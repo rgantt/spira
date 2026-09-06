@@ -226,13 +226,17 @@ echo "ctx-meter.sh line — the headline comes from the client, not from the tra
 # hook <session-id> <transcript-path> [total_input_tokens] [window] [used_percentage]
 # With the last three omitted the blob carries context_window.current_usage = null, which is
 # what the client sends before a session's first API response.
+# CWD IS THE FIXTURE'S REAL WORKING DIRECTORY, not a placeholder. The newest-by-mtime fallback
+# resolves <projects>/<slug of cwd>/, so a cwd that slugs to nothing means the fallback finds
+# nothing — and a test where the fallback CANNOT fire proves nothing about it being gated.
+# /two/sessions slugs to -two-sessions, which is where these fixtures live.
 hook() {
     if [ $# -ge 5 ]; then
-        printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","context_window":{"total_input_tokens":%s,"context_window_size":%s,"current_usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":1},"used_percentage":%s}}' \
-            "$1" "$2" "$T/projects" "$3" "$4" "$5"
+        printf '{"session_id":"%s","transcript_path":"%s","cwd":"/two/sessions","context_window":{"total_input_tokens":%s,"context_window_size":%s,"current_usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":1},"used_percentage":%s}}' \
+            "$1" "$2" "$3" "$4" "$5"
     else
-        printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","context_window":{"total_input_tokens":0,"context_window_size":%s,"current_usage":null,"used_percentage":null}}' \
-            "$1" "$2" "$T/projects" "${3:-200000}"
+        printf '{"session_id":"%s","transcript_path":"%s","cwd":"/two/sessions","context_window":{"total_input_tokens":0,"context_window_size":%s,"current_usage":null,"used_percentage":null}}' \
+            "$1" "$2" "${3:-200000}"
     fi
 }
 # line <hook-json> — the status line, under the same minimal environment as `run`.
@@ -246,13 +250,20 @@ line() {
 
 # A DIRECTORY WITH TWO SESSIONS IN IT, which is the whole hazard: one working directory can
 # host more than one agent, and they share a project slug. `mine` carries 2200; `other` is
-# written afterwards so it is unambiguously the newest by mtime and carries 700 — a number the
+# written afterwards so it is unambiguously the newest by mtime and carries 7000 — a number the
 # meter must never print while the hook is naming `mine`.
 P="$T/projects/-two-sessions"; mkdir -p "$P"
 : > "$P/mine.jsonl"
 for i in $(seq 0 20); do turn "n$i" 0 0 0 $(( 2000 + i * 10 )) 10 >> "$P/mine.jsonl"; done
-turn o1 0 0 0 700 10 > "$P/other.jsonl"
+turn o1 0 0 0 7000 10 > "$P/other.jsonl"
 touch -d '1 minute ago' "$P/mine.jsonl"; touch "$P/other.jsonl"
+
+# THE POSITIVE CONTROL FOR THE FALLBACK ITSELF. Every assertion below says the newest-by-mtime
+# glob did NOT fire; this one says it can, and that it lands on `other`. Without it, a glob
+# broken in any way — a wrong slug, a wrong root — would satisfy the whole section by finding
+# nothing, and the gating those cases exist to check would be untested.
+has "with no session named, the newest transcript in the directory is used" \
+    "$(line '{"cwd":"/two/sessions"}')" "ctx 7k"
 
 # THE POSITIVE CONTROL FOR THE WHOLE SECTION. Before asserting that the transcript's number is
 # NOT what gets printed, prove this fixture's transcript does produce a number of its own —
@@ -284,10 +295,10 @@ has "an extended-context window reports its own token count" "$L" "ctx 610k"
 
 # THIS SESSION, NOT THE NEWEST ONE. `other` is newer by mtime and carries a different number.
 L="$(line "$(hook mine "$P/mine.jsonl" 44000 200000 22)")"
-hasnt "a newer sibling transcript is not the one measured" "$L" "ctx 0k"
-L="$(line "{\"session_id\":\"mine\",\"transcript_path\":\"$P/other.jsonl\"}")"
+hasnt "a newer sibling transcript is not the one measured" "$L" "ctx 7k"
+L="$(line "{\"session_id\":\"mine\",\"cwd\":\"/two/sessions\",\"transcript_path\":\"$P/other.jsonl\"}")"
 has "session_id outranks a transcript_path pointing elsewhere" "$L" "ctx 2k"
-hasnt "so the sibling's context is never reported"             "$L" "ctx 1k"
+hasnt "so the sibling's context is never reported"             "$L" "ctx 7k"
 
 # ==========================================================================================
 echo
@@ -298,7 +309,7 @@ echo "ctx-meter.sh line — fresh, unreadable, and the difference between them"
 # does the most damage: the operator reads a discarded session's total as the live one.
 L="$(line "$(hook brandnew "$P/brandnew.jsonl")")"
 has "a named session with no transcript yet reads as fresh" "$L" "ctx fresh"
-hasnt "and never as another session's number"               "$L" "700"
+hasnt "and never the newest sibling's number"               "$L" "ctx 7k"
 hasnt "and never as a zero context"                         "$L" "ctx 0k"
 hasnt "and never as an unreadable gauge"                    "$L" "ctx ?"
 
@@ -306,6 +317,7 @@ hasnt "and never as an unreadable gauge"                    "$L" "ctx ?"
 : > "$P/empty.jsonl"
 L="$(line "$(hook empty "$P/empty.jsonl")")"
 has "a transcript with no usage row yet is fresh too" "$L" "ctx fresh"
+hasnt "and not the sibling that does have one"        "$L" "ctx 7k"
 
 # `?` IS STILL RESERVED FOR A GAUGE THAT COULD NOT READ. With no session named at all there is
 # nothing to be fresh about, and the meter must not claim a state it did not establish.
@@ -375,6 +387,17 @@ printf '%s' "$(turn r1 0 0 0 4242 10 | tail -c +41)" >> "$IJ"; echo >> "$IJ"
 C="$(ienv)"
 is "and is counted once the rest of it lands" "$(( fresh_turns + 1 ))" "$(val SP_CTX_TURNS <<<"$C")"
 is "with its context reported"                                 "4242" "$(val SP_CTX_NOW <<<"$C")"
+
+# ONE DEFINITION, TWO READERS. Where there is no hook to supply total_input_tokens, `env` sums
+# it off the transcript by the client's own formula — input_tokens AND both cache fields. Every
+# other fixture here leaves input_tokens at zero, so a reader that dropped the uncached term
+# would agree with all of them and still disagree with the status line on every real session.
+mkdir -p "$T/defn/-a-project"
+turn d1 0 250 1000 4000 10 > "$T/defn/-a-project/live.jsonl"
+C="$(env -i HOME="$T/home" PATH="$PATH" SPIRA_CONF="$NONE" SPIRA_RUN="$T/defnrun" \
+     SPIRA_TOKEN_PROJECTS="$T/defn" SPIRA_CTX_WARN=$CW SPIRA_CTX_HIGH=$CH \
+     SPIRA_CTX_LIMIT=$CL bash "$CTX" env 2>/dev/null)"
+is "the transcript-side context is input plus both cache fields" "5250" "$(val SP_CTX_NOW <<<"$C")"
 
 # ==========================================================================================
 echo
