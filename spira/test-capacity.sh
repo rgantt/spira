@@ -43,11 +43,16 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 export SPIRA_RUN="$TMP/run"; mkdir -p "$SPIRA_RUN"
 export SPIRA_CAPACITY_PAUSE="$SPIRA_RUN/capacity-pause"
+# DELIBERATELY OFF ITS DEFAULT, which is `$SPIRA_RUN/capacity-withdrawn`. Asserting against
+# the shipped default passes just as well if the path is written into the code, which is the
+# one thing a settable key exists to prevent.
+export SPIRA_CAPACITY_WITHDRAWN="$TMP/paid-back-marks"
 # shellcheck disable=SC1090
 . "$HERE/lib.sh"
 # lib.sh resolves these at source time from whatever conf is on the box; the fixture wins.
 SPIRA_RUN="$TMP/run"
 SPIRA_CAPACITY_PAUSE="$SPIRA_RUN/capacity-pause"
+SPIRA_CAPACITY_WITHDRAWN="$TMP/paid-back-marks"
 
 RESETS=1788696000       # the reset epoch the real rejection carried
 
@@ -150,6 +155,58 @@ want "and announces that the window reopened"    "reopened" "$outp"
 printf 'garbage\n' > "$SPIRA_CAPACITY_PAUSE"
 is "a corrupt pause file reads as epoch 0" "0" "$(capacity_pause_until)"
 capacity_paused; is "and therefore does not hold" "1" "$?"
+
+printf 'capacity: the withdrawal ledger\n'
+
+# WHY THERE IS A LEDGER AT ALL. The evidence for giving an attempt back is a file, and a file
+# is still there tomorrow — so a cleanup with no memory of itself reads the same refusal as
+# grounds for a second withdrawal, then a third, and attempt counts walk to zero. Nothing can
+# poison after that, however genuinely it keeps failing, and nothing complains: a bead that is
+# never poisoned looks exactly like a bead being retried. test-capacity-reclassify.sh holds
+# that property end to end through `capacity.sh` against a real `bd`; these are the primitives
+# it rests on, checked where no database is needed to check them.
+
+# THE IDENTITY IS THE LOG'S CONTENT. The horizon is one attempt deep — aeon.sh truncates the
+# log on every attempt — so "already paid back" is exactly "the same log I paid back before".
+FP1="$(capacity_log_fingerprint "$REFUSED")"
+[ -n "$FP1" ] && ok "a log has a fingerprint" || bad "a log has a fingerprint" "empty"
+is "and the same content fingerprints the same" "$FP1" "$(capacity_log_fingerprint "$REFUSED")"
+
+# THE POSITIVE CONTROL. Without a case where the fingerprint is KNOWN to move, "it did not
+# move" is indistinguishable from a function that returns a constant — and a constant would
+# block every future outage from ever being paid back, silently.
+cp "$REFUSED" "$TMP/second.log"
+printf '{"type":"result","subtype":"success","is_error":true,"result":"a second session"}\n' >> "$TMP/second.log"
+[ "$(capacity_log_fingerprint "$TMP/second.log")" != "$FP1" ] \
+    && ok "and a rewritten log fingerprints differently" \
+    || bad "and a rewritten log fingerprints differently" "unchanged"
+
+capacity_log_fingerprint "$TMP/does-not-exist.log" >/dev/null
+is "a missing log has no fingerprint" "1" "$?"
+: > "$TMP/nothing.log"; capacity_log_fingerprint "$TMP/nothing.log" >/dev/null
+is "nor does an empty one"            "1" "$?"
+
+is "an unmarked bead has nothing recorded against it" "" "$(capacity_withdrawn_fp sp-fixture)"
+capacity_withdrawn_mark sp-fixture "$FP1" 3
+is "a mark reads back the fingerprint it was given" "$FP1" "$(capacity_withdrawn_fp sp-fixture)"
+[ -f "$TMP/paid-back-marks/sp-fixture" ] \
+    && ok "written where SPIRA_CAPACITY_WITHDRAWN points, not beside the logs" \
+    || bad "written where SPIRA_CAPACITY_WITHDRAWN points, not beside the logs" "not in $TMP/paid-back-marks"
+[ ! -e "$SPIRA_RUN/capacity-withdrawn" ] \
+    && ok "and nothing is written to the default path"  \
+    || bad "and nothing is written to the default path" "the default was used as well"
+
+# OVERWRITTEN, NEVER APPENDED. One line per bead is the whole question, and a second mark for
+# the same bead must supersede the first rather than leave the old fingerprint to be read.
+capacity_withdrawn_mark sp-fixture "$(capacity_log_fingerprint "$TMP/second.log")" 2
+is "a later withdrawal replaces the mark" \
+   "$(capacity_log_fingerprint "$TMP/second.log")" "$(capacity_withdrawn_fp sp-fixture)"
+is "and the file stays one line"  "1" "$(wc -l < "$TMP/paid-back-marks/sp-fixture")"
+
+capacity_withdrawn_mark sp-nofp "" 1
+is "a mark with no fingerprint is refused rather than written blank" "1" "$?"
+[ -e "$TMP/paid-back-marks/sp-nofp" ] \
+    && bad "and leaves no file behind" "it wrote one" || ok "and leaves no file behind"
 
 printf '\n  %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

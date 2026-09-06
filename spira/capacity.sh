@@ -29,6 +29,15 @@
 # survives. History before that attempt is gone and no amount of care here recovers it —
 # which is why the fix that matters is the one in aeon.sh that stops charging the attempt in
 # the first place, and this is only the cleanup behind it.
+#
+# EVIDENCE OUTLIVES THE WITHDRAWAL IT JUSTIFIES, so this keeps a ledger. A log that ends in
+# a refusal is still there tomorrow, and a cleanup with no memory of itself reads it as
+# grounds for a second withdrawal, then a third — attempt counts walking down to zero, after
+# which nothing can ever poison however genuinely it keeps failing. Nothing calls this on a
+# timer, which is not a defence: a hand-run cleanup command invites being run again. Each
+# withdrawal is therefore marked against the fingerprint of the log that justified it, under
+# `$SPIRA_RUN/capacity-withdrawn/<id>`, and a re-run is a no-op until a NEW refusal rewrites
+# that log. Delete a mark to have its log reconsidered.
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -80,37 +89,80 @@ scan)
     ;;
 
 reclassify)
-    n=0
+    n=0; already=0; refused=0
     while read -r id at; do
         [ -n "${id:-}" ] || continue
+        # THE SAME LOG MAY ONLY BE PAID BACK ONCE. Without this the evidence outlives the
+        # withdrawal it justified, so every re-run takes another attempt off the same
+        # refusal and the count walks to zero — after which the bead can never poison,
+        # however genuinely it goes on failing. A new refusal rewrites the log, moving the
+        # fingerprint, and is withdrawn normally.
+        fp="$(capacity_log_fingerprint "$SPIRA_RUN/$id.log")" || continue
+        if [ "$fp" = "$(capacity_withdrawn_fp "$id")" ]; then
+            already=$((already+1))
+            printf 'ALREADY  %-20s this log was already given back; attempts now %s\n' \
+                "$id" "$(attempts_of "$id" 2>/dev/null || echo 0)"
+            continue
+        fi
         cur="$(attempts_of "$id")"; cur="${cur:-0}"
         [ "$cur" -gt 0 ] || continue
+        # Read the labels ONCE, into a variable, and match with a herestring. Piping into
+        # `grep -q` under `set -o pipefail` is a trap: grep exits at the first match and
+        # closes the pipe, the writer dies of SIGPIPE, and pipefail hands back 141 — so the
+        # test reads FALSE exactly when it succeeded, and poison would be left standing on
+        # an attempt that had just been withdrawn (law-no-grep-q-under-pipefail).
+        labels="$(bdq label list "$id" 2>/dev/null)"
+        poisoned=0
+        case "$labels" in *spira-poison*) poisoned=1 ;; esac
+        lifts=0
+        [ "$poisoned" = 1 ] && [ "$(( cur - 1 ))" -lt "${SPIRA_POISON_AT:-3}" ] && lifts=1
         n=$((n+1))
         if [ "$APPLY" = 1 ]; then
             # Remove the HIGHEST attempt label, because attempts_of reads the maximum: the
             # count is the top of the ladder, not the number of rungs, so taking the top rung
             # away is exactly what "one attempt back" means.
-            bdq label remove "$id" "sp-attempt-$cur" >/dev/null 2>&1
+            #
+            # THE RESULT IS CHECKED. A removal that failed and still printed RESTORED would
+            # be a claim the ledger then makes permanent, and the attempt would stay charged
+            # with nothing left saying so.
+            if ! bdq label remove "$id" "sp-attempt-$cur" >/dev/null 2>&1; then
+                printf 'REFUSED  %-20s could not remove sp-attempt-%s — left charged, nothing recorded\n' \
+                    "$id" "$cur"
+                n=$((n-1)); refused=$((refused+1))
+                continue
+            fi
             bdq note "$id" "Attempt $cur withdrawn: its session was refused by the account for want of capacity, not by anything about this work. Evidence: $SPIRA_RUN/$id.log ends in a rejected rate_limit_event." >/dev/null 2>&1
             # A bead poisoned only by that attempt is no longer poisoned. Its label goes with
             # it — leaving it would keep the bead out of every fayth's predicate for a
             # failure that was withdrawn, which is the whole harm this is undoing.
-            if [ "$(( cur - 1 ))" -lt "${SPIRA_POISON_AT:-3}" ] \
-               && bdq label list "$id" 2>/dev/null | grep -q spira-poison; then
+            if [ "$lifts" = 1 ]; then
                 bdq label remove "$id" spira-poison >/dev/null 2>&1
                 printf 'RESTORED %-20s attempt %s withdrawn, poison lifted\n' "$id" "$cur"
             else
                 printf 'RESTORED %-20s attempt %s withdrawn\n' "$id" "$cur"
             fi
+            # RECORDED ONLY AFTER THE WITHDRAWAL WAS MADE, so an interrupted run repeats one
+            # withdrawal at worst rather than recording one it never performed.
+            capacity_withdrawn_mark "$id" "$fp" "$cur"
         else
             printf 'would restore %-20s attempt %s -> %s%s\n' "$id" "$cur" "$(( cur - 1 ))" \
-                "$( [ "$(( cur - 1 ))" -lt "${SPIRA_POISON_AT:-3}" ] \
-                    && bdq label list "$id" 2>/dev/null | grep -q spira-poison \
-                    && printf ', poison would lift' )"
+                "$( [ "$lifts" = 1 ] && printf ', poison would lift' )"
         fi
     done <<< "$(scan)"
-    [ "$n" = 0 ] && printf 'nothing to reclassify — no surviving session log ends in an account refusal\n'
+    # ZERO IS A CLAIM AND IT NEEDS A CONTROL. "Nothing to reclassify" is true of a run that
+    # found no refusals AND of one whose refusals were all paid back already, and those are
+    # different facts about the harness. Say which, and say where the marks are kept, so an
+    # operator who genuinely wants a log reconsidered knows what to delete
+    # (law-absence-needs-a-positive-control).
+    if [ "$n" = 0 ] && [ "$already" = 0 ] && [ "$refused" = 0 ]; then
+        printf 'nothing to reclassify — no surviving session log ends in an account refusal\n'
+    fi
+    printf -- '--- %s to give back, %s already marked; marks in %s\n' \
+        "$n" "$already" "$SPIRA_CAPACITY_WITHDRAWN"
     [ "$APPLY" = 1 ] || printf -- '--- dry run; pass --apply to make these changes\n'
+    # A run that could not make a withdrawal it identified exits non-zero, so an operator who
+    # ran this from a script is told rather than left to read the count.
+    [ "$refused" = 0 ] || { printf -- '--- %s withdrawal(s) could not be made\n' "$refused" >&2; exit 1; }
     ;;
 
 pause)

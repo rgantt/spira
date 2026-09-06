@@ -397,6 +397,66 @@ capacity_pause_why() {   # -> what was being worked when the account ran out
 }
 
 # --------------------------------------------------------------------------------------
+# THE WITHDRAWAL LEDGER — which refusal has already been paid back.
+#
+# Giving an attempt back is driven by evidence that stays on disk: a session log ending in
+# an account refusal. Evidence that stays is evidence that can be read twice, so a cleanup
+# with no memory of itself withdraws a second attempt from the same log on its second run,
+# a third on its third, and attempt counts walk to zero — after which nothing can ever
+# poison, however genuinely it keeps failing. Nothing calls that cleanup automatically,
+# which is not a defence: a hand-run command invites being run again.
+#
+# THE MARK IS KEYED ON THE LOG'S CONTENT, not on the bead and not on a date. The horizon is
+# one attempt deep by construction — aeon.sh truncates `$SPIRA_RUN/<id>.log` on every
+# attempt — so "has this refusal already been paid back" is exactly "is this the same log I
+# paid back last time". A NEW refusal rewrites the file, the fingerprint moves, and the next
+# withdrawal is made. A bead keyed mark would refuse the second outage; a dated one would
+# turn the erosion back on after however long it waited.
+#
+# Losing the ledger costs one duplicate withdrawal per refused log and nothing worse, which
+# is why it lives under SPIRA_RUN beside the logs it describes rather than in the database.
+# It needs no config key for the same reason the traces do not: the harness put it there.
+# --------------------------------------------------------------------------------------
+SPIRA_CAPACITY_WITHDRAWN="${SPIRA_CAPACITY_WITHDRAWN:-$SPIRA_RUN/capacity-withdrawn}"
+
+# capacity_log_fingerprint <log> -> a string that moves when the log's content does; rc 1
+# if there is no readable content to fingerprint.
+#
+# Content and not `stat`: size and mtime make an unchanged log look new whenever anything
+# copies, restores or re-syncs the runtime directory, and every one of those false readings
+# spends an attempt that was never charged.
+capacity_log_fingerprint() {
+    local f="${1:-}" h
+    [ -n "$f" ] && [ -s "$f" ] || return 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        h="$(sha256sum < "$f" 2>/dev/null | awk '{print $1}')"
+    else
+        # cksum is POSIX and always there. It is weaker, and it does not need to be strong:
+        # this distinguishes one session trace from the next, not from an adversary's.
+        h="$(cksum < "$f" 2>/dev/null | tr -s ' ' -)"
+    fi
+    [ -n "$h" ] || return 1
+    printf '%s' "$h"
+}
+
+capacity_withdrawn_fp() {   # capacity_withdrawn_fp <id> -> the fingerprint already paid back, or nothing
+    local id="${1:-}"
+    [ -n "$id" ] || return 1
+    awk 'NR==1{print $1}' "$SPIRA_CAPACITY_WITHDRAWN/$id" 2>/dev/null
+}
+
+# capacity_withdrawn_mark <id> <fingerprint> <attempt> — record that this exact log has been
+# paid back. Written whole rather than appended: one line per bead is the entire question,
+# and a file that only ever grows is one more thing to prune.
+capacity_withdrawn_mark() {
+    local id="${1:-}" fp="${2:-}" att="${3:-0}"
+    [ -n "$id" ] && [ -n "$fp" ] || return 1
+    mkdir -p "$SPIRA_CAPACITY_WITHDRAWN" 2>/dev/null || return 1
+    printf '%s %s %s\n' "$fp" "$att" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        > "$SPIRA_CAPACITY_WITHDRAWN/$id"
+}
+
+# --------------------------------------------------------------------------------------
 # Attempt counting. Kept as labels rather than metadata because a label is visible in
 # every listing and filterable by the same --exclude-label surface claiming uses, so the
 # poison threshold is enforced at SELECTION time rather than after a wasted claim.
