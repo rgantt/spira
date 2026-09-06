@@ -190,3 +190,22 @@
 
 # How many aeons may run at once, before the governor's own headroom checks narrow it further.
 # SPIRA_MAX_AEONS = 2
+
+# ---- what the account spends ----------------------------------------------------------------
+# The rolling window the plan is billed against, in hours. Every token figure on the dashboard
+# is "inside the window", so this decides what those numbers mean. It is a fact about the plan
+# rather than about the box, and a colleague on a different plan reads a different length.
+# SPIRA_TOKEN_WINDOW_H = 5
+
+# Where the client writes interactive session transcripts. The aeons' own traces live under the
+# runtime directory and need no key, because the harness put them there. Point this at the wrong
+# place and the session half of the split reads zero — which is the reading that looks like good
+# news, so it is a key rather than a guess.
+# SPIRA_TOKEN_PROJECTS = $HOME/.claude/projects
+
+# The thresholds a LIVE session's carried context is measured against, shared by the status line
+# and the dashboard so the two cannot disagree about how close to the edge a session is. Context
+# is re-read in full on every turn, so these are the numbers that decide whether to clear.
+# SPIRA_CTX_WARN = 200000
+# SPIRA_CTX_HIGH = 400000
+# SPIRA_CTX_LIMIT = 1000000

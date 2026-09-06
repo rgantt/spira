@@ -93,12 +93,20 @@ SNAP="$RUN/cockpit.env"
 # Spira row the moment an operator moved it, and a panel that reports a broken read as
 # "nothing happening" displaces the suspicion that would have prompted a look.
 SPIRA_SNAP="$SPIRA_RUN/cockpit.env"
-HIST="$RUN/cockpit-history.csv"
+# SPIRA'S OWN SERIES, beside its own snapshot. The predecessor harness's collector owns the
+# cockpit-history.csv under $RUN and is deleted along with it; a pane drawing trends from a
+# file nothing appends to draws a flat line, and a flat line reads as calm rather than absent.
+HIST="$SPIRA_RUN/cockpit-history.csv"
 
 C_RST=$'\e[0m'; C_DIM=$'\e[2m'; C_B=$'\e[1m'
 C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_BAD=$'\e[31m'; C_ACC=$'\e[36m'
 
-# Sparkline over the last N values of a named history column.
+# Sparkline over the last N values of a named column of the time series.
+#
+# A NON-NUMERIC POINT IS DROPPED, NEVER PLOTTED AS ZERO. The series records `?` for a probe
+# that failed, and drawing that as a trough turns a broken instrument into the picture of a
+# quiet hour — which is the one thing a dashboard must never invent. With nothing numeric
+# left it draws nothing at all, so the absence is visible instead of imagined.
 spark() {
     local col="$1" n="${2:-24}"
     [ -f "$HIST" ] || { printf '%s' ""; return; }
@@ -114,7 +122,7 @@ except Exception:
 vals = []
 for r in rows[-n:]:
     try: vals.append(float(r[col]))
-    except Exception: vals.append(0.0)
+    except Exception: pass
 if not vals: sys.exit(0)
 lo, hi = min(vals), max(vals)
 if hi - lo < 1e-9:
@@ -162,6 +170,23 @@ fit() {                  # fit <text> <cols> -> sets $FIT
     if [ "$n" -ge 2 ] 2>/dev/null && [ "${#t}" -gt "$n" ]; then FIT="${t:0:$((n-1))}…"; else FIT="$t"; fi
 }
 
+# tok <n> -> "494M" / "126k". A `?` or `-` passes through untouched: a probe that failed and a
+# probe that measured nothing are different facts and neither is a number.
+tok() {
+    local v="${1:-?}"
+    case "$v" in ''|*[!0-9]*) printf '%s' "${v:-?}"; return ;; esac
+    if   [ "$v" -ge 1000000 ]; then printf '%sM' $(( v / 1000000 ))
+    elif [ "$v" -ge 1000 ];    then printf '%sk' $(( v / 1000 ))
+    else                            printf '%s' "$v"; fi
+}
+
+# pct <part> <whole> -> "74%", or `?` when either side is not a number or the whole is zero.
+pct() {
+    case "${1:-}${2:-}" in *[!0-9]*) printf '?'; return ;; esac
+    [ "${2:-0}" -gt 0 ] 2>/dev/null || { printf '?'; return; }
+    printf '%s%%' $(( $1 * 100 / $2 ))
+}
+
 # age <seconds> <warn> -> "12s" / "4m", coloured. `?` if the file was never written.
 age_str() {
     local a="$1" w="$2" s
@@ -207,6 +232,106 @@ header_line() {
         "$C_B" "$C_ACC" "$C_RST" "$(date +%H:%M)" \
         "$C_DIM" "$C_RST" "$(dot "${SP_SENTINEL_TIMER:-0}")" "${SP_SENTINEL_AGE:-?}" \
         "$C_DIM" "$C_RST" "$(dot "${SP_OPS_TIMER:-0}")" "${SP_OPS_AGE:-?}" "$stale"
+}
+
+# TOKENS — what the account is spending, and which half of the system is spending it.
+#
+# DIRECTLY UNDER THE HEADER AND OUTSIDE THE SHARE, because it is the constraint on everything
+# below it: when the account is out of capacity no aeon can be summoned and no bead can move,
+# so every other figure on this pane freezes for a reason nothing else here reports. It is the
+# leading indicator of the GOV row's "ACCOUNT OUT OF CAPACITY", which only says so once it is
+# too late to act. Fixed height by the same rule as the standing figures — each row is one
+# number that is always worth its row — so the elastic sections never elide it.
+#
+# THE SPLIT IS THE WHOLE POINT, and it gets a row each. A single total would not have answered
+# the question this was built for, and the answer was not the obvious one: the interactive
+# session is about three quarters of the window, so optimising the harness first would have
+# been optimising the smaller half. One half per row rather than both on one, because this is
+# a column about a third of the window wide and the tail of a long line is silently cut — the
+# tail here being the session, which is the larger half and the finding.
+#
+# CONTEXT PER TURN, NOT OUTPUT. What a rate limit meters is everything a request carried, and
+# the whole context is re-read on EVERY turn: cache reads outweigh output here by roughly 175
+# to 1. The lever is context size multiplied by turns, so both are on the row.
+tokens_section() {
+    printf ' %sTOKENS/%sh%s  %s%s%s billed  %s%s%s\n' \
+        "$C_DIM" "${SP_TOK_WINDOW_H:-?}" "$C_RST" \
+        "$C_B" "$(tok "${SP_TOK_WIN:-?}")" "$C_RST" \
+        "$C_ACC" "$(spark tok_win $(( COLS > 46 ? (COLS - 34 > 24 ? 24 : COLS - 34) : 0 )))" "$C_RST"
+    local half
+    for half in AEON:aeons SESS:session; do
+        eval "local w=\${SP_TOK_${half%%:*}_WIN:-?} t=\${SP_TOK_${half%%:*}_TURNS:-?} c=\${SP_TOK_${half%%:*}_CTX:-?}"
+        # Fitted like every other variable-length field: on a narrow column the tail is what
+        # the terminal would cut, and here the tail is the context-per-turn — half of the
+        # product this row exists to show.
+        fit "${t}t · $(tok "$c") ctx/turn" $(( COLS - 22 ))
+        printf '        %s%-8s%s %-4s %s%s%s\n' \
+            "$C_DIM" "${half#*:}" "$C_RST" "$(pct "$w" "${SP_TOK_WIN:-?}")" \
+            "$C_DIM" "$FIT" "$C_RST"
+    done
+
+    # CTX — the session in front of the operator, and how close it is to the edge.
+    #
+    # A TOTAL SAYS WHAT WAS SPENT; ONLY THE PROXIMITY SAYS WHETHER TO ACT NOW, and acting is
+    # the thing the operator can actually do about any of this. Headroom is quoted to the NEXT
+    # threshold rather than to the ceiling — "874k to the limit" is true and useless when what
+    # happens next is crossing into the band where clearing pays. Turns-to-threshold is the
+    # same fact in the unit the decision is made in, and it appears only while the session is
+    # growing: a flat session is approaching nothing, and a fabricated rate would be a number
+    # where there is no measurement.
+    # THREE STATES, AND THEY MUST NOT COLLAPSE INTO TWO. `-` is "no session is running", which
+    # is true and useful; an unset or `?` key is a probe that did not run, which is a fault and
+    # says so. Reading the second as the first would report a broken meter as a quiet keyboard
+    # — an all-clear that displaces the suspicion that would have prompted a look
+    # (law-absence-needs-a-positive-control).
+    case "${SP_CTX_NOW:-?}" in
+        '-') printf ' %sCTX%s    %sno session at the keyboard%s\n' "$C_DIM" "$C_RST" "$C_DIM" "$C_RST"
+             return ;;
+        ''|'?'|*[!0-9]*) unread_row CTX "cannot read the live session"; return ;;
+    esac
+    local ctx_col="$C_OK"
+    case "${SP_CTX_NEXT:-}" in
+        high)             ctx_col="$C_WARN" ;;
+        limit|over|'?')   ctx_col="$C_BAD$C_B" ;;
+    esac
+    local rest=""
+    [ "${SP_CTX_GROWTH:-0}" -gt 0 ] 2>/dev/null && rest=" · +$(tok "$SP_CTX_GROWTH")/turn"
+    case "${SP_CTX_NEXT:-}" in
+        warn|high|limit)
+            rest="$rest · $(tok "${SP_CTX_HEADROOM:-?}") to ${SP_CTX_NEXT}"
+            [ "${SP_CTX_TURNS_LEFT:--}" = "-" ] || rest="$rest (~${SP_CTX_TURNS_LEFT}t)" ;;
+        over) rest="$rest · past every threshold" ;;
+    esac
+    fit "$rest" $(( COLS - 18 ))
+    printf ' %sCTX%s    %s%s%s %s/%st%s%s\n' \
+        "$C_DIM" "$C_RST" "$ctx_col" "$(tok "${SP_CTX_NOW:-?}")" "$C_RST" \
+        "$C_DIM" "${SP_CTX_TURNS:-?}" "$FIT" "$C_RST"
+
+    # The archivist is what makes a full context recoverable rather than merely lost, so its
+    # state belongs beside the number that says the context is full — and so does the age of
+    # the transcript this was read from. The collector has no status-line hook and takes the
+    # newest transcript on disk; with nobody at the keyboard that is a session which ended
+    # hours ago, and presenting a dead session's context as live is the confident wrong number
+    # this pane exists to avoid. The row is emitted only when one of them has something to
+    # say, because a row that always reads the same becomes wallpaper.
+    local note=""
+    case "${SP_CTX_ARCHIVIST:-}" in
+        none)               [ "${SP_CTX_NEXT:-}" = warn ] || note="${C_DIM}· not archived${C_RST}" ;;
+        safe)               if [ "${SP_CTX_ARCHIVIST_BEHIND:-0}" -le 2 ] 2>/dev/null
+                            then note="${C_OK}✓ safe to clear${C_RST}"
+                            else note="${C_WARN}✓ safe as of ${SP_CTX_ARCHIVIST_BEHIND}t ago${C_RST}"; fi ;;
+        sweeping|archiving) note="${C_ACC}⟳ ${SP_CTX_ARCHIVIST}${C_RST}" ;;
+        failed)             note="${C_BAD}! archive failed${C_RST}" ;;
+        ''|'-')             ;;
+        *)                  note="${C_BAD}${C_B}archivist ?${C_RST}" ;;
+    esac
+    case "${SP_CTX_AGE:-}" in
+        ''|'-'|'?') ;;
+        *) [ "${SP_CTX_AGE}" -ge 300 ] 2>/dev/null \
+               && note="${note:+$note  }${C_DIM}idle $(( SP_CTX_AGE / 60 ))m${C_RST}" ;;
+    esac
+    [ -n "$note" ] && printf '        %s\n' "$note"
+    return 0
 }
 
 # `<label> ? <why>` — the shape every section uses when its input could not be read. It is
@@ -538,8 +663,9 @@ frame() {
     # thread it through unchanged. Set once per frame, so a resize reflows on the next tick.
     COLS="${2:-0}"; [ "$COLS" -gt 0 ] 2>/dev/null || COLS=80
     load_snapshot
-    local -a HEAD NOW NEXT RECENT CI STANDING give
+    local -a HEAD TOKENS NOW NEXT RECENT CI STANDING give
     mapfile -t HEAD     < <(header_line)
+    mapfile -t TOKENS   < <(tokens_section)
     mapfile -t NOW      < <(now_section)
     mapfile -t NEXT     < <(next_section)
     mapfile -t RECENT   < <(recent_section)
@@ -555,9 +681,14 @@ frame() {
     for (( i = 0; i < ${#want[@]}; i++ )); do
         [ "${want[i]}" -gt "$MAX_SECTION_ROWS" ] && want[i]="$MAX_SECTION_ROWS"
     done
-    mapfile -t give < <(share "$rows" $(( ${#HEAD[@]} + ${#STANDING[@]} )) "${want[@]}")
+    # TOKENS counts as FIXED, alongside the header and the standing figures: every one of its
+    # rows is a number that is always worth its row, and the constraint that stops all other
+    # work must not be what the allocator elides on a short pane.
+    mapfile -t give < <(share "$rows" \
+        $(( ${#HEAD[@]} + ${#TOKENS[@]} + ${#STANDING[@]} )) "${want[@]}")
 
     printf '%s\n' "${HEAD[@]}"
+    printf '%s\n' "${TOKENS[@]}"
     [ "${give[0]}" -gt 0 ] && printf '%s\n' "${NOW[@]:0:${give[0]}}"
     [ "${give[1]}" -gt 0 ] && printf '%s\n' "${NEXT[@]:0:${give[1]}}"
     [ "${give[2]}" -gt 0 ] && printf '%s\n' "${RECENT[@]:0:${give[2]}}"

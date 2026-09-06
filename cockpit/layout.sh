@@ -363,6 +363,29 @@ restart_collector_if_stale() {
     done
 }
 
+# THE SPIRA COLLECTOR HAS THE SAME PROBLEM AND NONE OF THE COMPLICATIONS. It is only ever
+# started by systemd — nothing here ever launched it from a terminal — so there is no orphan
+# to hunt and the supervised process is the only one that can exist. Left unwatched it keeps
+# running a superseded copy indefinitely, and the symptom is the one this whole surface exists
+# to prevent: a key added to the probe is never emitted, the pane renders `?` for it forever,
+# and every process involved reports itself healthy.
+restart_spira_collector_if_stale() {
+    local unit=spira-cockpit.service src="$SPIRA_HOME/cockpit.sh" main started mtime
+    [ -f "$src" ] || return 0
+    systemctl --user cat "$unit" >/dev/null 2>&1 || return 0
+    [ "$(systemctl --user is-active "$unit" 2>/dev/null)" = active ] || return 0
+    main=$(systemctl --user show "$unit" -p MainPID --value 2>/dev/null || echo 0)
+    [ -n "$main" ] && [ "$main" != 0 ] || return 0
+    started=$(proc_start "$main") || {
+        heal_log "spira collector $main start time unreadable — leaving it alone"
+        return 0
+    }
+    mtime=$(stat -c %Y "$src" 2>/dev/null || echo 0)
+    [ "$mtime" -gt "$started" ] || return 0
+    heal_log "spira collector $main is running code older than cockpit.sh — restarting $unit"
+    systemctl --user restart "$unit" 2>/dev/null
+}
+
 # --- the two splits, in the one order that produces the shape -------------------
 # `-f` IS WHAT MAKES A REPAIR PRODUCE THE SAME SHAPE AS A FRESH BUILD. A plain split takes
 # its TARGET pane's height, so a health pane respawned after the left column had already
@@ -564,6 +587,7 @@ ensure)
     # that draws them looks alive. `up` restarts it, but `up` only runs on a broken layout.
     if [ -n "$(cockpit_windows)" ]; then
         restart_collector_if_stale
+        restart_spira_collector_if_stale
         age=$(snapshot_age)
         if ! collector_running; then
             heal_log "collector was dead — restarting"

@@ -16,13 +16,17 @@
 # the unit that was actually billed.
 #
 # TWO SOURCES, KEPT SEPARATE, because the point is to attribute:
-#   aeons    $SPIRA_RUN/*.log            — stream-json from every aeon session
-#   session  ~/.claude/projects/*/*.jsonl — the interactive sessions in this project
+#   aeons    $SPIRA_RUN/*.log                  — stream-json from every aeon session
+#   session  $SPIRA_TOKEN_PROJECTS/*/*.jsonl   — the client's interactive transcripts
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/lib.sh" >/dev/null 2>&1
-WINDOW_H="${SPIRA_TOKEN_WINDOW_H:-5}"     # the rate-limit window this plan is billed against
-PROJECTS="${SPIRA_TOKEN_PROJECTS:-$HOME/.claude/projects}"
+# BOTH FROM CONFIGURATION, with no literal fallback here. The window is a fact about the plan
+# and the transcript directory is a fact about the client, so neither is knowable from this
+# file — and a default written in twice is how two programs come to disagree about what
+# "inside the window" means while both look right.
+WINDOW_H="$SPIRA_TOKEN_WINDOW_H"
+PROJECTS="$SPIRA_TOKEN_PROJECTS"
 
 python3 - "$SPIRA_RUN" "$PROJECTS" "$WINDOW_H" "${1:-env}" <<'PY'
 import json, sys, glob, os, collections, datetime as dt

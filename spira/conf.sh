@@ -59,6 +59,7 @@ COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_ALERT_GLOB
 SPIRA_FAYTHS SPIRA_MAX_AEONS
+SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
 "
 
 # --------------------------------------------------------------------------------------
@@ -254,6 +255,25 @@ spira_conf_defaults() {
     # pattern. Empty means none: these are the operator's own unit names and nothing here can
     # guess them, so install-intake.sh says so rather than wiring whatever matches.
     : "${SPIRA_ALERT_GLOB:=}"
+
+    # ---- WHAT THE ACCOUNT SPENDS -------------------------------------------------------
+    # The rate limit is charged against a rolling window, and every figure the token meter
+    # reports is "inside the window" — so this number decides what the dashboard means. It is
+    # a fact about the operator's PLAN, not about this box, which is why it is a key: a
+    # colleague on a different plan reads a window of a different length.
+    : "${SPIRA_TOKEN_WINDOW_H:=5}"
+    # Where the interactive sessions write their transcripts. The aeons' own traces are found
+    # under SPIRA_RUN and need no key, because the harness put them there; this directory
+    # belongs to the client, and a client that moves it would otherwise make the session half
+    # of the split silently read zero — which is the reading that looks like good news.
+    : "${SPIRA_TOKEN_PROJECTS:=$HOME/.claude/projects}"
+    # THE THRESHOLDS A LIVE SESSION IS MEASURED AGAINST, shared by the status line and the
+    # dashboard so that the two cannot disagree about how close to the edge a session is. The
+    # defaults are what this context window actually costs: a session opens near 50,000, and
+    # every long one ends up pinned near the ceiling, re-reading all of it on every turn.
+    : "${SPIRA_CTX_WARN:=200000}"
+    : "${SPIRA_CTX_HIGH:=400000}"
+    : "${SPIRA_CTX_LIMIT:=1000000}"
 
     # THE MAP FALLS BACK TO THE EXAMPLE, and that is what makes a clean clone runnable at
     # all. The real map is one operator's inventory of checkouts and does not ship; the

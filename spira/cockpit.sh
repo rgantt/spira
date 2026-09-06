@@ -2,8 +2,9 @@
 #
 # cockpit.sh — gather Spira health into .runtime/spira/cockpit.env for the cockpit pane.
 #
-#   cockpit.sh          one pass, write the snapshot, exit
+#   cockpit.sh          one pass, write the snapshot, append a history row, exit
 #   cockpit.sh loop     forever, every INTERVAL seconds
+#   cockpit.sh history  append one history row from the snapshot already on disk
 #
 # WHY A SNAPSHOT FILE AND NOT DIRECT CALLS
 # ----------------------------------------
@@ -512,6 +513,35 @@ print("SP_STRANDS_ESCALATED=%d" % sum(1 for v in d.values() if v.get("escalated"
         echo "SP_STRANDS=?"; echo "SP_STRANDS_ESCALATED=?"
     fi
 
+    # ---- TOKENS: what the account is spending, and which half is spending it ------------
+    # The rate limit is the binding constraint on everything else on this pane — when the
+    # account is out of capacity no aeon can be summoned, no bead can move, and every other
+    # figure here is frozen for reasons nothing else reports. It was also unattributed: the
+    # harness and the interactive session were both plausible culprits and optimising the
+    # wrong one is the expensive mistake.
+    #
+    # `tokens.sh env` READS ONLY FILES TOUCHED INSIDE THE WINDOW, which is why it can run on
+    # every pass at all. The full corpus is billions of tokens of history and re-reading it
+    # here would make the instrument cost more than the thing it measures. Do not "simplify"
+    # that away by calling `report`.
+    "$HERE/tokens.sh" env 2>/dev/null \
+      || { for k in SP_TOK_WINDOW_H SP_TOK_AEON_WIN SP_TOK_SESS_WIN SP_TOK_WIN \
+                    SP_TOK_AEON_TURNS SP_TOK_SESS_TURNS SP_TOK_AEON_CTX SP_TOK_SESS_CTX \
+                    SP_TOK_AEON_OUT SP_TOK_SESS_OUT SP_TOK_AEON_RECENT SP_TOK_SESS_RECENT; do
+               echo "$k=?"
+           done; }
+
+    # ---- LIVE CONTEXT: how close the session in front of the operator is to the edge -----
+    # A total says what was spent; only the proximity says whether to act now, and acting is
+    # what the operator can actually do about it. Measured by ctx-meter.sh — the same program
+    # the status line calls, deliberately, so the pane and the status line cannot disagree
+    # about how close to a threshold a session is.
+    "$HERE/ctx-meter.sh" env 2>/dev/null \
+      || { for k in SP_CTX_NOW SP_CTX_TURNS SP_CTX_GROWTH SP_CTX_NEXT SP_CTX_HEADROOM \
+                    SP_CTX_TURNS_LEFT SP_CTX_AGE SP_CTX_ARCHIVIST SP_CTX_ARCHIVIST_BEHIND; do
+               echo "$k=?"
+           done; }
+
     # ---- the four numbers this build got wrong -----------------------------------------
     python3 "$HERE/cockpit-metrics.py" \
         "$SPIRA_RUN/sentinel.log" "$SPIRA_RUN/aeon-ledger.log" "$WINDOW_HOURS" 2>/dev/null \
@@ -519,6 +549,65 @@ print("SP_STRANDS_ESCALATED=%d" % sum(1 for v in d.values() if v.get("escalated"
                     SP_AEON_BORN SP_AEON_LIVED SP_AEON_STILLBORN SP_AEON_WORKED; do
                echo "$k=?"
            done; }
+}
+
+# THE SERIES, because a gauge cannot answer "over time". The question the token meter exists
+# for is what has been contributing to the rate limit across a day, and no instant answers it.
+#
+# ITS OWN FILE, under $SPIRA_RUN, for the same reason the snapshot is: the predecessor
+# harness's collector owns the other cockpit-history.csv and is deleted along with it. A
+# series appended by a service that is being retired stops without anyone noticing, and a
+# flat line reads as calm rather than as absent.
+#
+# EVERY TOKEN COLUMN IS A ROLLING WINDOW TOTAL, not a counter — successive rows overlap and
+# must never be summed. That is what makes it readable against the limit, which is itself a
+# rolling window: the column IS the thing the account is judged on.
+#
+# A `?` OR `-` IS WRITTEN THROUGH VERBATIM. A probe that failed and a probe that measured zero
+# are different facts, and collapsing them here would put the difference beyond recovery for
+# every reader downstream.
+HIST="$SPIRA_RUN/cockpit-history.csv"
+HISTORY_MAX="${SPIRA_COCKPIT_HISTORY_MAX:-20160}"   # 14 days at the default 60s cadence
+HIST_COLS="ts,tok_win,tok_aeon_win,tok_sess_win,tok_aeon_turns,tok_sess_turns,ctx_now"
+
+append_history() {
+    # Read back the file just written rather than the probe's own output: the snapshot is what
+    # every other reader sees, so a row disagreeing with it would be a third opinion.
+    #
+    # IN A SUBSHELL, WHICH IS LOAD-BEARING IN `loop` MODE. Sourcing the snapshot into this
+    # process leaves its keys set, so the NEXT pass — with a probe that had failed and written
+    # no key at all — would quietly reuse the previous pass's figure instead of `?`. A stale
+    # number presented as current is precisely the confident wrong reading the `?` rule exists
+    # to prevent, and it would be indistinguishable from a healthy flat line.
+    local row
+    row="$(
+        set +u
+        # shellcheck disable=SC1090
+        . "$SNAP" 2>/dev/null
+        printf '%s,%s,%s,%s,%s,%s,%s' \
+            "${SP_AT:-$(date +%s)}" "${SP_TOK_WIN:-?}" "${SP_TOK_AEON_WIN:-?}" \
+            "${SP_TOK_SESS_WIN:-?}" "${SP_TOK_AEON_TURNS:-?}" "${SP_TOK_SESS_TURNS:-?}" \
+            "${SP_CTX_NOW:-?}"
+    )"
+    # A CHANGED COLUMN SET ROTATES THE FILE RATHER THAN APPENDING A SECOND HEADER. Every reader
+    # takes line one as the header, so a header written into the middle is parsed as data and
+    # every column after it is read under the wrong name — a series that is quietly wrong is
+    # worse than one that is quietly short. The old rows are moved aside, not deleted: they are
+    # the only record of what came before, and nothing here is worth destroying to keep the
+    # shape tidy.
+    if [ ! -s "$HIST" ]; then
+        echo "$HIST_COLS" > "$HIST"
+    elif [ "$(head -1 "$HIST")" != "$HIST_COLS" ]; then
+        mv -f "$HIST" "$HIST.$(date +%s)" 2>/dev/null
+        echo "$HIST_COLS" > "$HIST"
+    fi
+    printf '%s\n' "$row" >> "$HIST"
+
+    local lines; lines=$(wc -l < "$HIST" 2>/dev/null || echo 0)
+    if [ "${lines:-0}" -gt $(( HISTORY_MAX + 1 )) ] 2>/dev/null; then
+        { head -1 "$HIST"; tail -n "$HISTORY_MAX" "$HIST"; } > "$HIST.tmp" \
+            && mv -f "$HIST.tmp" "$HIST"
+    fi
 }
 
 write_snapshot() {
@@ -543,6 +632,7 @@ for line in sys.stdin:
     print("%s=%s" % (k, "\x27" + v.replace("\x27", "\x27\\\x27\x27") + "\x27"))
 ' > "$tmp"
     mv -f "$tmp" "$SNAP"
+    append_history
 }
 
 case "${1:-once}" in
@@ -550,10 +640,17 @@ once)
     write_snapshot
     echo "spira cockpit: $SNAP ($(wc -l < "$SNAP") keys)"
     ;;
+# Appends from the snapshot ALREADY ON DISK, taking no fresh reading. It is how the series is
+# repaired without disturbing the live snapshot, and it is the seam the suite drives — the
+# same function the loop calls, so what is tested is what runs.
+history)
+    append_history
+    echo "spira cockpit: $HIST ($(( $(wc -l < "$HIST") - 1 )) rows)"
+    ;;
 # Driven today by the town's cockpit collector, which already runs as a service. This mode
 # exists so that retiring that collector is a unit file rather than a rewrite.
 loop)
     while :; do write_snapshot; sleep "$INTERVAL"; done
     ;;
-*) echo "usage: cockpit.sh [once|loop]" >&2; exit 1 ;;
+*) echo "usage: cockpit.sh [once|loop|history]" >&2; exit 1 ;;
 esac
