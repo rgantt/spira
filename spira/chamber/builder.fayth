@@ -8,8 +8,8 @@ FAYTH_NAME=builder
 FAYTH_DESC="Guardian — claims ready Spira plan beads and implements them"
 
 # The partition. AND-labels, so this can only ever see beads deliberately marked as Spira
-# plan work — never the 1,600 Gas Town beads imported alongside them, which are a replica
-# that Gas Town is still actively working.
+# plan work — never beads imported from a predecessor alongside them, which are a replica
+# that the predecessor is still actively working.
 FAYTH_LABELS="spira,plan"
 FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,awaiting-ci"
 

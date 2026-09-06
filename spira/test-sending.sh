@@ -158,9 +158,16 @@ echo 'scratch'      > "$RUN/worktree/sp-dirty/untracked.txt"
 status sp-dirty closed
 out="$(sending)"
 want "a dirty worktree is still reaped" "REAPED sp-dirty" "$out"
-want "its diff is salvaged"             "reaped/sp-dirty.patch" "$out"
-want "the salvaged diff has the content" "half-written" "$(cat "$RUN/reaped/sp-dirty.patch")"
-want "untracked files are at least named" "untracked.txt" "$(cat "$RUN/reaped/sp-dirty.patch")"
+# THE SALVAGE FILENAME CARRIES A TIMESTAMP. It did not, and every reap of a bead wrote
+# `<id>.patch`, so sp-vna's twenty reaps left exactly one file: nineteen salvages destroyed
+# by the salvage machinery, each reported as a success. test-reap.sh holds the rest of the
+# contract — untracked CONTENT, and a failed salvage aborting the removal.
+want "its diff is salvaged" "reaped/sp-dirty." "$out"
+dp="$(ls "$RUN"/reaped/sp-dirty.*.patch 2>/dev/null | head -1)"
+want "the salvaged diff has the content" "half-written" "$(cat "${dp:-/dev/null}")"
+want "untracked files are named in the patch" "untracked.txt" "$(cat "${dp:-/dev/null}")"
+want "and carried by content beside it" "scratch" \
+     "$(tar -xOf "$(ls "$RUN"/reaped/sp-dirty.*.untracked.tar 2>/dev/null | head -1)" untracked.txt 2>/dev/null)"
 
 # -- an orphaned worktree ----------------------------------------------------------------
 # The interrupted-reap state: branch gone, worktree left. aeon.sh reuses any directory that

@@ -78,6 +78,27 @@ run_suite() {           # run_suite <suite> -> stdout+stderr, exit code
     return "$rc"
 }
 
+# ONE FIXTURE FOR THE WHOLE RUN. Several of these suites build a Dolt database, and `bd init`
+# is nearly all of the ~27s each one costs — the same schema built over and over was more than
+# half the gate's wall clock. testdb_up honours an inherited TESTDB_SHARED fixture by resetting
+# it to its baseline instead (~73ms), which is the same isolation every suite already relies on
+# between its own cases. Parallelising instead was measured and is worse: the Dolt server
+# contends on creation, three concurrent builds taking 95.6s against 66.6s serially.
+#
+# BUILT HERE, NOT IN THE SUITES, so a suite run on its own still builds its own and needs no
+# argument — the sharing is the gate's optimisation, not a precondition of the tests.
+if . spira/testdb.sh 2>/dev/null && testdb_up gate >/dev/null 2>&1; then
+    export TESTDB_SHARED=1 TESTDB_NAME TESTDB_DIR TESTDB_BASELINE TESTDB_HOST TESTDB_PORT
+    # The owner drops it: TESTDB_SHARED is cleared first so testdb_drop stops being a no-op.
+    trap 'TESTDB_SHARED=0 testdb_drop >/dev/null 2>&1' EXIT
+else
+    # A fixture that could not be built is not a pass, and it is not a skip either. Suites fall
+    # back to building their own, which is slow but correct; what must not happen is the gate
+    # quietly running fewer of them.
+    echo "gate: could not build a shared fixture — suites will build their own" >&2
+    unset TESTDB_SHARED
+fi
+
 skipped=0
 for t in spira/test-*.sh; do
     [ -e "$t" ] || continue

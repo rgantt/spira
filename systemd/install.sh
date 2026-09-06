@@ -99,6 +99,14 @@ if [ "${1:-}" = "--diff" ]; then
 fi
 
 mkdir -p "$DEST"
+
+# THE RUNTIME DIRECTORY, BEFORE ANY UNIT STARTS. `.runtime/` is gitignored — it holds logs,
+# leases, worktrees and the cockpit snapshot, none of which is content — so a fresh clone does
+# not have one. Most of the harness gets it from lib.sh, but the units start things that source
+# only conf.sh, and those fail on a path that does not exist yet. Install is the one act that
+# turns a clone into an installation, so it is where the directory is made.
+mkdir -p "$SPIRA_RUN"
+
 for u in "${UNITS[@]}"; do
     render "$SRC/$u" > "$DEST/$u.new" || { rm -f "$DEST/$u.new"; echo "install: $u FAILED" >&2; exit 1; }
     mv "$DEST/$u.new" "$DEST/$u" && chmod 0644 "$DEST/$u" && echo "installed $u"

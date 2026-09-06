@@ -115,7 +115,10 @@ CMD="$(repo_gate "$REPO_NAME")"
 TREE="$SPIRA_RUN/worktree/.gate.$(basename "$REPO")"
 if [ ! -e "$TREE/.git" ]; then
     mkdir -p "$(dirname "$TREE")"
-    git -C "$REPO" worktree prune 2>/dev/null
+    # Through the chokepoint: one prune covers every worktree of the repository, so a gate
+    # tidying up after itself must not be able to unregister the aeon whose branch it is
+    # about to try.
+    spira_prune_worktrees "$REPO" >/dev/null 2>&1
     git -C "$REPO" worktree add -q --detach "$TREE" "$BR" 2>/dev/null || {
         echo "gate: cannot create a gate worktree at $TREE" >&2; exit 1; }
 else

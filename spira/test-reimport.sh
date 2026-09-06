@@ -7,7 +7,7 @@
 # WHAT IS ACTUALLY BEING TESTED
 # -----------------------------
 # Not that `bd import` upserts — that is the tool's claim, verified live against the real
-# database once (1,673 rows, `unchanged=1673`, repeat run identical). What
+# database once (every row imported, then the same count `unchanged`, repeat run identical). What
 # is tested here is every decision reimport.sh makes AROUND that call, because each of them
 # is a way to convert a routine refresh into damage that reports success:
 #

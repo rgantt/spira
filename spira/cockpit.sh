@@ -295,9 +295,9 @@ except Exception: print("")' 2>/dev/null)"
     # Scoped by LABEL, not by the goal epic's children: the goal epic is one pilgrimage, and
     # a dashboard that describes exactly one of them describes nothing the moment a second
     # design is in flight. Scoped to `spira,plan` for the reason in
-    # law-spira-is-a-replica-until-cutover — the 1,673 imported Gas Town beads are a
-    # snapshot of work live polecats are still doing, and counting them here would report
-    # another system's backlog as this one's.
+    # law-spira-is-a-replica-until-cutover — imported beads are a snapshot of work another
+    # system's workers are still doing, and counting them here would report that system's
+    # backlog as this one's.
     bdq list --limit 0 --label spira,plan --json 2>/dev/null | json_only | python3 -c '
 import os, sys, json
 # The escalation label is one configured key, read from the environment rather than written

@@ -131,7 +131,7 @@ is "and does not assume main when it does" "trunk" "$(spira_landref "$NOREMOTE_M
 
 # rung 1 — repo-map's `base` column, which beats both automatic sources. The two rungs below
 # it are local caches; a checkout sitting on a topic branch or a detached HEAD is the normal
-# state of four of the seven real repositories, so the declared answer has to win.
+# state of most real repositories, so the declared answer has to win.
 MAPHOME="$TMP/maphome"; mkdir -p "$MAPHOME"
 MASTER2="$TMP/masterrepo2"; mkrepo_master "$MASTER2"
 git -C "$MASTER2" branch -q side master
@@ -250,11 +250,12 @@ git -C "$RUN/worktree/sp-dirty" add staged.txt
 advance_origin four
 rebase_branch spira/sp-dirty origin/main "$REPO"; rc=$?
 is "a dirty worktree still rebases" "0"         "$rc"
-[ -f "$RUN/reaped/sp-dirty-prerebase.patch" ] \
-    && ok "its uncommitted work was salvaged" \
-    || bad "its uncommitted work was salvaged" "no patch in $RUN/reaped"
-want "the salvaged patch has the content" "half-written" \
-     "$(cat "$RUN/reaped/sp-dirty-prerebase.patch" 2>/dev/null)"
+# The salvage filename carries a timestamp: it did not, and every salvage of a bead wrote
+# one `<id>.patch`, so a bead reaped twenty times kept only the twentieth.
+pp="$(ls "$RUN"/reaped/sp-dirty-prerebase.*.patch 2>/dev/null | head -1)"
+[ -n "$pp" ] && ok "its uncommitted work was salvaged" \
+             || bad "its uncommitted work was salvaged" "no patch in $RUN/reaped"
+want "the salvaged patch has the content" "half-written" "$(cat "${pp:-/dev/null}" 2>/dev/null)"
 
 # -- a branch with NO worktree: rebased in the scratch tree, and released afterwards -----
 git -C "$REPO" worktree add -q -b spira/sp-bare "$TMP/bare-wt" origin/main

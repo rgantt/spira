@@ -145,9 +145,9 @@ fayth_get() {            # fayth_get <fayth> <VAR> [default] -> one field of a f
 
 # ready_count <labels> <exclude-labels> -> how many beads that predicate can claim.
 #
-# `--limit 0` is not optional. `bd ready` pages at 100 and silently drops the rest, and the
-# Spira database holds 1,600 imported Gas Town beads above every `sp-` plan bead — the plan
-# read as having no workable step at all until this was found.
+# `--limit 0` is not optional. `bd ready` pages at 100 and silently drops the rest, and an
+# installation that imported a predecessor's beads sorts thousands of them above every native
+# plan bead — the plan read as having no workable step at all until this was found.
 ready_count() {
     bdq ready --limit 0 --exclude-type epic --label "$1" --exclude-label "$2" \
         --json 2>/dev/null | json_only | json_count
@@ -547,10 +547,10 @@ for i in d:
 # and `repo-map` says what that name means on this disk.
 #
 # It used to come from the fayth, as FAYTH_REPO, which is a constant per persona: every
-# fayth in the chamber pointed at the home checkout, so Spira could not touch any of the six
-# other repositories on the box. Collapsing seven databases into one made the
-# cross-repo DEPENDENCY expressible and left the cross-repo WORK impossible, which is most
-# of what the collapse was for. It surfaced the day the operator endorsed fixing ~37 grep -q
+# fayth in the chamber pointed at the home checkout, so Spira could not touch any other
+# repository on the box. Collapsing the per-repository databases into one made the cross-repo
+# DEPENDENCY expressible and left the cross-repo WORK impossible, which is most of what the
+# collapse was for. It surfaced the day the operator endorsed fixing ~37 grep -q
 # pipelines in another repository and there was no aeon that could open the file.
 #
 # UNKNOWN NAMES FAIL CLOSED. Every lookup here returns non-zero for a name the map does not
@@ -906,25 +906,319 @@ holder_alive() {
     return 1
 }
 
+# ======================================================================================
+# DESTRUCTION. Every removal of a bead's worktree or branch goes through this section, and
+# nothing outside it may call `git worktree remove`, `git branch -D` or `rm -rf` on a tree.
+#
+# WHY IT IS ONE SITE. A bead's worktree and branch were both destroyed while its aeon was
+# mid-edit and its lease was live, taking forty minutes of uncommitted work, writing no
+# salvage, and NAMING THE BEAD IN NO LOG — the Sending's own passes bracket the deletion and
+# report the tree HELD on one side and 0 reaped on the other, so the actor was some other
+# process entirely. It had happened twenty times to the same bead, every note reading
+# "Reclaimed by strand.sh", which is the signature an aeon leaves when its workspace vanishes
+# underneath it: twenty aeons spent re-deriving work the harness then ate.
+#
+# The lesson is not "fix that caller". Deletion was SPREAD ACROSS SIX SITES, each with its own
+# guard or none, reachable by anything that sources this file with the default environment —
+# including a test suite run from the installed tree, which is how an operator's real
+# checkouts were once swept (see test-sending.sh's own header). A rule enforced at six sites
+# is a rule enforced at whichever of them the next caller does not use. So the rule lives at
+# one site, it is unconditional, and it does not care who is calling.
+#
+# WHAT IT REFUSES, and why each is not optional:
+#
+#   • A path outside `$SPIRA_RUN/worktree/`. A deleter handed anything else has been
+#     misconfigured — a fixture that forgot to set SPIRA_RUN, a repo-map naming a real
+#     checkout — and misconfiguration must not be able to reach `rm -rf`.
+#   • TWO liveness witnesses, not one. `holder_alive` reads a pidfile that is absent for the
+#     seconds between `bd ready --claim` and the aeon writing it; the bead's status is stale
+#     for as long as it takes a killed aeon's lease to be reclaimed. Either alone has a blind
+#     spot the other covers, so BOTH must say nobody is home.
+#   • A status witness that could not be examined at all. An unreachable database answers
+#     "not in_progress" exactly as a genuinely open bead does, and the wrong one of those
+#     reads as permission (law-absence-needs-a-positive-control). The probe is proved able to
+#     answer once per process before any absence is believed.
+#   • A salvage that did not succeed. Salvage runs BEFORE the removal, and its failure aborts
+#     the removal rather than being stepped over.
+#
+# And it LOGS EVERY DECISION, naming the bead and the calling program, to $SPIRA_REAPLOG —
+# so the next occurrence is one `grep` rather than four hours of correlating timestamps.
+# ======================================================================================
+SPIRA_REAPLOG="${SPIRA_REAPLOG:-$SPIRA_RUN/reap.log}"
+
+# The program that reached the chokepoint, read from /proc rather than matched against a
+# command line: a pattern matches the searcher's own argv, which is how `pgrep -f` reported
+# a collector healthy by finding the shell that was killing it. Walks the ancestor chain,
+# because the interesting name is rarely the immediate one — `sending.sh` tells you nothing,
+# `test-repo.sh -> sending.sh` tells you everything.
+spira_caller() {
+    local pid=$$ n=0 out="" cmd first
+    while [ "$n" -lt 6 ] && [ "$pid" != 1 ] && [ -r "/proc/$pid/cmdline" ]; do
+        cmd="$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -v '^-' | head -3 | tr '\n' ' ')"
+        first="$(printf '%s' "$cmd" | tr ' ' '\n' | grep -E '\.(sh|py)$' | head -1)"
+        [ -n "$first" ] && out="$(basename "$first")${out:+ -> $out}"
+        pid="$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)" || break
+        [ -n "${pid:-}" ] || break
+        n=$((n+1))
+    done
+    printf '%s' "${out:-unknown}"
+}
+
+spira_reaplog() {        # spira_reaplog <verb> <id> <detail>
+    mkdir -p "$(dirname "$SPIRA_REAPLOG")" 2>/dev/null
+    printf '%s %-9s %-22s %s [by %s]\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "${3:-}" "$(spira_caller)" \
+        >> "$SPIRA_REAPLOG" 2>/dev/null || true
+}
+
+# The status witness, and the seam a suite drives it through. `--status-from` is the honest
+# manual entry point too: it says exactly what the caller believes about each bead.
+declare -A SPIRA_STATUS_MAP=()
+SPIRA_STATUS_SEAM=0
+spira_status_seam() {    # spira_status_seam <file|-> — load the map once
+    local sid sst
+    while IFS=$'\t' read -r sid sst; do
+        [ -n "${sid:-}" ] && SPIRA_STATUS_MAP["$sid"]="${sst:-}"
+    done < <(if [ "$1" = - ]; then cat; else cat "$1"; fi)
+    SPIRA_STATUS_SEAM=1
+}
+
+spira_bead_status() {    # <id> -> open|in_progress|blocked|closed|"" (unknown)
+    if [ "$SPIRA_STATUS_SEAM" = 1 ]; then printf '%s' "${SPIRA_STATUS_MAP[$1]:-}"; return; fi
+    bdjson show "$1" 2>/dev/null | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: print(""); sys.exit()
+d = d if isinstance(d, list) else [d]
+print(d[0].get("status", "") if d else "")' 2>/dev/null
+}
+
+# THE POSITIVE CONTROL for the status witness. An empty answer means "this bead is not in
+# progress" only if the probe could have said otherwise; from a database that is down, every
+# bead reads as free. Proved once per process against a bead known to exist — the goal bead,
+# which is the one row this harness cannot run without — and cached, because it gates a loop
+# that runs every two minutes over seven repositories.
+SPIRA_DB_OK=""
+spira_db_reachable() {
+    [ "$SPIRA_STATUS_SEAM" = 1 ] && return 0
+    if [ -z "$SPIRA_DB_OK" ]; then
+        if [ -n "$(bdjson show "$SPIRA_GOAL" 2>/dev/null | json_only | head -c 1)" ]; then
+            SPIRA_DB_OK=1
+        else
+            SPIRA_DB_OK=0
+        fi
+    fi
+    [ "$SPIRA_DB_OK" = 1 ]
+}
+
+# spira_holder_witnesses <id> -> 0 and prints WHY somebody may be home; 1 if nobody is.
+spira_holder_witnesses() {
+    local id="$1" st
+    if holder_alive "$id"; then
+        printf 'a live aeon holds it'; return 0
+    fi
+    if ! spira_db_reachable; then
+        printf 'the bead database did not answer, so the status witness proves nothing'; return 0
+    fi
+    st="$(spira_bead_status "$id")"
+    if [ "$st" = in_progress ]; then
+        printf 'in_progress — the lease has not been released'; return 0
+    fi
+    return 1
+}
+
 # --------------------------------------------------------------------------------------
-# Salvage before destroying. Anything uncommitted in a dead aeon's worktree is scratch —
-# the aeon's real work is committed, which is what made the branch eligible — but "almost
-# certainly scratch" is not a licence to delete it unseen, and a patch file costs nothing.
-# Untracked files are recorded by NAME only; `git diff HEAD` cannot carry their content,
-# and saying so here is cheaper than someone discovering it later.
+# Salvage before destroying, and REFUSE TO DESTROY IF IT FAILS. Anything uncommitted in a
+# dead aeon's worktree is usually scratch — the aeon's real work is committed, which is what
+# made the branch eligible — but "usually" is not a licence, and it has cost real work: the
+# uncommitted state WAS the work, forty minutes of it, four times over.
+#
+# UNTRACKED FILES ARE CARRIED BY CONTENT, not by name. `git diff HEAD` cannot see them, so
+# the old salvage listed them and let them go — and a new file is exactly what an aeon
+# building something has most of, so the patch was emptiest precisely when it mattered most.
+# They go into a tar beside the patch, filtered by `--exclude-standard` so a build directory
+# does not turn a salvage into a gigabyte.
+#
+# THE FILENAME CARRIES A TIMESTAMP because the old one did not. Every reap of a bead wrote
+# `<id>.patch`, so twenty reaps of one bead left exactly one patch: nineteen salvages destroyed
+# by the salvage machinery itself, silently, each one reported as a success.
 # --------------------------------------------------------------------------------------
-salvage() {              # salvage <label> <worktree-path>
-    local id="$1" w="$2" dirty out="$SPIRA_RUN/reaped"
-    dirty="$(git -C "$w" status --porcelain 2>/dev/null)"
+SALVAGED=""
+salvage() {              # salvage <label> <worktree-path> -> 0 saved or nothing to save
+    local id="$1" w="$2" dirty out="$SPIRA_RUN/reaped" stamp base rc=0 untracked
+    SALVAGED=""
+    # A worktree whose status cannot be read is not a clean one; it is a question. Fail
+    # closed — the caller aborts its removal.
+    if ! dirty="$(git -C "$w" status --porcelain 2>/dev/null)"; then
+        spira_reaplog SALVAGE "$id" "cannot read the status of $w — refusing to call it clean"
+        return 1
+    fi
     [ -n "$dirty" ] || return 0
-    mkdir -p "$out"
+    mkdir -p "$out" || { spira_reaplog SALVAGE "$id" "cannot create $out"; return 1; }
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    base="$out/$id.$stamp"
+    # `|| true` on the diff, and the verdict taken from the FILE rather than the group. A
+    # worktree whose branch ref was deleted underneath it has an unborn HEAD, so `git diff
+    # HEAD` legitimately fails there — and that is the orphan case, the one where salvage
+    # matters most. Letting its exit status stand as the group's turned every orphan salvage
+    # into a refusal. What is actually being asked is "did the bytes get written".
     {
         printf '# %s — uncommitted at reap time, %s\n' "$id" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        printf '# untracked files are listed but their CONTENT is not recoverable from here\n'
+        printf '# tracked changes are below; untracked file CONTENT is in %s\n' "$(basename "$base").untracked.tar"
         printf '%s\n\n' "$dirty"
-        git -C "$w" diff HEAD 2>/dev/null
-    } > "$out/$id.patch"
-    printf '  salvaged uncommitted changes to %s\n' "$out/$id.patch"
+        git -C "$w" diff HEAD 2>/dev/null || true
+    } > "$base.patch" 2>/dev/null
+    [ -s "$base.patch" ] || rc=1
+
+    untracked="$(git -C "$w" ls-files --others --exclude-standard 2>/dev/null)"
+    if [ -n "$untracked" ]; then
+        git -C "$w" ls-files --others --exclude-standard -z 2>/dev/null \
+            | tar -C "$w" --null -T - -cf "$base.untracked.tar" 2>/dev/null || rc=1
+        [ -s "$base.untracked.tar" ] || rc=1
+    fi
+
+    if [ "$rc" -ne 0 ]; then
+        spira_reaplog SALVAGE "$id" "FAILED to write $base.patch — the removal must not proceed"
+        return 1
+    fi
+    SALVAGED="$base.patch"
+    spira_reaplog SALVAGE "$id" "wrote $base.patch${untracked:+ and $base.untracked.tar}"
+    printf '  salvaged uncommitted changes to %s\n' "$base.patch"
+    return 0
+}
+
+# --------------------------------------------------------------------------------------
+# spira_destroy_worktree <id> <path> <repo> <why> -> 0 removed or nothing to remove
+# --------------------------------------------------------------------------------------
+spira_destroy_worktree() {
+    local id="$1" w="$2" repo="$3" why="${4:-}" held
+    [ -n "$w" ] || return 0
+    # THE FENCE FIRST, before anything is read off the path or acted on. A deleter handed a
+    # path outside the harness's own scratch directory has been misconfigured — a fixture
+    # that forgot to set SPIRA_RUN, a repo-map naming a real checkout — and a misconfigured
+    # caller must not be able to reach any of what follows, prune included.
+    case "$w" in
+        "$SPIRA_RUN/worktree/"?*) ;;
+        *) spira_reaplog REFUSED "$id" "$w is not under $SPIRA_RUN/worktree — refusing to remove it"
+           return 1 ;;
+    esac
+    if [ ! -e "$w" ]; then
+        # The directory has already gone but its REGISTRATION may not have, and a live
+        # registration is enough to make `git branch -D` refuse — which is how an interrupted
+        # reap leaves a branch that can never be deleted. Nothing here is left to salvage or
+        # destroy, so clear the entry (through the prune that repairs rather than orphans)
+        # and report success.
+        spira_prune_worktrees "$repo" >/dev/null 2>&1
+        return 0
+    fi
+    if held="$(spira_holder_witnesses "$id")"; then
+        spira_reaplog REFUSED "$id" "worktree $w — $held"
+        return 1
+    fi
+    if ! salvage "$id" "$w"; then
+        spira_reaplog REFUSED "$id" "worktree $w — salvage failed, so the removal is abandoned"
+        return 1
+    fi
+    # Logged BEFORE the act as well as after: a process killed between the two leaves a
+    # record that it was about to delete this tree. The absence of that one line turned the
+    # incident this section exists for into a four-hour forensic exercise.
+    spira_reaplog REMOVING "$id" "worktree $w ($why)"
+    git -C "$repo" worktree remove --force "$w" 2>/dev/null \
+        || { rm -rf "$w"; spira_prune_worktrees "$repo"; }
+    if [ -e "$w" ]; then
+        spira_reaplog FAILED "$id" "worktree $w survived removal"
+        return 1
+    fi
+    spira_reaplog REMOVED "$id" "worktree $w"
+    return 0
+}
+
+# --------------------------------------------------------------------------------------
+# spira_destroy_branch <id> <branch> <repo> <why> -> 0 gone, 1 refused or survived.
+# The witnesses are re-read rather than inherited from the worktree removal: they are two
+# /proc reads and a cached status, and the alternative is a decision made before the act.
+# --------------------------------------------------------------------------------------
+spira_destroy_branch() {
+    local id="$1" br="$2" repo="$3" why="${4:-}" held wt err
+    git -C "$repo" show-ref --verify -q "refs/heads/$br" || return 0
+    if held="$(spira_holder_witnesses "$id")"; then
+        spira_reaplog REFUSED "$id" "branch $br — $held"
+        return 1
+    fi
+    # A branch a worktree still holds is not deletable, and forcing the issue by pruning the
+    # registration out from under it is how a live tree becomes an orphan.
+    wt="$(worktree_of "$br" "$repo")"
+    if [ -n "$wt" ] && [ -e "$wt" ]; then
+        spira_reaplog REFUSED "$id" "branch $br is checked out at $wt"
+        return 1
+    fi
+    spira_reaplog REMOVING "$id" "branch $br ($why)"
+    err="$(git -C "$repo" branch -D "$br" 2>&1)"
+    if git -C "$repo" show-ref --verify -q "refs/heads/$br"; then
+        spira_reaplog FAILED "$id" "branch $br survived deletion: $(head -1 <<< "$err")"
+        SPIRA_DESTROY_ERR="$(head -1 <<< "$err")"
+        return 1
+    fi
+    spira_reaplog REMOVED "$id" "branch $br"
+    return 0
+}
+
+# --------------------------------------------------------------------------------------
+# spira_prune_worktrees <repo> — `git worktree prune`, with the one case it gets wrong.
+#
+# Prune is safe on the reading everyone has of it: it drops admin entries for directories
+# that are already gone, and one witness is plenty for a directory that does not exist. But
+# an entry is ALSO prunable when the worktree's own `.git` file is missing or unreadable
+# while the directory is entirely intact and full of work. Pruning that entry frees the
+# branch for `git branch -D` and leaves a live tree registered nowhere — the exact state
+# PASS 2 of the Sending then classifies as an orphan and removes.
+#
+# So: anything prune would drop whose DIRECTORY STILL EXISTS is repaired instead, and every
+# entry that really is pruned is named in the reap log. `git worktree repair` restores the
+# link both ways and is a no-op on a healthy tree.
+# --------------------------------------------------------------------------------------
+# `prune --dry-run --verbose` reports on STDERR, not stdout. Reading it with a plain `2>/dev/null`
+# — the shape every other git call in this harness uses — yields nothing at all, and a guard
+# fed an empty list approves everything (law-absence-needs-a-positive-control).
+spira_prune_worktrees() {
+    local repo="$1" line name path common still=0
+    common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 0
+    case "$common" in /*) ;; *) common="$repo/$common" ;; esac
+
+    _spira_prunable_path() {   # <entry-name> -> the worktree directory git recorded for it
+        local gd; gd="$(cat "$common/worktrees/$1/gitdir" 2>/dev/null)"; printf '%s' "${gd%/.git}"
+    }
+
+    while IFS= read -r line; do
+        case "$line" in "Removing "*) ;; *) continue ;; esac
+        name="${line#Removing }"; name="${name#worktrees/}"; name="${name%%:*}"
+        [ -n "$name" ] || continue
+        path="$(_spira_prunable_path "$name")"
+        if [ -n "$path" ] && [ -d "$path" ]; then
+            spira_reaplog REPAIRED "$name" "prune would have dropped a worktree whose directory EXISTS at $path — repairing instead"
+            git -C "$repo" worktree repair "$path" >/dev/null 2>&1
+        else
+            spira_reaplog PRUNED "$name" "$line"
+        fi
+    done < <(git -C "$repo" worktree prune -n -v 2>&1 >/dev/null)
+
+    # Re-read after the repairs. `git worktree prune` has no way to skip one entry, so if any
+    # live directory is STILL prunable the only safe move is not to prune at all: a leaked
+    # admin entry is untidy, and unregistering a tree an aeon is working in is not recoverable.
+    while IFS= read -r line; do
+        case "$line" in "Removing "*) ;; *) continue ;; esac
+        name="${line#Removing }"; name="${name#worktrees/}"; name="${name%%:*}"
+        path="$(_spira_prunable_path "$name")"
+        if [ -n "$path" ] && [ -d "$path" ]; then
+            spira_reaplog REFUSED "$name" "still prunable with its directory intact at $path — skipping the prune entirely"
+            still=1
+        fi
+    done < <(git -C "$repo" worktree prune -n -v 2>&1 >/dev/null)
+    unset -f _spira_prunable_path
+    [ "$still" = 1 ] && return 1
+
+    git -C "$repo" worktree prune 2>/dev/null
+    return 0
 }
 
 # --------------------------------------------------------------------------------------
@@ -1052,7 +1346,9 @@ rebase_branch() {
         scratch="$SPIRA_RUN/worktree/.rebase.$(basename "$repo")"
         if [ ! -e "$scratch/.git" ]; then
             mkdir -p "$(dirname "$scratch")"
-            git -C "$repo" worktree prune >/dev/null 2>&1
+            # Through the chokepoint: a bare prune here would silently unregister any tree
+            # whose `.git` link is broken, including a live aeon's, and free its branch.
+            spira_prune_worktrees "$repo" >/dev/null 2>&1
             git -C "$repo" worktree add -q --detach "$scratch" "$onto" >/dev/null 2>&1 \
                 || return 1
         fi
@@ -1094,12 +1390,12 @@ rebase_branch() {
 }
 
 # --------------------------------------------------------------------------------------
-# THE OWNERSHIP FENCE. Spira holds 1,673 beads imported from Gas Town's seven databases,
-# and Gas Town is still writing to those databases. An aeon that claims one of them is
-# racing a live polecat, and both of them will do the work.
+# THE OWNERSHIP FENCE. An installation that imported a predecessor's databases holds
+# thousands of beads that predecessor is still writing to. An aeon that claims one of them is
+# racing a live worker, and both of them will do the work.
 #
-# `spira` is the ownership marker: measured, all 20 native beads carried it
-# and none of the 1,673 imported ones do. That makes it the one label a predicate can be
+# `spira` is the ownership marker: measured, every native bead carried it and no imported one
+# did. That makes it the one label a predicate can be
 # REQUIRED to have — where `plan` or `incident` are each one persona's partition, `spira`
 # is the boundary of the whole system. Until now the boundary held only because two config
 # strings happened to be right, and a new fayth written without `spira` in FAYTH_LABELS
@@ -1116,11 +1412,11 @@ fayth_fenced() {         # fayth_fenced <name> <FAYTH_LABELS> -> 0 if it cannot 
     local name="$1" labels="${2:-}"
     if [ -z "$labels" ]; then
         log "FENCE $name: FAYTH_LABELS is empty — that predicate selects the whole database,"
-        log "FENCE $name: including 1,673 beads Gas Town is still working."
+        log "FENCE $name: including every bead imported from a system still working them."
         return 1
     fi
     grep -qx 'spira' <<< "${labels//,/$'\n'}" && return 0
     log "FENCE $name: FAYTH_LABELS='$labels' does not require 'spira', so this predicate can"
-    log "FENCE $name: select imported Gas Town work. Add 'spira' to it."
+    log "FENCE $name: select work another system still owns. Add 'spira' to it."
     return 1
 }

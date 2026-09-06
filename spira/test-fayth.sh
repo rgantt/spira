@@ -160,8 +160,9 @@ beads "$(bead sp-epic spira,incident epic)"
 is "an epic is not claimable work"             0 "$(fayth_ready ops)"
 beads "$(bead sp-inc-4 spira,incident task closed)"
 is "a closed bead is not ready"                0 "$(fayth_ready ops)"
-# AND over the labels, not OR: the Spira database holds 1,600 imported Gas Town beads and a
-# persona that ORs its way into them races a live polecat (law-spira-is-a-replica-until-cutover).
+# AND over the labels, not OR: an installation that imported a predecessor's beads holds
+# thousands of them, and a persona that ORs its way in races a live worker
+# (law-spira-is-a-replica-until-cutover).
 beads "$(bead pd-999 spira)"
 is "a partial label match is not in the partition" 0 "$(fayth_ready ops)"
 

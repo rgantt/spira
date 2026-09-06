@@ -8,8 +8,8 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# Spira's 1,673 Gas Town beads are a SNAPSHOT taken, and Gas Town has gone on
-# writing to its seven databases ever since. The drift is invisible in the worst possible
+# Imported beads are a SNAPSHOT taken at one moment, and the system they came from goes on
+# writing to its own databases afterwards. The drift is invisible in the worst possible
 # way: `bd ready` in Spira answers confidently while describing a past state. So the copy
 # is refreshed immediately before cutover — import is upsert, so it converges — and until
 # then nothing consumes it (`fence`, and the refusal in aeon.sh).
@@ -287,8 +287,8 @@ cmd_run() {
     # ---- import ----------------------------------------------------------------------
     # The change report comes from a DRY RUN taken first, not from the import's own result.
     # The two do not use the same words: a real import of a payload the dry-run called
-    # `unchanged=1673` reports `created=1673`, so reading the import's own numbers as
-    # "1,673 new beads" would announce a catastrophe on a run that did nothing. The
+    # a run that changed nothing reports `created=N` alongside `unchanged=N`, so reading the
+    # import's own numbers would announce N new beads on a run that did nothing. The
     # convergence check below re-reads the same dry-run surface, so the before and after
     # numbers are comparable to each other, which is the only property that matters.
     local pre

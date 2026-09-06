@@ -300,16 +300,24 @@ fn section(it: &Item) -> &'static str {
 /// body that routinely runs past the fold, so the freshest thing on the item was the one
 /// furthest from the eye in a pane already short on rows.
 ///
-/// WITHIN the thread the order is unchanged: oldest to newest, because a conversation read
-/// backwards is not a conversation. `store::oldest_first` enforces that, so this function
-/// only lays out what it is handed.
+/// WITHIN the thread, NEWEST FIRST. (the operator, verbatim: *"i also want to see the threaded
+/// responses from newest-to-oldest so i don't have to scroll endlessly to see the
+/// current/last state of the conversation"*). A long thread is read to find out where the
+/// conversation got to, and oldest-first put that answer at the bottom of a pane that is
+/// already short on rows — so the one line they needed was the one they had to scroll for.
+///
+/// THE STORE ORDER IS UNCHANGED, and deliberately so: `store::oldest_first` stays canonical
+/// because the list's turn marker asks `thread.last()` whose ball it is — `↩` for me, `●` for
+/// the operator — and that inverts outright if the newest entry moves to the front. Reversing here,
+/// at the point of drawing, gives the reading order without touching the semantics anything
+/// else depends on.
 ///
 /// Shared by the reader and the detail strip so the two surfaces cannot drift into
 /// disagreeing about the order — the previous version had the layout written out once, and
 /// the strip simply had no thread at all.
 fn thread_lines(it: &Item, w: usize) -> Vec<String> {
     let mut out = Vec::new();
-    for (author, when, text) in &it.thread {
+    for (author, when, text) in it.thread.iter().rev() {
         let mine = author == crate::model::ME;
         let who = if mine { "me" } else { author.as_str() };
         let colour = if mine { ACC } else { OK };
@@ -533,12 +541,61 @@ pub fn detail_lines(it: &Item, w: usize) -> Vec<String> {
     d
 }
 
+/// The most rows the reply editor may take. Four is enough for a considered verdict without
+/// the queue above it collapsing; past that the view scrolls with the cursor.
+pub const INPUT_MAX_ROWS: usize = 4;
+
+/// The reply buffer wrapped to the pane, as the rows that should be drawn.
+///
+/// THE CURSOR IS ALWAYS ON SCREEN. render.rs pushed the whole buffer as one row and `fit`
+/// truncated it at the pane edge, so past roughly one line the operator was typing blind into
+/// the one place on this pane where they write rather than read (the operator, verbatim: *"after
+/// that threshold i can't see what i'm typing"*). When the answer outgrows INPUT_MAX_ROWS this
+/// keeps the LAST rows rather than the first: what matters is the words being typed now.
+pub fn input_rows(buf: &str, label: &str, w: usize) -> Vec<String> {
+    let indent = label.chars().count() + 3; // " label▸ "
+    let avail = w.saturating_sub(indent).max(8);
+    // The cursor block occupies a cell, so it wraps like any other character.
+    let mut cells: Vec<char> = buf.chars().collect();
+    cells.push('█');
+    let mut rows: Vec<String> = cells
+        .chunks(avail)
+        .map(|c| c.iter().collect::<String>())
+        .collect();
+    if rows.is_empty() {
+        rows.push(String::from("█"));
+    }
+    if rows.len() > INPUT_MAX_ROWS {
+        rows = rows.split_off(rows.len() - INPUT_MAX_ROWS);
+    }
+    rows
+}
+
+/// The editor's label for a mode, or None when no editor is open. ONE definition, because
+/// main.rs clamps the detail scroll against `split` and the renderer draws against it; when
+/// each worked the label out for itself they could disagree about the row budget, which is
+/// the class of bug that let the buffer run off the pane in the first place.
+pub fn input_label(mode: Option<&str>) -> Option<&'static str> {
+    mode.map(|m| match m {
+        "comment" => "comment",
+        "decide" => "verdict",
+        _ => "reason",
+    })
+}
+
+/// How many rows the editor will occupy — the number `split` must reserve. Kept beside the
+/// wrapper so the reservation and the drawing can never disagree; they did, and the buffer
+/// simply ran off the pane.
+pub fn input_h(buf: &str, label: &str, w: usize) -> usize {
+    input_rows(buf, label, w).len()
+}
+
 /// How the pane divides: `(list rows, detail rows)`.
 ///
 /// Split out from `frame` so the row budget can be asserted in a test rather than eyeballed
 /// in a screenshot. `need` is `detail_lines().len()`.
-pub fn split(h: usize, mode: bool, items: usize, need: usize) -> (usize, usize) {
-    let chrome = 2 + usize::from(mode); // the two bands (+ the input row)
+pub fn split(h: usize, input_h: usize, items: usize, need: usize) -> (usize, usize) {
+    let chrome = 2 + input_h; // the two bands (+ however many rows the editor needs)
     let avail = h.saturating_sub(chrome).max(3);
     let usable = avail.saturating_sub(1); // the rule, which also names the selected item
     let mut list_h = (usable * 2) / 5; // 40% navigating, 60% reading
@@ -634,7 +691,11 @@ pub fn frame(f: &Frame) -> Vec<String> {
     // first. See `split`.
     let it = &items[f.sel];
     let detail = detail_lines(it, f.w);
-    let (list_h, detail_h) = split(f.h, f.mode.is_some(), items.len(), detail.len());
+    // The editor's label decides its indent and therefore its wrapping, so it is resolved
+    // before the split rather than inside the block that draws it.
+    let in_label = input_label(f.mode);
+    let ih = in_label.map_or(0, |l| input_h(f.buf, l, f.w));
+    let (list_h, detail_h) = split(f.h, ih, items.len(), detail.len());
 
     let start = f.sel.saturating_sub(list_h.saturating_sub(1));
     for (i, it) in items.iter().enumerate().skip(start).take(list_h) {
@@ -736,17 +797,22 @@ pub fn frame(f: &Frame) -> Vec<String> {
         }
         out.push(l);
     }
-    while out.len() < f.h.saturating_sub(1 + usize::from(f.mode.is_some())) {
+    while out.len() < f.h.saturating_sub(1 + ih) {
         out.push(String::new());
     }
 
-    if let Some(m) = f.mode {
-        let label = match m {
-            "comment" => "comment",
-            "decide" => "verdict",
-            _ => "reason",
-        };
-        out.push(format!(" {}{}{}▸{} {}{}█{}", BOLD, OK, label, RST, TXT, f.buf, RST));
+    if let Some(label) = in_label {
+        // The label prefixes the first row; continuation rows are indented to line up under
+        // it, so a wrapped answer reads as one field rather than several.
+        let rows = input_rows(f.buf, label, f.w);
+        let indent = " ".repeat(label.chars().count() + 3);
+        for (i, r) in rows.iter().enumerate() {
+            if i == 0 {
+                out.push(format!(" {}{}{}▸{} {}{}{}", BOLD, OK, label, RST, TXT, r, RST));
+            } else {
+                out.push(format!("{}{}{}{}", indent, TXT, r, RST));
+            }
+        }
     }
     out.push(footer(f, f.sel + 1, items.len()));
     out.truncate(f.h);
@@ -972,7 +1038,7 @@ three")]);
     #[test]
     fn a_short_body_gives_its_surplus_rows_to_the_list() {
         // 19 rows, 12 items waiting, detail needs 4.
-        let (list, detail) = split(19, false, 12, 4);
+        let (list, detail) = split(19, 0, 12, 4);
         assert_eq!(detail, 4, "the detail keeps exactly what it can fill");
         assert_eq!(list + detail, 16, "and no row is lost in the handover");
         assert_eq!(list, 12, "the surplus is visible queue, not blank pane");
@@ -982,7 +1048,7 @@ three")]);
     /// blanks stay — but nothing is being hidden behind them.
     #[test]
     fn the_list_never_grows_past_the_items_it_has() {
-        let (list, _) = split(19, false, 2, 1);
+        let (list, _) = split(19, 0, 2, 1);
         assert_eq!(list, 2);
     }
 
@@ -990,7 +1056,7 @@ three")]);
     /// rule when there is no surplus to hand back.
     #[test]
     fn a_long_body_keeps_the_reading_share() {
-        let (list, detail) = split(19, false, 12, 99);
+        let (list, detail) = split(19, 0, 12, 99);
         assert_eq!((list, detail), (6, 10));
         assert!(detail > list, "reading gets the larger half");
     }
@@ -998,16 +1064,50 @@ three")]);
     /// The input row is taken out of the content, not out of the bands.
     #[test]
     fn the_input_row_costs_one_content_row() {
-        let (l0, d0) = split(19, false, 12, 99);
-        let (l1, d1) = split(19, true, 12, 99);
+        let (l0, d0) = split(19, 0, 12, 99);
+        let (l1, d1) = split(19, 1, 12, 99);
         assert_eq!(l0 + d0, l1 + d1 + 1);
+    }
+
+    /// A reply longer than the pane is wide is still visible: it wraps, and it wraps to the
+    /// END of the buffer so the cursor is on screen. This is the defect that had the operator
+    /// typing blind past one line.
+    #[test]
+    fn a_long_reply_wraps_and_keeps_the_cursor_visible() {
+        let long = "x".repeat(400);
+        let rows = input_rows(&long, "verdict", 60);
+        assert!(rows.len() > 1, "a 400-char reply must not be one row");
+        assert!(rows.len() <= INPUT_MAX_ROWS);
+        assert!(rows.last().unwrap().ends_with('█'), "the cursor must be on the last row");
+        // Every drawn row fits the pane once the label indent is charged.
+        for r in &rows {
+            assert!(r.chars().count() <= 60 - ("verdict".len() + 3));
+        }
+    }
+
+    /// And the rows it needs are the rows the split reserves, or the editor runs off the pane.
+    #[test]
+    fn the_split_reserves_exactly_the_rows_the_editor_draws() {
+        for n in [0usize, 1, 40, 400, 4000] {
+            let buf = "y".repeat(n);
+            assert_eq!(input_h(&buf, "verdict", 60), input_rows(&buf, "verdict", 60).len());
+        }
+    }
+
+    /// An empty buffer is one row carrying just the cursor — not zero rows, which would make
+    /// the editor invisible the moment it opened.
+    #[test]
+    fn an_empty_reply_still_shows_a_cursor() {
+        let rows = input_rows("", "verdict", 60);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], "█");
     }
 
     /// A pane squeezed to nothing still renders both halves rather than panicking.
     #[test]
     fn a_tiny_pane_still_has_both_halves() {
         for h in 0..8 {
-            let (list, detail) = split(h, false, 3, 3);
+            let (list, detail) = split(h, 0, 3, 3);
             assert!(list >= 1 && detail >= 1, "h={h} gave {list}/{detail}");
         }
     }
@@ -1057,24 +1157,34 @@ three")]);
         let it = threaded();
         let (lines, _) = reader(&it, View::Decisions, NOW, 0, 107, 40);
         assert!(
-            at(&lines, "OLDEST reply") < at(&lines, "THE-ASK first"),
+            at(&lines, "NEWEST reply") < at(&lines, "THE-ASK first"),
             "the reader still buries the thread"
         );
         let d = detail_lines(&it, 107);
         assert!(
-            at(&d, "OLDEST reply") < at(&d, "THE-ASK first"),
+            at(&d, "NEWEST reply") < at(&d, "THE-ASK first"),
             "the detail strip still buries the thread"
         );
     }
 
-    /// Within itself the thread stays a conversation: oldest to newest.
+    /// The thread reads newest first, so where the conversation got to is the first thing
+    /// seen rather than something to scroll for.
     #[test]
-    fn the_thread_keeps_its_own_order() {
+    fn the_thread_reads_newest_first() {
         let it = threaded();
         let (lines, _) = reader(&it, View::Decisions, NOW, 0, 107, 40);
-        assert!(at(&lines, "OLDEST reply") < at(&lines, "NEWEST reply"));
+        assert!(at(&lines, "NEWEST reply") < at(&lines, "OLDEST reply"));
         let d = detail_lines(&it, 107);
-        assert!(at(&d, "OLDEST reply") < at(&d, "NEWEST reply"));
+        assert!(at(&d, "NEWEST reply") < at(&d, "OLDEST reply"));
+    }
+
+    /// And the STORE order is untouched, because the list's turn marker reads `thread.last()`
+    /// to decide whose ball it is. Reversing the display must not reverse that.
+    #[test]
+    fn the_store_order_stays_oldest_first() {
+        let it = threaded();
+        assert_eq!(it.thread.first().unwrap().2, "OLDEST reply");
+        assert_eq!(it.thread.last().unwrap().2, "NEWEST reply");
     }
 
     /// The recommended default keeps the top of the strip. It is the one line that lets an
@@ -1082,7 +1192,7 @@ three")]);
     #[test]
     fn the_default_still_leads_the_detail_strip() {
         let d = detail_lines(&threaded(), 107);
-        assert!(at(&d, "do X") < at(&d, "OLDEST reply"));
+        assert!(at(&d, "do X") < at(&d, "NEWEST reply"));
         assert!(at(&d, "a title") < at(&d, "do X"));
     }
 
@@ -1092,7 +1202,7 @@ three")]);
         let it = threaded();
         let (lines, _) = reader(&it, View::Decisions, NOW, 0, 107, 40);
         let r = at(&lines, "the question");
-        assert!(at(&lines, "NEWEST reply") < r && r < at(&lines, "THE-ASK first"));
+        assert!(at(&lines, "OLDEST reply") < r && r < at(&lines, "THE-ASK first"));
     }
 
     /// And that rule is never trailing chrome: with nothing beneath it to name, it is not

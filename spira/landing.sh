@@ -249,7 +249,10 @@ land_repo() {
     if [ "$mode" = push ]; then
         if [ ! -e "$land/.git" ]; then
             mkdir -p "$(dirname "$land")"
-            git -C "$repo" worktree prune 2>/dev/null
+            # Through the chokepoint. This runs on every landing pass, every two minutes,
+            # over every repository — so it is the prune most likely to be the one standing
+            # over a live aeon's tree when that tree's `.git` link is momentarily unreadable.
+            spira_prune_worktrees "$repo" >/dev/null 2>&1
             git -C "$repo" worktree add -q --detach "$land" "$base" 2>/dev/null || true
         fi
         [ -e "$land/.git" ] && git -C "$land" checkout -q -B landing "$base" 2>/dev/null

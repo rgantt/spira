@@ -500,7 +500,9 @@ fn main() {
         if let Ok(v) = items {
             if let Some(it) = v.get(app.sel) {
                 let d = render::detail_lines(it, w);
-                let (_, detail_h) = render::split(h, app.mode.is_some(), v.len(), d.len());
+                let ih = render::input_label(app.mode.as_deref())
+                    .map_or(0, |l| render::input_h(&app.buf, l, w));
+                let (_, detail_h) = render::split(h, ih, v.len(), d.len());
                 app.detail_scroll.set_max(d.len().saturating_sub(detail_h));
             }
         }

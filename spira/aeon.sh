@@ -27,10 +27,11 @@ F="$SPIRA_HOME/chamber/$FAYTH.fayth"
 . "$F"
 
 # ---- the fence -----------------------------------------------------------------------
-# Bound to the actor that would do the damage. Spira's ready queue still contains 1,673
-# beads Gas Town is actively working, and the only thing that has ever kept an aeon off
-# them is a config string in a fayth being right. A predicate that omits `spira` claims
-# somebody else's work, so refuse to claim at all rather than trust the string.
+# Bound to the actor that would do the damage. An installation that imported a predecessor's
+# beads has a ready queue full of work that predecessor is still doing, and the only thing
+# that has ever kept an aeon off them is a config string in a fayth being right. A predicate
+# that omits `spira` claims somebody else's work, so refuse to claim at all rather than trust
+# the string.
 fayth_fenced "$FAYTH" "${FAYTH_LABELS:-}" || die "$FAYTH: refusing to claim behind an unfenced predicate"
 
 # ---- the ledger ----------------------------------------------------------------------
@@ -164,7 +165,7 @@ ledger "awake $FAYTH $BEAD_ID"
 # THE REPOSITORY COMES FROM THE BEAD. A fayth supplies the persona, the statutes and the
 # tool allowlist; the bead supplies the workspace, through the same `repo:<name>` partition
 # every imported Gas Town bead carries. FAYTH_REPO was a constant per persona and every
-# fayth pointed at the home checkout, so the harness could not touch any of the six other
+# fayth pointed at the home checkout, so the harness could not touch any other
 # repositories whose beads it had just spent a design collapsing into one database.
 #
 # AND AN UNKNOWN NAME IS REFUSED, never defaulted. Falling back to the home repo would put
@@ -315,7 +316,11 @@ fi
 
 if [ ! -d "$WORK/.git" ] && [ ! -f "$WORK/.git" ]; then
     mkdir -p "$(dirname "$WORK")"
-    git -C "$REPO" worktree prune 2>/dev/null
+    # Through the chokepoint. A bare prune drops the registration of any worktree whose
+    # `.git` link is unreadable even when the directory is intact and full of work, which
+    # frees that branch for deletion and leaves a live tree registered nowhere. Here that
+    # tree could be another aeon's, since one prune covers the whole repository.
+    spira_prune_worktrees "$REPO" >/dev/null 2>&1
     if git -C "$REPO" show-ref --verify -q "refs/heads/$BRANCH"; then
         # A retry: the branch survives from a previous attempt. Reuse it rather than
         # refusing, and bring it current below.

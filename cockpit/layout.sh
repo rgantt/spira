@@ -304,7 +304,7 @@ restart_if_stale() { # pane_tag script_path
     [ "$mtime" -gt "$started" ] || return 0
     heal_log "$WINDOW: $tag is running code older than $src — respawning"
     case "$tag" in
-        panel) tmux respawn-pane -k -t "$pane" "$SPIRA_PANEL" 2>/dev/null ;;
+        panel) tmux respawn-pane -k -t "$pane" "$COCK/panel-run.sh" 2>/dev/null ;;
         health)    tmux respawn-pane -k -t "$pane" "$COCK/health.sh loop" 2>/dev/null ;;
     esac
     tag_pane "$pane" "$tag"
@@ -348,6 +348,25 @@ restart_collector_if_stale() {
 }
 
 # Respawn whichever dashboard is missing, without disturbing the session pane.
+# SIDES ARE PART OF THE LAYOUT, NOT A COINCIDENCE. This file's first line promises "panel
+# bottom-left, health bottom-right", and the operator reads the two by position — attention on
+# the left is where they look for what is waiting on them. Nothing enforced it: repair
+# respawned a dead panel with `split-window -h -t <health>`, which places the new pane to the
+# RIGHT of its target, so every repair silently flipped the band. Presence was checked,
+# placement never was.
+normalize_sides() {
+    local d h dl hl
+    d="$(tagged panel)"; h="$(tagged health)"
+    [ -n "$d" ] && [ -n "$h" ] || return 0
+    dl="$(tmux display-message -p -t "$d" '#{pane_left}' 2>/dev/null)"
+    hl="$(tmux display-message -p -t "$h" '#{pane_left}' 2>/dev/null)"
+    [ -n "$dl" ] && [ -n "$hl" ] || return 0
+    if [ "$dl" -gt "$hl" ]; then
+        heal_log "$WINDOW: panel is right of health — swapping back"
+        tmux swap-pane -s "$d" -t "$h" 2>/dev/null || true
+    fi
+}
+
 repair_dashboards() {
     local sess; sess="$(session_pane)"
     [ -n "$sess" ] || return 0
@@ -368,11 +387,11 @@ repair_dashboards() {
 
     local d h
     d="$(tagged panel)"; h="$(tagged health)"
-    [ -n "$d" ] && [ -n "$h" ] && return 0
+    [ -n "$d" ] && [ -n "$h" ] && { normalize_sides; return 0; }
 
     if [ -z "$d" ] && [ -z "$h" ]; then
         heal_log "$WINDOW: both dashboards gone — rebuilding the band"
-        tmux split-window -d -v -l "${BOTTOM_PCT}%" -t "$sess" -c "$CWD" "$SPIRA_PANEL" 2>/dev/null || return 1
+        tmux split-window -d -v -l "${BOTTOM_PCT}%" -t "$sess" -c "$CWD" "$COCK/panel-run.sh" 2>/dev/null || return 1
         d="$(untagged | grep -Fxv "$sess" | head -1)"
         [ -n "$d" ] && tag_pane "$d" panel
         tmux split-window -d -h -l 50% -t "$d" -c "$CWD" "$COCK/health.sh loop" 2>/dev/null
@@ -384,11 +403,14 @@ repair_dashboards() {
         h="$(untagged | grep -Fxv "$sess" | head -1)"
         [ -n "$h" ] && tag_pane "$h" health
     else
-        heal_log "$WINDOW: panel pane gone — respawning beside health"
-        tmux split-window -d -h -l 50% -t "$h" -c "$CWD" "$SPIRA_PANEL" 2>/dev/null || return 1
+        # -b: BEFORE the target, i.e. to its left. Without it the panel comes back on the
+        # right and the band is mirrored.
+        heal_log "$WINDOW: panel pane gone — respawning left of health"
+        tmux split-window -d -h -b -l 50% -t "$h" -c "$CWD" "$COCK/panel-run.sh" 2>/dev/null || return 1
         d="$(untagged | grep -Fxv "$sess" | head -1)"
         [ -n "$d" ] && tag_pane "$d" panel
     fi
+    normalize_sides
     tmux select-pane -t "$sess" 2>/dev/null || true
 }
 
@@ -413,7 +435,7 @@ up)
     for p in $(all_tagged); do tmux kill-pane -t "$p" 2>/dev/null || true; done
 
     dec=$(tmux split-window -P -F '#{pane_id}' -d -v -l "${BOTTOM_PCT}%" -t "$sess" -c "$CWD" \
-            "$SPIRA_PANEL") \
+            "$COCK/panel-run.sh") \
         || { echo "cockpit: split failed" >&2; exit 1; }
     tag_pane "$dec" panel
 

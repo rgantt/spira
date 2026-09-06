@@ -22,8 +22,8 @@
 # inside the gate's 300s per-suite timeout — and cheaper than one wrong verdict from a
 # drifting stub.
 #
-# THE DATABASE NAME IS THE SAFETY BOUNDARY. The seven live Gas Town databases and Spira's
-# own share this server, so every fixture is `sptest_<tag>_<epoch>_<pid>` and `testdb_drop`
+# THE DATABASE NAME IS THE SAFETY BOUNDARY. Live databases share this server with the
+# fixtures, so every fixture is `sptest_<tag>_<epoch>_<pid>` and `testdb_drop`
 # refuses any name that does not match. The name also carries its own age, which is how a
 # run killed with SIGKILL — where no trap fires — still gets collected: `testdb_up` sweeps
 # fixtures older than two hours before it makes its own.
@@ -56,8 +56,12 @@ else:
     print(3307)' "$SPIRA_DB" 2>/dev/null)}"
 [ -n "$TESTDB_PORT" ] || TESTDB_PORT=3307
 TESTDB_BD="${TESTDB_BD:-bd}"
-TESTDB_NAME=""
-TESTDB_DIR=""
+# Preserved if already set, so a caller that built a shared fixture and exported it is not
+# erased by the act of sourcing this file. Blanking these unconditionally is what made the
+# first shared-fixture attempt silently fall back to building one per suite.
+TESTDB_NAME="${TESTDB_NAME:-}"
+TESTDB_DIR="${TESTDB_DIR:-}"
+TESTDB_BASELINE="${TESTDB_BASELINE:-}"
 
 # A wire query against the server, as the CLI. `--password ''` is not optional: without it
 # dolt prompts, and a prompt with no tty fails as "inappropriate ioctl for device" — which
@@ -108,8 +112,22 @@ testdb_sweep() {
 # `--prefix sp` with an explicit `--database`: the issue prefix is production's, so ids read
 # `sp-a3f` exactly as they do live, while the database name stays unique per run. Passing
 # only a prefix would name the database after it and collide between concurrent runs.
+# A FIXTURE MAY BE INHERITED. `bd init` is 26.6s of testdb_up's 27s — schema DDL against Dolt
+# — and the gate ran six suites that each built the same thing, 134s of the 259s total. When a
+# caller has already built one and exported TESTDB_SHARED=1, reset to its baseline instead:
+# 73ms, and the isolation is identical, because dolt_reset --hard + dolt_clean is what every
+# suite already trusts between its own cases (test-reimport resets three times).
+#
+# NOT BY PARALLELISING. Measured 2026-09-06: three creations serially 66.6s, the same three
+# concurrently 95.6s. The Dolt server contends on database creation, so fanning out is slower
+# than doing it once (law-test-comprehensively-but-fastest).
 testdb_up() {            # testdb_up <tag>
     local tag="$1"
+    if [ "${TESTDB_SHARED:-0}" = 1 ] && [ -n "${TESTDB_NAME:-}" ] && [ -n "${TESTDB_BASELINE:-}" ]; then
+        testdb_reset || { printf 'testdb: could not reset shared fixture %s\n' "$TESTDB_NAME" >&2; return 1; }
+        export SPIRA_DB="$TESTDB_DIR"; unset SPIRA_BD
+        return 0
+    fi
     testdb_sweep
     TESTDB_NAME="sptest_${tag}_$(date +%s)_$$"
     TESTDB_DIR="$(mktemp -d)"
@@ -118,11 +136,22 @@ testdb_up() {            # testdb_up <tag>
     # explicit minimal environment, never the caller's: BEADS_ACTOR and friends leak into
     # `created_by` and `owner`, and ambient configuration silently deciding a verdict is
     # exactly law-gates-run-in-a-clean-environment.
-    ( cd "$TESTDB_DIR" && env -i PATH="$PATH" HOME="$HOME" TERM=dumb BD_NON_INTERACTIVE=1 \
+    # THE FAILURE MUST CARRY ITS REASON. This swallowed both streams and printed only
+    # "bd init failed", so a broken fixture looked identical whether the port was wrong, the
+    # database already existed, or the server was down — and the one run that failed inside a
+    # full-suite sweep could not be told apart from the same test passing alone. A fixer that
+    # discards the diagnosis makes every one of its failures cost a fresh investigation.
+    # Errors go to stderr, where a gate capturing output can still see them.
+    local init_out init_rc
+    init_out="$( cd "$TESTDB_DIR" && env -i PATH="$PATH" HOME="$HOME" TERM=dumb BD_NON_INTERACTIVE=1 \
         "$TESTDB_BD" init --server --server-host "$TESTDB_HOST" --server-port "$TESTDB_PORT" \
             --external --database "$TESTDB_NAME" --prefix sp \
-            --non-interactive --skip-agents --skip-hooks -q ) >/dev/null 2>&1 || {
-        printf 'testdb: bd init failed for %s\n' "$TESTDB_NAME" >&2
+            --non-interactive --skip-agents --skip-hooks -q 2>&1 )"
+    init_rc=$?
+    [ $init_rc -eq 0 ] || {
+        printf 'testdb: bd init failed (rc=%s) for %s at %s:%s in %s\n' \
+            "$init_rc" "$TESTDB_NAME" "$TESTDB_HOST" "$TESTDB_PORT" "$TESTDB_DIR" >&2
+        printf '%s\n' "$init_out" | sed 's/^/testdb:   /' >&2
         testdb_drop; return 1; }
     git -C "$TESTDB_DIR" config beads.role maintainer 2>/dev/null
 
@@ -173,10 +202,13 @@ PY
     printf '%s' "$d"
 }
 
-# REFUSES ANY NAME THAT IS NOT A FIXTURE. This drops a database on the server that also
-# holds Spira's live data and seven Gas Town rigs; a typo here is not recoverable, so the
-# pattern is checked rather than trusted.
+# REFUSES ANY NAME THAT IS NOT A FIXTURE. This drops a database on the server that also holds
+# live data; a typo here is not recoverable, so the pattern is checked rather than trusted.
+# THE BORROWER DOES NOT DROP. Suites trap testdb_drop on EXIT; with a shared fixture the first
+# suite to finish would otherwise delete the database the rest are still using. Only the process
+# that created it owns it, and it drops by clearing TESTDB_SHARED first.
 testdb_drop() {
+    [ "${TESTDB_SHARED:-0}" = 1 ] && return 0
     [ -n "${TESTDB_NAME:-}" ] || return 0
     case "$TESTDB_NAME" in
         sptest_*) testdb_sql "" "drop database \`$TESTDB_NAME\`" >/dev/null 2>&1 ;;

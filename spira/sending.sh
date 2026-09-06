@@ -81,36 +81,17 @@ done
 say() { printf '%s\n' "$*"; }
 
 # --------------------------------------------------------------------------------------
-# Bead status. Routed through one function so a destructive program can be tested without a
-# live database: a reaper whose only test environment is production is a reaper nobody dares
-# run. `--status-from` is also the honest manual entry point — it says exactly what the
-# reaper believes about each bead.
+# Bead status and liveness both live in lib.sh now, at the one place a tree or a branch can
+# be destroyed. They were here, and being here is what made them advisory: this file asked
+# for two witnesses in PASS 1 and one in PASS 2, and every other deleter in the harness
+# asked for none. A rule stated where the deletion happens cannot be skipped by a caller
+# that took another route (see the DESTRUCTION section of lib.sh).
+#
+# `--status-from` is still the seam a suite drives the status witness through, and the
+# honest manual entry point: it says exactly what the reaper believes about each bead.
 # --------------------------------------------------------------------------------------
-declare -A STATUS_MAP=()
-if [ -n "$STATUS_FROM" ]; then
-    while IFS=$'\t' read -r sid sst; do
-        [ -n "${sid:-}" ] && STATUS_MAP["$sid"]="${sst:-}"
-    done < <(if [ "$STATUS_FROM" = - ]; then cat; else cat "$STATUS_FROM"; fi)
-fi
+[ -n "$STATUS_FROM" ] && spira_status_seam "$STATUS_FROM"
 
-bead_status() {          # bead_status <id> -> open|in_progress|blocked|closed|""
-    if [ -n "$STATUS_FROM" ]; then printf '%s' "${STATUS_MAP[$1]:-}"; return; fi
-    bdjson show "$1" 2>/dev/null | python3 -c '
-import sys, json
-try: d = json.load(sys.stdin)
-except Exception: print(""); sys.exit()
-d = d if isinstance(d, list) else [d]
-print(d[0].get("status", "") if d else "")' 2>/dev/null
-}
-
-# --------------------------------------------------------------------------------------
-# Liveness. A bead whose aeon is still running must never be reaped out from under it, and
-# there are two independent witnesses to that, because either alone has a blind spot:
-# `holder_alive` (lib.sh) reads the pidfile, which is absent for the seconds between
-# `bd ready --claim` and the aeon writing it, and `bead_status` reads a status that is stale
-# for as long as it takes a killed aeon's lease to be reclaimed. Requiring BOTH to say
-# "nobody is here" costs one skipped pass and buys the guarantee.
-# --------------------------------------------------------------------------------------
 
 reaped=0; failed=0
 LANDREF=""
@@ -121,28 +102,27 @@ LANDREF=""
 # the entire bug this file exists for.
 # --------------------------------------------------------------------------------------
 reap() {
-    local id="$1" br="$2" w
+    local id="$1" br="$2" w held
     # Re-check liveness immediately before acting. The sentinel summons aeons in the same
-    # pass that lands branches, so the gap between deciding and doing is a real window.
-    if holder_alive "$id"; then say "HELD   $id  an aeon appeared mid-reap"; return 0; fi
+    # pass that lands branches, so the gap between deciding and doing is a real window. Both
+    # witnesses again, not just the pidfile: this recheck used to ask only `holder_alive`,
+    # which is the witness with the documented blind spot.
+    if held="$(spira_holder_witnesses "$id")"; then
+        say "HELD   $id  $held (mid-reap)"; return 0
+    fi
 
     w="$(worktree_of "$br" "$REPO")"
-    if [ -n "$w" ]; then
-        salvage "$id" "$w"
-        git -C "$REPO" worktree remove --force "$w" 2>/dev/null \
-            || { rm -rf "$w"; git -C "$REPO" worktree prune 2>/dev/null; }
-    fi
-    git -C "$REPO" branch -D "$br" >/dev/null 2>&1
-
-    # VERIFY. `git branch -D` failing silently is the whole reason this program exists; a
-    # reaper that trusts its own exit status inherits the bug it was written to fix.
-    if git -C "$REPO" show-ref --verify -q "refs/heads/$br"; then
-        say "FAILED $id  branch $br survived deletion: $(
-             git -C "$REPO" branch -D "$br" 2>&1 | head -1)"
+    if [ -n "$w" ] && ! spira_destroy_worktree "$id" "$w" "$REPO" "landed in $LANDREF"; then
+        say "FAILED $id  worktree $w was not removed — see $SPIRA_REAPLOG"
         failed=$((failed+1)); return 1
     fi
-    if [ -n "$w" ] && [ -e "$w" ]; then
-        say "FAILED $id  worktree $w survived removal"
+
+    # VERIFY. `git branch -D` failing silently is the whole reason this program exists; a
+    # reaper that trusts its own exit status inherits the bug it was written to fix. The
+    # verification is inside spira_destroy_branch, which re-reads the ref after the delete.
+    SPIRA_DESTROY_ERR=""
+    if ! spira_destroy_branch "$id" "$br" "$REPO" "landed in $LANDREF"; then
+        say "FAILED $id  branch $br survived deletion: ${SPIRA_DESTROY_ERR:-refused, see $SPIRA_REAPLOG}"
         failed=$((failed+1)); return 1
     fi
 
@@ -177,7 +157,7 @@ reap() {
 # this file and catastrophic in CHECK 6; skipping loudly is what makes it visible in both.
 # ======================================================================================
 sweep_repo() {
-    local name="$1" br id st n w brs rem
+    local name="$1" br id n w brs rem held
     REPO="$(repo_root "$name")" || { say "SKIP   $name  repo-map has no path for it"; return 0; }
     if [ ! -e "$REPO/.git" ]; then say "SKIP   $name  $REPO is not a git checkout"; return 0; fi
 
@@ -204,12 +184,11 @@ sweep_repo() {
         id="${br#spira/}"
         [ -z "$ONLY" ] || [ "$ONLY" = "$id" ] || [ "$ONLY" = "$br" ] || continue
 
-        if holder_alive "$id"; then
-            say "HELD   $id  a live aeon holds it"; continue
-        fi
-        st="$(bead_status "$id")"
-        if [ "$st" = in_progress ]; then
-            say "HELD   $id  in_progress — the lease has not been released"; continue
+        # ONE WITNESS FUNCTION, the same one every deleter asks. Asked separately here, this
+        # pass had two witnesses and no positive control on either — an unreachable database
+        # answers "not in_progress" exactly as an open bead does, and that reads as permission.
+        if held="$(spira_holder_witnesses "$id")"; then
+            say "HELD   $id  $held"; continue
         fi
         if ! git -C "$REPO" merge-base --is-ancestor "$br" "$LANDREF" 2>/dev/null; then
             n="$(git -C "$REPO" rev-list --count "$LANDREF..$br" 2>/dev/null || echo '?')"
@@ -252,17 +231,27 @@ for line in sys.stdin:
 ' "$w" 2>/dev/null)"
         [ -n "$br" ] || continue
         git -C "$REPO" show-ref --verify -q "refs/heads/$br" && continue   # branch still exists
-        holder_alive "$id" && continue
+        # THE SAME TWO WITNESSES AS PASS 1. This asked only `holder_alive` — the one guard in
+        # the file weaker than the rule the file states — and a missing branch is not evidence
+        # that nobody is home: an aeon works for its first minutes with a branch that exists
+        # only locally, and any prune that unregistered a live tree produces exactly this
+        # shape. spira_destroy_worktree refuses on either witness and salvages before acting.
+        if held="$(spira_holder_witnesses "$id")"; then
+            say "HELD   $id  orphaned worktree kept — $held"; continue
+        fi
         if [ "$DRY" = 1 ]; then say "WOULD  $id  remove orphaned worktree $w"; continue; fi
-        salvage "$id" "$w"
-        git -C "$REPO" worktree remove --force "$w" 2>/dev/null || rm -rf "$w"
+        spira_destroy_worktree "$id" "$w" "$REPO" "orphan: branch $br is gone" || {
+            say "FAILED $id  orphaned worktree $w was not removed — see $SPIRA_REAPLOG"
+            failed=$((failed+1)); continue; }
         reaped=$((reaped+1))
         say "REAPED $id  orphaned worktree (branch $br is gone)"
     done < <(git -C "$REPO" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
 
     # Registrations whose directory a human already deleted. Harmless, but they accumulate
     # and make `git worktree list` unreadable, which is how the real ones get missed.
-    [ "$DRY" = 1 ] || git -C "$REPO" worktree prune 2>/dev/null
+    # Through the chokepoint, which repairs rather than prunes any entry whose directory is
+    # still on disk, and names in the reap log every entry it really does drop.
+    [ "$DRY" = 1 ] || spira_prune_worktrees "$REPO"
     return 0
 }
 
@@ -273,13 +262,18 @@ for line in sys.stdin:
 # check anything out in them again, so retire them once rather than leaving two permanent
 # registrations that make `git worktree list` unreadable.
 # ======================================================================================
+# These are DETACHED scratch trees the harness made for itself and no bead was ever worked in
+# one, so the liveness witnesses will always say nobody is home — but they go through the
+# chokepoint anyway rather than being exempted from it. An exemption is a second code path,
+# and a second code path is what this whole section is a response to.
 [ "$DRY" = 1 ] || for legacy in "$WORKTREES/.landing" "$WORKTREES/.rebase"; do
     [ -e "$legacy" ] || continue
     for r in $(spira_repos); do
         rp="$(repo_root "$r")" || continue
-        git -C "$rp" worktree remove --force "$legacy" 2>/dev/null && break
+        spira_destroy_worktree "$(basename "$legacy")" "$legacy" "$rp" \
+            "legacy harness tree, superseded by the per-repository one" && break
     done
-    rm -rf "$legacy" 2>/dev/null
+    [ -e "$legacy" ] && continue     # nothing could remove it: say nothing rather than lie
     say "RETIRED $(basename "$legacy")  superseded by the per-repository tree"
 done
 

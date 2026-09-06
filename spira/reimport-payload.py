@@ -13,7 +13,7 @@ WHY THE MIRROR IS NOT FED TO `bd import` DIRECTLY
 Three things have to happen between the mirror and the database, and each of them is a way
 the re-import can quietly do damage.
 
-1. THE `repo:` LABEL IS THE PARTITION. Spira collapsed seven databases into one, so the
+1. THE `repo:` LABEL IS THE PARTITION. Spira collapses per-repository databases into one, so the
    thing that used to be "which database is this in" is now a label. It is not in the
    mirror — Gas Town has no idea it exists — so every row must carry one before it lands.
    Adding it here rather than in a relabelling pass afterwards means it arrives WITH the
