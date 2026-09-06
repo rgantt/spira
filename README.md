@@ -32,6 +32,7 @@ not shareable, and finding them one restart at a time is the alternative.
 ## Getting started
 
 ```sh
+mkdir -p ~/.config/spira                           # the config lives outside the checkout
 cp spira.conf.example ~/.config/spira/spira.conf   # and edit it
 cp spira/repo-map.example spira/repo-map           # and write your own rows
 spira/exclude.sh install .                        # arm the pre-commit fence
