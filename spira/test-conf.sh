@@ -247,7 +247,7 @@ for f in "$HERE"/statutes/law-*.txt; do
     # AND IT MUST NAME NO INVENTORY. A statute naming a repository, a path or an operator only
     # teaches a colleague's agent to index on someone else's box
     # (law-harness-ships-mechanism-not-inventory).
-    hits="$(grep -oiE '/workspaces|one repository here|another|a third|a fourth|ryan|gas town|spira' "$f" | sort -u | tr '\n' ' ')"
+    hits="$(bash "$HERE/inventory.sh" --scan "$f" | tr '\n' ' ')"
     [ -n "$hits" ] && { bad "$k names no inventory" "$hits"; statute_faults=1; }
 done
 [ "$statute_faults" -eq 0 ] && ok "every shipped statute is one paragraph and names no inventory"

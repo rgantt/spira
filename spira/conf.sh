@@ -56,6 +56,7 @@ SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER
 SPIRA_COCKPIT SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
+SPIRA_ALERT_GLOB
 SPIRA_FAYTHS SPIRA_MAX_AEONS
 "
 
@@ -226,6 +227,10 @@ spira_conf_defaults() {
     # serves. Empty means this installation does not manage the server, and the unit that
     # would supervise it is not installed.
     : "${SPIRA_DOLT_DATA:=}"
+    # The alert units whose failure should be filed as an incident bead, as a find(1) name
+    # pattern. Empty means none: these are the operator's own unit names and nothing here can
+    # guess them, so install-intake.sh says so rather than wiring whatever matches.
+    : "${SPIRA_ALERT_GLOB:=}"
 
     # THE MAP FALLS BACK TO THE EXAMPLE, and that is what makes a clean clone runnable at
     # all. The real map is one operator's inventory of checkouts and does not ship; the
@@ -300,6 +305,7 @@ export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin
 export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_CWD SPIRA_PATH SPIRA_GOAL \
        SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
+       SPIRA_ALERT_GLOB \
        SPIRA_CONF_FILE
 
 # --------------------------------------------------------------------------------------

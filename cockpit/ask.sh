@@ -15,8 +15,7 @@
 # truncated timestamp plus a truncated random suffix, two asks filed in the same second
 # collided, and because answering matched by id one reply closed both — recording a verdict
 # against a question the operator never answered. Beads gives real identity, status, close reasons
-# and comments, and the database is mirrored to raw/spira-beads/spira.jsonl, so it
-# reaches all three replicas including the phone. (the operator, verbatim: "the current data
+# and comments, and one store rather than two. (The operator, verbatim: "the current data
 # model is guaranteeing sync issues and data loss".)
 #
 # THE THREE KINDS, AND THE TYPES THAT ACTUALLY EXIST

@@ -407,7 +407,7 @@ if [ -f "$SHIPPED" ]; then
 
     # AND THE DECLARED BASE MUST ACTUALLY RESOLVE IN THAT CHECKOUT. A `base` naming a ref the
     # repository does not have is the very defect this column exists to fix, moved from the
-    # code into the map. Checked only where the checkout is present, because three replicas
+    # code into the map. Checked only where the checkout is present, because other machines
     # share this file and only some of them have the checkouts.
     badbase=""
     for n in $(SPIRA_REPO_MAP="$SHIPPED" repo_names); do

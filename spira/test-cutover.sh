@@ -157,7 +157,7 @@ mkrepo alpha main origin set-head
 mkrepo beta master origin
 # gamma — a rig whose remote is not called origin. Assuming `origin` reported zero landed
 # commits for a repository with real work in it, which is why this case is here.
-mkrepo gamma master gitea
+mkrepo gamma master upstream
 # delta — a checkout that exists but has no landing ref at all under its remote.
 git init -q --bare "$REM/delta.git"
 git init -q -b sideshow "$WS/delta"
@@ -191,7 +191,7 @@ cut() {   # cut <args...> — one run, with the fixture world in place of the re
 R="$(cut repos)"
 want "origin/HEAD resolves the landing ref"        $'alpha\t'"$WS/alpha"$'\torigin\torigin/main' "$R"
 want "master is found when there is no HEAD"       $'beta\t'"$WS/beta"$'\torigin\torigin/master' "$R"
-want "a remote that is not called origin resolves" $'gamma\t'"$WS/gamma"$'\tgitea\tgitea/master' "$R"
+want "a remote that is not called origin resolves" $'gamma\t'"$WS/gamma"$'\tupstream\tupstream/master' "$R"
 want "no landing ref is an ERROR, not a default"   'delta	-	-	ERROR:no landing ref' "$R"
 want "a rig with no checkout is an ERROR"          'ghost	-	-	ERROR:no checkout of' "$R"
 nowant "a rig with no checkout is not silently dropped" $'ghost\t-\t-\t-' "$R"
@@ -214,7 +214,7 @@ commit beta master nobody nobody@example.com 'WIP: checkpoint' '2026-08-03T00:00
 git -C "$WS/beta" branch -q "polecat/pipboy/pd-mt57"
 
 P="$(cut report)"
-wantr "a probed repository that landed nothing shows 0"   'gamma gitea/master 0 0 0 0' "$P"
+wantr "a probed repository that landed nothing shows 0"   'gamma upstream/master 0 0 0 0' "$P"
 nowantr "a quiet repository is not reported as unreadable" 'gamma ?' "$P"
 wantr "a probe that could not run shows ?"                 'delta ? ? ? ? ?' "$P"
 want  "and says why"                                       'no landing ref' "$P"

@@ -63,10 +63,10 @@ incident() { "$HERE/incident.sh" "$@" 2>&1; }
 # asserting on output it was not actually reading.
 incident_id() { incident "$@" | tail -1; }
 
-GOOD='MATCH: mtgc-diskcheck-prod\.service.*(FAILED|Result=exit-code)
+GOOD='MATCH: svc-diskcheck-prod\.service.*(FAILED|Result=exit-code)
 SYMPTOM: the prod disk check failed because / crossed its floor
 CHECK: df -h / | tail -1
-FIX: find the largest scratch directory and remove it, then systemctl --user start mtgc-diskcheck-prod.service
+FIX: find the largest scratch directory and remove it, then systemctl --user start svc-diskcheck-prod.service
 ESCALATE: if the space is production data rather than scratch
 REF: wiki/notes/tmp-own-volume-sop-2026-08-11.md'
 
@@ -93,7 +93,7 @@ echo "sop.sh — a good SOP round-trips:"
 # ======================================================================================
 out="$(sop write diskcheck - <<< "$GOOD")"
 want "write accepts it"        "wrote sop-diskcheck" "$out"
-want "write echoes the regex"  "matches: mtgc-diskcheck" "$out"
+want "write echoes the regex"  "matches: svc-diskcheck" "$out"
 want "write regenerates the page" "sop-synth: wrote" "$out"
 want "show returns the text"   "CHECK: df -h" "$(sop show diskcheck)"
 want "list names it"           "sop-diskcheck" "$(sop list)"
@@ -104,14 +104,14 @@ echo
 echo "sop.sh match — the deterministic tier:"
 # ======================================================================================
 cat > "$TMP/payload-hit" <<'P'
-unit: mtgc-diskcheck-prod.service
+unit: svc-diskcheck-prod.service
 Result=exit-code
-Sep 05 03:14:02 gitea mtgc-diskcheck-prod.service: FAILED / at 97%
+Sep 05 03:14:02 host svc-diskcheck-prod.service: FAILED / at 97%
 P
 cat > "$TMP/payload-miss" <<'P'
-unit: mtgc-catalog-refresh-prod.service
+unit: svc-catalog-refresh-prod.service
 Result=timeout
-Sep 05 03:14:02 gitea scryfall bulk download timed out
+Sep 05 03:14:02 host feed bulk download timed out
 P
 want   "match fires on the right payload"  "sop-diskcheck" "$(sop match "$TMP/payload-hit")"
 want   "match says how it matched"         "MATCH" "$(sop match "$TMP/payload-hit")"
@@ -119,23 +119,23 @@ nowant "match is silent on an unrelated payload" "sop-diskcheck" "$(sop match "$
 
 # An SOP with no MATCH: line is findable but weakly, by the words in its own key. This is
 # deliberately poor — it is the nudge that gets a MATCH written.
-printf 'SYMPTOM: scryfall bulk download timed out\nCHECK: c\nFIX: f\n' \
-    | sop write scryfall-timeout - >/dev/null
-want "key-token fallback finds it" "sop-scryfall-timeout" "$(sop match "$TMP/payload-miss")"
+printf 'SYMPTOM: feed bulk download timed out\nCHECK: c\nFIX: f\n' \
+    | sop write feed-timeout - >/dev/null
+want "key-token fallback finds it" "sop-feed-timeout" "$(sop match "$TMP/payload-miss")"
 want "and says the match was weak" "key-tokens" "$(sop match "$TMP/payload-miss")"
 
 # ======================================================================================
 echo
 echo "sop.sh synth — regenerated whole, never patched:"
 # ======================================================================================
-want "the page carries both SOPs" "sop-scryfall-timeout" "$(cat "$SOP_PAGE")"
+want "the page carries both SOPs" "sop-feed-timeout" "$(cat "$SOP_PAGE")"
 want "and the closing rule"       "must produce one" "$(cat "$SOP_PAGE")"
 echo "A HAND EDIT THAT MUST NOT SURVIVE" >> "$SOP_PAGE"
 sop synth >/dev/null
 nowant "a hand edit is discarded on the next run" "MUST NOT SURVIVE" "$(cat "$SOP_PAGE")"
-sop retire scryfall-timeout >/dev/null
-nowant "a retired SOP leaves the page"   "sop-scryfall-timeout" "$(cat "$SOP_PAGE")"
-nowant "and leaves the shelf"            "sop-scryfall-timeout" "$(sop list)"
+sop retire feed-timeout >/dev/null
+nowant "a retired SOP leaves the page"   "sop-feed-timeout" "$(cat "$SOP_PAGE")"
+nowant "and leaves the shelf"            "sop-feed-timeout" "$(sop list)"
 
 # ======================================================================================
 echo
@@ -152,7 +152,7 @@ first="$(incident_id file "prod diskcheck failed" "$TMP/payload-hit")"
 # and that is exactly what a one-character slip in spool_body did on the first real run.
 body="$(bodyof "$first")"
 want "with the payload intact through the spool" "Result=exit-code" "$body"
-want "and the unit that failed"                  "mtgc-diskcheck-prod.service" "$body"
+want "and the unit that failed"                  "svc-diskcheck-prod.service" "$body"
 second="$(incident_id file "prod diskcheck failed" "$TMP/payload-hit")"
 want "the second event is the SAME bead" "$first" "$second"
 want "and is counted as a recurrence" "sp-recur-2" "$(B label list "$first")"
@@ -239,17 +239,24 @@ echo "install-intake.sh — the wiring:"
 # incident.sh, not whatever is on main.
 export SPIRA_HOME="$HERE"
 UD="$TMP/units"; mkdir -p "$UD"
-printf '[Service]\nExecStart=/bin/true\n' > "$UD/mtgc-alert-prod@.service"
+printf '[Service]\nExecStart=/bin/true\n' > "$UD/svc-alert-prod@.service"
 export SPIRA_UNITDIR="$UD" SPIRA_SYSTEMCTL_RELOAD=0
-intake() { "$HERE/install-intake.sh" "$@" 2>&1; }
+intake() { SPIRA_ALERT_GLOB="svc-alert-prod@.service" "$HERE/install-intake.sh" "$@" 2>&1; }
+
+# THE GLOB HAS NO DEFAULT, and that is asserted before anything that depends on it: a default
+# would be one operator's own unit names, and the wrong one wires nothing while reporting
+# success. Unset, it must say so rather than match whatever happens to be there.
+want "an unset glob refuses rather than guessing" "SPIRA_ALERT_GLOB is unset" \
+     "$(SPIRA_ALERT_GLOB= "$HERE/install-intake.sh" install 2>&1)"
+
 want "status reports an unwired template" "UNWIRED" "$(intake status)"
-want "install wires it"                   "wired    mtgc-alert-prod@.service" "$(intake install)"
-[ -f "$UD/mtgc-alert-prod@.service.d/50-spira-intake.conf" ] \
+want "install wires it"                   "wired    svc-alert-prod@.service" "$(intake install)"
+[ -f "$UD/svc-alert-prod@.service.d/50-spira-intake.conf" ] \
     && ok "the drop-in is a sibling file, not an edit to the unit" \
     || bad "the drop-in is a sibling file, not an edit to the unit" "not written"
 want "a failing intake cannot fail the alert" "ExecStart=-" \
-     "$(cat "$UD/mtgc-alert-prod@.service.d/50-spira-intake.conf")"
-want "the unit file itself is untouched" "ExecStart=/bin/true" "$(cat "$UD/mtgc-alert-prod@.service")"
+     "$(cat "$UD/svc-alert-prod@.service.d/50-spira-intake.conf")"
+want "the unit file itself is untouched" "ExecStart=/bin/true" "$(cat "$UD/svc-alert-prod@.service")"
 want "a second install changes nothing"  "0 changed" "$(intake install)"
 want "status now agrees"                 "1 of 1 alert template(s) wired" "$(intake status)"
 want "uninstall removes it"              "removed 1" "$(intake uninstall)"

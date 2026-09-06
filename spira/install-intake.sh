@@ -8,10 +8,10 @@
 #
 # WHAT IT WIRES
 # -------------
-# `mtgc-alert-<store>@.service` is fired from `OnFailure=` on every unit worth hearing
-# about and pushes the journal tail to Pushover. This adds a second ExecStart that files
-# the same event as an incident bead, so the event becomes work with an identity rather
-# than a notification that scrolls past.
+# An alert unit fired from `OnFailure=` on every unit worth hearing about typically pushes
+# the journal tail somewhere a human will see it. This adds a second ExecStart that files the
+# same event as an incident bead, so the event becomes work with an identity rather than a
+# notification that scrolls past.
 #
 # WHY A DROP-IN AND NOT AN EDIT
 # -----------------------------
@@ -36,16 +36,30 @@
 # disk before it touches the database, so a failure here loses a log line and not an event.
 set -uo pipefail
 
+# The glob is a configuration key, so it reaches this from spira.conf as well as from the
+# environment — it runs as an ExecStartPre, where a login shell's environment does not exist.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/conf.sh"
 SPIRA_HOME="${SPIRA_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}"
 UNITDIR="${SPIRA_UNITDIR:-$HOME/.config/systemd/user}"
-# PROD ONLY, deliberately. Seventeen alert templates exist on this box and fourteen of
-# them belong to dev stores (`de-wdq`, `furiosa-tok`, …) whose units fail routinely and by
-# design — `mtgc-catalog-refresh-de-wdq.service` is failed right now. Wiring all of them
-# would fill the Ops queue with events that have no action, which is the definition of a
-# false alert. Widening this is a deliberate act, one store at a time. The value is a
-# `find -name` pattern, so `*` `?` and `[...]` work and brace expansion does not:
-#     SPIRA_ALERT_GLOB='mtgc-alert-scrotus@.service' install-intake.sh install
-PATTERN="${SPIRA_ALERT_GLOB:-mtgc-alert-prod@.service}"
+# WHICH TEMPLATES, AND THERE IS NO DEFAULT. `SPIRA_ALERT_GLOB` names your own alert units and
+# nothing here can guess it; unset, this refuses with a sentence rather than wiring whatever
+# happens to match. A default would be one operator's inventory, and the wrong one silently
+# wires nothing while reporting success.
+#
+# NAME ONLY THE UNITS WHOSE FAILURE IS ACTIONABLE. Where alert templates are rendered per
+# environment, most of them usually belong to development instances that fail routinely and by
+# design; wiring those fills the Ops queue with events that have no action, which is the
+# definition of a false alert. Widening the glob is a deliberate act, one at a time.
+#
+# The value is a `find -name` pattern, so `*` `?` and `[...]` work and brace expansion does not:
+#     SPIRA_ALERT_GLOB='alert-prod@.service' install-intake.sh install
+PATTERN="${SPIRA_ALERT_GLOB:-}"
+if [ -z "$PATTERN" ]; then
+    echo "install-intake: SPIRA_ALERT_GLOB is unset — nothing to wire." >&2
+    echo "  Set it to a find(1) name pattern matching the alert units whose failure you want" >&2
+    echo "  filed as incident beads, e.g. SPIRA_ALERT_GLOB='alert-prod@.service'." >&2
+    exit 0
+fi
 DROPIN=50-spira-intake.conf
 RELOAD="${SPIRA_SYSTEMCTL_RELOAD:-1}"
 

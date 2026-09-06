@@ -83,7 +83,7 @@ remote_for() {           # remote_for <repo-path> <url> -> remote name on stdout
 }
 
 # The ref a repository's work LANDS on. Resolved, never assumed: three spellings are already in
-# use here (origin/main, origin/master, gitea/master). Unresolvable is an error, not a default.
+# use here (origin/main, origin/master, upstream/master). Unresolvable is an error, not a default.
 landing_ref() {          # landing_ref <repo-path> <remote> -> ref on stdout, or fail
     local p="$1" r="$2" head c
     head="$(git -C "$p" symbolic-ref --short "refs/remotes/$r/HEAD" 2>/dev/null)"

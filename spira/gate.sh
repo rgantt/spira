@@ -18,7 +18,7 @@
 # each repo's own test command" means in practice.
 #
 # It fails CLOSED. A gate that cannot run its own checks must not report a pass: the whole
-# point is to keep unverified work out of a branch three replicas pull from.
+# point is to keep unverified work out of a branch everything else pulls from.
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 

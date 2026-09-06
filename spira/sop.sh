@@ -224,10 +224,10 @@ b += ["---", "type: note", "created: 2026-09-05", f"updated: {today}",
       "tags: [spira, ops, sop, runbook, generated]",
       "aliases: [SOPs, Standard operating procedures, The shelf]", "---", ""]
 b += ["# Standard operating procedures", ""]
-b += ["**Generated — do not edit.** Regenerated whole by `.claude/spira/sop.sh synth` from "
+b += ["**Generated — do not edit.** Regenerated whole by the harness's `spira/sop.sh synth` from "
       "the Spira beads database, which is the source of truth. Editing this page has no "
       "effect; the next run overwrites it. Amend an SOP instead:", ""]
-b += ["```bash", ".claude/spira/sop.sh write <slug> -   # text on stdin", "```", ""]
+b += ["```bash", "spira/sop.sh write <slug> -   # text on stdin", "```", ""]
 b += ["Statutes are how to behave; SOPs are how to fix. They share one mechanism, split by "
       "prefix — `law-` and `sop-` — so the [[spira]] Ops persona reads its runbooks exactly "
       "the way every agent already reads [[common-law]]. Ops is summoned by an incident bead "
