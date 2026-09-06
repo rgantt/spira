@@ -79,6 +79,53 @@ every automatic source for it is a local cache that can be stale, absent or answ
 branch a human last looked at. On the box this harness was written for, three of seven
 repositories had no ref named `main` at all.
 
+## Personas
+
+A *fayth* is a persona definition; an *aeon* is one summoned instance of it. A persona is four
+things — a predicate that carves its partition out of the bead graph, the statutes it must
+read, the tools it may use, and the lease it works under — and all four live in one file in
+`spira/chamber/`. **Landing a fayth is the whole of installing a persona:** the roster is
+discovered from that directory rather than listed anywhere, so a file that lands is a persona
+that runs.
+
+Three ship.
+
+| fayth | partition | what it is for |
+|---|---|---|
+| `builder` | `spira,plan` | the only persona that writes code: claims a ready plan bead, implements it, opens the pull request, exits |
+| `ops` | `spira,incident` | the only persona whose work arrives from outside the plan: matches a production event to an SOP, executes it or writes one. It is the only one that reads `sop-` as well as `law-` |
+| `spike` | `spira,` + `SPIRA_SPIKE_LABEL` | researches one question to a costed feasibility document, and carries no conversation |
+
+### Spikes
+
+Feasibility research is the worst thing to do inside a long conversation. It reads heavily,
+and almost nothing it reads is needed once the question is answered — only the conclusion is.
+Yet every page fetched stays in that conversation's context and is re-read on every later turn
+for the rest of its life. A spike aeon starts at the floor, reads what it needs, writes one
+document, and exits; the session that filed the bead gets the document, not the reading.
+
+Its document names the question, what was found, **two or more options each with a cost and a
+risk**, a recommendation with its one load-bearing assumption named, and a falsifier — what
+would have to be true for the recommendation to be wrong. A recommendation *against* is a
+complete answer, and often the most valuable one: a persona rewarded for producing plans
+always produces a plan, so the brief says so explicitly. Every source it fetched is kept
+verbatim beside the document, because a citation that cannot be re-read is not a citation.
+
+**It gets the full toolset, including a shell and an editor.** For most interesting questions
+the only honest answer to "is this feasible" comes from trying it, and a spike that may not
+build cannot tell "this is hard" from "I could not find out" — it would report the second as
+the first. The discipline is in the deliverable instead: **a spike may leave a branch and must
+not leave a merge.** A proof of concept is evidence *for* the document, kept on a branch of its
+own and named in it.
+
+That is a fence rather than a request. `spira/confine.sh` runs from the landing worker, ahead
+of the repository's gate, and refuses to merge a spike branch that changes anything outside
+`SPIRA_SPIKE_PATHS` — naming the offending paths, reopening the bead, and leaving the branch
+standing. Nothing else could hold that line: a merged experiment passes every downstream
+check, because the aeon committed, the commit names the bead and the gate went green. A bead
+that is not a spike passes through untouched, which is what makes it safe on the shared path.
+Widen `SPIRA_SPIKE_PATHS` if your notes and your preserved sources live in different trees.
+
 ## Statutes
 
 Agents read their law from the beads KV store at summon, and that store is per-installation —

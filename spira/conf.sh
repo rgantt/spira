@@ -58,6 +58,7 @@ SPIRA_COCKPIT SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA
 SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
 SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S
+SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_VIEW SPIRA_VIEW_SESSION
@@ -329,6 +330,22 @@ spira_conf_defaults() {
     # than by viewer, so ten open tabs cost one query instead of ten. It is a cache and not a
     # background job: nothing runs when nobody is looking, and 0 disables it.
     : "${SPIRA_LOOM_CACHE_S:=15}"
+    # THE SPIKE PARTITION, in one place because it is read in four: the spike fayth's
+    # predicate, the brief handed to a spike aeon, the confinement check the landing worker
+    # runs, and whatever files the bead. A literal in four files is how four programs come to
+    # disagree, and the half nobody notices is wrong is the one that simply matches less.
+    : "${SPIRA_SPIKE_LABEL:=spike}"
+    # Where a spike writes its document, relative to the root of whatever repository its bead
+    # names. A spike's deliverable is a document, so it needs somewhere to put one that is
+    # true of a repository this harness has never seen; a colleague who keeps notes elsewhere
+    # moves it here rather than in a prompt.
+    : "${SPIRA_SPIKE_DIR:=docs/spikes}"
+    # The path prefixes a spike branch is allowed to LAND, space-separated. Everything a
+    # spike learns belongs in its document and beside it; a proof of concept is evidence FOR
+    # that document rather than a change to the repository, so it lives on a branch of its own
+    # and is named in the document. Two prefixes rather than one because the sources a spike
+    # preserved need not sit under the document — set it to the trees your own notes use.
+    : "${SPIRA_SPIKE_PATHS:=$SPIRA_SPIKE_DIR}"
     # The name the operator's OWN comments are recorded under, so the attention panel can tell
     # a reply of theirs from a reply of the agent's. Both write into the same thread, and a
     # panel that cannot separate them announces the agent's own comment back to it as an answer.
@@ -598,6 +615,7 @@ export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIR
        SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT \
        SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE \
        SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S \
+       SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \
        SPIRA_GATE_NOVERDICT SPIRA_GATE_BASEFAIL \

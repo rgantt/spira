@@ -337,7 +337,7 @@ PRBODY
 
 land_repo() {
     local name="$1" repo br id st mode base land tip merged pushed attempt brs
-    local bead_repo_name bead_repo_path gate_out base_branch base_remote
+    local bead_repo_name bead_repo_path gate_out base_branch base_remote bead_labels
     repo="$(repo_root "$name")" || { log "CHECK6 $name: no repo-map entry — skipped"; return 0; }
     [ -e "$repo/.git" ] || { log "CHECK6 $name: $repo is not a git checkout — skipped"; return 0; }
 
@@ -395,7 +395,7 @@ land_repo() {
             log "CHECK6 $id: $br is gone since this pass began — landed or reaped elsewhere, not reopening"
             continue
         fi
-        read -r st bead_repo_name <<< "$(bdjson show "$id" 2>/dev/null | python3 -c '
+        read -r st bead_repo_name bead_labels <<< "$(bdjson show "$id" 2>/dev/null | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
 except Exception: raise SystemExit
@@ -403,7 +403,7 @@ d = d if isinstance(d, list) else [d]
 if not d: raise SystemExit
 i = d[0]
 repo = next((l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")), sys.argv[1])
-print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
+print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_home_repo)" 2>/dev/null)"
         # A BRANCH SKIPPED FOR A BEAD THAT IS NOT CLOSED HAS TO HAVE A VOICE. This was a bare
         # `continue`, so the one state that most needs saying — a branch whose bead sits
         # in_progress while nothing is holding it — left no trace anywhere in this log, and
@@ -487,6 +487,20 @@ print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
             continue
         fi
         tip="$(git -C "$repo" rev-parse "$br" 2>/dev/null)"
+
+        # CONFINEMENT COMES BEFORE THE GATE. A spike's branch may pass every test in the
+        # repository and still be the wrong thing to merge — its experiment compiles, which
+        # is the point of an experiment. This asks a different question from the gate ("is
+        # this branch allowed to land at all") and it must be asked first, because the gate
+        # is the expensive half and there is nothing to learn from running it on a branch
+        # that is going back either way. A bead that is not a spike passes through untouched.
+        if ! gate_out="$("$SPIRA_HOME/confine.sh" "$id" "$br" "$repo" "$base" "${bead_labels:-}" 2>&1)"; then
+            bdq reopen "$id" >/dev/null 2>&1
+            bdq note "$id" "Reopened by sentinel: $gate_out" >/dev/null 2>&1
+            progress "reopened $id — spike branch is not confined to its document"
+            log "CHECK6 $id: $(printf '%s' "$gate_out" | head -1)"
+            continue
+        fi
 
         # THE NOTE CARRIES THE GATE'S OWN WORDS. A bead reopened with "failed the landing
         # gate" tells its next aeon nothing it can act on, and after three of those the bead

@@ -211,6 +211,27 @@
 # makes every request pay for its own query.
 # SPIRA_LOOM_CACHE_S = 15
 
+# THE SPIKE PARTITION. A spike is a persona that researches one question to a costed document
+# and carries no conversation; these three keys are what the harness reads to find its beads,
+# to tell it where to write, and to refuse to merge anything else it leaves behind.
+#
+# The label its beads carry, and the label its fayth's predicate is built from — one key
+# rather than four literals, because four literals is how four programs come to disagree
+# about which beads exist.
+# SPIRA_SPIKE_LABEL = spike
+#
+# Where a spike writes its document, relative to the root of whatever repository its bead
+# names. Point it at wherever your own notes live.
+# SPIRA_SPIKE_DIR = docs/spikes
+#
+# The path prefixes a spike branch is allowed to LAND, space-separated, defaulting to
+# SPIRA_SPIKE_DIR alone. A spike is closed by its document; a proof of concept is evidence FOR
+# that document, so it belongs on a branch of its own, named in the document, and unmerged.
+# The landing worker refuses a spike branch that changes anything outside these trees. Widen
+# it if the sources a spike preserves live somewhere other than beside the document — for
+# example, "notes/spikes sources".
+# SPIRA_SPIKE_PATHS = docs/spikes
+
 # The timezone dates are written in. Empty means the host's own, which is right until the host
 # is a server in one zone and you read its output in another — the case where an evening's
 # work lands under tomorrow's date and a chronological log stops being chronological.
