@@ -163,8 +163,8 @@ out="$("$COCKPIT/reply.sh" sp-open "a reply" 2>&1)"
 want "reply.sh reports the database it wrote to" "$(basename "$DB")" "$out"
 thread="$("$BD" -C "$DB" comments sp-open --json 2>/dev/null | sed -n '/^[[{]/,$p')"
 want "the comment landed in it" "a reply" "$thread"
-# Authorship is what lets the watcher tell my own reply from the operator's; announcing mine back to
-# me as "RYAN COMMENTED" is a notification loop with itself.
+# Authorship is what lets the watcher tell my own reply from the operator's; announcing mine
+# back to me as though they had commented is a notification loop with itself.
 want "the comment is authored claude" '"claude"' "$thread"
 
 # the operator speaks last, so the thread is an open obligation whatever the bead's status says.
@@ -172,7 +172,11 @@ want "the comment is authored claude" '"claude"' "$thread"
 # so two comments added in the same second come back in an order nothing defines — and "whose
 # turn is it" is read off the end of that list.
 sleep 2
-BEADS_ACTOR=ryan "$BD" -C "$DB" comments add sp-open "and their answer" >/dev/null 2>&1
+# THE OPERATOR'S ACTOR NAME COMES FROM THE CONFIGURATION, not from a literal. unanswered.sh
+# compares the last author against SPIRA_OPERATOR_ACTOR, so a fixture writing a hardcoded name
+# tests one installation's value and fails everywhere else — the same defect as a test that
+# hardcodes a default (law-gates-run-in-a-clean-environment).
+BEADS_ACTOR="$SPIRA_OPERATOR_ACTOR" "$BD" -C "$DB" comments add sp-open "and their answer" >/dev/null 2>&1
 out="$("$COCKPIT/unanswered.sh" 2>&1)"
 want "unanswered.sh sees the thread they spoke last on" "sp-open" "$out"
 eq "and counts it once, not once per database" "1" "$("$COCKPIT/unanswered.sh" --count 2>&1)"
@@ -218,7 +222,7 @@ eq "the first run seeds silently rather than replaying history" "" "$out"
 # again on the following run. Hours separate these in production; only the test compresses
 # them, so the test is what has to separate them.
 sleep 1
-BEADS_ACTOR=ryan "$BD" -C "$DB" close sp-todo --force --reason "take your default" >/dev/null 2>&1
+BEADS_ACTOR="$SPIRA_OPERATOR_ACTOR" "$BD" -C "$DB" close sp-todo --force --reason "take your default" >/dev/null 2>&1
 sleep 1
 out="$(ANSWER_MARK="$MARK" "$COCKPIT/answered-since.sh" 2>&1)"
 want "the verdict is reported" "sp-todo" "$out"

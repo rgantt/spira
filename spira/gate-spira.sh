@@ -78,6 +78,22 @@ run_suite() {           # run_suite <suite> -> stdout+stderr, exit code
     return "$rc"
 }
 
+# EVERY SHELL SCRIPT PARSES. The cheapest check there is, and it caught a real one: a comment
+# rewritten inside a `python3 -c '...'` block gained an apostrophe, which closed the quote and
+# left the file syntactically invalid — invisible to every suite, because nothing here executes
+# that particular watcher, and invisible to review, because the change was one word in a
+# comment. Prose is not inert when it lives inside a quoted string
+# (law-deterministic-before-inference: build the cheap check before the smart one).
+badsyntax=""
+while IFS= read -r f; do
+    bash -n "$f" 2>/dev/null || badsyntax="$badsyntax $f"
+done < <(find . -path ./.git -prune -o -name '*.sh' -type f -print)
+if [ -n "$badsyntax" ]; then
+    for f in $badsyntax; do bash -n "$f" 2>&1 | head -2 >&2; done
+    echo "gate: shell scripts do not parse:$badsyntax" >&2
+    fail=1
+fi
+
 # ONE FIXTURE FOR THE WHOLE RUN. Several of these suites build a Dolt database, and `bd init`
 # is nearly all of the ~27s each one costs — the same schema built over and over was more than
 # half the gate's wall clock. testdb_up honours an inherited TESTDB_SHARED fixture by resetting

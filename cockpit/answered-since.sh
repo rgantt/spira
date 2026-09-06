@@ -8,7 +8,7 @@
 # session cheerfully re-asks. One sat answered ("take your default") until the operator asked why
 # nothing had happened.
 #
-# The #ryan SessionStart hook already reports what is still OPEN. This is its other half.
+# The SessionStart hook already reports what is still OPEN for the operator. This is its other half.
 #
 # Prints only what closed since the LAST time it ran, so a verdict is announced once rather
 # than every session for a day. The marker is written even when there is nothing to say.

@@ -14,8 +14,8 @@
 #                |   claude session  (flips to hunk for review)      |  ~72%
 #                |                                                  |
 #                +------------------------+-------------------------+
-#                |  WAITING ON RYAN       |  GAS TOWN health        |  ~28%
-#                |  asks + #ryan tasks    |  activity + trends      |
+#                |  WAITING ON YOU        |  ops health             |  ~28%
+#                |  asks + open tasks     |  activity + trends      |
 #                +------------------------+-------------------------+
 #
 # PANES ARE ADDRESSED BY TAG, NEVER BY INDEX

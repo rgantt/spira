@@ -3,7 +3,7 @@
 # pilgrimage.sh — epic-complete detection and notification.
 #
 #   pilgrimage.sh check [epic-id] [--dry-run]  detect, notify, close   (the timer entry point)
-#   pilgrimage.sh watch   <epic> [addr]        subscribe (default: ryan)
+#   pilgrimage.sh watch   <epic> [addr]        subscribe (default: the operator)
 #   pilgrimage.sh unwatch <epic> [addr]        unsubscribe; with no addr, silence the epic entirely
 #   pilgrimage.sh status  <epic>               progress and subscribers for one pilgrimage
 #   pilgrimage.sh list                         every pilgrimage in the partition
@@ -56,7 +56,11 @@ SPIRA_EPIC_LABELS="${SPIRA_EPIC_LABELS:-spira}"
 # Subscription therefore defaults ON, and `unwatch <epic>` with no address is how you opt
 # out. The opt-out is stored as the literal `none` rather than as an absent key, because an
 # absent key cannot tell "never subscribed" apart from "deliberately silenced".
-SPIRA_DEFAULT_WATCHERS="${SPIRA_DEFAULT_WATCHERS:-ryan}"
+# The operator's own address, from the one key that names them, so a clone subscribes its own
+# operator rather than somebody else's. It is not the literal `operator` because subscriptions
+# already stored carry whatever this installation has always used, and changing the default
+# would silence every epic already watched.
+SPIRA_DEFAULT_WATCHERS="${SPIRA_DEFAULT_WATCHERS:-$SPIRA_OPERATOR_ACTOR}"
 
 DRY=0
 kv_get() {   # kv_get <key> -> value on stdout, rc 1 if unset
@@ -123,8 +127,8 @@ for r in rows if isinstance(rows, list) else [rows]:
 deliver() {   # deliver <addr> <epic-id> <subject> <body>
     local addr="$1" id="$2" subject="$3" body="$4"
     case "$addr" in
-        ryan|cockpit)
-            [ "$DRY" = 1 ] && { log "  would notify ryan: $subject"; return 0; }
+        "$SPIRA_OPERATOR_ACTOR"|operator|cockpit)
+            [ "$DRY" = 1 ] && { log "  would notify $SPIRA_OPERATOR: $subject"; return 0; }
             "$SPIRA_NOTIFY" insight "$subject" --why "$body" >/dev/null 2>&1
             ;;
         bead:*)
@@ -203,7 +207,7 @@ cmd_check() {
 # watch / unwatch — the subscription that convoy had and an epic bead does not
 # ======================================================================================
 cmd_watch() {
-    local id="${1:?usage: pilgrimage.sh watch <epic-id> [addr]}" addr="${2:-ryan}" cur
+    local id="${1:?usage: pilgrimage.sh watch <epic-id> [addr]}" addr="${2:-$SPIRA_OPERATOR_ACTOR}" cur
     cur="$(subs_of "$id")"
     case ",${cur}," in *",$addr,"*) echo "$addr already watches $id"; return 0 ;; esac
     kv_set "$(subs_key "$id")" "${cur:+$cur,}$addr"

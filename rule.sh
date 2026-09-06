@@ -23,9 +23,9 @@
 #
 # WHEN TO REACH FOR IT
 # --------------------
-# When the operator answers a `#ryan` escalation, that answer is a verdict. Ask whether it
+# When the operator answers an escalation, that answer is a verdict. Ask whether it
 # generalises; if it does, enact it in the same session with the case that produced it
-# as the trailing citation, so the rule carries its own history. The `#ryan` list should
+# as the trailing citation, so the rule carries its own history. The escalation queue should
 # be producing law, not just draining — a class of question that keeps coming back is a
 # missing statute.
 #

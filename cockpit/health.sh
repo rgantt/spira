@@ -129,7 +129,7 @@ spira_lines() {
             [ -f "$RUN/spira/budget.env" ] && . "$RUN/spira/budget.env" 2>/dev/null; set -u
 
     # A LABELLED SECTION PER QUESTION. The old single line read
-    # "open 25 ready 17 working 1 aeons 1 poison 1 #ryan 0 fiends 0" — beads, sessions and
+    # "open 25 ready 17 working 1 aeons 1 poison 1 asks 0 fiends 0" — beads, sessions and
     # asks in one undifferentiated row, so nothing could be read at a glance and the counts
     # looked like they measured the same kind of thing (the operator, verbatim: "i can't tell
     # at a glance what's actually happening"). Each line now answers one question and says

@@ -25,8 +25,12 @@ export BEADS_NO_AUTO_IMPORT=1
 COUNT_ONLY=0; [ "${1:-}" = "--count" ] && COUNT_ONLY=1
 . "$(dirname "$0")/db.sh"
 
-# Whose voice counts as "answered". the operator writes as `ryan`; everything else here is mine.
-HUMAN="${COCKPIT_HUMAN:-ryan}"
+# Whose voice counts as "answered": the actor the OPERATOR's own comments are recorded under,
+# which is a config key because it is one installation's account name. Everything else in the
+# thread is mine, and a default of somebody's first name would make every other installation
+# read its own replies as an answer.
+HUMAN="${COCKPIT_HUMAN:-$SPIRA_OPERATOR_ACTOR}"
+export HUMAN
 
 rows=""
 db=$(cockpit_db) || exit 1
@@ -53,7 +57,7 @@ rows = d if isinstance(d, list) else d.get("comments", [])
 if not rows: raise SystemExit
 last = rows[-1]
 import os
-if (last.get("author") or "") != os.environ.get("HUMAN", "ryan"): raise SystemExit
+if (last.get("author") or "") != os.environ.get("HUMAN", "operator"): raise SystemExit
 ts = (last.get("created_at") or "")
 try:
     t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))

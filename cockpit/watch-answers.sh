@@ -17,7 +17,7 @@
 # indistinguishable from an unanswered question -- and worse, the operator believes they have replied.
 #
 # Emits one line per event, so it is a Monitor command:
-#   Monitor({command: '.claude/cockpit/watch-answers.sh', persistent: true})
+#   Monitor({command: '<harness>/cockpit/watch-answers.sh', persistent: true})
 #
 # First run SEEDS SILENTLY. Without that, arming it would replay every historical verdict
 # as if it had just landed.
@@ -41,6 +41,9 @@ while true; do
       SELF_CLOSED="${SELF_CLOSED:-$(dirname "$0")/.runtime/self-closed}" python3 -c '
 import json, os, sys
 ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")
+# The name of the operator, for the lines a human reads. A literal here would announce
+# the wrong person on every other installation.
+WHO = (os.environ.get("SPIRA_OPERATOR") or "the operator").upper()
 
 state_path = os.environ["STATE"]
 text = sys.stdin.read()
@@ -102,16 +105,16 @@ for r in rows:
     if prev.get("status") != "closed" and status == "closed":
         # Not if I closed it. A beads close records no actor -- there is no closed_by, and
         # the Dolt committer is always "beads" whatever BEADS_ACTOR says -- so resolve.sh
-        # records the id and this skips it. Without that, the harness's own close came back
-        # to me as "RYAN ANSWERED", which is the comment-path bug all over again.
+        # records the id and this skips it. Without that, a close made by the harness came back
+        # to me as an answer from the operator, which is the comment-path bug all over again.
         if rid in self_closed:
             continue
         reason = (r.get("close_reason") or "").strip() or "(no reason given)"
-        events.append(f"RYAN ANSWERED {rid}: {reason}  --  {title}")
+        events.append(f"{WHO} ANSWERED {rid}: {reason}  --  {title}")
     elif ccount > (prev.get("comments") or 0):
         # Only if the newest comment is not mine. This session and the pane both wrote as
-        # "overseer" at first, so the watcher announced my OWN reply back to me as "RYAN
-        # COMMENTED" -- a notification loop with itself. Mine are authored "claude".
+        # "overseer" at first, so the watcher announced my OWN reply back to me as though the
+        # operator had commented -- a notification loop with itself. Mine are authored "claude".
         events.append((rid, ccount, title))
 
 tmp = state_path + ".tmp"
@@ -140,7 +143,7 @@ for ev in events:
         who = None
     if who == "claude":
         continue          # my own reply; not news
-    print(f"RYAN COMMENTED on {rid} ({ccount} total)  --  {title}", flush=True)
+    print(f"{WHO} COMMENTED on {rid} ({ccount} total)  --  {title}", flush=True)
 '
   fi
   sleep "$INTERVAL"
