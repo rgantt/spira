@@ -221,6 +221,163 @@ has "and a transcript it cannot find renders ?" "$line" "ctx ?"
 
 # ==========================================================================================
 echo
+echo "ctx-meter.sh line — the headline comes from the client, not from the transcript"
+# ==========================================================================================
+# hook <session-id> <transcript-path> [total_input_tokens] [window] [used_percentage]
+# With the last three omitted the blob carries context_window.current_usage = null, which is
+# what the client sends before a session's first API response.
+hook() {
+    if [ $# -ge 5 ]; then
+        printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","context_window":{"total_input_tokens":%s,"context_window_size":%s,"current_usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":1},"used_percentage":%s}}' \
+            "$1" "$2" "$T/projects" "$3" "$4" "$5"
+    else
+        printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","context_window":{"total_input_tokens":0,"context_window_size":%s,"current_usage":null,"used_percentage":null}}' \
+            "$1" "$2" "$T/projects" "${3:-200000}"
+    fi
+}
+# line <hook-json> — the status line, under the same minimal environment as `run`.
+line() {
+    env -i HOME="$T/home" PATH="$PATH" SPIRA_CONF="$NONE" \
+        SPIRA_RUN="$T/run" SPIRA_TOKEN_PROJECTS="$T/projects" \
+        SPIRA_TOKEN_WINDOW_H="$WINDOW_H" \
+        SPIRA_CTX_WARN="$CW" SPIRA_CTX_HIGH="$CH" SPIRA_CTX_LIMIT="$CL" \
+        bash "$CTX" <<<"$1" 2>/dev/null
+}
+
+# A DIRECTORY WITH TWO SESSIONS IN IT, which is the whole hazard: one working directory can
+# host more than one agent, and they share a project slug. `mine` carries 2200; `other` is
+# written afterwards so it is unambiguously the newest by mtime and carries 700 — a number the
+# meter must never print while the hook is naming `mine`.
+P="$T/projects/-two-sessions"; mkdir -p "$P"
+: > "$P/mine.jsonl"
+for i in $(seq 0 20); do turn "n$i" 0 0 0 $(( 2000 + i * 10 )) 10 >> "$P/mine.jsonl"; done
+turn o1 0 0 0 700 10 > "$P/other.jsonl"
+touch -d '1 minute ago' "$P/mine.jsonl"; touch "$P/other.jsonl"
+
+# THE POSITIVE CONTROL FOR THE WHOLE SECTION. Before asserting that the transcript's number is
+# NOT what gets printed, prove this fixture's transcript does produce a number of its own —
+# otherwise "the JSON won" and "the transcript was unreadable" look identical.
+L="$(line "{\"session_id\":\"mine\",\"transcript_path\":\"$P/mine.jsonl\"}")"
+has "a hook without a context_window still reads the transcript" "$L" "ctx 2k"
+has "and reports the turns it counted there"                     "$L" "/21t"
+
+# THE SUPPLIED FIELD WINS. 44000 is nowhere near the transcript's 2200, so a meter still
+# re-deriving the headline cannot accidentally agree.
+L="$(line "$(hook mine "$P/mine.jsonl" 44000 200000 22)")"
+has "the headline is the client's total_input_tokens" "$L" "ctx 44k"
+hasnt "and not the transcript's own sum"              "$L" "ctx 2k"
+has "while the turn count still comes from the transcript" "$L" "/21t"
+
+# AND IT MATCHES used_percentage, which the client pre-computes as
+# round(total_input_tokens / context_window_size * 100). Asserting the tokens and the
+# percentage against each other is what makes "the same number the client reports" checkable
+# rather than merely claimed.
+for pct in 5 22 61; do
+    tok=$(( 200000 * pct / 100 ))
+    got="$(line "$(hook mine "$P/mine.jsonl" "$tok" 200000 "$pct")" | sed -n 's/.*ctx \([0-9]*\)k.*/\1/p')"
+    is "ctx at ${pct}% of the window reads as $(( tok / 1000 ))k" "$(( tok / 1000 ))" "$got"
+done
+# The extended-context window is a different size, and the headline must follow the tokens
+# rather than the percentage's scale.
+L="$(line "$(hook mine "$P/mine.jsonl" 610000 1000000 61)")"
+has "an extended-context window reports its own token count" "$L" "ctx 610k"
+
+# THIS SESSION, NOT THE NEWEST ONE. `other` is newer by mtime and carries a different number.
+L="$(line "$(hook mine "$P/mine.jsonl" 44000 200000 22)")"
+hasnt "a newer sibling transcript is not the one measured" "$L" "ctx 0k"
+L="$(line "{\"session_id\":\"mine\",\"transcript_path\":\"$P/other.jsonl\"}")"
+has "session_id outranks a transcript_path pointing elsewhere" "$L" "ctx 2k"
+hasnt "so the sibling's context is never reported"             "$L" "ctx 1k"
+
+# ==========================================================================================
+echo
+echo "ctx-meter.sh line — fresh, unreadable, and the difference between them"
+# ==========================================================================================
+# A SESSION THE HOOK NAMED BUT THAT HAS NOT SPOKEN YET IS FRESH. This is the state for the few
+# seconds after a clear, and it is exactly where reporting the newest OTHER session's number
+# does the most damage: the operator reads a discarded session's total as the live one.
+L="$(line "$(hook brandnew "$P/brandnew.jsonl")")"
+has "a named session with no transcript yet reads as fresh" "$L" "ctx fresh"
+hasnt "and never as another session's number"               "$L" "700"
+hasnt "and never as a zero context"                         "$L" "ctx 0k"
+hasnt "and never as an unreadable gauge"                    "$L" "ctx ?"
+
+# A transcript that exists but carries no assistant usage row is the same state.
+: > "$P/empty.jsonl"
+L="$(line "$(hook empty "$P/empty.jsonl")")"
+has "a transcript with no usage row yet is fresh too" "$L" "ctx fresh"
+
+# `?` IS STILL RESERVED FOR A GAUGE THAT COULD NOT READ. With no session named at all there is
+# nothing to be fresh about, and the meter must not claim a state it did not establish.
+L="$(line '{"cwd":"/nowhere/at/all"}')"
+has "an unnamed session with nothing to read stays ?" "$L" "ctx ?"
+hasnt "and does not borrow the fresh state"           "$L" "fresh"
+
+# ==========================================================================================
+echo
+echo "ctx-meter.sh — the incremental read, because this now runs every few seconds"
+# ==========================================================================================
+# THE SAVING IS ASSERTED AS A NUMBER, not as elapsed time: a wall-clock threshold on a shared
+# box is a flake, and the property that actually makes it fast is that a second pass reads
+# only what was appended. SP_CTX_SCAN_BYTES is that property, published.
+mkdir -p "$T/incr/-a-project" "$T/incrrun"
+IJ="$T/incr/-a-project/live.jsonl"
+: > "$IJ"; for i in $(seq 0 20); do turn "p$i" 0 0 0 $(( 500 + i * 5 )) 10 >> "$IJ"; done
+ienv() {
+    env -i HOME="$T/home" PATH="$PATH" SPIRA_CONF="$NONE" SPIRA_RUN="$T/incrrun" \
+        SPIRA_TOKEN_PROJECTS="$T/incr" SPIRA_CTX_WARN=$CW SPIRA_CTX_HIGH=$CH \
+        SPIRA_CTX_LIMIT=$CL bash "$CTX" env 2>/dev/null
+}
+size() { wc -c < "$1" | tr -d ' '; }
+
+C="$(ienv)"
+is "the first pass reads the whole transcript" "$(size "$IJ")" "$(val SP_CTX_SCAN_BYTES <<<"$C")"
+is "and counts every turn in it"                            "21" "$(val SP_CTX_TURNS <<<"$C")"
+cold_now="$(val SP_CTX_NOW <<<"$C")"
+
+C="$(ienv)"
+is "a pass with nothing appended reads nothing"  "0" "$(val SP_CTX_SCAN_BYTES <<<"$C")"
+is "and still reports the same turn count"      "21" "$(val SP_CTX_TURNS <<<"$C")"
+is "and the same context"           "$cold_now" "$(val SP_CTX_NOW <<<"$C")"
+
+before="$(size "$IJ")"
+turn p99 0 0 0 9000 10 >> "$IJ"
+C="$(ienv)"
+is "an appended turn costs only its own bytes" "$(( $(size "$IJ") - before ))" "$(val SP_CTX_SCAN_BYTES <<<"$C")"
+is "the turn is counted"                       "22" "$(val SP_CTX_TURNS <<<"$C")"
+is "and it is the one reported"              "9000" "$(val SP_CTX_NOW <<<"$C")"
+
+# THE CURSOR MAY ONLY MAKE THIS FASTER, NEVER DIFFERENT. Reading the same file with the cursor
+# thrown away must produce the same answer; if it does not, every incremental figure above is
+# a number the cold path would disagree with.
+rm -rf "$T/incrrun/ctx-meter"
+C="$(ienv)"
+is "a cold read agrees with the incremental one" "22" "$(val SP_CTX_TURNS <<<"$C")"
+is "on the context too"                        "9000" "$(val SP_CTX_NOW <<<"$C")"
+
+# A TRANSCRIPT REWRITTEN IN PLACE KEEPS ITS INODE and can regrow past the recorded offset, so
+# the offset alone is not enough to resume on: doing that would splice two sessions' turns into
+# one count. The cursor carries a digest of the file's opening bytes for exactly this.
+old="$(size "$IJ")"
+: > "$IJ"; for i in $(seq 0 4); do turn "q$i" 0 0 0 $(( 100 + i )) 10 >> "$IJ"; done
+while [ "$(size "$IJ")" -le "$old" ]; do turn "q$(date +%s%N)" 0 0 0 104 10 >> "$IJ"; done
+C="$(ienv)"
+fresh_turns="$(grep -c '"usage"' "$IJ")"
+is "a rewritten transcript is re-read from the start" "$fresh_turns" "$(val SP_CTX_TURNS <<<"$C")"
+is "and the whole of it is scanned"      "$(size "$IJ")" "$(val SP_CTX_SCAN_BYTES <<<"$C")"
+
+# A HALF-WRITTEN LAST LINE IS NOT CONSUMED. The client appends while this runs, so the final
+# line can be a fragment; a cursor advanced past it would drop that turn permanently.
+turn r1 0 0 0 4242 10 | head -c 40 >> "$IJ"
+C="$(ienv)"
+is "a partial line is not counted as a turn" "$fresh_turns" "$(val SP_CTX_TURNS <<<"$C")"
+printf '%s' "$(turn r1 0 0 0 4242 10 | tail -c +41)" >> "$IJ"; echo >> "$IJ"
+C="$(ienv)"
+is "and is counted once the rest of it lands" "$(( fresh_turns + 1 ))" "$(val SP_CTX_TURNS <<<"$C")"
+is "with its context reported"                                 "4242" "$(val SP_CTX_NOW <<<"$C")"
+
+# ==========================================================================================
+echo
 echo "the series — because a gauge cannot answer \"over time\""
 # ==========================================================================================
 HIST="$T/run/cockpit-history.csv"

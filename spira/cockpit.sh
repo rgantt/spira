@@ -538,7 +538,8 @@ print("SP_STRANDS_ESCALATED=%d" % sum(1 for v in d.values() if v.get("escalated"
     # about how close to a threshold a session is.
     "$HERE/ctx-meter.sh" env 2>/dev/null \
       || { for k in SP_CTX_NOW SP_CTX_TURNS SP_CTX_GROWTH SP_CTX_NEXT SP_CTX_HEADROOM \
-                    SP_CTX_TURNS_LEFT SP_CTX_AGE SP_CTX_ARCHIVIST SP_CTX_ARCHIVIST_BEHIND; do
+                    SP_CTX_TURNS_LEFT SP_CTX_AGE SP_CTX_ARCHIVIST SP_CTX_ARCHIVIST_BEHIND \
+                    SP_CTX_SCAN_BYTES; do
                echo "$k=?"
            done; }
 
