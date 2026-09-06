@@ -20,6 +20,13 @@ Input is environment, so this composes with shell: BEADS and READY are `bd ... -
 payloads, HOLDERS is "<bead-id>\t0|1" lines from the /proc liveness check, LIVE is the
 number of running aeons, GHOST_GRACE the lease grace window in seconds.
 
+THE TWO PAYLOADS COME AS FILES, named in BEADS_FILE and READY_FILE. The inline form is kept
+for fixtures small enough to write by hand, and it is the form that failed in production:
+the kernel caps ONE argv or environment string at MAX_ARG_STRLEN (128 KiB, independent of
+ARG_MAX), and a partition of a few hundred beads is several times that. execve then refuses
+the classifier outright, every pass, and the sentinel's other lines look ordinary while the
+stranded-work check produces nothing.
+
 Output is TSV: kind, id, disposition (act|escalate|info), detail, action.
 """
 import json, os
@@ -30,7 +37,13 @@ ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")
 from datetime import datetime, timezone
 
 def load(name):
-    try: d = json.loads(os.environ.get(name) or "[]")
+    path = os.environ.get(name + "_FILE")
+    try:
+        if path:
+            with open(path) as fh: raw = fh.read()
+        else:
+            raw = os.environ.get(name) or "[]"
+        d = json.loads(raw or "[]")
     except Exception: return []
     return d if isinstance(d, list) else [d]
 

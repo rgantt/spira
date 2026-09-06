@@ -156,8 +156,20 @@ print("\n".join(r["id"] for r in rows if r.get("status") == "in_progress"))' 2>/
           if holder_alive "$id"; then printf '%s\t1\n' "$id"; else printf '%s\t0\n' "$id"; fi
       done)"
 
-    BEADS="$beads" READY="$ready" HOLDERS="$holders" LIVE="$live" \
+    # THE TWO PAYLOADS GO THROUGH FILES, NOT THE ENVIRONMENT. One environment string may
+    # not exceed MAX_ARG_STRLEN (128 KiB); a partition of a few hundred beads is several
+    # times that, and execve then refuses the classifier with "Argument list too long" on
+    # every pass — which the sentinel logged 204 times in one afternoon while every other
+    # line of each pass read as normal. The holders list and the counters stay inline;
+    # they are lines, not corpora.
+    local tmp; tmp="$(mktemp -d)" || return 1
+    printf '%s' "$beads" > "$tmp/beads.json"
+    printf '%s' "$ready" > "$tmp/ready.json"
+    BEADS_FILE="$tmp/beads.json" READY_FILE="$tmp/ready.json" HOLDERS="$holders" LIVE="$live" \
     GHOST_GRACE="$GHOST_GRACE" python3 "$HERE/strand-classify.py"
+    local rc=$?
+    rm -rf "$tmp"
+    return "$rc"
 }
 
 # ======================================================================================

@@ -51,7 +51,43 @@ print(json.dumps(b))' "$@"
 }
 arr() { printf '[%s]' "$(printf '%s\n' "$@" | paste -sd, -)"; }
 
+TMP_BIG="$(mktemp -d)"; trap 'rm -rf "$TMP_BIG"' EXIT
+
 echo "strand-classify:"
+
+# -- size ------------------------------------------------------------------------------
+# The production partition is several times MAX_ARG_STRLEN (128 KiB), the kernel's cap on a
+# single environment string; passed inline, execve refuses the classifier and the check is
+# silently blind. The fixture is asserted to be past the cap first, so the case cannot pass
+# by being too small to have proved anything.
+BIG="$TMP_BIG"
+python3 -c '
+import json, sys
+pad = "x" * 400
+rows = [{"id": "sp-big%04d" % i, "status": "open", "issue_type": "task",
+         "labels": ["spira","plan"], "description": pad} for i in range(400)]
+json.dump(rows, open(sys.argv[1], "w"))' "$BIG/ready.json"
+printf '[]' > "$BIG/beads.json"
+size="$(stat -c %s "$BIG/ready.json")"
+if [ "$size" -gt 131072 ]; then
+    pass=$((pass+1)); printf '  ok    fixture exceeds MAX_ARG_STRLEN (%s bytes)\n' "$size"
+else
+    fail=$((fail+1)); printf '  FAIL  fixture is only %s bytes; it proves nothing\n' "$size"
+fi
+got="$(BEADS_FILE="$BIG/beads.json" READY_FILE="$BIG/ready.json" HOLDERS='' LIVE=0 GHOST_GRACE=300 \
+       python3 "$CLASSIFY" 2>&1 | cut -f1 | sort -u | paste -sd, -)"
+if [ "$got" = starved ]; then
+    pass=$((pass+1)); printf '  ok    a payload past the cap classifies through a file\n'
+else
+    fail=$((fail+1)); printf '  FAIL  payload past the cap: expected [starved] got [%s]\n' "$got"
+fi
+# The control: the same payload inline is what the kernel refuses. If this ever passes, the
+# cap has moved and the file path is no longer load-bearing — worth knowing, not a failure.
+if READY="$(cat "$BIG/ready.json")" BEADS='[]' HOLDERS='' LIVE=0 GHOST_GRACE=300 python3 "$CLASSIFY" >/dev/null 2>&1; then
+    printf '  note  the inline form accepted %s bytes — the kernel cap is not what it was\n' "$size"
+else
+    pass=$((pass+1)); printf '  ok    control: the same payload inline is refused by execve\n'
+fi
 
 # -- ghost -----------------------------------------------------------------------------
 # in_progress, lease long expired, no live holder. This is the case an assignee-based check
@@ -147,7 +183,7 @@ check "malformed input yields no strands, not a crash" - 'not json' 'also not js
 echo
 echo "strand.sh check (state machine):"
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP" "$TMP_BIG"' EXIT
 cat > "$TMP/ask.sh" <<'ASK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$ASK_LOG"
