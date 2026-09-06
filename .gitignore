@@ -1,0 +1,46 @@
+# What this repository does NOT carry.
+
+# Build output. The panel's source is committed; its target directory is not, and it holds
+# absolute paths from whichever box last built it.
+target/
+
+# Machine-local runtime: logs, worktrees, leases, cockpit state. Regenerated, and none of it
+# is content.
+.runtime/
+
+# Python bytecode.
+__pycache__/
+*.pyc
+
+# The operator's own configuration — real paths, real repositories, real personas. The
+# examples ship; these do not, and keeping them untracked is what lets the harness be
+# shared at all.
+#
+# `repo-map` is here rather than only `repo-map.local` because conf.sh resolves the map in
+# the order config-dir, `$SPIRA_HOME/repo-map`, `repo-map.example` — so a tracked map at the
+# second position is not dead weight a colleague ignores, it is the map their clone silently
+# USES, naming checkouts they do not have.
+/spira.conf
+spira/repo-map
+spira/repo-map.local
+
+# Editor and OS litter.
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- beads data: never in a shared repository (exclude.sh) ------------------------------
+# A beads database holds internal working notes, agent memories and the overseer's own
+# judgement. It belongs to whoever runs the harness, is never public, and is in no shared
+# repository. `*.jsonl` is here because `bd export` writes one, and an export of the
+# issues is the database in the form that needs no tooling at all to read.
+.beads/
+.dolt/
+.beads-credential-key
+*.jsonl
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*

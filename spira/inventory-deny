@@ -1,0 +1,11 @@
+# inventory-deny — extra tokens `inventory.sh` must refuse, one extended-regex per line.
+#
+# THIS FILE SHIPS EMPTY, and that is deliberate: your repository, host and account names are
+# yours, and a shipped list of somebody else's names would be exactly the inventory this
+# fence exists to keep out of a shared repository.
+#
+# Add your own, case-insensitively matched anywhere in a tracked file:
+#
+#   my-service-name
+#   build-box-01
+#   acme\.internal

@@ -1,0 +1,18 @@
+[Unit]
+# The concierge is the phone's only way in; "always available" is the whole property.
+# `concierge.sh start` is idempotent and backgrounds a tmux server, so systemd cannot
+# supervise it as a main process — this is an ensure on a timer, replacing the cron
+# */10 and @reboot pair.
+Description=Ensure the Remote Control concierge session is up
+Documentation=file://@SPIRA_REPO@/concierge.sh
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=@SPIRA_REPO@/concierge.sh start
+TimeoutStartSec=60
+StandardOutput=append:@SPIRA_REPO@/.runtime/concierge.log
+StandardError=append:@SPIRA_REPO@/.runtime/concierge.log
+
+[Install]
+WantedBy=default.target

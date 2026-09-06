@@ -1,0 +1,80 @@
+# boundary — which repository owns each path, and why.
+#
+# THE FAILURE THIS PREVENTS is a half-migration. The cockpit's shell tools were pointed at
+# one database while the panel still wrote to another; within the hour a conversation was
+# split across two stores and an answer reached nobody. A boundary written on only one side
+# of itself drifts exactly that way, so this file is the single source and `boundary.sh`
+# renders it into every document that publishes it — this repository's README, and the
+# operator's own wiki page when one is configured.
+#
+# Format:  owner | path | what it is
+#
+#   spira    ships in the harness repo. Generic mechanism, carrying no operator data.
+#   brain    stays in the operator's wiki repo, if they keep one. Everything whose write
+#            target is a page. Named for the repository this harness was extracted from.
+#   neither  data. It belongs to whoever runs the harness and is in no shared repo.
+#
+# TWO RULES DECIDE EVERY CASE, INCLUDING THE ONES NOT LISTED BELOW:
+#
+#   1. THE WRITE TARGET DECIDES OWNERSHIP. A program belongs to the repository whose files
+#      it writes, whatever it reads. Reading across the boundary is free; writing across it
+#      is what makes ownership arguable, and every genuinely ambiguous path below is a
+#      program that reads one side and writes the other.
+#   2. DEPENDENCY RUNS ONE WAY: wiki -> harness, never back. The harness must start from a
+#      clean clone with no wiki present anywhere on the machine. Where it wants an effect on
+#      the wiki it calls a CONFIGURED hook and carries on when that hook is absent — an
+#      optional call is not a dependency, a hard path is.
+#
+# THE ROWS DESCRIBE WHERE A PATH BELONGS, and in this repository that is also where it is.
+# While the harness was being extracted the renderer derived a "still to move" list from the
+# gap between the two; it is gone because the gap is closed, and a migration aid left standing
+# after its migration reads as a plan rather than a record.
+
+# ---- the harness: generic mechanism, no operator data ----------------------------------
+spira   | spira/                        | the harness proper — aeon runner, sentinel and its checks, gate, governor, sending, strand, drain, the chamber and its fayth format, lib.sh, and the test suites that hold them
+spira   | spira/boundary                | this manifest — it describes the harness, so it travels with it
+spira   | spira/boundary.sh             | renders this manifest into every document that publishes it; the wiki-side target is configured and skipped when unset, per rule 2
+spira   | spira/conf.sh                 | the one configuration surface: the loader, the key allowlist, the derived defaults, and `spira_require`, which names a missing program instead of dying as a shell error
+spira   | spira/repo-map.example        | example rows showing the six columns. The real rows are operator data
+spira   | spira/prefix-map              | id-prefix to repo: label, for prefixes no export can vote for. Ships because the mechanism does; its rows are one installation's history and are meant to be replaced
+spira   | spira/exclude.sh              | keeps the beads database and its exports out of this repository — the check the gate runs, the pre-commit hook, and the installer that arms both. A beads database is never public
+spira   | spira/hooks/                  | the pre-commit hook itself, TRACKED and armed by core.hooksPath. .git/hooks is not cloned, so a hook that lived there would reach a colleague missing and unannounced
+spira   | spira/inventory.sh            | the fence that keeps one operator's infrastructure out of a repository meant to be cloned — repository names, hosts, paths, people, dates. It scans comments, which is where all of it was
+spira   | spira/inventory-deny          | the tokens that fence refuses beyond the structural ones. Ships EMPTY: a list of somebody else's names is itself the inventory
+spira   | spira/actors.example          | commit author to harness, for authors the commit graph cannot vote on. Its rows are one installation's roster
+spira   | spira/doctor.sh               | read-only preflight — every missing program, unreadable database, unmapped repository and unbuilt panel, named in one pass
+spira   | spira/statutes/               | the SEED statute book, one file per statute. Statutes live in the beads KV store, which is per-installation, so a clone gets the mechanism and none of the law unless it ships as text
+spira   | spira/seed.sh                 | writes those statutes into a fresh database, and never over one already in force
+spira   | cockpit/                      | the decisions panel (Rust) and the ops pane — how a human sees what the harness is doing and answers what it asks. Generic; it reads whatever database it is pointed at
+spira   | systemd/                      | unit TEMPLATES plus install.sh. The units in force on a machine are generated from these, never edited in place
+spira   | concierge.sh                  | one named Remote Control session, so a phone can reach the harness
+spira   | rule.sh                       | enacting a statute writes the beads KV store, which is the harness's substrate
+spira   | beads-push.sh                 | pushes each database that has a configured Dolt remote. The mechanism ships; the remote it is pointed at is the operator's own and is private
+spira   | spira.conf.example            | the annotated template an operator copies to spira.conf. Every key optional, every default derived from where the harness is installed
+spira   | README.md                     | the harness's own entry point, carrying this table
+spira   | AGENTS.md, CLAUDE.md          | how an agent works ON the harness. Distinct from the wiki repository's own agent instructions, which are how an overseer works WITH it
+
+# ---- the wiki: everything whose write target is a page ----------------------------------
+# Paths in the operator's own notes repository, if they keep one. They are here because the
+# rule that places them is the harness's — the write target decides ownership — not because
+# the harness knows or needs anything about that repository.
+brain   | wiki/                         | the operator's knowledge base: pages, journal, projects, notes
+brain   | raw/                          | source documents, and any JSONL mirror of the database kept in a PRIVATE repository
+brain   | the wiki's own agent instructions | its catalog, its chronological log, and how an overseer works with the harness
+brain   | a tasks generator             | regenerates a page listing the beads that need the operator
+brain   | a statute-book generator      | regenerates the readable copy of the statutes in force
+brain   | its cron wrapper              | runs that generator on a timer and commits only on substantive change
+brain   | a beads exporter              | writes the JSONL mirror into a private repository
+brain   | a bead-table generator        | regenerates a plan table on a wiki page from the bead graph
+brain   | that repository's own gate    | one repository's landing gate, named by its row in repo-map. Every repository declares its own
+brain   | a checkbox ticker             | ticks a checkbox on the wiki page that holds it — the one cockpit tool that writes a page
+brain   | its session guards            | PreToolUse fences for the overseer's own session. A guard binds the actor who broke the rule, so they live with that actor
+brain   | its session settings          | that session's own hooks and environment
+brain   | its skills                    | whatever lands its output in the wiki
+
+# ---- data: in neither repository --------------------------------------------------------
+neither | the beads database            | served by Dolt, addressed as a path. It accumulates internal working notes and agent memories, so it is never public and never in a shared repo
+neither | the statutes in force         | rows in that database's KV store, per-installation. A wiki may render a read-only copy; the harness ships SEED statute text an installer writes into a fresh database
+neither | spira.conf, repo-map          | the operator's real paths, repositories and personas. The examples ship; these do not. Both are gitignored, and spira.conf is looked for outside the checkout first for that reason
+neither | the systemd units in force    | rendered from systemd/ templates by install.sh, filled from spira.conf. Never edited in place — `install.sh --diff` is how you find out somebody did
+neither | .runtime/                     | logs, worktrees, leases, cockpit state. Regenerated, machine-local, gitignored

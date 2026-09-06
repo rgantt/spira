@@ -1,0 +1,30 @@
+# actors — commit author to harness, for authors the git graph cannot vote on.
+#
+# cutover.sh derives the Gas Town roster from the graph itself: every `polecat/<name>/` branch
+# ref and every "Merge ... polecat/<name>/..." subject names a polecat, and those refs and
+# subjects are permanent, so a polecat that commits tomorrow classifies itself and this file
+# stays empty for it. The same idea as prefix-map, and for the same reason — derive what can be
+# derived, and keep a file only for what cannot.
+#
+# Two things the graph cannot say:
+#
+#   - THE OPERATOR. Nothing in a commit distinguishes a human from a machine, and on a
+#     single-user box both sign with the same address. They have to be named.
+#   - An identity that appears once and never again. `other` is the honest answer for those and
+#     they should usually stay there.
+#
+# Format: <author-name>=<spira|gastown|human|other>, one per line, `#` comments.
+#
+# DO NOT ADD A NAME HERE TO MAKE THE VERDICT PASS. An unclassified author is only ever an
+# obstacle when it is DECISIVE — `cutover.sh verdict` computes the comparison twice, once
+# crediting every unknown to Gas Town and once to Spira, and reports undecided only when those
+# two disagree. So a line here is a claim about who somebody is, and nothing else.
+
+# THESE ROWS ARE EXAMPLES. Copy this file to `actors` beside it and write your own; the rows
+# below name identities that are not yours. An operator's session, their statute synthesiser
+# and their generators may all commit under one name, so `human` means "neither harness"
+# rather than "typed by a person", and the report says so.
+#
+#   alex=human
+#   mayor=gastown
+#   deacon=gastown

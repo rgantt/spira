@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""
+strand-classify.py — the classifier behind strand.sh: partition state in, stranded rows out.
+
+Split out of strand.sh so it can be run against fixtures. Every kind below is a distinct
+failure mode with a distinct fix, which is the whole complaint against `gt convoy stranded`:
+it collapsed three unrelated conditions into one list and named no action for any of them.
+
+  ghost                in_progress, lease expired, and no live aeon holds it
+  deferred-unescalated deferred with no escalation label — the state the statute forbids
+  starved              claimable work exists and nothing alive is working it
+  stale-blocked        every blocker closed, nothing claimable — is_blocked went stale
+  blocked-external     blocked by a bead outside the partition; no aeon can ever clear it
+  stuck                blocked by work that is itself not moving
+  cycle                a dependency ring: permanently unclaimable
+  empty                an open epic with no children
+  waiting / poisoned   informational: already in the operator's queue, never escalated again
+
+Input is environment, so this composes with shell: BEADS and READY are `bd ... --json`
+payloads, HOLDERS is "<bead-id>\t0|1" lines from the /proc liveness check, LIVE is the
+number of running aeons, GHOST_GRACE the lease grace window in seconds.
+
+Output is TSV: kind, id, disposition (act|escalate|info), detail, action.
+"""
+import json, os
+
+# The escalation label is one configured key; a literal here would silently disagree
+# with the predicates and the panel the moment an operator changed it.
+ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")
+from datetime import datetime, timezone
+
+def load(name):
+    try: d = json.loads(os.environ.get(name) or "[]")
+    except Exception: return []
+    return d if isinstance(d, list) else [d]
+
+beads = load("BEADS")
+ready = {b["id"] for b in load("READY")}
+holders = {}
+for line in (os.environ.get("HOLDERS") or "").splitlines():
+    if "\t" in line:
+        k, v = line.split("\t", 1); holders[k] = v == "1"
+live = int(os.environ.get("LIVE") or 0)
+grace = int(os.environ.get("GHOST_GRACE") or 300)
+now = datetime.now(timezone.utc).timestamp()
+
+by_id = {b["id"]: b for b in beads if b.get("id")}
+OPEN = lambda b: b.get("status") != "closed"
+lab  = lambda b: set(b.get("labels") or [])
+rows = []
+def row(kind, ident, disp, detail, action):
+    rows.append("\t".join([kind, ident, disp, detail.replace("\t", " "), action.replace("\t", " ")]))
+
+def ts(v):
+    if not v: return None
+    try: return datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+    except Exception: return None
+
+# -- ghost: in_progress, lease expired past the grace window, and no live aeon holds it.
+# Both halves are required. The lease alone is a heuristic about time; /proc alone races the
+# two windows where a bead is legitimately in_progress with no pidfile yet, or no longer.
+for b in beads:
+    if b.get("status") != "in_progress": continue
+    if holders.get(b["id"]): continue
+    exp = ts(b.get("lease_expires_at"))
+    if exp is None or now - exp < grace: continue
+    mins = int((now - exp) // 60)
+    row("ghost", b["id"], "act",
+        "in_progress, lease expired %dm ago, holder %s is not running" % (mins, b.get("assignee") or "?"),
+        "bd reclaim --id %s" % b["id"])
+
+# -- deferred without an escalation. law-filed-bead-queued-xor-escalated: a bead is worked in
+# topological order XOR escalated with a decision only the operator can resolve. Deferred with no
+# escalation label is the third state the statute forbids, and it is invisible to every other
+# check because a deferred bead is neither ready, nor in progress, nor closed. 130 of them
+# once sat parked across three rigs.
+for b in beads:
+    if b.get("status") == "deferred" and ASK not in lab(b):
+        row("deferred-unescalated", b["id"], "escalate",
+            "deferred but not labelled %s: %s" % (ASK, b.get("title") or ""),
+            "bd update %s --status open, or label it %s with the decision" % (b["id"], ASK))
+
+# -- starved: the condition this check is named for. Claimable work exists and nothing alive
+# is working it. Aeons at their concurrency cap is NOT starvation — work is moving.
+if ready and live == 0:
+    row("starved", "-", "escalate",
+        "%d bead(s) ready and no live aeon: %s" % (len(ready), " ".join(sorted(ready)[:6])),
+        "check spira-sentinel.timer and the tail of sentinel.log")
+
+# -- per-pilgrimage analysis. An epic whose open children are none of ready, in progress,
+# escalated or poisoned is stuck, and the interesting part is WHY.
+children = {}
+for b in beads:
+    if b.get("parent"): children.setdefault(b["parent"], []).append(b)
+
+for e in beads:
+    if e.get("issue_type") != "epic" or not OPEN(e): continue
+    kids = children.get(e["id"], [])
+    if not kids:
+        row("empty", e["id"], "escalate", "open epic with no children: %s" % (e.get("title") or ""),
+            "decompose it, or close it")
+        continue
+    live_kids = [c for c in kids if OPEN(c)]
+    if not live_kids: continue                      # complete; pilgrimage.sh owns that
+    if any(c["id"] in ready or c.get("status") == "in_progress" for c in live_kids):
+        continue                                    # moving
+
+    parked  = [c for c in live_kids if ASK in lab(c) or c.get("status") == "deferred"]
+    poisonc = [c for c in live_kids if "spira-poison" in lab(c)]
+    excused = {c["id"] for c in parked} | {c["id"] for c in poisonc}
+    rest    = [c for c in live_kids if c["id"] not in excused]
+    if not rest:
+        # Not a strand. Waiting on the operator is a queue they already has, and a poisoned bead has
+        # already been escalated by the sentinel's poison check. Repeating either here is
+        # how a real alert ends up buried under standing ones.
+        kind = "waiting" if parked else "poisoned"
+        who  = " ".join(c["id"] for c in (parked or poisonc))
+        row(kind, e["id"], "info", "%d open child(ren), all %s: %s" %
+            (len(live_kids), "awaiting the operator" if parked else "poisoned", who), "none — already queued")
+        continue
+
+    unmet, foreign = [], []
+    for c in rest:
+        for d in c.get("dependencies") or []:
+            if d.get("type") != "blocks": continue
+            t = d.get("depends_on_id")
+            if not t: continue
+            dep = by_id.get(t)
+            if dep is None: foreign.append((c["id"], t))
+            elif OPEN(dep): unmet.append((c["id"], t))
+
+    ids = " ".join(c["id"] for c in rest)
+    if not unmet and not foreign:
+        # Every blocker is closed, yet nothing is claimable: is_blocked is a cached column and
+        # goes stale after an import or a pull. The sentinel recomputes it only when the WHOLE
+        # partition is idle, so one stuck epic beside one busy epic is exactly the case that
+        # slips through.
+        row("stale-blocked", e["id"], "act",
+            "%d open child(ren) with every blocker closed, none claimable: %s" % (len(rest), ids),
+            "bd recompute-blocked")
+    elif foreign:
+        row("blocked-external", e["id"], "escalate",
+            "blocked by bead(s) outside the partition: %s" %
+            " ".join("%s->%s" % p for p in foreign[:5]),
+            "close or import the blocker, or drop the edge with bd dep remove")
+    else:
+        blockers = sorted({t for _, t in unmet})
+        movable = [t for t in blockers if t in ready or by_id[t].get("status") == "in_progress"]
+        if not movable:
+            row("stuck", e["id"], "escalate",
+                "%d open child(ren) blocked by work that is itself not moving: %s" %
+                (len(rest), " ".join(blockers[:5])),
+                "unblock the head of the chain, or re-sequence the plan")
+
+# -- cycles. A dependency cycle is the permanent case of exactly this condition: work exists,
+# nothing is ever ready, and no other check can see it because every bead in the ring has a
+# perfectly good reason to be blocked. Tarjan over the open sub-graph.
+graph, index, low, onstack, stack, comps, counter = {}, {}, {}, set(), [], [], [0]
+for b in beads:
+    if not OPEN(b): continue
+    graph[b["id"]] = [d["depends_on_id"] for d in (b.get("dependencies") or [])
+                      if d.get("type") == "blocks" and d.get("depends_on_id") in by_id
+                      and OPEN(by_id[d["depends_on_id"]])]
+for root in graph:
+    if root in index: continue
+    work = [(root, iter(graph[root]))]
+    index[root] = low[root] = counter[0]; counter[0] += 1
+    stack.append(root); onstack.add(root)
+    while work:
+        v, it = work[-1]
+        for w in it:
+            if w not in index:
+                index[w] = low[w] = counter[0]; counter[0] += 1
+                stack.append(w); onstack.add(w)
+                work.append((w, iter(graph.get(w, []))))
+                break
+            elif w in onstack:
+                low[v] = min(low[v], index[w])
+        else:
+            work.pop()
+            if work:
+                low[work[-1][0]] = min(low[work[-1][0]], low[v])
+            if low[v] == index[v]:
+                comp = []
+                while True:
+                    w = stack.pop(); onstack.discard(w); comp.append(w)
+                    if w == v: break
+                if len(comp) > 1: comps.append(sorted(comp))
+for comp in comps:
+    row("cycle", comp[0], "escalate",
+        "dependency cycle, permanently unclaimable: %s" % " -> ".join(comp),
+        "bd dep remove one edge of the ring")
+
+print("\n".join(rows))

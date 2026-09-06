@@ -1,0 +1,19 @@
+[Unit]
+# Self-heal for the cockpit. Was documented as depending on a session-scoped watcher,
+# which is precisely what dies when a session is interrupted — on 2026-09-01 the health
+# pane exited and nothing brought it back, while every liveness check stayed green.
+# A repair loop that only runs while a session is alive cannot repair the case where the
+# session died.
+Description=Repair the cockpit layout and collector if either has died
+Documentation=file://@SPIRA_COCKPIT@/layout.sh
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=@SPIRA_COCKPIT@/layout.sh ensure
+TimeoutStartSec=60
+StandardOutput=append:@SPIRA_REPO@/.runtime/cockpit-heal.log
+StandardError=append:@SPIRA_REPO@/.runtime/cockpit-heal.log
+
+[Install]
+WantedBy=default.target

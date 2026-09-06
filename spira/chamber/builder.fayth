@@ -1,0 +1,48 @@
+# builder.fayth — the Guardian: the only persona that writes code.
+#
+# A fayth is a persona DEFINITION; an aeon is one summoned instance of it. Everything a
+# persona is amounts to four things: a predicate that carves its partition out of the
+# graph, the statutes it must read, the tools it may use, and what wakes it.
+
+FAYTH_NAME=builder
+FAYTH_DESC="Guardian — claims ready Spira plan beads and implements them"
+
+# The partition. AND-labels, so this can only ever see beads deliberately marked as Spira
+# plan work — never the 1,600 Gas Town beads imported alongside them, which are a replica
+# that Gas Town is still actively working.
+FAYTH_LABELS="spira,plan"
+FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,awaiting-ci"
+
+# Statutes only. SOPs are runbooks for production incidents; a builder will never execute
+# one, and a shelf of them would push the law it does have to obey off the end of the
+# budget. Ops reads "law-,sop-".
+FAYTH_MEMORY_PREFIXES="law-"
+
+# NO FAYTH_REPO. The repository comes from the BEAD — a `repo:<name>` label resolved
+# through .claude/spira/repo-map — because a repository pinned per persona is a
+# persona that can only ever work one of them, and every fayth here named the same
+# one. A bead with no `repo:` label is the home repo, which is what Spira's own plan
+# beads are.
+FAYTH_MODEL=claude-opus-5
+# Two, not one. The governor has reported two affordable all evening, the queue has sat at
+# 15 ready, and each landing pass spends 96s in the gate before it can summon again — so a
+# single slot leaves the box idle for most of a landing. Aeons work in separate worktrees
+# and claim atomically, so the risk is contention in a shared repo, not lost work; the
+# governor will withhold in measure mode if that proves wrong.
+FAYTH_MAX_CONCURRENT=2
+
+# The lease TTL the claim carries, and how often the aeon refreshes it. Heartbeats write
+# no Dolt commit, so a fast cadence is free; the reaper's grace window is ~2x the TTL.
+FAYTH_LEASE_MINUTES=90
+FAYTH_HEARTBEAT_SECONDS=120
+
+# NO WALL-CLOCK CEILING. An aeon runs until its work is done. A clock cannot distinguish
+# slow from stuck — a bead whose CI takes four rounds is not failing — and killing on one
+# burned an attempt toward the poison threshold for being legitimately long. Stuck is
+# detected by the heartbeat, which fires only while something observably moves and stops
+# when nothing has for FAYTH_STALL_BEATS checks; the lease then expires and bd reclaim
+# returns the bead. Set FAYTH_TIMEOUT_SECONDS only for a persona that genuinely needs a
+# hard bound.
+FAYTH_STALL_BEATS=10
+
+FAYTH_TOOLS="Bash,Read,Edit,Write,Glob,Grep,TodoWrite"

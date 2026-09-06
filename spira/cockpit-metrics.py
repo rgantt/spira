@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""cockpit-metrics.py — the four Spira numbers this build already got wrong.
+
+    cockpit-metrics.py <sentinel.log> <aeon-ledger.log> [window-hours]
+
+Prints flat `KEY=value` lines on stdout. It is pure: two files in, keys out, no bead
+queries and no git. That is what makes it testable against fixtures, which matters
+because every number here is a claim about whether the harness is working, and a
+dashboard that lies confidently is worse than no dashboard.
+
+WHY THESE FOUR, AND NOT A STAT DUMP
+-----------------------------------
+The selection rule is the operator's: instrument the numbers that SURPRISED us. For Spira those
+are the ones this build got wrong, each expensively:
+
+  born vs lived    the first aeon the sentinel ever summoned was killed inside the same
+                   second, after 1.6s of CPU: the service is Type=oneshot with the default
+                   KillMode=control-group, so systemd tore down the whole cgroup when the
+                   pass finished. The sentinel reported "summoned" every two minutes into
+                   an empty log. A summon is not a worker.
+
+  false ACTs       CHECK 6 re-landed one branch forever because `git branch -D` cannot
+                   delete a branch a worktree holds, and the error went to /dev/null:
+                     06:29:33 ACT landed spira/sp-stranded
+                     06:31:35 ACT landed spira/sp-stranded
+                   `acted` was therefore never 0, and CHECK 8 fires only when `acted` is 0,
+                   so a harness spinning on one branch could never notice it was starved.
+                   The reclaim probe had already done the same thing by matching its own
+                   idle message. Twice is a pattern; this is the meter for it.
+
+  passes since     CHECK 8 is the only tier that reaches a model, and the two bugs above
+  judgement        both worked by making it unreachable. "It has never fired" and "it fired
+                   40 passes ago" are the same picture from the outside and mean opposite
+                   things, so the number is rendered rather than inferred.
+
+  closed vs        law-closed-is-not-landed, as a running total instead of a rule. Computed
+  landed           by cockpit.sh, which has the commit graph; not here.
+
+WHAT COUNTS AS A FALSE ACT
+--------------------------
+An ACT that repeats in the IMMEDIATELY FOLLOWING pass. A real state transition happens
+once: a branch lands once, a bead is poisoned once, a lease is reclaimed once. The same
+action reported twice two minutes apart means the first one did not take, which is the
+exact shape of both bugs above.
+
+Consecutive, not merely repeated within the window: reopening the same bead after an aeon
+has failed it again is a genuine second action, and those passes are an hour apart, not
+one apart. Summoning is excluded outright — an aeon is summoned every pass that has ready
+work and a free slot, and that is the system working.
+
+A missing or unreadable input renders `?` for the keys that depend on it, never 0. The
+first version of the town collector returned 0 from its exception handler, so a broken
+parser displayed as "all clear" and displaced the suspicion that would have prompted a
+look.
+"""
+import re
+import sys
+from datetime import datetime, timedelta, timezone
+
+# `<iso8601> spira: state: ...` opens every pass, unconditionally and before any check can
+# exit early. `pass complete` does NOT: CHECK 7 exits straight after summoning, so counting
+# passes by their completion line would undercount exactly the busy passes.
+PASS_RE = re.compile(r"^(\S+) spira: state: ")
+ACT_RE = re.compile(r"^(\S+) spira: ACT (.*)$")
+LEDGER_RE = re.compile(r"^(\S+) (born|awake|done) (\S+)(?: (.*))?$")
+
+# Legitimately once per pass; not evidence of anything failing.
+NOT_AN_EVENT = (re.compile(r"^summoned a \S+ aeon$"), re.compile(r"^invoked reflection$"))
+
+# CHECK 8's precondition, read off the state line: open work, nothing ready, nothing
+# running. Counting it is what separates "judgement never fired" from "judgement was never
+# NEEDED" — two opposite health states that rendered as the same scary number, and one of
+# them was a real bug that hid here for 76 passes.
+STARVED_RE = re.compile(r"state: goal=\S+ open=(\d+) plan_ready=(\d+) in_progress=(\d+)")
+
+
+def parse_ts(s):
+    try:
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def read(path):
+    with open(path, "r", errors="replace") as f:
+        return f.read().splitlines()
+
+
+def sentinel_metrics(lines, since):
+    """passes, acts, false acts, and how long since the judgement tier fired."""
+    starved = 0          # passes meeting CHECK 8's precondition: work open, none ready, none running
+    passes = []          # one list of ACT texts per pass, oldest first
+    judged_at = None     # index of the pass in which reflection was last invoked
+    for line in lines:
+        m = PASS_RE.match(line)
+        if m:
+            ts = parse_ts(m.group(1))
+            if ts is None or ts < since:
+                # A pass older than the window closes any pass being accumulated and
+                # starts nothing, so out-of-window ACTs are never attributed to an
+                # in-window pass — which would manufacture a false ACT at the boundary.
+                passes = []
+                judged_at = None
+                starved = 0
+                continue
+            passes.append([])
+            sm = STARVED_RE.search(line)
+            if sm:
+                o, r, ip = (int(x) for x in sm.groups())
+                if o > 0 and r == 0 and ip == 0:
+                    starved += 1
+            continue
+        m = ACT_RE.match(line)
+        if m and passes:
+            text = m.group(2).strip()
+            passes[-1].append(text)
+            if text == "invoked reflection":
+                judged_at = len(passes) - 1
+
+    n_passes = len(passes)
+    acts = sum(len(p) for p in passes)
+    false_acts = 0
+    for i in range(1, n_passes):
+        prev = set(passes[i - 1])
+        for text in passes[i]:
+            if any(r.match(text) for r in NOT_AN_EVENT):
+                continue
+            if text in prev:
+                false_acts += 1
+
+    out = {
+        "SP_PASSES": n_passes,
+        "SP_ACTS": acts,
+        "SP_FALSE_ACTS": false_acts,
+        # Per pass, because "3 false ACTs" means nothing without knowing over how many
+        # passes. Two decimals: one false ACT in a day of two-minute passes is 0.00 at one.
+        "SP_FALSE_PER_PASS": "%.2f" % (false_acts / n_passes) if n_passes else "?",
+    }
+    out["SP_STARVED_PASSES"] = starved
+    if judged_at is None:
+        # NEVER FIRED IS NOT A NUMBER ON ITS OWN. If the DAG has never been starved,
+        # judgement had nothing to do and ">282" reads as a fault that is not there; if it
+        # HAS been starved and judgement still never ran, that is the real alarm. Say which.
+        out["SP_SINCE_JUDGEMENT"] = "n/a" if starved == 0 else "NEVER (%d starved)" % starved
+    else:
+        out["SP_SINCE_JUDGEMENT"] = n_passes - 1 - judged_at
+    return out
+
+
+def ledger_metrics(lines, since):
+    """born vs lived: a summon that produced a process, vs one that reached a decision.
+
+    `born` is written by aeon.sh within milliseconds of exec. `awake` is written once the
+    claim has resolved — the first thing an aeon does that takes real time. An aeon killed
+    in its first second has the first and not the second, which is precisely the cgroup
+    teardown bug, and no other failure has that signature.
+    """
+    born = lived = worked = 0
+    for line in lines:
+        m = LEDGER_RE.match(line)
+        if not m:
+            continue
+        ts = parse_ts(m.group(1))
+        if ts is None or ts < since:
+            continue
+        event, rest = m.group(2), (m.group(4) or "").strip()
+        if event == "born":
+            born += 1
+        elif event == "awake":
+            lived += 1
+            # `capacity` and `idle` are healthy no-ops; only a claim is work.
+            if rest not in ("capacity", "idle", ""):
+                worked += 1
+    return {
+        "SP_AEON_BORN": born,
+        "SP_AEON_LIVED": lived,
+        # Clamped at zero: an aeon born in the last second of the window has not reached
+        # its disposition yet, and one negative reading would render as an alarm.
+        "SP_AEON_STILLBORN": max(0, born - lived),
+        "SP_AEON_WORKED": worked,
+    }
+
+
+def sending_metrics(lines, since):
+    """The Sending: work reaped, work refused, and work that would not go.
+
+    The refusals are the point. Reaping a branch is routine; DECLINING to reap one a live
+    aeon still holds is the check that stops the reaper destroying work in flight, and
+    KEEPing one that is closed but not yet an ancestor of main is the check that stops a
+    bead's word being taken over the commit graph. FAILED is the fiend precursor: before
+    sending.sh existed, a branch left behind by its aeon could not be deleted (git refuses
+    while a worktree holds it), so the landing check re-merged and re-pushed it every two
+    minutes forever. Unsent work comes back (2026-09-05).
+    """
+    # COUNT BRANCHES, NOT LOG LINES. held/kept were incremented per matching line, and the
+    # sending runs every two minutes — so one branch a live aeon held for eight hours
+    # counted 240 times and the pane read "held 221" for 23 distinct branches. A number
+    # that large invites the reader to think something is wrong; the truth was that the
+    # same refusal was working, repeatedly.
+    sent = failed = 0
+    held_ids, kept_ids = set(), set()
+    # sending.sh's own output carries NO timestamp of its own — it is printed inside a pass
+    # and captured verbatim. So attribute each line to the most recent timestamped line
+    # above it. Lines before any timestamp are pre-window and dropped rather than counted,
+    # because a count that silently includes the whole file would make the 24h window a lie.
+    cur = None
+    for line in lines:
+        m = PASS_RE.match(line) or ACT_RE.match(line)
+        if m:
+            cur = parse_ts(m.group(1))
+        if cur is None or cur < since:
+            continue
+        t = line.strip()
+        if t.startswith("REAPED"):
+            sent += 1
+        elif t.startswith("HELD"):
+            parts = t.split()
+            if len(parts) > 1: held_ids.add(parts[1])
+        elif t.startswith("KEEP"):
+            parts = t.split()
+            if len(parts) > 1: kept_ids.add(parts[1])
+        elif t.startswith("FAILED") or "could not delete" in t:
+            failed += 1
+    return {
+        "SP_SENT": sent,
+        "SP_SENT_HELD": len(held_ids),
+        "SP_SENT_KEPT": len(kept_ids),
+        "SP_SENT_FAILED": failed,
+    }
+
+
+def main():
+    if len(sys.argv) < 3:
+        sys.exit("usage: cockpit-metrics.py <sentinel.log> <aeon-ledger.log> [hours]")
+    hours = float(sys.argv[3]) if len(sys.argv) > 3 else 24.0
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    out = {}
+    for path, fn, keys in (
+        (sys.argv[1], sentinel_metrics,
+         ("SP_PASSES", "SP_ACTS", "SP_FALSE_ACTS", "SP_FALSE_PER_PASS", "SP_SINCE_JUDGEMENT",
+          "SP_STARVED_PASSES")),
+        (sys.argv[1], sending_metrics,
+         ("SP_SENT", "SP_SENT_HELD", "SP_SENT_KEPT", "SP_SENT_FAILED")),
+        (sys.argv[2], ledger_metrics,
+         ("SP_AEON_BORN", "SP_AEON_LIVED", "SP_AEON_STILLBORN", "SP_AEON_WORKED")),
+    ):
+        try:
+            out.update(fn(read(path), since))
+        except Exception:
+            # A probe that fails says so. It never says 0.
+            out.update({k: "?" for k in keys})
+
+    out["SP_WINDOW_HOURS"] = ("%g" % hours)
+    for k in sorted(out):
+        print("%s=%s" % (k, out[k]))
+
+
+if __name__ == "__main__":
+    main()

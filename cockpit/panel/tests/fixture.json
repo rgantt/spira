@@ -1,0 +1,211 @@
+{
+ "_provenance": "SYNTHETIC. Every row is invented to exercise a rendering shape the pane has to get right \u2014 a long body, an empty body, a long title, a thread, an epic and a closed ask that must not appear, and an archived insight. It is deliberately NOT a dump of a real database: a beads database holds internal working notes and agent memories and is never public, so a fixture cut from one cannot ship with the harness.",
+ "_usage": "PANEL_FIXTURE=tests/fixture.json ./target/release/panel --once --size 107x19 [--sel N]. Review screenshots are regenerated on demand with ./capture.sh and are not committed.",
+ "_note": "The escalation label here is the shipped default. Against an installation that configured SPIRA_ASK_LABEL to something else, run the panel with that value set.",
+ "beads": [
+  {
+   "id": "ex-0001",
+   "title": "Raise the connection-pool ceiling, or add a second box?",
+   "labels": [
+    "needs-operator",
+    "overseer",
+    "ask-decision"
+   ],
+   "status": "open",
+   "issue_type": "decision",
+   "description": "**Default \u2014 what I would do:** raise the pool ceiling to 32 and leave the queue depth alarm where it is.\n\n**What is blocked:** nothing yet. The service is serving; this decides whether the next traffic step needs a second box or fits on this one.\n\n**Evidence**\n```\n  pool          16 connections, 100% utilised for 41 of the last 60 minutes\n  queue depth   p50 0, p99 214, max 1,102\n  latency       p50 4ms, p99 890ms  <- entirely queue wait, not work\n```\n\nDoubling the pool costs memory and nothing else, and it is one config line to put back. A second box is a week and cannot be undone in an afternoon.\n\n_Answer inline in the cockpit pane, or:_\n`cockpit/ask.sh answered <id> \"<verdict>\"`",
+   "comment_count": 2,
+   "created_at": "2026-01-02T09:00:00Z"
+  },
+  {
+   "id": "ex-0002",
+   "title": "Rotate the signing key now or at the next release?",
+   "labels": [
+    "needs-operator",
+    "overseer",
+    "ask-decision"
+   ],
+   "status": "open",
+   "issue_type": "decision",
+   "description": "**Default \u2014 what I would do:** rotate at the next release; nothing is exposed.\n\n**What is blocked:** nothing. The current key is valid for 60 more days.\n\nReversing an early rotation means re-signing every artifact already published.",
+   "comment_count": 0,
+   "created_at": "2026-01-03T09:00:00Z"
+  },
+  {
+   "id": "ex-0003",
+   "title": "Grant the deploy role to the release runner",
+   "labels": [
+    "needs-operator",
+    "overseer",
+    "ask-task"
+   ],
+   "status": "open",
+   "issue_type": "task",
+   "description": "Needs a console only you can reach.\n\nVERIFY: test -n \"$(id -u)\"",
+   "comment_count": 0,
+   "created_at": "2026-01-04T09:00:00Z"
+  },
+  {
+   "id": "ex-0004",
+   "title": "Which timezone should the digest be stamped in?",
+   "labels": [
+    "needs-operator",
+    "overseer",
+    "ask-question"
+   ],
+   "status": "open",
+   "issue_type": "decision",
+   "description": "",
+   "comment_count": 0,
+   "created_at": "2026-01-05T09:00:00Z"
+  },
+  {
+   "id": "ex-0005",
+   "title": "Drop the legacy import path?",
+   "labels": [
+    "needs-operator",
+    "overseer",
+    "ask-decision"
+   ],
+   "status": "open",
+   "issue_type": "decision",
+   "description": "**Default:** drop it. Nothing has called it in 90 days.",
+   "comment_count": 1,
+   "created_at": "2026-01-06T09:00:00Z"
+  },
+  {
+   "id": "ex-0006",
+   "title": "The nightly reconciliation job has been reporting success while writing nothing, and the check that would have caught it reads the same field the job writes",
+   "labels": [
+    "needs-operator",
+    "overseer",
+    "ask-decision"
+   ],
+   "status": "open",
+   "issue_type": "decision",
+   "description": "**Default:** measure the row count, not the exit status.",
+   "comment_count": 0,
+   "created_at": "2026-01-07T09:00:00Z"
+  },
+  {
+   "id": "ex-0007",
+   "title": "Storage migration",
+   "labels": [
+    "needs-operator",
+    "overseer"
+   ],
+   "status": "open",
+   "issue_type": "epic",
+   "description": "Container for the migration work.",
+   "comment_count": 0,
+   "created_at": "2026-01-01T09:00:00Z"
+  },
+  {
+   "id": "ex-0008",
+   "title": "Should the retry budget be per-call or per-request?",
+   "labels": [
+    "needs-operator",
+    "overseer",
+    "ask-decision"
+   ],
+   "status": "closed",
+   "issue_type": "decision",
+   "description": "Answered: per-request.",
+   "comment_count": 0,
+   "created_at": "2026-01-01T09:00:00Z"
+  },
+  {
+   "id": "ex-0009",
+   "title": "A green check is not evidence the thing works",
+   "labels": [
+    "insight",
+    "overseer"
+   ],
+   "status": "closed",
+   "issue_type": "task",
+   "description": "Eleven of fourteen defects one week were in the checking machinery rather than the work. Before believing a green signal, ask what it would look like if the check itself were broken.",
+   "comment_count": 0,
+   "created_at": "2026-01-08T09:00:00Z"
+  },
+  {
+   "id": "ex-0010",
+   "title": "grep -q under pipefail inverts the test",
+   "labels": [
+    "insight",
+    "overseer"
+   ],
+   "status": "closed",
+   "issue_type": "task",
+   "description": "grep -q exits at the first match, the writer takes SIGPIPE, and pipefail propagates 141 \u2014 so the test fails precisely when it succeeds.",
+   "comment_count": 1,
+   "created_at": "2026-01-08T09:00:00Z"
+  },
+  {
+   "id": "ex-0011",
+   "title": "The queue was never a throughput problem",
+   "labels": [
+    "insight",
+    "overseer",
+    "archived"
+   ],
+   "status": "closed",
+   "issue_type": "task",
+   "description": "Five of eleven branches had never once passed CI.",
+   "comment_count": 0,
+   "created_at": "2026-01-09T09:00:00Z"
+  },
+  {
+   "id": "ex-0012",
+   "title": "Add a fixture database to the landing gate",
+   "labels": [
+    "plan"
+   ],
+   "status": "open",
+   "issue_type": "task",
+   "description": "",
+   "comment_count": 0,
+   "created_at": "2026-01-05T09:00:00Z"
+  },
+  {
+   "id": "ex-0013",
+   "title": "Deferred with no escalation label \u2014 the state the policy forbids",
+   "labels": [
+    "plan"
+   ],
+   "status": "deferred",
+   "issue_type": "task",
+   "description": "",
+   "comment_count": 0,
+   "created_at": "2026-01-05T09:00:00Z"
+  }
+ ],
+ "threads": {
+  "ex-0001": [
+   {
+    "author": "operator",
+    "created_at": "2026-01-02T17:04:00Z",
+    "text": "what does the pool ceiling cost us in memory?"
+   },
+   {
+    "author": "harness",
+    "created_at": "2026-01-02T17:06:00Z",
+    "text": "~40MB at 32 connections, measured. The box has 11GB free."
+   }
+  ],
+  "ex-0005": [
+   {
+    "author": "operator",
+    "created_at": "2026-01-06T08:30:00Z",
+    "text": "drop it."
+   }
+  ],
+  "ex-0010": [
+   {
+    "author": "harness",
+    "created_at": "2026-01-08T11:00:00Z",
+    "text": "Capture the output into a variable and match it with a herestring instead."
+   }
+  ]
+ },
+ "mail": []
+}

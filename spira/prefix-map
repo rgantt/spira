@@ -1,0 +1,12 @@
+# prefix-map — id prefix to `repo:` label, for prefixes the mirror can no longer vote for.
+#
+# reimport-payload.py derives the map from the mirror itself: a file named <rig>.jsonl
+# votes its dominant id prefix, so a rig added to Gas Town tomorrow maps itself and this
+# file stays empty for it. What it cannot derive is a prefix whose rig has been REMOVED —
+# no file votes, the rows survive in the town's convoy trackers, and an unmapped row is
+# refused rather than landed with no partition.
+#
+# Format: <prefix>=<repo>, one per line, `#` comments. No `-` on the prefix.
+#
+# ho- : home-manager, retired. Two hq-side trackers reference it and nothing exports it.
+ho=homemanager

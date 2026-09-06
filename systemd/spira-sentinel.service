@@ -1,0 +1,28 @@
+[Unit]
+# The outer harness for Spira: compare current state to goal state and close the gap.
+# It is deliberately a oneshot on a timer rather than a daemon — a loop hung off a session
+# cannot repair the case where the session died, which is the scar behind cockpit-ensure.
+Description=Spira sentinel — reconcile the work graph toward its goal
+Documentation=file://@SPIRA_HOME@/sentinel.sh
+After=default.target
+
+[Service]
+Type=oneshot
+# No SPIRA_FAYTHS here on purpose. It used to read `builder ops`, written when the harness
+# default was the literal string `builder` — and a roster pinned in a unit file is how a
+# persona lands complete and never runs, which is what happened to ops.fayth. The chamber is
+# the roster now. Set SPIRA_FAYTHS only to NARROW this host deliberately; the sentinel logs
+# a WARN naming every fayth such a setting leaves out.
+ExecStart=@SPIRA_HOME@/sentinel.sh
+# A pass is deterministic bead and git queries; the inference tier is rate limited to
+# once an hour inside the script and runs detached, so this ceiling never truncates it.
+TimeoutStartSec=900
+# This box runs prod and the CI runner. Anything that polls in a loop on shared hardware
+# gets a quota (law-fence-loops-on-shared-hardware).
+CPUQuota=40%
+Nice=10
+StandardOutput=append:@SPIRA_RUN@/sentinel.log
+StandardError=append:@SPIRA_RUN@/sentinel.log
+
+[Install]
+WantedBy=default.target

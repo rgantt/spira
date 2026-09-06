@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+#
+# inventory.sh — refuse to ship one operator's infrastructure.
+#
+#   inventory.sh                 scan every tracked file; exit 1 naming each offender
+#   inventory.sh --scan <file>   scan one file; print the offending tokens, one per line
+#   inventory.sh --patterns      print the pattern list and exit
+#
+# WHAT THIS IS FOR. This repository is meant to be cloned by someone else. A comment naming
+# a repository, a deploy path, a host or a person teaches their agent to reason about
+# infrastructure that does not exist, and sometimes to act on it. The rule and the trap are
+# what make the code worth reading; the case history behind them belongs in the operator's
+# own notes.
+#
+# WHY A PROGRAM AND NOT A HABIT. A sanitising pass done by hand is done once. This runs from
+# the landing gate on every branch, so the next comment that names a box is refused at the
+# moment it is written rather than found by a reader who already believed it.
+#
+# WHAT IT LOOKS FOR is structural, so it needs no list of the operator's own names:
+#
+#   an absolute path rooted in a home or workspace directory   /home/<user>/…  /Users/<u>/…
+#                                                              /workspaces/…
+#   an e-mail address that is neither a reserved example domain (RFC 2606 / RFC 6761) nor
+#   the `git@host` SSH remote form
+#   a provenance mark naming a person and a date               (per <Name>, YYYY-MM-DD)
+#
+# AND WHATEVER THE OPERATOR ADDS. `inventory-deny`, one extended-regex per line, `#`
+# comments. It ships with no entries: your repository and host names are yours to name, and
+# a shipped deny-list of somebody else's names is itself the inventory it is hunting.
+#
+# COMMENTS ARE SCANNED, NOT STRIPPED. Every occurrence this was written to catch was in a
+# comment; a version that stripped them first passed a tree that named seven repositories,
+# a host and a person across ninety lines.
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd -P)"
+# `||` binds looser than `&&`, so the fallback needs its own subshell or the git branch and
+# the cd branch run as one expression and the wrong one wins.
+ROOT="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null)"
+[ -n "$ROOT" ] || ROOT="$(cd "$HERE/.." && pwd -P)"
+DENY="${SPIRA_INVENTORY_DENY:-$HERE/inventory-deny}"
+
+# Reserved for documentation by RFC 2606 and RFC 6761, plus the harness's own synthetic
+# author. Anything else is somebody's real address.
+# `git@host` is the SSH remote form, not a person, and it is how every remote in every
+# example is written.
+EXEMPT_MAIL='^git@|@example\.(com|net|org|invalid)|@(example|test|invalid|localhost)$|@spira\.local'
+
+patterns() {
+    cat <<'PAT'
+/home/[a-z][a-z0-9_.-]*/
+/Users/[A-Za-z][A-Za-z0-9_.-]*/
+/workspaces/
+\(per [A-Z][a-z]+, [0-9]{4}-[0-9]{2}-[0-9]{2}
+PAT
+    [ -f "$DENY" ] && sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$DENY"
+    return 0
+}
+
+# scan <file> -> the offending tokens, one per line. Exit 0 either way; the caller decides
+# what an offender means. Mail is matched separately because the exemption is a subtraction.
+scan() {
+    local f="$1" pat
+    pat="$(patterns | paste -sd'|' -)"
+    { [ -n "$pat" ] && grep -ohE "$pat" "$f" 2>/dev/null
+      grep -ohE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$f" 2>/dev/null \
+        | grep -vE "$EXEMPT_MAIL"
+    } | sort -u
+}
+
+case "${1:-}" in
+--patterns) patterns; exit 0 ;;
+--scan)     scan "${2:?--scan needs a file}"; exit 0 ;;
+esac
+
+git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || {
+    echo "inventory: $ROOT is not a git repository — nothing to scan" >&2; exit 3; }
+
+# THE INDEX, not the worktree: what the next commit ships is what matters, and an operator's
+# untracked notes beside the code are their own business.
+mapfile -t files < <(git -C "$ROOT" ls-files)
+[ "${#files[@]}" -gt 0 ] || { echo "inventory: nothing is tracked — refusing to report clean" >&2; exit 3; }
+
+bad=0
+for f in "${files[@]}"; do
+    # Three files are exempt, and all three for the same reason: their content IS the
+    # offender list. This file carries the patterns as string literals, the deny-list is
+    # nothing but tokens to refuse, and the suite has to plant one of each shape to prove the
+    # fence can go red. A fence that flags itself is a fence somebody deletes.
+    case "$f" in
+        */inventory.sh|inventory.sh|*/inventory-deny|inventory-deny) continue ;;
+        */test-inventory.sh|test-inventory.sh) continue ;;
+    esac
+    [ -f "$ROOT/$f" ] || continue
+    hits="$(scan "$ROOT/$f")"
+    [ -n "$hits" ] || continue
+    bad=1
+    printf '%s\n' "$f"
+    printf '%s\n' "$hits" | sed 's/^/    /'
+done
+
+if [ "$bad" = 0 ]; then
+    printf 'inventory: clean — %d tracked file(s) name no operator infrastructure\n' "${#files[@]}"
+    exit 0
+fi
+cat >&2 <<'WHY'
+
+REFUSED by inventory.sh — the files above name one operator's infrastructure.
+
+This repository is meant to be cloned. Keep the rule and the trap, which are why the code
+is correct; move the case history — the path, the host, the repository name, the person and
+the date — to wherever your own notes live, and cite it from there.
+
+If a token above is genuinely generic, the deny-list and the pattern list are both editable;
+a fence is a polite refusal, not a wall.
+WHY
+exit 1

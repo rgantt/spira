@@ -1,0 +1,42 @@
+[Unit]
+# The Ops persona's EVENT trigger. Incidents arrive from `OnFailure=` on the alert templates
+# via incident.sh, so this partition of the graph fills from outside the plan — and the two
+# ExecStartPre lines below (drain the spool, repair the wiring) belong to that arrival path
+# and to nothing else, which is why they are here and not in the sentinel.
+#
+# The summon itself is not exclusive to this unit: the sentinel asks EVERY fayth in the
+# chamber for its own predicate's ready count on every pass. This timer is the second path
+# to the same summon, at the cadence an incident deserves rather than the plan's.
+Description=Spira Ops — claim one incident, match an SOP, resolve or escalate
+Documentation=file://@SPIRA_HOME@/chamber/ops.fayth
+After=default.target
+
+[Service]
+Type=oneshot
+# Inert until the persona exists on main. This unit is installed and enabled by the same
+# change that ADDS ops.fayth, so between arming the timer and the branch landing there is a
+# window in which ExecStart would fail every five minutes — and a unit that is red for
+# reasons nobody should act on is the noise that hides the one that matters. An
+# ExecCondition that exits non-zero makes systemd SKIP the pass and record success, so the
+# timer sits silent and starts working by itself the moment the file is there. No step for
+# anyone to remember.
+ExecCondition=/usr/bin/test -f @SPIRA_HOME@/chamber/ops.fayth
+# Repair the wiring on every pass. A new store gets a new alert template that an install
+# run months ago never saw; this is idempotent, costs a find and a diff, and is the
+# cockpit-ensure lesson — repair from systemd, not from a session that may be dead.
+ExecStartPre=-@SPIRA_HOME@/install-intake.sh install
+# Anything the spool is still holding because the database was unreachable when the event
+# arrived. A write-ahead record nobody drains is a lost event with extra steps.
+ExecStartPre=-@SPIRA_HOME@/incident.sh drain
+ExecStart=@SPIRA_HOME@/aeon.sh ops
+# Matches FAYTH_TIMEOUT_SECONDS plus room for the claim and the verdict. An aeon that
+# outlives this is killed, its lease goes stale, and `bd reclaim` returns the bead.
+TimeoutStartSec=2000
+# This box runs prod and the CI runner (law-fence-loops-on-shared-hardware).
+CPUQuota=70%
+Nice=10
+StandardOutput=append:@SPIRA_RUN@/ops.log
+StandardError=append:@SPIRA_RUN@/ops.log
+
+[Install]
+WantedBy=default.target

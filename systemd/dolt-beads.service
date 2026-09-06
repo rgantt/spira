@@ -1,0 +1,38 @@
+[Unit]
+# The one Dolt server behind every beads database, including Spira's.
+#
+# WHY THIS UNIT EXISTS. The server used to be started by `gt dolt start`, out of
+# a predecessor harness — a data directory inside the harness Spira replaced. Nothing
+# restarted it: the process running on 2026-09-05 had been up since 2026-08-25 because
+# nobody had rebooted, not because anything supervised it. The store now lives at
+# @SPIRA_DOLT_DATA@ and this unit owns it, so a crash or a reboot brings it back instead of
+# presenting as "bd hangs" to whatever runs next.
+#
+# The config is dolt-server.yaml, NOT config.yaml, on purpose: `gt dolt start` regenerates
+# config.yaml in its data directory and overwrites it without warning. A name it does not
+# know cannot be clobbered by a command nobody should still be running.
+Description=Dolt SQL server for beads (spira and the frozen Gas Town databases)
+Documentation=file://@SPIRA_HOME@/README.md
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=@DOLT@ sql-server --config @SPIRA_DOLT_DATA@/dolt-server.yaml
+WorkingDirectory=@SPIRA_DOLT_DATA@
+Restart=always
+RestartSec=5
+# Dolt flushes its working set on SIGTERM; killing it early is how a store gets a dirty
+# chunk journal. Give it room, and never SIGKILL the group out from under a flush.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+# This box also runs prod and the CI runner. The server averaged 0.54 cores over eleven
+# days of uptime — mostly auto-GC, not queries — so one core of four is generous headroom
+# and still a ceiling (law-fence-loops-on-shared-hardware). No memory cap on purpose: a
+# throttled database is slow, an OOM-killed one is corrupt.
+CPUQuota=100%
+Nice=5
+StandardOutput=append:@SPIRA_REPO@/.runtime/dolt-beads.log
+StandardError=append:@SPIRA_REPO@/.runtime/dolt-beads.log
+
+[Install]
+WantedBy=default.target

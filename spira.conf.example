@@ -1,0 +1,156 @@
+# spira.conf.example — copy to `spira.conf` and edit. THE ONE CONFIGURATION SURFACE.
+#
+# Copy it to whichever of these the harness should read; the first one that exists wins:
+#
+#     <the checkout the harness runs from>/spira.conf
+#     ${XDG_CONFIG_HOME:-$HOME/.config}/spira/spira.conf
+#     /etc/spira/spira.conf
+#
+# or point $SPIRA_CONF at it directly. Keeping it OUTSIDE the checkout is the safer default:
+# these are your paths, and none of them belong in a repository you might push.
+#
+# EVERY KEY BELOW IS OPTIONAL. The code carries a default for each, derived from where the
+# harness is installed, so a clean clone runs. What it cannot derive is where your database
+# is, where your binaries live and which repositories exist, which is what you are here for.
+#
+# FORMAT: `KEY = value`, one per line, `#` comments, blank lines ignored. Values are NOT
+# shell — `~` and `$HOME` expand and nothing else does, because this file is read by the
+# process that summons agents and `$(...)` in it would be a command run as you. An
+# unrecognised key is reported on stderr and ignored rather than obeyed, so a typo is not a
+# setting you believe is in force.
+#
+# THE ENVIRONMENT WINS over this file, which is what keeps the test suites isolated: a suite
+# sets SPIRA_DB to a throwaway database and this file cannot point it back at yours.
+#
+# SPIRA_HOME and SPIRA_REPO are deliberately NOT settable here. Where the harness is, is not
+# a configuration question — it is a fact about where conf.sh sits. Letting a file answer it
+# breaks the landing gate, which extracts a branch to a scratch tree and runs that tree's own
+# suites: the config would point them back at the installed copy, so the gate would test the
+# code already in force instead of the code being judged, and pass.
+
+# ---- the database ---------------------------------------------------------------------
+# The beads database, as a directory `bd -C` is pointed at. Everything the harness raises,
+# reads, answers and closes lives here, including the statute book.
+#
+# THE DEFAULT IS OUTSIDE ANY REPOSITORY, and keep yours that way. A beads database
+# accumulates internal working notes and agent memories; a path inside a checkout is one
+# `git add -A` away from publishing them (law-beads-is-never-public).
+#
+# Default: ${XDG_DATA_HOME:-$HOME/.local/share}/spira/db
+# SPIRA_DB = $HOME/.local/share/spira/db
+
+# ---- your repositories ------------------------------------------------------------------
+# The `repo:` label a bead means when it carries none — your home repository, which must have
+# a row in repo-map.
+# Default: the basename of the checkout the harness is installed in.
+# SPIRA_HOME_REPO = home
+
+# The map from `repo:<name>` to a checkout. Copy `repo-map.example` to `repo-map` beside it,
+# or beside this file, and write your own rows. Unset, the harness looks for `repo-map` next
+# to this file, then next to conf.sh, then falls back to `repo-map.example`.
+# SPIRA_REPO_MAP = $HOME/.config/spira/repo-map
+
+# Where your checkouts live. Used for the disk-headroom check the governor runs and for
+# classifying repositories during a migration — not for locating anything, which is repo-map's
+# job.
+# Default: the parent of the checkout the harness is installed in.
+# SPIRA_WORKSPACES = /srv/checkouts
+
+# The root epic every plan hangs from. The sentinel reports progress against it.
+# SPIRA_GOAL = sp-spira
+
+# ---- where your binaries are --------------------------------------------------------------
+# Directories PREPENDED to PATH for the harness and everything it spawns. Everything here runs
+# from systemd and from tmux, where a login shell's PATH does not exist, so `bd` in ~/.local/bin
+# or a shim directory ahead of it has to be named. The tail (~/.local/bin, /usr/local/bin,
+# /usr/bin, /bin) is always appended and is not configurable.
+#
+# If the harness tells you a program is missing and you know it is installed, this is the key.
+# SPIRA_PATH = /opt/beads/bin
+
+# ---- the cockpit --------------------------------------------------------------------------
+# The database the attention panel and the ops pane read. Defaults to SPIRA_DB, and there is
+# very little reason to differ.
+# COCKPIT_DB = $HOME/.local/share/spira/db
+
+# How much of the window the bottom band takes, as a percentage. A 13-inch laptop and a
+# 32-inch monitor do not want the same band.
+# COCKPIT_BOTTOM_PCT = 28
+
+# The directory the cockpit's panes open in. The top pane holds YOUR session, so this decides
+# which project's instructions that session loads — not a cosmetic choice.
+# Default: SPIRA_WIKI if you set one, otherwise the harness checkout.
+# COCKPIT_CWD = $HOME/notes
+
+# The attention panel binary. Build it with `cargo build --release` in cockpit/panel.
+# Default: <cockpit>/panel/target/release/panel
+# SPIRA_PANEL = $HOME/.local/bin/spira-panel
+
+# The script an escalation is delivered through. Anything that takes the same arguments as
+# `cockpit/ask.sh add` will do, which is the seam for delivering somewhere else entirely.
+# Default: <cockpit>/ask.sh
+# SPIRA_NOTIFY = $HOME/.local/bin/my-pager
+
+# Your name, as it appears in prose the harness writes for you to read.
+# SPIRA_OPERATOR = the operator
+
+# The actor name YOUR OWN comments are recorded under, so the attention panel can tell a reply
+# of yours from a reply of the agent's. Both write into the same bead thread, and a panel that
+# cannot separate them announces the agent's own comment back to it as your answer.
+# SPIRA_OPERATOR_ACTOR = operator
+
+# The label that means "waiting on you". It is the one the escalation gate defers on, the one
+# every persona's predicate excludes, and the one the attention panel reads — one key rather
+# than five literals, because five literals is how those four come to disagree.
+#
+# CHANGING IT ON A LIVE INSTALLATION ORPHANS every bead already carrying the old value: they
+# keep the old label, and nothing is looking for it any more. Relabel them, or leave it alone.
+# SPIRA_ASK_LABEL = needs-operator
+
+# The timezone dates are written in. Empty means the host's own, which is right until the host
+# is a server in one zone and you read its output in another — the case where an evening's
+# work lands under tomorrow's date and a chronological log stops being chronological.
+# SPIRA_TZ = America/Los_Angeles
+
+# ---- optional, and EMPTY BY DEFAULT --------------------------------------------------------
+# Each of these names something you may simply not have. Every caller treats empty as "skip
+# this", never as "guess": an optional call is not a dependency, a hard path is.
+
+# A predecessor harness being retired, if you are migrating from one. Empty means there is
+# none, and the tools that report on it say so and stop rather than printing a page of zeroes
+# that reads like a clean drain.
+# SPIRA_TOWN =
+
+# A design document the judgement tier is given as context when it is asked why the graph is
+# stalled.
+# SPIRA_DESIGN = $HOME/notes/spira.md
+
+# A JSONL mirror of a predecessor's databases, and the exporter that writes one. Used only by
+# the migration importer.
+# SPIRA_MIRROR =
+# SPIRA_EXPORTER =
+
+# Your wiki or notes checkout, if you keep one. The harness never requires it: where it wants
+# to publish something there — the boundary table, the runbook page — it writes if this is set
+# and carries on in silence if it is not. An optional call is not a dependency; a hard path is.
+# SPIRA_WIKI = $HOME/notes
+
+# A hook called where the harness wants an effect on that repository — regenerating whatever
+# it renders. Absent, the harness carries on.
+# SPIRA_WIKI_HOOK = $HOME/notes/bin/synth-statutes
+
+# The Dolt server's own data directory — NOT the beads project directory above. `bd -C` is
+# pointed at the project; this is where the server keeps every database it serves. Set it only
+# if you want this harness to supervise the server with a systemd unit; empty means you run
+# the server yourself and `systemd/install.sh` will not install dolt-beads.service.
+# SPIRA_DOLT_DATA = /srv/beads
+
+# ---- host policy ---------------------------------------------------------------------------
+# Which personas this host summons, space-separated. Unset means every fayth in the chamber.
+# Deliberately NOT exported into children: it is policy for this host, and exporting it once
+# reached a test suite through systemd and made the suite assert this host's roster instead of
+# the defaults it was written to check (law-gates-run-in-a-clean-environment).
+# SPIRA_FAYTHS = builder ops
+
+# How many aeons may run at once, before the governor's own headroom checks narrow it further.
+# SPIRA_MAX_AEONS = 2
