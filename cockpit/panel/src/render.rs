@@ -1103,6 +1103,142 @@ three")]);
         assert_eq!(rows[0], "█");
     }
 
+    /// And a field that wrapped to three rows costs three. The reservation was a hard-coded
+    /// single row, so a wrapping field would have painted over content the layout still
+    /// believed it owned.
+    #[test]
+    fn a_wrapped_input_costs_every_row_it_takes() {
+        let (l0, d0) = split(19, 0, 12, 99);
+        for input in 1..=INPUT_MAX_ROWS {
+            let (l, d) = split(19, input, 12, 99);
+            assert_eq!(l0 + d0, l + d + input, "a {input}-row field lost a row somewhere");
+        }
+    }
+
+    /// Nothing typed is lost and nothing is invented: while the answer still fits, the rows
+    /// concatenate back to exactly the buffer plus its cursor. A field whose whole job is
+    /// showing what was actually typed cannot swallow a doubled or a trailing space, which is
+    /// what `wrap` — the PROSE wrapper, which splits on whitespace and rejoins with single
+    /// spaces — would have done had it been reached for here.
+    #[test]
+    fn the_wrap_is_lossless_while_the_answer_fits() {
+        let cases: Vec<String> = vec![
+            String::new(),
+            "a".into(),
+            "hello  world".into(),
+            "   leading".into(),
+            "trailing   ".into(),
+            "word ".repeat(20),
+            "x".repeat(120),
+        ];
+        for buf in &cases {
+            for w in [20usize, 40, 60, 107] {
+                let rows = input_rows(buf, "verdict", w);
+                let drawn = rows.concat();
+                let whole = format!("{buf}█");
+                if rows.len() < INPUT_MAX_ROWS {
+                    assert_eq!(drawn, whole, "w={w} buf={buf:?}");
+                }
+                // And even once it scrolls, what is shown is a TAIL of what was typed —
+                // never a rewrite of it.
+                assert!(whole.ends_with(&drawn), "w={w} buf={buf:?} drew {drawn:?}");
+            }
+        }
+    }
+
+    /// THE THRESHOLD CASE, which is the one that regresses silently: one character short of
+    /// the edge the field is one row, at the edge the caret still has its cell, and past it
+    /// the text wraps and the caret goes with it. Before this, all three drew as one row and
+    /// the last two ran off the pane into whatever the terminal felt like doing.
+    #[test]
+    fn the_wrap_threshold_moves_the_caret_down_not_off_the_edge() {
+        let avail = 107 - ("verdict".chars().count() + 3); // 97 cells, cursor included
+        let field = |n: usize| input_rows(&"a".repeat(n), "verdict", 107);
+        assert_eq!(field(avail - 2).len(), 1, "short of the edge, one row");
+        assert_eq!(field(avail - 1).len(), 1, "the last cell of the row is the caret's");
+        assert_eq!(field(avail).len(), 2, "past the edge, the caret takes the next row");
+        assert!(field(avail).last().unwrap().ends_with('█'));
+        // And no row the frame draws runs past the pane, at the threshold or anywhere near it.
+        let items = Ok(vec![item("t", "a body")]);
+        for n in [0usize, 1, avail - 2, avail - 1, avail, avail + 1, 400] {
+            let buf = "a".repeat(n);
+            for l in text(&frame(&typed(&items, &buf))) {
+                assert!(l.chars().count() <= 107, "n={n} row runs past the pane: {l:?}");
+            }
+        }
+    }
+
+    fn typed<'a>(items: &'a Result<Vec<Item>, String>, buf: &'a str) -> Frame<'a> {
+        let mut f = a_frame(items, 107, 19);
+        f.mode = Some("decide");
+        f.buf = buf;
+        f
+    }
+
+    /// The caret is on screen for every length there is, and exactly once. THAT is the
+    /// invariant — not that all the text is visible — and it is asserted through the drawn
+    /// frame, because the defect was never in the wrapping alone but in the field and the
+    /// layout disagreeing about how many rows there were.
+    #[test]
+    fn the_caret_is_always_on_screen() {
+        let items = Ok(vec![item("t", "a body")]);
+        for n in [0usize, 1, 50, 95, 96, 97, 190, 384, 385, 900] {
+            let buf = format!("{}end", "word ".repeat(n / 5));
+            let rows = frame(&typed(&items, &buf));
+            assert_eq!(rows.len(), 19, "n={n} changed the pane height");
+            let t = text(&rows);
+            let carets: Vec<usize> = (0..t.len()).filter(|&i| t[i].contains('█')).collect();
+            assert_eq!(carets.len(), 1, "n={n} drew {} carets", carets.len());
+            let ih = input_h(&buf, "verdict", 107);
+            assert!(
+                carets[0] >= 18 - ih && carets[0] < 18,
+                "n={n} put the caret at row {} — outside the {ih}-row field",
+                carets[0]
+            );
+        }
+    }
+
+    /// A long answer keeps its TAIL on screen, because that is where the operator is typing.
+    /// What the field shows is the end of what was typed, exactly — a window that slid, not a
+    /// paraphrase.
+    #[test]
+    fn a_long_answer_shows_its_tail() {
+        let items = Ok(vec![item("t", "a body")]);
+        let buf = format!("{}THE-TAIL-IS-HERE", "filler ".repeat(80));
+        let ih = input_h(&buf, "verdict", 107);
+        assert_eq!(ih, INPUT_MAX_ROWS, "this answer is meant to be scrolling the window");
+        let t = text(&frame(&typed(&items, &buf)));
+        // Strip the field's own gutter — the label on its first row, the matching indent on
+        // the rest — and what is left is the buffer's last rows, run back together.
+        let gutter = "verdict".chars().count() + 3;
+        let drawn: String = t[19 - 1 - ih..18]
+            .iter()
+            .map(|l| l.chars().skip(gutter).collect::<String>())
+            .collect();
+        assert!(
+            format!("{buf}█").ends_with(drawn.trim_end()),
+            "the field is not showing a tail of the buffer: {drawn:?}"
+        );
+        assert!(
+            drawn.contains("THE-TAIL-IS-HERE"),
+            "the words being typed now are off screen: {drawn:?}"
+        );
+    }
+
+    /// And chrome has still not grown a band. A four-row field comes out of the content
+    /// budget; the header and footer are where they always were.
+    #[test]
+    fn the_field_does_not_grow_a_third_band() {
+        let items = Ok(vec![item("t", "a body")]);
+        let buf = "word ".repeat(80);
+        let rows = frame(&typed(&items, &buf));
+        assert!(rows[0].starts_with(BAR), "the header is a band");
+        assert!(rows[18].starts_with(BAR), "the footer is a band");
+        for (i, l) in rows.iter().enumerate().take(18).skip(1) {
+            assert!(!l.starts_with(BAR), "row {i} became a band: {l:?}");
+        }
+    }
+
     /// A pane squeezed to nothing still renders both halves rather than panicking.
     #[test]
     fn a_tiny_pane_still_has_both_halves() {

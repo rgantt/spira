@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Screenshot the attention pane, with no human and no live database.
 #
-#   ./capture.sh <binary> <out-prefix> [sel] [WxH] [keys]
+#   ./capture.sh <binary> <out-prefix> [sel] [WxH] [keys] [text]
 #
 # Runs the panel against tests/fixture.json in a scratch tmux pane of the REAL cockpit size,
 # lets it paint, and writes <prefix>.txt (structure) and <prefix>.svg (colour).
@@ -17,6 +17,11 @@ OUT="${2:?}"
 SEL="${3:-0}"
 SIZE="${4:-107x19}"
 KEYS="${5:-}"   # a key SEQUENCE, e.g. "Tab o" — switch to INSIGHTS, then open the reader
+# TEXT is typed LITERALLY after the keys, which is the only way to shoot the answer field:
+# send-keys reads its arguments as key NAMES, so a space in an answer would arrive as the
+# Space key name at best and be swallowed at worst, and 200 characters at one key per 0.4s
+# is a minute and a half per shot.
+TEXT="${6:-}"
 W="${SIZE%x*}"; H="${SIZE#*x}"
 
 # FREEZE THE CLOCK, not only the data. Every stamp in the pane is now an age, so a capture
@@ -45,6 +50,10 @@ for k in $KEYS; do
     tmux send-keys -t "$S" "$k"
     python3 -c 'import time; time.sleep(0.4)'
 done
+if [ -n "$TEXT" ]; then
+    tmux send-keys -t "$S" -l "$TEXT"
+    python3 -c 'import time; time.sleep(0.6)'
+fi
 tmux capture-pane -p    -t "$S" > "$OUT.txt"
 tmux capture-pane -p -e -t "$S" | ./ansi-svg.py > "$OUT.svg"
 tmux kill-session -t "$S" 2>/dev/null || true
