@@ -8,18 +8,16 @@
 #                         paint one frame sized for a pane <rows> tall and <cols> wide, and
 #                         exit — the seam the test suite drives the sizing through
 #
-# Reads the snapshots written by the collectors — `.runtime/spira/cockpit.env` from
-# `.claude/spira/cockpit.sh`, `.runtime/cockpit.env` from `.claude/cockpit/collect.sh`.
-# NEVER calls `bd`, `gt` or `git` itself: the expensive sources cost ~27s a pass and a pane
-# that shelled out would freeze on every repaint.
+# Reads the snapshots written by `spira/cockpit.sh` under `spira-cockpit.service`, all of them
+# under $SPIRA_RUN. NEVER calls `bd` or `git` itself: the expensive sources cost seconds a pass
+# and a pane that shelled out would freeze on every repaint.
 #
-# WHY SPIRA IS ON TOP
-# -------------------
-# This pane used to instrument only Gas Town, which is frozen and being retired, while the
-# harness actually running the operator's work — sentinel, aeons, the landing gate — had no display
-# at all. A dashboard whose subject is the system being decommissioned reports on the past.
-# Gas Town keeps a line because it is still serving; it keeps ONE line because that is what
-# a retiring system is worth.
+# WHY ONLY SPIRA
+# --------------
+# This pane used to instrument only the predecessor harness, while the harness actually running
+# the operator's work — sentinel, aeons, the landing gate — had no display at all. A dashboard
+# whose subject is a decommissioned system reports on the past, and worse, trains the eye to
+# skip the pane.
 #
 # WHAT IS ON IT, AND WHY THOSE
 # ----------------------------
@@ -41,9 +39,6 @@
 #                    "never fired" and "fired 40 passes ago" look identical from outside.
 #   sentinel age     strand.sh cannot detect that the sentinel is dead, because a check
 #                    cannot observe the failure of the thing running it. This pane can.
-#
-# And for Gas Town, kept because each is still true: polecats live-vs-directories, parked
-# beads, orphaned commits, undrained watcher events, unread mail, statute drift.
 #
 # A `?` means the probe FAILED. It never renders as 0 — a panel that reports a broken check
 # as "all clear" displaces the suspicion that would have prompted a look.
@@ -86,16 +81,17 @@ set -uo pipefail
 # launched the pane.
 export LC_ALL="${LC_ALL:-C.UTF-8}"
 
-RUN="$SPIRA_REPO/.runtime"
-SNAP="$RUN/cockpit.env"
-# FROM $SPIRA_RUN, NOT DERIVED. cockpit.sh writes its snapshot to $SPIRA_RUN/cockpit.env, and
-# SPIRA_RUN is configurable — a reader that recomputed the path would render `?` for every
-# Spira row the moment an operator moved it, and a panel that reports a broken read as
-# "nothing happening" displaces the suspicion that would have prompted a look.
+# EVERY PATH HERE COMES FROM $SPIRA_RUN, NONE OF THEM DERIVED. cockpit.sh and governor.sh
+# write under $SPIRA_RUN, and SPIRA_RUN is configurable — a reader that recomputes the path
+# from $SPIRA_REPO renders `?` for every row it feeds the moment an operator moves it, and a
+# panel that reports a broken read as "nothing happening" displaces the suspicion that would
+# have prompted a look. That is not hypothetical: the governor row read a derived
+# `$SPIRA_REPO/.runtime/spira/budget.env` and rendered `? mode  would withhold — no headroom`
+# against a budget file that was present and current, on an installation where the two differ.
 SPIRA_SNAP="$SPIRA_RUN/cockpit.env"
-# SPIRA'S OWN SERIES, beside its own snapshot. The predecessor harness's collector owns the
-# cockpit-history.csv under $RUN and is deleted along with it; a pane drawing trends from a
-# file nothing appends to draws a flat line, and a flat line reads as calm rather than absent.
+BUDGET_SNAP="$SPIRA_RUN/budget.env"
+# SPIRA'S OWN SERIES, beside its own snapshot: a pane drawing trends from a file nothing
+# appends to draws a flat line, and a flat line reads as calm rather than absent.
 HIST="$SPIRA_RUN/cockpit-history.csv"
 
 C_RST=$'\e[0m'; C_DIM=$'\e[2m'; C_B=$'\e[1m'
@@ -214,7 +210,7 @@ MAX_SECTION_ROWS=20
 load_snapshot() {
     set +u
     [ -f "$SPIRA_SNAP" ] && . "$SPIRA_SNAP" 2>/dev/null
-    [ -f "$RUN/spira/budget.env" ] && . "$RUN/spira/budget.env" 2>/dev/null
+    [ -f "$BUDGET_SNAP" ] && . "$BUDGET_SNAP" 2>/dev/null
     set -u
 }
 

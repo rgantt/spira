@@ -370,6 +370,41 @@ if grep -qE '^ RECENT +\? ' <<< "$none"; then
 else
     fail=$((fail+1)); printf '  FAIL  a missing snapshot read as "nothing happened":\n%s\n' "$none"
 fi
+
+# ======================================================================================
+# EVERY PATH THE PANE READS IS $SPIRA_RUN, NOT ONE DERIVED FROM $SPIRA_REPO.
+# ======================================================================================
+# The two are the same on a default installation, so a fixture that lets SPIRA_RUN fall
+# where the derivation would put it asserts nothing: a renderer with the derivation
+# written into it passes identically. So SPIRA_RUN is pinned somewhere the derivation
+# cannot reach, and a DECOY is planted at the derived path — the reader names which file
+# it read, rather than only failing to find one (law-absence-needs-a-positive-control).
+#
+# The scar is the governor row: it read `$SPIRA_REPO/.runtime/spira/budget.env` while
+# every other reader of that file used $SPIRA_RUN, so on an installation where the two
+# differ the pane rendered `? mode  would withhold — no headroom` against a budget file
+# that was present and current.
+GD="$TMP/gov"; mkdir -p "$GD/repo/.runtime/spira" "$GD/run" "$GD/home"
+cat > "$GD/run/budget.env" <<'EOF'
+SP_BUDGET='0'
+SP_GOVERNOR_MODE='measure'
+SP_BUDGET_REASON='cpu 13% idle, floor 25%'
+EOF
+cat > "$GD/repo/.runtime/spira/budget.env" <<'EOF'
+SP_BUDGET='0'
+SP_GOVERNOR_MODE='derived'
+SP_BUDGET_REASON='read from the derived path'
+EOF
+printf 'SP_AEON_N=0\n' > "$GD/run/cockpit.env"
+gov="$(env -i PATH="$PATH" HOME="$GD/home" TERM=dumb LC_ALL=C.UTF-8 \
+        SPIRA_CONF="$GD/no.conf" SPIRA_REPO="$GD/repo" SPIRA_RUN="$GD/run" \
+        bash "$PANE" once 0 120 2>/dev/null | sed 's/\x1b\[[?0-9;]*[a-zA-Z]//g' | grep -F ' GOV ')"
+if [ "${gov#* GOV }" != "$gov" ] && grep -qF 'measure mode' <<<"$gov" \
+   && grep -qF 'cpu 13% idle, floor 25%' <<<"$gov" && ! grep -qF derived <<<"$gov"; then
+    pass=$((pass+1)); printf '  ok    the governor row reads budget.env from $SPIRA_RUN, not a derived path\n'
+else
+    fail=$((fail+1)); printf '  FAIL  the governor row did not read $SPIRA_RUN/budget.env: [%s]\n' "$gov"
+fi
 fi
 
 echo
