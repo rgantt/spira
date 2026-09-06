@@ -35,16 +35,11 @@ is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "want [$2] got [$3]"; fi
 TMP="$(mktemp -d)"
 
 # A COCKPIT MADE OF STUBS. SPIRA_COCKPIT decides what the panes RUN; layout.sh itself is
-# invoked by its real path, so the code under test is the branch's. The directory must be
-# named `cockpit`, because that is the substring `collector_pids` nominates candidates on.
+# invoked by its real path, so the code under test is the branch's.
 COCK="$TMP/cockpit"
 mkdir -p "$COCK/panel/target/release"
 printf '#!/usr/bin/env bash\nexec sleep 600\n' > "$COCK/health.sh"
-# NOT `exec`. `collector_pids` identifies the collector from argv[1] and argv[2] in /proc —
-# pgrep may nominate, /proc decides — so a stub that execs away its own argv is invisible to
-# it, `up` reports the collector failed to start, and every later `ensure` starts another.
-printf '#!/usr/bin/env bash\nwhile :; do sleep 5; done\n' > "$COCK/collect.sh"
-chmod +x "$COCK/health.sh" "$COCK/collect.sh"
+chmod +x "$COCK/health.sh"
 # The panel is addressed through its binary in one place and its launcher in another, and
 # `retag_dashboards` derives a pane's identity from the process actually running in it —
 # so the stub has to have the same argv shape, not merely the same behaviour.
@@ -71,9 +66,8 @@ reap_panes() {           # reap_panes -a | -t <target>
     done
 }
 
-# `down` runs before the server goes, so layout.sh's own stop_collector reaps the stub
-# collector it started: that one is nohup'd rather than held in a pane, so nothing else here
-# would find it.
+# `down` runs before the server goes, so the layout is torn down through the code under test
+# rather than only by killing the server out from under it.
 cleanup() {
     reap_panes -a
     [ -n "$WIN" ] && lay 33 down >/dev/null 2>&1

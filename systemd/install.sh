@@ -34,13 +34,6 @@ ENABLE=(cockpit-ensure.timer concierge.timer
         beads-push.timer spira-sentinel.timer spira-ops.timer spira-skew.timer
         spira-cockpit.service)
 
-# cockpit-collector.service probes the PREDECESSOR harness and only that. Without one there is
-# nothing for it to collect, and a service that exits immediately every ten seconds under
-# Restart=always is noise a colleague would have to learn to ignore.
-if [ -n "$SPIRA_TOWN" ]; then
-    UNITS+=(cockpit-collector.service); ENABLE+=(cockpit-collector.service)
-fi
-
 # dolt-beads.service supervises the Dolt server itself, which is only this harness's business
 # when the operator says so. Empty SPIRA_DOLT_DATA means they run the server their own way,
 # and installing a unit that would fight them is worse than not installing one.
@@ -65,10 +58,10 @@ DOLT="$(command -v dolt 2>/dev/null || true)"
 # on argv rather than reading an environment that will not have them.
 render() {
     python3 - "$1" "$SPIRA_HOME" "$SPIRA_REPO" "$SPIRA_RUN" "$SPIRA_DB" "$SPIRA_COCKPIT" \
-                   "$SPIRA_TOWN" "$SPIRA_DOLT_DATA" "$DOLT" <<'PY'
+                   "$SPIRA_DOLT_DATA" "$DOLT" <<'PY'
 import os, re, sys
 keys = ["SPIRA_HOME", "SPIRA_REPO", "SPIRA_RUN", "SPIRA_DB", "SPIRA_COCKPIT",
-        "SPIRA_TOWN", "SPIRA_DOLT_DATA", "DOLT"]
+        "SPIRA_DOLT_DATA", "DOLT"]
 m = dict(zip(keys, sys.argv[2:]))
 text = open(sys.argv[1]).read()
 out = re.sub(r"@([A-Z_]+)@", lambda x: m.get(x.group(1), x.group(0)), text)
@@ -123,6 +116,6 @@ for u in "${ENABLE[@]}"; do systemctl --user enable --now "$u" && echo "enabled 
 systemctl --user list-timers --all 2>/dev/null | grep -E 'cockpit|concierge|beads-push|spira' || true
 # Long-running services never appear above. Everything else on this list is worthless if
 # they are down.
-for u in cockpit-collector.service spira-cockpit.service ${SPIRA_DOLT_DATA:+dolt-beads.service}; do
+for u in spira-cockpit.service ${SPIRA_DOLT_DATA:+dolt-beads.service}; do
     printf '%-28s %s\n' "$u" "$(systemctl --user is-active "$u")"
 done

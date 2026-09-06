@@ -4,7 +4,7 @@
 # pane exited and nothing brought it back, while every liveness check stayed green.
 # A repair loop that only runs while a session is alive cannot repair the case where the
 # session died.
-Description=Repair the cockpit layout and collector if either has died
+Description=Repair the cockpit tmux layout when a pane has died
 Documentation=file://@SPIRA_COCKPIT@/layout.sh
 After=default.target
 

@@ -2,7 +2,7 @@
 #
 # layout.sh — build the cockpit: session top-left, panel bottom-left, health down the right.
 #
-#   layout.sh up       create/repair the dashboard panes (idempotent) and start the collector
+#   layout.sh up       create/repair the dashboard panes (idempotent)
 #   layout.sh down     remove them, leaving the session pane full-height
 #   layout.sh status   what is running
 #   layout.sh ensure   heal a cockpit that is already up; SILENT when nothing is wrong
@@ -57,9 +57,10 @@
 # ACTIVE pane, so this script always restores the session pane as active before exiting.
 # Leaving a bottom pane selected would send the next review's launch command into a dashboard.
 #
-# The panes run renderers that only read `.runtime/cockpit.env`. The collector is the one
-# thing that shells out to `gt`, and it runs detached so a slow probe can never stall a
-# repaint.
+# The panes run renderers that only read a snapshot file — `$SPIRA_RUN/cockpit.env`, written
+# by `spira-cockpit.service`. This script does not supervise that collector and must not start
+# one: a probe pass costs seconds, and a pane that shelled out would stall on every repaint.
+# Layout repair and metric collection are separate concerns under separate units.
 #
 # `ensure` — WHAT THE WATCHER CALLS
 # ---------------------------------
@@ -208,65 +209,17 @@ heal_ready() {
     [ $(( $(date +%s) - $(stat -c %Y "$HEAL_STAMP") )) -ge "$HEAL_COOLDOWN" ]
 }
 
-# NEVER `pgrep -f`/`pkill -f` the collector on its own. The pattern is a substring of any
-# command line that MENTIONS it — including this script's caller. `pkill -f 'collect.sh
-# loop'` in `down` killed the shell that invoked it, and the matching `pgrep` reported
-# "collector: already running" by matching that same shell, which is how the panes spent
-# 17 hours rendering a frozen snapshot while every check said green.
-#
-# So pgrep only NOMINATES candidates, and /proc decides. The collector's argv is
-# `bash <collect.sh> loop`; any shell that merely names it has argv[1] == "-c".
-collector_pids() {
-    local p argv
-    for p in $(pgrep -f 'cockpit/collect\.sh' 2>/dev/null); do
-        [ "$p" = "$$" ] && continue
-        argv=$(tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null) || continue
-        [ "$(printf '%s\n' "$argv" | sed -n 2p)" = "$COCK/collect.sh" ] || continue
-        [ "$(printf '%s\n' "$argv" | sed -n 3p)" = "loop" ] || continue
-        echo "$p"
-    done
-}
-
-collector_running() { [ -n "$(collector_pids)" ]; }
-
-# A collector that is alive but no longer writing is worse than a dead one: the panes keep
-# rendering and every liveness check stays green. Freshness is the property that matters,
-# so it is what gets measured. One pass is ~27s of probes plus a 10s sleep.
-snapshot_age() {
-    [ -f "$RUN/cockpit.env" ] || { echo 999999; return; }
-    echo $(( $(date +%s) - $(stat -c %Y "$RUN/cockpit.env") ))
-}
-
-stop_collector() {
-    local p
-    for p in $(collector_pids); do kill "$p" 2>/dev/null || true; done
-}
-
-start_collector() {
-    collector_running && { echo "collector: already running"; return; }
-    # systemd owns the collector when the unit is installed. Spawning a nohup copy
-    # alongside it gives two writers to one snapshot and two rows per tick in the time
-    # series, and systemd's restart would keep resurrecting its own on top.
-    if systemctl --user list-unit-files cockpit-collector.service >/dev/null 2>&1 \
-       && systemctl --user cat cockpit-collector.service >/dev/null 2>&1; then
-        systemctl --user start cockpit-collector.service 2>/dev/null && sleep 1
-        collector_running && { echo "collector: started (systemd)"; return; }
-    fi
-    nohup "$COCK/collect.sh" loop >"$RUN/collect.log" 2>&1 &
-    sleep 1
-    collector_running && echo "collector: started" || echo "collector: FAILED — see $RUN/collect.log" >&2
-}
-
 # Epoch seconds at which a pid started.
 # Returns the process's start epoch, or FAILS. It must never answer 0 for "I could not
 # tell": every caller compares it against a file mtime, and 0 means infinitely old, so a
 # failed probe reads as "running code from before the file existed" and triggers a repair.
 #
-# That is not hypothetical. `ps` gets slow and drops requests when the box is loaded, and on
-# between 19:30 and 20:42 -- while CI, a container build and the visual suite were
-# all running -- this restarted the collector 2212 times. Each restart added load, which made
-# the next probe likelier to fail. A repair loop that feeds on its own load is worse than the
-# staleness it exists to catch.
+# That is not hypothetical. `ps` gets slow and drops requests when the box is loaded, and over
+# one 70-minute window -- while CI, a container build and the visual suite were all running --
+# a caller of this respawned its subject 2212 times on failed probes alone. Each restart added
+# load, which made the next probe likelier to fail. A repair loop that feeds on its own load is
+# worse than the staleness it exists to catch, so the remaining callers respawn a PANE, which
+# is cheap; nothing here supervises a process any more.
 #
 # The dashboard learned this already: a failed probe renders `?`, never 0.
 proc_start() {
@@ -324,43 +277,6 @@ restart_if_stale() { # pane_tag script_path
         health)    tmux respawn-pane -k -t "$pane" "$COCK/health.sh loop" 2>/dev/null ;;
     esac
     tag_pane "$pane" "$tag"
-}
-
-# Same problem for the collector, which systemd supervises but will happily keep running
-# a superseded copy of collect.sh forever.
-restart_collector_if_stale() {
-    local pids p started mtime
-    mtime=$(stat -c %Y "$COCK/collect.sh" 2>/dev/null || echo 0)
-    for p in $(collector_pids); do
-        started=$(proc_start "$p") || {
-            heal_log "collector $p start time unreadable — leaving it alone"
-            continue
-        }
-        if [ "$mtime" -gt "$started" ]; then
-            # A REPAIR MUST ACT ON THE PROCESS IT DIAGNOSED. This restarted the systemd
-            # service whatever it found — so an ORPHANED collector, one systemd does not
-            # supervise, was diagnosed correctly every minute and never touched: the
-            # restart cycled a healthy service while the offender kept running. Measured
-            #: one orphan alive 3.4 days, 4,291 futile restarts logged, and up
-            # to three collectors racing on the same cockpit.env.
-            local main; main=$(systemctl --user show cockpit-collector.service -p MainPID --value 2>/dev/null || echo 0)
-            if [ -n "$main" ] && [ "$main" != 0 ] && [ "$p" = "$main" ]; then
-                heal_log "collector $p (supervised) is running code older than collect.sh — restarting the service"
-                systemctl --user restart cockpit-collector.service 2>/dev/null
-            elif systemctl --user cat cockpit-collector.service >/dev/null 2>&1; then
-                # Confirm on argv from /proc before killing: pgrep may nominate, /proc decides.
-                if tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -qF 'collect.sh'; then
-                    heal_log "collector $p is an ORPHAN systemd does not supervise — killing it"
-                    kill "$p" 2>/dev/null || true
-                else
-                    heal_log "collector $p vanished or is not a collector — leaving it alone"
-                fi
-            else
-                stop_collector; start_collector >/dev/null 2>&1
-            fi
-            return 0
-        fi
-    done
 }
 
 # THE SPIRA COLLECTOR HAS THE SAME PROBLEM AND NONE OF THE COMPLICATIONS. It is only ever
@@ -541,7 +457,6 @@ up)
     echo "cockpit: up in $WINDOW (session $sess · panel $dec · health $hea)"
     # ALWAYS hand focus back to the session pane: hunk-open sends keys to the active pane.
     tmux select-pane -t "$sess" 2>/dev/null || true
-    start_collector
     ;;
 
 down)
@@ -555,8 +470,7 @@ down)
     fi
     for p in $(all_tagged); do tmux kill-pane -t "$p" 2>/dev/null || true; done
     tmux select-pane -t "$sess" 2>/dev/null || true
-    stop_collector
-    echo "cockpit: down in $WINDOW (collector stopped)"
+    echo "cockpit: down in $WINDOW"
     ;;
 
 ensure)
@@ -583,20 +497,21 @@ ensure)
             heal_log "$WINDOW: REPAIR FAILED — $(printf '%s' "$out" | tr '\n' ' ')"
         fi
     done
-    # A dead collector leaves both panes rendering a frozen snapshot while every process
-    # that draws them looks alive. `up` restarts it, but `up` only runs on a broken layout.
+    # NO WATCHDOG OVER A COLLECTOR'S LIVENESS HERE, only over the code it is running. This
+    # used to kill and respawn a collector whenever its snapshot looked stale, and a pass of
+    # that collector could not finish inside the 60s between `ensure` runs under load — so
+    # every pass read the snapshot as stale, killed the collector and started another,
+    # forever, each attempt shelling out to probes that cost seconds on the same cores the
+    # work runs on. A repair loop feeding on its own load is worse than the staleness it
+    # exists to catch, and a snapshot that is merely late is indistinguishable from one whose
+    # writer is slow.
+    #
+    # systemd is where process supervision belongs: `spira-cockpit.service` is Restart=always
+    # under a CPUQuota, and it backs off where a one-minute timer cannot. This script owns the
+    # tmux layout, and the one process property it still checks is whether a running collector
+    # predates its own source — which respawns nothing on a failed probe.
     if [ -n "$(cockpit_windows)" ]; then
-        restart_collector_if_stale
         restart_spira_collector_if_stale
-        age=$(snapshot_age)
-        if ! collector_running; then
-            heal_log "collector was dead — restarting"
-            start_collector 2>&1 | tee -a "$HEAL_LOG"
-        elif [ "$age" -gt "${COCKPIT_STALE:-300}" ]; then
-            heal_log "collector alive but snapshot ${age}s stale — restarting"
-            stop_collector
-            start_collector 2>&1 | tee -a "$HEAL_LOG"
-        fi
     fi
     ;;
 
@@ -609,13 +524,14 @@ status)
         p="$(tagged "$t")"
         printf '%-10s %s\n' "$t:" "${p:-absent}"
     done
-    echo "collector: $(collector_running && echo "running (pid $(collector_pids | tr '\n' ' '))" || echo stopped)"
-    if [ -f "$RUN/cockpit.env" ]; then
-        echo "snapshot:  $(snapshot_age)s old"
+    # The collector is not this script's to report on: `systemctl --user status
+    # spira-cockpit.service` is the authority, and a second opinion here would drift.
+    # FROM $SPIRA_RUN, NOT DERIVED — the same reason health.sh reads it from there.
+    if [ -f "$SPIRA_RUN/cockpit.env" ]; then
+        echo "snapshot:  $(( $(date +%s) - $(stat -c %Y "$SPIRA_RUN/cockpit.env") ))s old (spira-cockpit.service)"
     else
-        echo "snapshot:  missing"
+        echo "snapshot:  missing — check 'systemctl --user status spira-cockpit.service'"
     fi
-    [ -f "$RUN/cockpit-history.csv" ] && echo "history:   $(( $(wc -l < "$RUN/cockpit-history.csv") - 1 )) rows"
     ;;
 
 *) sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
