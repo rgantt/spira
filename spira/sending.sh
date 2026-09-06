@@ -45,13 +45,21 @@
 #
 # WHAT MAY BE DELETED
 # -------------------
-# Only a branch every one of whose commits is already an ancestor of its repository's base
-# ref. Ancestry,
-# never a tip comparison and never the bead's status (law-closed-is-not-landed): CLOSED is a
-# claim about a database, and the question here is whether deleting this ref can lose work.
-# If the remote is unreachable the fetch fails, the base ref is stale, and a freshly-landed
-# branch reads as unlanded and is KEPT — the fetch failure biases toward hoarding branches,
-# which is recoverable, rather than toward deleting work, which is not.
+# Only a branch whose every change the repository's base ref already holds — either because
+# the branch is an ancestor of it, or because merging the branch into it would produce the
+# base's own tree. Never a tip comparison and never the bead's status
+# (law-closed-is-not-landed): CLOSED is a claim about a database, and the question here is
+# whether deleting this ref can lose work. If the remote is unreachable the fetch fails, the
+# base ref is stale, and a freshly-landed branch reads as unlanded and is KEPT — the fetch
+# failure biases toward hoarding branches, which is recoverable, rather than toward deleting
+# work, which is not.
+#
+# The second reading is what a squashing repository needs, and it is not a relaxation. A
+# squash lands the diff as one new commit the branch is not in the history of, so ancestry
+# alone keeps that branch forever; and a branch that is never reaped is re-examined on every
+# pass, where the landing worker's rebase conflicts against changes already on the base and
+# reopens the finished bead. Nothing about that repeats differently, so it repeats until
+# someone deletes the ref by hand.
 #
 # An unlanded branch is never deleted, whatever its bead says. That is CHECK 6's problem to
 # land or reopen, not this program's to tidy away.
@@ -136,6 +144,14 @@ reap() {
             && say "  deleted $rem/$br"
     fi
 
+    # AND THE `branch:` LABEL GOES WITH THE REF. The label records which branch a bead's
+    # work lives on so a reopened bead returns to it (law-branch-affinity-is-recorded), and
+    # that affinity is over the moment the branch is deleted: a bead reopened afterwards
+    # would be handed the name of a ref that no longer exists, and an aeon that recreates it
+    # from the base rebuilds a branch whose work already landed. Dropped only here, after the
+    # ref is verifiably gone, so the label and the branch cannot disagree.
+    bdq label remove "$id" "branch:$br" >/dev/null 2>&1 || true
+
     # The aeon's session log is deliberately KEPT. Sentinel CHECK 5 uses the existence of
     # .runtime/spira/<id>.log to tell a bead an aeon worked from one a human closed by hand,
     # so deleting it here would silently disable the closed-but-not-landed check for exactly
@@ -152,9 +168,9 @@ reap() {
 # that choice is made, so the ref a branch is CUT from and the ref it is judged against can
 # never drift apart. It is not assumed to be `main` — three of the seven repositories here
 # default to something else — and a repository whose answer cannot be established is skipped
-# rather than swept against a ref that does not exist. `merge-base --is-ancestor` against a
-# missing ref returns non-zero, which reads as "unlanded", so that failure was survivable in
-# this file and catastrophic in CHECK 6; skipping loudly is what makes it visible in both.
+# rather than swept against a ref that does not exist. Every landed test here answers "no"
+# against a missing ref, which reads as "unlanded", so that failure was survivable in this
+# file and catastrophic in CHECK 6; skipping loudly is what makes it visible in both.
 # ======================================================================================
 sweep_repo() {
     local name="$1" br id n w brs rem held
@@ -190,7 +206,14 @@ sweep_repo() {
         if held="$(spira_holder_witnesses "$id")"; then
             say "HELD   $id  $held"; continue
         fi
-        if ! git -C "$REPO" merge-base --is-ancestor "$br" "$LANDREF" 2>/dev/null; then
+        # ANCESTRY, THEN CONTENT. A squashing repository lands the work as one new commit
+        # the branch is not in the history of, so ancestry alone answers "unlanded" forever
+        # about a branch whose changes are all on the base — and a branch that is never
+        # reaped is re-examined on every pass, which is how one merged bead was reopened
+        # three times in thirteen minutes. content_landed asks whether merging this branch
+        # would change anything; it is exact, local, and answers NO on a conflict, so it can
+        # never authorise deleting a ref that still carries work.
+        if ! content_landed "$REPO" "$br" "$LANDREF"; then
             n="$(git -C "$REPO" rev-list --count "$LANDREF..$br" 2>/dev/null || echo '?')"
             say "KEEP   $id  unlanded — $n commit(s) not in $LANDREF"; continue
         fi

@@ -137,7 +137,7 @@ git -C "$REPO" merge-base --is-ancestor "spira/sp-land" origin/main \
 # second run must not merge it again and must not report a movement, or the sentinel counts
 # an action the DAG never made and mutes its own judgement tier with it.
 out="$(landing)"
-want   "an already-landed branch is skipped"  "is already an ancestor of" "$out"
+want   "an already-landed branch is skipped"  "already contains every change on spira/sp-land" "$out"
 nowant "and is not reported again"            "landed spira/sp-land"      "$out"
 is     "and posts nothing to the mailbox"     ""                          "$(mailbox)"
 want   "while still reporting that it looked" "SP_LAND_BRANCHES=1"        "$(status)"
@@ -283,6 +283,129 @@ git -C "$TMP/six" merge-base --is-ancestor "spira/sp-master" origin/master \
 git -C "$TMP/six" rev-parse --verify -q main >/dev/null 2>&1 \
     && bad "and no branch named main was invented" "one exists" \
     || ok "and no branch named main was invented"
+
+# ======================================================================================
+# A SQUASH-MERGED BRANCH IS LANDED, AND "DOES NOT REBASE" IS THE PROOF OF IT RATHER THAN
+# THE COUNTER-EVIDENCE. Auto-merge is armed with --squash, so the whole branch is replayed
+# as ONE new commit with a new SHA and a parentage the branch does not appear in: its
+# commits are not ancestors of the base and never will be. The rebase that followed then
+# conflicted — precisely BECAUSE the base already held those changes — and the pair was read
+# as a branch in trouble, so a bead closed over merged work was reopened, and reopened again
+# on the next pass, forever, because nothing about the situation changes between passes.
+#
+# The branch here is built to conflict on rebase and to be a no-op on merge, which is the
+# exact shape: two commits taking a file "" -> A -> B, against a base that went "" -> B in
+# one. Replaying the first patch onto the base collides; merging the endpoints changes
+# nothing.
+# ======================================================================================
+mkrepo2 eight
+cat > "$SH/repo-map" <<MAP
+eight | $TMP/eight | push | origin/main | |
+MAP
+squashed() {             # squashed <repo-path> <id> <repo-label> — land it the way GitHub does
+    local r="$1" id="$2" lab="$3"
+    git -C "$r" worktree add -q -b "spira/$id" "$RUN/worktree/$id" main
+    printf 'A\n' > "$RUN/worktree/$id/f.txt"
+    git -C "$RUN/worktree/$id" add -A
+    git -C "$RUN/worktree/$id" commit -q -m "feat: $id — first pass"
+    printf 'B\n' > "$RUN/worktree/$id/f.txt"
+    git -C "$RUN/worktree/$id" add -A
+    git -C "$RUN/worktree/$id" commit -q -m "feat: $id — second pass"
+    closed_child "$id" "$lab"
+    git -C "$r" merge -q --squash "spira/$id" >/dev/null
+    git -C "$r" commit -q -m "$id: work (#7)"
+    git -C "$r" push -q origin main
+    git -C "$r" fetch -q origin
+}
+seed; squashed "$TMP/eight" sp-squash eight
+before="$(git -C "$TMP/eight" rev-parse spira/sp-squash)"
+
+# THE POSITIVE CONTROL, and it is the whole reason this case is trustworthy: both of the old
+# signals must really be present, or the assertions below are passing against a world in
+# which nothing was ever wrong (law-absence-needs-a-positive-control).
+git -C "$TMP/eight" merge-base --is-ancestor spira/sp-squash origin/main \
+    && bad "the squashed branch is not an ancestor of its base" "it is one — no squash happened" \
+    || ok "the squashed branch is not an ancestor of its base"
+git -C "$TMP/eight" worktree add -q --detach "$TMP/eight-replay" spira/sp-squash 2>/dev/null
+if git -C "$TMP/eight-replay" rebase -q origin/main >/dev/null 2>&1; then
+    bad "and genuinely does not rebase onto it" "the rebase succeeded"
+else
+    ok "and genuinely does not rebase onto it"
+fi
+git -C "$TMP/eight-replay" rebase --abort >/dev/null 2>&1
+git -C "$TMP/eight" worktree remove --force "$TMP/eight-replay" >/dev/null 2>&1
+
+out="$(landing)"
+want   "a squash-merged branch is recognised as landed" "already contains every change on spira/sp-squash" "$out"
+nowant "and is not reopened"                            "reopened sp-squash" "$out"
+nowant "and is not re-landed"                           "landed spira/sp-squash" "$out"
+is     "and its bead stays closed"                      "closed"   "$(status_of sp-squash)"
+is     "and its branch is left exactly as it was"       "$before"  "$(git -C "$TMP/eight" rev-parse spira/sp-squash)"
+is     "and nothing reaches the mailbox"                ""         "$(mailbox)"
+
+# AND THE CHECK CAN STILL SAY NO. A content test that answered "landed" for everything would
+# pass every assertion above while silently disabling the reopen path, so the branch that
+# really does carry something the base lacks must still come back. Same conflicting shape,
+# different content: the base went "" -> C by work of its own.
+mkrepo2 nine
+cat > "$SH/repo-map" <<MAP
+nine | $TMP/nine | push | origin/main | |
+MAP
+seed
+git -C "$TMP/nine" worktree add -q -b spira/sp-real "$RUN/worktree/sp-real" main
+printf 'A\n' > "$RUN/worktree/sp-real/f.txt"
+git -C "$RUN/worktree/sp-real" add -A
+git -C "$RUN/worktree/sp-real" commit -q -m "feat: sp-real — first pass"
+printf 'B\n' > "$RUN/worktree/sp-real/f.txt"
+git -C "$RUN/worktree/sp-real" add -A
+git -C "$RUN/worktree/sp-real" commit -q -m "feat: sp-real — second pass"
+closed_child sp-real nine
+printf 'C\n' > "$TMP/nine/f.txt"
+git -C "$TMP/nine" add -A
+git -C "$TMP/nine" commit -q -m "somebody else's work"
+git -C "$TMP/nine" push -q origin main
+git -C "$TMP/nine" fetch -q origin
+# SPIRA_GH is a gh that knows no pull requests, so the merged-PR reading below cannot be what
+# carries this case: the reopen must come from the content test alone.
+out="$(SPIRA_GH="$TMP/gh" landing)"
+want "a branch the base does not contain is still reopened" "reopened sp-real — does not rebase" "$out"
+is   "and its bead is open again"                           "open"  "$(status_of sp-real)"
+
+# A MERGED PULL REQUEST IS THE OTHER READING OF "ALREADY LANDED", and it is the one that
+# survives what the content test cannot: a squash that merged and was then amended on the
+# base. The content genuinely differs, so merging would change something and the branch reads
+# as unlanded — but re-landing it would revert whoever amended it. The network call sits
+# behind the rebase failure, so it is paid for only by a branch about to be reopened.
+cat > "$TMP/gh-merged" <<'GH'
+#!/usr/bin/env bash
+case "$1 $2" in "pr view") echo MERGED; exit 0 ;; esac
+exit 1
+GH
+chmod +x "$TMP/gh-merged"
+mkrepo2 ten
+cat > "$SH/repo-map" <<MAP
+ten | $TMP/ten | push | origin/main | |
+MAP
+seed
+git -C "$TMP/ten" worktree add -q -b spira/sp-amended "$RUN/worktree/sp-amended" main
+printf 'A\n' > "$RUN/worktree/sp-amended/f.txt"
+git -C "$RUN/worktree/sp-amended" add -A
+git -C "$RUN/worktree/sp-amended" commit -q -m "feat: sp-amended — first pass"
+printf 'B\n' > "$RUN/worktree/sp-amended/f.txt"
+git -C "$RUN/worktree/sp-amended" add -A
+git -C "$RUN/worktree/sp-amended" commit -q -m "feat: sp-amended — second pass"
+closed_child sp-amended ten
+git -C "$TMP/ten" merge -q --squash spira/sp-amended >/dev/null
+git -C "$TMP/ten" commit -q -m "sp-amended: work (#8)"
+printf 'B, then somebody fixed a typo\n' > "$TMP/ten/f.txt"
+git -C "$TMP/ten" add -A
+git -C "$TMP/ten" commit -q -m "follow-up on the squashed work"
+git -C "$TMP/ten" push -q origin main
+git -C "$TMP/ten" fetch -q origin
+out="$(SPIRA_GH="$TMP/gh-merged" landing)"
+want   "a merged pull request is landed however the content reads" "its pull request is merged" "$out"
+nowant "and the bead is not reopened"                              "reopened sp-amended" "$out"
+is     "and it stays closed"                                       "closed" "$(status_of sp-amended)"
 
 # A REPOSITORY WHOSE BASE CANNOT BE ESTABLISHED IS SKIPPED, NOT GUESSED AT. The bare origin
 # here publishes a default branch nothing ever pushed, so there is genuinely no answer — and

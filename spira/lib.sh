@@ -656,6 +656,62 @@ landed() {
     grep -qF "$id" <<< "$subjects"
 }
 
+# content_landed <repo> <branch> <baseref> -> 0 if <baseref> already contains every change
+# <branch> makes, 1 if it does not.
+#
+# ANCESTRY IS NOT THE ONLY WAY WORK LANDS, AND ON A SQUASHING REPOSITORY IT IS NEVER THE WAY.
+# A squash merge replays the branch's whole diff as ONE NEW COMMIT with a new SHA and a
+# parentage the branch does not appear in, so the branch's own commits are not ancestors of
+# the base and never will be. Every SHA-based test therefore answers "not landed" about work
+# that is demonstrably on the base — and then the rebase that follows CONFLICTS, precisely
+# because the base already holds those changes. The harness read that pair as a branch in
+# trouble and reopened a finished bead with "does not rebase onto <base>", which was true and
+# meant the opposite of what it was taken to mean. It repeats forever, because nothing about
+# the situation changes between passes.
+#
+# So ask the question that actually matters: would merging this branch into the base change
+# anything? `merge-tree --write-tree` performs the three-way merge in memory and prints the
+# resulting tree; when that tree IS the base's own tree, the merge is a no-op and the content
+# is already there. This is deliberately not the rebase's question — a rebase replays commit
+# by commit and can conflict on an intermediate patch whose end state is fine, which is
+# exactly the false alarm.
+#
+# It answers NO when the merge conflicts (non-zero exit) and NO when the merged tree differs,
+# both of which mean the branch really does carry something the base lacks. That is what makes
+# it safe for a caller that DELETES on the answer: it cannot say "landed" about a branch with
+# work outstanding. `landed()` above is a different question — whether a commit on the base
+# names the BEAD — and is not a substitute here, because a branch may carry commits beyond the
+# one that landed.
+#
+# NO PIPE. `git ... | head -1` under pipefail returns 141 when head closes the pipe first, so
+# the check would fail exactly when merge-tree succeeded (law-no-grep-q-under-pipefail).
+# Capture whole, then trim.
+content_landed() {
+    local repo="$1" br="$2" base="$3" merged basetree
+    git -C "$repo" merge-base --is-ancestor "$br" "$base" 2>/dev/null && return 0
+    merged="$(git -C "$repo" merge-tree --write-tree "$base" "$br" 2>/dev/null)" || return 1
+    merged="${merged%%$'\n'*}"
+    [ -n "$merged" ] || return 1
+    basetree="$(git -C "$repo" rev-parse "$base^{tree}" 2>/dev/null)" || return 1
+    [ "$merged" = "$basetree" ]
+}
+
+# pr_merged <repo> <branch> -> 0 if a pull request whose head is <branch> is MERGED.
+#
+# The second reading of "already landed", and the one that survives what content_landed
+# cannot: a squash that merged and was then amended on the base. The content differs, so the
+# merge test says no, and re-landing the branch would revert whoever amended it.
+#
+# THIS IS EVIDENCE FOR NOT REOPENING, NEVER EVIDENCE FOR DELETING. A merged pull request says
+# the work was accepted; it does not say the ref holds nothing else. A caller about to destroy
+# a branch must use content_landed, which is exact and local. This one reaches the network, so
+# it belongs behind a cheap check that has already failed — never on the common path.
+pr_merged() {
+    local repo="$1" br="$2" state
+    state="$( cd "$repo" 2>/dev/null && ghq pr view "$br" --json state -q .state 2>/dev/null )" || return 1
+    [ "$state" = "MERGED" ]
+}
+
 # --------------------------------------------------------------------------------------
 # Memory delivery. An aeon has no SessionStart hook, so this is how it reads the law — and
 # now also how Ops reads its runbooks, since a statute and an SOP are the same mechanism

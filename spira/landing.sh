@@ -281,12 +281,21 @@ print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
             log "CHECK6 $id: $br is in $name but the bead names repo:${bead_repo_name:-?} — not landing it here"
             continue
         fi
-        # ANCESTRY IS THE WHOLE QUESTION. A branch already merged into main has nothing to
-        # land; re-merging it is a no-op that still logs an ACT, and that
-        # re-landed spira/sp-stranded on every pass for twenty minutes. Reaping the ref is
-        # CHECK 6b's job, not this one's.
-        if git -C "$repo" merge-base --is-ancestor "$br" "$base" 2>/dev/null; then
-            log "$br is already an ancestor of $base — nothing to land"
+        # WHETHER THE BASE ALREADY HOLDS THIS WORK IS THE WHOLE QUESTION, and ancestry is
+        # only one of the two ways the answer is yes. A branch already merged has nothing to
+        # land; re-merging it is a no-op that still logs an ACT, and that re-landed
+        # spira/sp-stranded on every pass for twenty minutes. Reaping the ref is CHECK 6b's
+        # job, not this one's.
+        #
+        # A SQUASHING REPOSITORY NEVER MAKES THE BRANCH AN ANCESTOR. `pr` mode arms
+        # --squash, so GitHub lands the work as one new commit the branch is not in the
+        # history of — the ancestry test then says "not landed" about work sitting on the
+        # base, the rebase below conflicts BECAUSE the base already holds those changes, and
+        # a finished bead is reopened on the strength of the pair. content_landed asks
+        # whether merging would change anything, which is the question that survives a
+        # rewrite of the commits.
+        if content_landed "$repo" "$br" "$base"; then
+            log "$base already contains every change on $br — nothing to land"
             continue
         fi
 
@@ -309,6 +318,16 @@ print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
         fi
 
         if ! rebase_branch "$br" "$base" "$repo" "$name"; then
+            # "DOES NOT REBASE" IS NOT EVIDENCE OF UNLANDED WORK ON ITS OWN. content_landed
+            # above has already cleared the ordinary squash case; this catches the one it
+            # cannot — a squash that merged and was then amended on the base, where the
+            # content genuinely differs and re-landing the branch would revert the amendment.
+            # The network call sits here, behind a cheap check that has already failed, so it
+            # is paid for only by a branch that is about to be reopened.
+            if pr_merged "$repo" "$br"; then
+                log "CHECK6 $id: $br does not rebase onto $base, but its pull request is merged — landed, not stuck"
+                continue
+            fi
             bdq reopen "$id" >/dev/null 2>&1
             bdq note "$id" "Reopened by sentinel: $br does not rebase onto $base in $name; conflicts in ${REBASE_CONFLICTS:-unknown}. A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it." >/dev/null 2>&1
             progress "reopened $id — does not rebase onto $base"

@@ -55,8 +55,24 @@ cat > "$SH/repo-map" <<MAP
 brain | $REPO | push | origin/main | |
 MAP
 
+# `bd` IS RECORDED RATHER THAN STUBBED AWAY. The reaper's only database call is the one that
+# drops a landed bead's `branch:` label, and a suite pointed at /nonexistent-spira-db would
+# see that call succeed or fail identically — which is to say it would assert nothing about
+# whether the call is made at all. SPIRA_BD is lib.sh's own seam for this. Nothing else here
+# reaches bd: `--status-from` sets the status seam, which also short-circuits the database
+# reachability probe.
+cat > "$TMP/bd" <<'BD'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$BD_LOG"
+exit 0
+BD
+chmod +x "$TMP/bd"
+export BD_LOG="$TMP/bd.log"; : > "$BD_LOG"
+
 sending() {   # sending <args...> — one pass with the test's status map
+    : > "$BD_LOG"
     SPIRA_HOME="$SH" SPIRA_REPO="$REPO" SPIRA_RUN="$RUN" SPIRA_DB=/nonexistent-spira-db \
+    SPIRA_BD="$TMP/bd" \
         "$SH/sending.sh" --no-fetch --status-from "$TMP/status" "$@" 2>&1
 }
 
@@ -73,6 +89,15 @@ aeon_branch() {   # aeon_branch <id> [commit-message]
 land() {          # land <id> — merge the branch to origin/main the way CHECK 6 does
     git -C "$REPO" checkout -q main
     git -C "$REPO" merge -q --no-edit -m "spira: land $1" "spira/$1"
+    git -C "$REPO" push -q origin main
+}
+squash() {        # squash <id> — land it the way GitHub's auto-merge does
+    # ONE NEW COMMIT CARRYING THE WHOLE DIFF, with a parentage the branch does not appear in.
+    # The branch's own commits are therefore not ancestors of the base and never will be, so
+    # ancestry alone answers "unlanded" about work that is demonstrably there.
+    git -C "$REPO" checkout -q main
+    git -C "$REPO" merge -q --squash "spira/$1" >/dev/null
+    git -C "$REPO" commit -q -m "$1: work (#3)"
     git -C "$REPO" push -q origin main
 }
 status() { printf '%s\t%s\n' "$@" > "$TMP/status"; }
@@ -237,6 +262,50 @@ nowant "and is not retired twice" "RETIRED .landing" "$out"
 out="$(sending)"
 nowant "the shared checkout is not a candidate" "$REPO " "$out"
 [ -e "$REPO/.git" ] && ok "the shared checkout survives" || bad "the shared checkout survives" "gone"
+
+# -- squash-merged: the content is on the base, the SHA never will be ---------------------
+# A branch that is not reaped is re-examined on every pass forever, and the landing worker's
+# rebase conflicts against changes the base already holds — so leaving one standing is what
+# reopened a finished bead three times in thirteen minutes.
+aeon_branch sp-squash "feat: sp-squash — work"
+tip="$(git -C "$REPO" rev-parse spira/sp-squash)"
+squash sp-squash
+# THE POSITIVE CONTROL. Ancestry must really say no, or this case is asserting nothing.
+git -C "$REPO" merge-base --is-ancestor spira/sp-squash origin/main \
+    && bad "the squashed branch is not an ancestor of its base" "it is one — no squash happened" \
+    || ok "the squashed branch is not an ancestor of its base"
+status sp-squash closed
+out="$(sending)"
+want "a squash-merged branch is reaped" "REAPED sp-squash" "$out"
+has_branch sp-squash && bad "its branch is gone" "it survived" || ok "its branch is gone"
+[ -e "$RUN/worktree/sp-squash" ] && bad "its worktree is gone" "it survived" \
+                                 || ok "its worktree is gone"
+has_commit "$tip" && ok "and the work itself is still reachable" \
+                  || bad "and the work itself is still reachable" "unreachable"
+# The `branch:` label points a reopened bead back at a ref that no longer exists, so it goes
+# with the ref — dropped only after the deletion is verified, so the two cannot disagree.
+want "and its branch: label is dropped" "label remove sp-squash branch:spira/sp-squash" "$(cat "$BD_LOG")"
+
+# AND THE CONTENT TEST CAN STILL SAY NO. A test that answered "landed" for everything would
+# pass every assertion above while quietly authorising the deletion of unlanded work, which
+# is the one mistake in this program that cannot be undone. Same conflicting shape, different
+# content: the base moved on work of its own.
+aeon_branch sp-diverged
+printf 'A\n' > "$RUN/worktree/sp-diverged/f.txt"
+git -C "$RUN/worktree/sp-diverged" add -A
+git -C "$RUN/worktree/sp-diverged" commit -q -m "feat: sp-diverged — work"
+tip="$(git -C "$REPO" rev-parse spira/sp-diverged)"
+git -C "$REPO" checkout -q main
+printf 'C\n' > "$REPO/f.txt"
+git -C "$REPO" add -A
+git -C "$REPO" commit -q -m "somebody else's work"
+git -C "$REPO" push -q origin main
+status sp-diverged closed
+out="$(sending)"
+want "a branch the base does not contain is kept" "KEEP   sp-diverged" "$out"
+has_branch sp-diverged && ok "a diverged branch survives" || bad "a diverged branch survives" "deleted"
+has_commit "$tip" && ok "and its work survives" || bad "and its work survives" "unreachable"
+nowant "and its branch: label is left alone" "label remove sp-diverged" "$(cat "$BD_LOG")"
 
 # -- --dry-run changes nothing --------------------------------------------------------------
 aeon_branch sp-dry "feat: sp-dry — work"
