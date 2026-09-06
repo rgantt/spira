@@ -24,11 +24,13 @@
 # ends in an account refusal gets one attempt back. It refuses to reason about the rest, and
 # `scan` prints the same evidence so the refusal is checkable rather than asserted.
 #
-# THE HORIZON IS ONE ATTEMPT DEEP, and that is a property of the harness rather than of this
-# script: aeon.sh truncates `$SPIRA_RUN/<id>.log` on every attempt, so only the last one
-# survives. History before that attempt is gone and no amount of care here recovers it —
-# which is why the fix that matters is the one in aeon.sh that stops charging the attempt in
-# the first place, and this is only the cleanup behind it.
+# THE HORIZON IS ONE ATTEMPT DEEP, and deliberately so. The log keeps every attempt now, but
+# what is being asked here is whether THIS bead's latest session was refused, and an older
+# segment answers a question about a window that has already reopened — so scan reads only
+# the last one, through capacity_reset_at. Earlier segments are there to be read by a person
+# asking what happened; they are not evidence about the attempt now on the ladder. The fix
+# that matters is still the one in aeon.sh that stops charging the attempt in the first
+# place, and this is only the cleanup behind it.
 #
 # EVIDENCE OUTLIVES THE WITHDRAWAL IT JUSTIFIES, so this keeps a ledger. A log that ends in
 # a refusal is still there tomorrow, and a cleanup with no memory of itself reads it as
@@ -36,8 +38,8 @@
 # which nothing can ever poison however genuinely it keeps failing. Nothing calls this on a
 # timer, which is not a defence: a hand-run cleanup command invites being run again. Each
 # withdrawal is therefore marked against the fingerprint of the log that justified it, under
-# `$SPIRA_RUN/capacity-withdrawn/<id>`, and a re-run is a no-op until a NEW refusal rewrites
-# that log. Delete a mark to have its log reconsidered.
+# `$SPIRA_RUN/capacity-withdrawn/<id>`, and a re-run is a no-op until a NEW refusal appends
+# to that log. Delete a mark to have its log reconsidered.
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -95,8 +97,10 @@ reclassify)
         # THE SAME LOG MAY ONLY BE PAID BACK ONCE. Without this the evidence outlives the
         # withdrawal it justified, so every re-run takes another attempt off the same
         # refusal and the count walks to zero — after which the bead can never poison,
-        # however genuinely it goes on failing. A new refusal rewrites the log, moving the
-        # fingerprint, and is withdrawn normally.
+        # however genuinely it goes on failing. A new refusal appends a segment, which moves
+        # the fingerprint, and is withdrawn normally. Growth alone cannot pay a log back
+        # twice: scan reaches here only while the LAST segment is a refusal, and an attempt
+        # that appends anything else takes the log out of scan's answer entirely.
         fp="$(capacity_log_fingerprint "$SPIRA_RUN/$id.log")" || continue
         if [ "$fp" = "$(capacity_withdrawn_fp "$id")" ]; then
             already=$((already+1))

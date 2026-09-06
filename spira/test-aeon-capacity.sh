@@ -169,6 +169,72 @@ done
 is "the bead has reached the poison threshold" "3" "$(bd -C "$SPIRA_DB" label list sp-fail-1 2>/dev/null \
     | grep -oE 'sp-attempt-[0-9]+' | grep -oE '[0-9]+$' | sort -n | tail -1)"
 
+# ---- every attempt's trace survives -----------------------------------------------------
+# aeon.sh opened the session log with `>`, so an attempt erased its predecessor and only the
+# LAST session of a bead had a trace. On the day a capacity outage killed 121 sessions in
+# three to seven seconds each, three traces survived — and with them went the only record of
+# why any of the others died (the operator, verbatim: "I don't want to miss any insights from
+# here on").
+#
+# The whole risk of appending is on the other side: the file now holds sessions that are
+# over, and a reader that takes an old segment for the live one does real harm. So the two
+# attempts here are ordered REFUSED then FAILED, which is the pairing where a reader with no
+# sense of the boundary gets it wrong — it would find attempt 1's refusal, hand back the
+# attempt attempt 2 has just earned, and pause the harness against a window already reopened.
+#
+# The library is sourced in a subshell rather than at the top of this file: the suite runs
+# aeon.sh as a program in an explicit minimal environment, and that must stay the thing being
+# measured (law-gates-run-in-a-clean-environment).
+in_lib() { ( . "$SPIRA_HOME/lib.sh" >/dev/null 2>&1 || exit 9; "$@" ); }
+tool_line() { printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"%s"}}]}}\n' "$1"; }
+
+echo
+echo "two attempts on one bead leave two traces, and the newest is what the harness reads:"
+rm -f "$SPIRA_CAPACITY_PAUSE"
+seed_bead sp-keep-1
+KEEP="$SPIRA_RUN/sp-keep-1.log"
+rm -f "$KEEP"
+
+{ tool_line "the first attempt ran"; rl_event rejected 1
+  printf '{"type":"result","subtype":"success","is_error":true,"result":"You'"'"'ve hit your session limit · resets 12pm (UTC)","num_turns":1}\n'; } > "$TMP/trace"
+run_aeon
+is   "the fake session ran for attempt 1" "yes" "$(shim_ran)"
+[ -s "$KEEP" ] && ok "attempt 1 left a trace" || bad "attempt 1 left a trace" "no $KEEP"
+size1="$(stat -c %s "$KEEP" 2>/dev/null || echo 0)"
+
+# The window reopens and the bead is worked again — this time the session fails at its own
+# work. No reseed: that would reset the fixture and take the first attempt's evidence with it.
+rm -f "$SPIRA_CAPACITY_PAUSE"
+{ tool_line "the second attempt ran"; rl_event allowed 0.1
+  printf '{"type":"result","subtype":"success","is_error":true,"result":"Error: could not do the work","num_turns":9}\n'; } > "$TMP/trace"
+run_aeon
+size2="$(stat -c %s "$KEEP" 2>/dev/null || echo 0)"
+
+want "attempt 1's trace is still there"  "the first attempt ran"  "$(cat "$KEEP")"
+want "and attempt 2's is there too"      "the second attempt ran" "$(cat "$KEEP")"
+is   "each attempt opened its own segment" "2" "$(grep -c '^=== spira attempt ' "$KEEP")"
+# THE HEARTBEAT'S SIGNAL IS THIS FILE GROWING. It decides a session is wedged by watching
+# `stat -c %s` on this exact path, which is why the trace is appended to one file per bead
+# rather than written to a new name per attempt: a name that changed would leave the beat
+# staring at a file nobody writes, and cost the bead its lease for working.
+[ "$size2" -gt "$size1" ] && ok "the log grew rather than restarting, so the beat still sees progress" \
+    || bad "the log grew rather than restarting" "was $size1 bytes, now $size2"
+
+# THE BOUNDARY IS DOING THE WORK, shown from both sides: the refusal IS in the file, and is
+# NOT in the segment the harness reads. Without the first half, the second passes just as
+# well on a suite whose attempt 1 never happened.
+want "the refusal is in the file"            "hit your session limit" "$(cat "$KEEP")"
+nowant "but not in the segment now read"     "hit your session limit" "$(in_lib attempt_trace "$KEEP")"
+in_lib capacity_reset_at "$KEEP" >/dev/null
+is   "so capacity_reset_at judges attempt 2, not attempt 1" "1" "$?"
+is   "and the heartbeat sees attempt 2's last action" "Bash the second attempt ran" "$(in_lib trace_last "$KEEP")"
+
+# WHAT THAT VERDICT COST THE BEAD. Attempt 2 failed at its own work, so it is charged — and
+# a reader fooled by attempt 1's refusal would have charged nothing and stopped summoning.
+is   "attempt 2 is charged, and only attempt 2" "1" "$(labels sp-keep-1 | grep -oE 'sp-attempt-[0-9]+' | grep -oE '[0-9]+$' | sort -n | tail -1)"
+[ ! -f "$SPIRA_CAPACITY_PAUSE" ] && ok "and no stale pause was written from the older segment" \
+    || bad "and no stale pause was written from the older segment" "$(cat "$SPIRA_CAPACITY_PAUSE")"
+
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

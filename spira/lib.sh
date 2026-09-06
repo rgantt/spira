@@ -295,7 +295,17 @@ SPIRA_CAPACITY_BACKOFF="${SPIRA_CAPACITY_BACKOFF:-900}"
 capacity_reset_at() {
     local logf="${1:-}"
     [ -n "$logf" ] && [ -s "$logf" ] || return 1
-    python3 - "$logf" <<'PY'
+    # THE LAST ATTEMPT ONLY. The log carries every attempt this bead has had, and a refusal
+    # is sticky evidence: attempt 1 dying to a spent window would otherwise make attempt 3
+    # look refused too, so a bead that genuinely failed would be handed its attempt back and
+    # the harness would pause summoning against a `resetsAt` that has already passed. No cap
+    # — this runs once at teardown, and the two records that decide the verdict sit at
+    # opposite ends of a session.
+    # THE PROGRAM ARRIVES ON FD 3, NOT ON STDIN, because stdin is the trace. `python3 -
+    # <<PY` looks right and silently reads the HEREDOC as the data too: the redirect wins,
+    # the pipe is discarded unread, and the detector then says "not a refusal" about every
+    # log ever handed to it — with a BrokenPipeError from the writer as the only tell.
+    attempt_trace "$logf" | python3 /dev/fd/3 3<<'PY'
 import json, sys
 
 # The session limit shows up twice in one trace and either alone is enough. The
@@ -303,39 +313,34 @@ import json, sys
 # `result` record is the fallback for a refusal that arrives without one.
 LIMIT_TEXT = ("hit your session limit", "usage limit", "rate limit")
 reset, hit = 0, False
-try:
-    fh = open(sys.argv[1], encoding="utf-8", errors="replace")
-except OSError:
-    raise SystemExit(1)
-with fh:
-    for line in fh:
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            d = json.loads(line)
-        except ValueError:
-            continue          # a partial last line is normal on a killed session
-        if not isinstance(d, dict):
-            continue
-        if d.get("type") == "rate_limit_event":
-            info = d.get("rate_limit_info") or {}
-            # `status`, never `overageStatus` — see the header. A value we have never seen
-            # is not treated as a refusal: an unknown string must not be able to halt the
-            # harness, and a real refusal also lands on the `result` record below.
-            if info.get("status") == "rejected":
-                hit = True
-                try:
-                    reset = max(reset, int(info.get("resetsAt") or 0))
-                except (TypeError, ValueError):
-                    pass
-        elif d.get("type") == "result" and d.get("is_error"):
-            # `subtype` is "success" on this record even though is_error is true, so subtype
-            # cannot be the test. The text is what distinguishes an account refusal from a
-            # session that failed at its own work.
-            text = str(d.get("result") or "").lower()
-            if any(t in text for t in LIMIT_TEXT):
-                hit = True
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue          # a partial last line is normal on a killed session
+    if not isinstance(d, dict):
+        continue
+    if d.get("type") == "rate_limit_event":
+        info = d.get("rate_limit_info") or {}
+        # `status`, never `overageStatus` — see the header. A value we have never seen
+        # is not treated as a refusal: an unknown string must not be able to halt the
+        # harness, and a real refusal also lands on the `result` record below.
+        if info.get("status") == "rejected":
+            hit = True
+            try:
+                reset = max(reset, int(info.get("resetsAt") or 0))
+            except (TypeError, ValueError):
+                pass
+    elif d.get("type") == "result" and d.get("is_error"):
+        # `subtype` is "success" on this record even though is_error is true, so subtype
+        # cannot be the test. The text is what distinguishes an account refusal from a
+        # session that failed at its own work.
+        text = str(d.get("result") or "").lower()
+        if any(t in text for t in LIMIT_TEXT):
+            hit = True
 if not hit:
     raise SystemExit(1)
 print(reset)
@@ -540,12 +545,112 @@ aeon_named() {           # aeon_named <pidfile> -> the name held by that aeon, i
 }
 
 # --------------------------------------------------------------------------------------
+# ONE SESSION LOG PER BEAD, APPENDED TO, WITH ONE SEGMENT PER ATTEMPT.
+#
+# aeon.sh used to open the log with `>`, so an attempt erased its predecessor and only the
+# last one of a bead had a trace at all. On a day when a capacity outage killed 121 sessions
+# in three to seven seconds each, three traces survived; every other one had been overwritten
+# by the next attempt on the same bead, and with them the only record of why the session
+# died. The operator, verbatim: "I don't want to miss any insights from here on."
+#
+# Appending rather than one file per attempt is deliberate. The heartbeat decides whether a
+# session is alive by watching `stat -c %s` on this path grow, and that check reads a fixed
+# name — a new filename per attempt leaves it watching a file nobody is writing, which is
+# indistinguishable from a wedged session and costs the bead its lease. Appending keeps the
+# growth signal exactly as it was.
+#
+# What appending DOES change is that the file now holds events from sessions that are over,
+# so every reader that asks "what is happening" must read the LAST segment and not the whole
+# file: a `result` record from attempt 1 taken for attempt 3's would pause the harness for a
+# capacity outage that ended hours ago, or report a finished session's last tool call as a
+# live one's. attempt_trace is that boundary, and it is the only place the mark is parsed.
+#
+# The mark is a constant rather than a configuration key because it is a FORMAT, not a path:
+# an operator who changed it would make every log already on disk unreadable by the code that
+# writes the next line of it. It is defined once here and written by aeon.sh through
+# spira_trace_mark, so the writer and the readers cannot drift.
+#
+# It is not JSON and does not start with `{`, which is what makes it inert: every consumer of
+# this trace already skips any line that is not a JSON object, so the mark passes through
+# trace_last, trace_tail, capacity_reset_at and tokens.sh without special handling.
+# --------------------------------------------------------------------------------------
+SPIRA_TRACE_MARK='=== spira attempt'
+
+# spira_trace_mark <logfile> <aeon> -> the separator line that opens a new attempt.
+#
+# THE ORDINAL COUNTS MARKS ALREADY IN THE FILE, not the bead's `sp-attempt-N` labels. An
+# attempt is only CHARGED when a session fails, and a session refused by the account is
+# deliberately charged nothing — so the label count answers "how many failures were blamed on
+# this work", which is a different question from "which session am I reading" and was off by
+# every successful and every refused run. Here the file is its own authority.
+#
+# `kept=` IS THE METER, and it is here because nothing prunes these logs. Appending trades
+# bounded disk for a complete history, and the quantity given away is exactly the bytes
+# already retained for this bead — so it is recorded at the head of every attempt rather than
+# left to be discovered when a volume fills (law-take-the-simple-fix-with-a-meter). A bead
+# whose mark lines show `kept=` climbing into the hundreds of megabytes is the signal that
+# this simple choice has stopped being adequate.
+spira_trace_mark() {
+    local f="${1:-}" who="${2:-?}" kept n
+    kept="$(stat -c %s "$f" 2>/dev/null || echo 0)"
+    n="$(grep -c "^$SPIRA_TRACE_MARK " "$f" 2>/dev/null)"
+    printf '%s %s aeon=%s at=%s kept=%s\n' \
+        "$SPIRA_TRACE_MARK" "$(( ${n:-0} + 1 ))" "$who" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${kept:-0}"
+}
+
+# attempt_trace <logfile> [cap] -> the LAST attempt's segment, at most <cap> trailing bytes
+# (0 or absent means all of it). A log with no mark in it is emitted whole, because that is
+# what every log written before this change looks like and one attempt is all it ever held.
+attempt_trace() {
+    local f="${1:-}" cap="${2:-0}"
+    [ -r "$f" ] || return 0
+    python3 - "$f" "$cap" "$SPIRA_TRACE_MARK" <<'PY'
+import os, sys
+
+path, cap, mark = sys.argv[1], int(sys.argv[2]), sys.argv[3].encode()
+try:
+    fh = open(path, "rb")
+except OSError:
+    raise SystemExit(0)
+with fh:
+    size = os.fstat(fh.fileno()).st_size
+    # BACKWARDS IN CHUNKS, never a read of the whole file. This runs on every heartbeat of
+    # every live aeon, and the file it reads is the one thing here that grows without bound;
+    # a forward scan would make the cost of watching a session rise with how long the bead
+    # has been worked, which is the wrong way round.
+    CH, keep = 1 << 16, len(mark) + 1
+    start, pos, carry = 0, size, b""
+    while pos > 0:
+        step = min(CH, pos)
+        pos -= step
+        fh.seek(pos)
+        buf = fh.read(step) + carry
+        i = buf.rfind(b"\n" + mark)
+        if i >= 0:
+            start = pos + i + 1
+            break
+        if pos == 0 and buf.startswith(mark):
+            start = 0
+            break
+        # A mark straddling a chunk boundary belongs to neither half alone.
+        carry = buf[:keep]
+    fh.seek(max(start, size - cap) if cap > 0 else start)
+    sys.stdout.buffer.write(fh.read())
+PY
+}
+
+# --------------------------------------------------------------------------------------
 # trace_last <logfile> -> the last thing the session actually did, one line.
 # --------------------------------------------------------------------------------------
 trace_last() {
     local f="$1"
     [ -r "$f" ] || { printf ''; return 0; }
-    tail -c 100000 "$f" 2>/dev/null | python3 -c '
+    # THE LAST ATTEMPT'S SEGMENT, not the file's tail. The log is appended to across
+    # attempts, so a fresh attempt that has not yet written an event would otherwise report
+    # the PREVIOUS session's last tool call as what this one is doing — and the heartbeat
+    # grants a stalled aeon a reprieve on exactly that answer.
+    attempt_trace "$f" 100000 2>/dev/null | python3 -c '
 import sys, json
 last = ""
 for line in sys.stdin:
@@ -616,7 +721,7 @@ still_waiting() {
 trace_tail() {
     local f="$1" n="${2:-25}"
     [ -r "$f" ] || { printf '(no session log)'; return 0; }
-    tail -c 200000 "$f" 2>/dev/null | python3 -c '
+    attempt_trace "$f" 200000 2>/dev/null | python3 -c '
 import sys, json
 out = []
 for line in sys.stdin:

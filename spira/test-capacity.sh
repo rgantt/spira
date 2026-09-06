@@ -118,6 +118,92 @@ is  "an empty log is not a refusal"  "1" "$?"
 printf 'not json\nneither is this\n' > "$TMP/junk.log"; capacity_reset_at "$TMP/junk.log" >/dev/null
 is  "an unparseable log is not a refusal" "1" "$?"
 
+# ---- one log per bead, one segment per attempt -----------------------------------------
+# aeon.sh used to truncate the session log on every attempt, so a bead only ever had a trace
+# of its LAST session; a capacity outage that killed 121 sessions in three to seven seconds
+# left three traces behind. It appends now, which means every reader that asks "what is
+# happening" must find the newest segment — a `result` record from attempt 1 read as attempt
+# 3's would pause the harness against a window that reopened hours ago, and hand an attempt
+# back to a bead that genuinely failed.
+printf 'capacity: the trace keeps every attempt\n'
+
+RESETS2=$(( RESETS + 7200 ))
+rl2() { printf '{"type":"rate_limit_event","rate_limit_info":{"status":"%s","resetsAt":%s,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false},"uuid":"u","session_id":"s"}\n' "$1" "$RESETS2"; }
+mark() { spira_trace_mark "$1" "aeon-fixture" >> "$1"; }
+
+# A LEGACY LOG — no mark anywhere, because it was written before this change. It is one
+# attempt and must be read whole; a segment finder that returned nothing here would make
+# every log already on disk invisible.
+LEGACY="$(mklog legacy "$(rl_event rejected 1)" "$(result_line true "You've hit your session limit")")"
+is  "a log with no mark is its own segment" "$(wc -c < "$LEGACY")" "$(attempt_trace "$LEGACY" | wc -c)"
+capacity_reset_at "$LEGACY" >/dev/null
+is  "and is still read for a refusal" "0" "$?"
+
+# THE CENTRAL CASE. Attempt 1 was refused; attempt 2 failed at its own work. Under the old
+# code the second attempt erased the first and the question could not arise; appending makes
+# it the default failure, so it is the one asserted first.
+TWO="$TMP/two.log"; : > "$TWO"
+mark "$TWO"; rl_event rejected 1 >> "$TWO"; result_line true "You've hit your session limit" >> "$TWO"
+mark "$TWO"; rl_event allowed 0.3 >> "$TWO"; result_line true "Error: the test suite failed" >> "$TWO"
+capacity_reset_at "$TWO" >/dev/null
+is  "attempt 1's refusal is not attempt 2's" "1" "$?"
+want "but attempt 1's trace is still there"  "hit your session limit" "$(cat "$TWO")"
+
+# THE POSITIVE CONTROL FOR THE SAME MACHINERY: the refusal in the LAST segment is found, and
+# the epoch reported is that segment's and not the earlier one's. Without this, the case above
+# passes just as well on a reader that can no longer detect a refusal at all.
+THREE="$TMP/three.log"; : > "$THREE"
+mark "$THREE"; rl_event rejected 1 >> "$THREE"; result_line true "You've hit your session limit" >> "$THREE"
+mark "$THREE"; result_line true "Error: the test suite failed" >> "$THREE"
+mark "$THREE"; rl2 rejected >> "$THREE"; result_line true "You've hit your session limit" >> "$THREE"
+out="$(capacity_reset_at "$THREE")"; rc=$?
+is  "a refusal in the last segment is detected" "0" "$rc"
+is  "and reports that segment's epoch"          "$RESETS2" "$out"
+
+# THE MARK MAY STRADDLE A CHUNK BOUNDARY. attempt_trace reads backwards in 64KiB chunks
+# because this runs on every heartbeat of every live aeon; a mark split across two reads is
+# the one input that finds that seam, and it cannot be hit by a small fixture.
+BIG="$TMP/big.log"; : > "$BIG"
+mark "$BIG"
+python3 -c 'import sys
+sys.stdout.write("".join("{\"type\":\"pad\",\"n\":%d,\"x\":\"%s\"}\n" % (i, "p"*900) for i in range(300)))' >> "$BIG"
+for _ in 1 2 3 4 5 6 7; do
+    mark "$BIG"
+    python3 -c 'import sys
+sys.stdout.write("".join("{\"type\":\"pad\",\"n\":%d,\"x\":\"%s\"}\n" % (i, "q"*900) for i in range(80)))' >> "$BIG"
+done
+mark "$BIG"; rl2 rejected >> "$BIG"; result_line true "You've hit your session limit" >> "$BIG"
+[ "$(wc -c < "$BIG")" -gt 500000 ] && ok "the straddle fixture is bigger than one chunk" \
+    || bad "the straddle fixture is bigger than one chunk" "only $(wc -c < "$BIG") bytes"
+is  "the last mark is found across chunk boundaries" "3" "$(attempt_trace "$BIG" | wc -l)"
+is  "and the refusal in it is read" "$RESETS2" "$(capacity_reset_at "$BIG")"
+
+# WHAT THE HEARTBEAT SEES. still_waiting asks trace_last what the session was last doing and
+# grants a reprieve on the answer, so a fresh attempt that has written nothing yet must read
+# as nothing — not as the previous session's `cargo test`, which would buy a wedged aeon six
+# free extensions on evidence from a session that is already over.
+tool_line() { printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"%s"}}]}}\n' "$1"; }
+TL="$TMP/tl.log"; : > "$TL"
+mark "$TL"; tool_line "cargo test --all" >> "$TL"
+is   "trace_last reads the only segment there is" "Bash cargo test --all" "$(trace_last "$TL")"
+mark "$TL"; tool_line "grep -rn thing src" >> "$TL"
+is   "trace_last reads the newest segment"        "Bash grep -rn thing src" "$(trace_last "$TL")"
+mark "$TL"
+is   "a segment with no events yet reads as nothing" "" "$(trace_last "$TL")"
+still_waiting "$TL"; is "so the heartbeat does not grant it a reprieve" "1" "$?"
+
+# THE MARK IS ITS OWN COUNTER. The ordinal comes from the marks in the file rather than from
+# the bead's sp-attempt-N labels, because a refused session is charged no attempt at all and
+# a successful one none either — so the labels answer "how many failures were blamed on this
+# work", not "which session is this".
+is   "the first mark is attempt 1" "1" "$(awk 'NR==1{print $4}' "$TL")"
+is   "the third is attempt 3"      "3" "$(awk '/^=== spira attempt/{n=$4} END{print n}' "$TL")"
+grep -q 'kept=0' <<< "$(head -1 "$TL")" && ok "the meter starts at nothing kept" \
+    || bad "the meter starts at nothing kept" "$(head -1 "$TL")"
+kept="$(awk '/^=== spira attempt/{split($NF,a,"="); k=a[2]} END{print k}' "$TL")"
+[ "${kept:-0}" -gt 0 ] && ok "and records the bytes already retained, so growth is visible" \
+    || bad "and records the bytes already retained" "kept=[$kept]"
+
 printf 'capacity: the pause\n'
 rm -f "$SPIRA_CAPACITY_PAUSE"
 capacity_paused; is "no file means no pause" "1" "$?"

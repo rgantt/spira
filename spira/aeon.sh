@@ -229,6 +229,12 @@ PIDFILE="$SPIRA_RUN/aeon-$FAYTH-$BEAD_ID.pid"
 # ATTEMPT. That is the same harm this bead is about (an attempt spent on something that is
 # not the work's fault) arriving through a second door, and it left 94 `line 257: LOGF:
 # unbound variable` lines in the user journal in six hours to say so.
+#
+# ONE FILE PER BEAD, HELD ACROSS ATTEMPTS, and the heartbeat's growth check is why it is one
+# file and not one per attempt: it watches this exact path grow, so a name that changed each
+# time would leave it staring at a file nobody writes — which reads as a wedged session and
+# costs the bead its lease. Every attempt appends a segment behind a mark line; lib.sh's
+# attempt_trace is the only thing that knows how to find the newest one.
 LOGF="$SPIRA_RUN/$BEAD_ID.log"
 echo $$ > "$PIDFILE"
 printf '%s' "$AEON" > "${PIDFILE%.pid}.name"
@@ -517,6 +523,10 @@ $PROMPT
 $REBASE_BRIEF"
 
 # ---- work ----------------------------------------------------------------------------
+# APPEND, NEVER TRUNCATE — see attempt_trace in lib.sh. A `>` here erased the previous
+# attempt's trace, so a bead only ever had a record of its last session; the mark line is
+# what lets every reader still find where that last session begins.
+spira_trace_mark "$LOGF" "$AEON" >> "$LOGF"
 log "$FAYTH: working $BEAD_ID on $BRANCH (log: $LOGF)"
 set +e
 cd "$WORK" || die "worktree missing: $WORK"
@@ -542,7 +552,7 @@ printf '%s' "$FULL" | ${FAYTH_TIMEOUT_SECONDS:+timeout $FAYTH_TIMEOUT_SECONDS} \
            --model "${FAYTH_MODEL:-claude-opus-5}" \
            --allowedTools "${FAYTH_TOOLS:-Bash,Read,Edit,Write,Glob,Grep}" \
            --dangerously-skip-permissions \
-    > "$LOGF" 2>&1
+    >> "$LOGF" 2>&1
 rc=$?
 set -e
 log "$FAYTH: $BEAD_ID session exited rc=$rc"
