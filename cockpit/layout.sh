@@ -1,22 +1,34 @@
 #!/usr/bin/env bash
 #
-# layout.sh — build the cockpit: session on top, panel bottom-left, health bottom-right.
+# layout.sh — build the cockpit: session top-left, panel bottom-left, health down the right.
 #
-#   layout.sh up       create/repair the bottom panes (idempotent) and start the collector
+#   layout.sh up       create/repair the dashboard panes (idempotent) and start the collector
 #   layout.sh down     remove them, leaving the session pane full-height
 #   layout.sh status   what is running
 #   layout.sh ensure   heal a cockpit that is already up; SILENT when nothing is wrong
 #
 #   layout.sh up --window <target>   apply to a different tmux window
 #
-#                +--------------------------------------------------+
-#                |                                                  |
-#                |   claude session  (flips to hunk for review)      |  ~72%
-#                |                                                  |
-#                +------------------------+-------------------------+
-#                |  WAITING ON YOU        |  ops health             |  ~28%
-#                |  asks + open tasks     |  activity + trends      |
-#                +------------------------+-------------------------+
+#                +----------------------------------+---------------+
+#                |                                  |               |
+#                |   claude session                 |               |
+#                |   (flips to hunk for review)     |  ops health   |
+#                |                                  |               |
+#                +----------------------------------+  full height  |
+#                |  WAITING ON YOU                  |               |
+#                |  asks + open tasks               |  ~33% wide    |
+#                +----------------------------------+---------------+
+#                 <---- 100% - COCKPIT_RIGHT_PCT ---> <-- RIGHT_PCT ->
+#
+# ORDER IS THE GEOMETRY
+# ---------------------
+# The health pane is split off the WHOLE WINDOW first, which is what gives it the window's
+# full height; only then is the remaining left column divided between the session and the
+# panel. Split the bottom band first and halve it — as this once did — and the right pane
+# can only ever be a quadrant, because by the time it exists its height is already the
+# band's. A dashboard with a column's worth of rows is not a cosmetic change: health.sh
+# sizes each of its sections to the rows it is given, and in five rows every section is cut
+# to one.
 #
 # PANES ARE ADDRESSED BY TAG, NEVER BY INDEX
 # ------------------------------------------
@@ -32,7 +44,7 @@
 #
 # `up` is a REPAIR, not just a create. It normalises whatever it finds: if the session pane
 # is gone it opens a fresh shell at the top before touching anything else (the window must
-# never reach zero panes, or it dies and takes the session with it), then rebuilds the band.
+# never reach zero panes, or it dies and takes the session with it), then rebuilds the dashboards.
 #
 # WHAT THIS MUST NOT BREAK
 # ------------------------
@@ -56,7 +68,7 @@
 # a cockpit that is ALREADY UP — a window with `@cockpit` panes but no session pane left.
 #
 # The absence of any `@cockpit` pane means `down` was run, and `ensure` must leave that
-# alone. An unattended process that rebuilds the band the operator just dismissed is not a fence,
+# alone. An unattended process that rebuilds the dashboards the operator just dismissed is not a fence,
 # it is a fight. Same reason it heals wherever the tagged panes actually are rather than
 # at a hardcoded `brain:0`.
 #
@@ -73,8 +85,12 @@ RUN="$SPIRA_REPO/.runtime"
 # The panes open where the operator works — COCKPIT_CWD, a spira.conf key.
 CWD="$COCKPIT_CWD"
 # Pane geometry is the operator's, not the code's: a 13-inch laptop and a 32-inch monitor
-# do not want the same band. COCKPIT_BOTTOM_PCT is a spira.conf key.
+# do not want the same proportions. Both are spira.conf keys.
+#   COCKPIT_RIGHT_PCT   how wide the full-height ops column is, as a % of the window
+#   COCKPIT_BOTTOM_PCT  how tall the attention panel is, as a % of the window, inside the
+#                       LEFT column — it no longer has anything to do with the ops pane
 BOTTOM_PCT="$COCKPIT_BOTTOM_PCT"
+RIGHT_PCT="$COCKPIT_RIGHT_PCT"
 mkdir -p "$RUN"
 
 # Default to the window this script was invoked from; fall back to the claude window.
@@ -347,23 +363,78 @@ restart_collector_if_stale() {
     done
 }
 
-# Respawn whichever dashboard is missing, without disturbing the session pane.
-# SIDES ARE PART OF THE LAYOUT, NOT A COINCIDENCE. This file's first line promises "panel
-# bottom-left, health bottom-right", and the operator reads the two by position — attention on
-# the left is where they look for what is waiting on them. Nothing enforced it: repair
-# respawned a dead panel with `split-window -h -t <health>`, which places the new pane to the
-# RIGHT of its target, so every repair silently flipped the band. Presence was checked,
-# placement never was.
-normalize_sides() {
-    local d h dl hl
+# --- the two splits, in the one order that produces the shape -------------------
+# `-f` IS WHAT MAKES A REPAIR PRODUCE THE SAME SHAPE AS A FRESH BUILD. A plain split takes
+# its TARGET pane's height, so a health pane respawned after the left column had already
+# been divided came back the height of whichever half it was split from — a quadrant, on
+# the correct side, the correct width, running the correct program. `-f` spans the full
+# window height whatever the target looks like, so `up` and every repair path agree.
+split_health() {   # split_health <any pane in the left column> -> pane id on stdout
+    tmux split-window -P -F '#{pane_id}' -d -h -f -l "${RIGHT_PCT}%" -t "$1" -c "$CWD" \
+        "$COCK/health.sh loop"
+}
+# NO `-f` HERE, and that is deliberate: a full-window `-v` split would run under the health
+# column too and cut it off at the knees. The panel divides the LEFT column only, which is
+# what splitting the session pane in place does.
+split_panel() {    # split_panel <session pane> -> pane id on stdout
+    tmux split-window -P -F '#{pane_id}' -d -v -l "${BOTTOM_PCT}%" -t "$1" -c "$CWD" \
+        "$COCK/panel-run.sh"
+}
+
+geom() { tmux display-message -p -t "$1" "$2" 2>/dev/null; }
+
+# POSITION IS PART OF THE LAYOUT, NOT A COINCIDENCE. This file's first line promises the
+# session top-left, the panel beneath it and health down the right, and the operator reads
+# the three by position — attention on the left is where they look for what is waiting on
+# them. Nothing enforced it: repair respawned a dead panel with `split-window -h -t
+# <health>`, which places the new pane to the RIGHT of its target, so every repair silently
+# flipped the two. Presence was checked, placement never was.
+#
+# THREE INVARIANTS, AND A QUADRANT VIOLATES THE ONE THAT IS HARDEST TO SEE. A half-height
+# health pane is on the right, the right width, and running the right program; only its
+# height is wrong, and the eye reads it as the layout working. So the height is measured
+# against the window rather than looked at.
+normalize_geometry() {
+    local d h s dl hl hh wh dt st anchor
+
+    # 1. MIRRORED — the panel holds the right column and health is in the left. A swap
+    #    exchanges the two PROCESSES and leaves the geometry alone, which is exactly the
+    #    repair: health lands in the pane that is already the full-height column.
     d="$(tagged panel)"; h="$(tagged health)"
-    [ -n "$d" ] && [ -n "$h" ] || return 0
-    dl="$(tmux display-message -p -t "$d" '#{pane_left}' 2>/dev/null)"
-    hl="$(tmux display-message -p -t "$h" '#{pane_left}' 2>/dev/null)"
-    [ -n "$dl" ] && [ -n "$hl" ] || return 0
-    if [ "$dl" -gt "$hl" ]; then
-        heal_log "$WINDOW: panel is right of health — swapping back"
-        tmux swap-pane -s "$d" -t "$h" 2>/dev/null || true
+    if [ -n "$d" ] && [ -n "$h" ]; then
+        dl="$(geom "$d" '#{pane_left}')"; hl="$(geom "$h" '#{pane_left}')"
+        if [ -n "$dl" ] && [ -n "$hl" ] && [ "$dl" -gt "$hl" ]; then
+            heal_log "$WINDOW: panel is right of health — swapping back"
+            tmux swap-pane -s "$d" -t "$h" 2>/dev/null || true
+        fi
+    fi
+
+    # 2. HEALTH SPANS THE FULL WINDOW HEIGHT. Anything less is the old quadrant coming
+    #    back, and it cannot be swapped or resized into the right shape while a pane sits
+    #    above or below it — the column has to be cut from the window again.
+    h="$(tagged health)"
+    if [ -n "$h" ]; then
+        hh="$(geom "$h" '#{pane_height}')"; wh="$(geom "$h" '#{window_height}')"
+        if [ -n "$hh" ] && [ -n "$wh" ] && [ "$hh" -lt "$wh" ]; then
+            heal_log "$WINDOW: health is $hh of $wh rows — rebuilding it as a full-height column"
+            anchor="$(session_pane)"; [ -n "$anchor" ] || anchor="$(tagged panel)"
+            if [ -n "$anchor" ] && [ "$anchor" != "$h" ]; then
+                tmux kill-pane -t "$h" 2>/dev/null || true
+                h="$(split_health "$anchor")" && [ -n "$h" ] && tag_pane "$h" health
+            fi
+        fi
+    fi
+
+    # 3. THE PANEL SITS BELOW THE SESSION. Beside it, or above it, is a left column that
+    #    never got divided the way `up` divides it.
+    d="$(tagged panel)"; s="$(session_pane)"
+    if [ -n "$d" ] && [ -n "$s" ]; then
+        dt="$(geom "$d" '#{pane_top}')"; st="$(geom "$s" '#{pane_top}')"
+        if [ -n "$dt" ] && [ -n "$st" ] && [ "$dt" -le "$st" ]; then
+            heal_log "$WINDOW: panel is not below the session — rebuilding it there"
+            tmux kill-pane -t "$d" 2>/dev/null || true
+            d="$(split_panel "$s")" && [ -n "$d" ] && tag_pane "$d" panel
+        fi
     fi
 }
 
@@ -387,30 +458,28 @@ repair_dashboards() {
 
     local d h
     d="$(tagged panel)"; h="$(tagged health)"
-    [ -n "$d" ] && [ -n "$h" ] && { normalize_sides; return 0; }
+    [ -n "$d" ] && [ -n "$h" ] && { normalize_geometry; return 0; }
 
+    # A REBUILD REPRODUCES COLUMN-THEN-ROW, never a band. Both paths anchor on the session
+    # pane and use `split_health`/`split_panel` for exactly that reason: the old code split
+    # from whichever pane had survived, which under a divided left column handed the new
+    # health pane that half's height and quietly restored the quadrant.
     if [ -z "$d" ] && [ -z "$h" ]; then
-        heal_log "$WINDOW: both dashboards gone — rebuilding the band"
-        tmux split-window -d -v -l "${BOTTOM_PCT}%" -t "$sess" -c "$CWD" "$COCK/panel-run.sh" 2>/dev/null || return 1
-        d="$(untagged | grep -Fxv "$sess" | head -1)"
-        [ -n "$d" ] && tag_pane "$d" panel
-        tmux split-window -d -h -l 50% -t "$d" -c "$CWD" "$COCK/health.sh loop" 2>/dev/null
-        h="$(untagged | grep -Fxv "$sess" | head -1)"
+        heal_log "$WINDOW: both dashboards gone — rebuilding column, then row"
+        h="$(split_health "$sess")" || return 1
         [ -n "$h" ] && tag_pane "$h" health
+        d="$(split_panel "$sess")" || return 1
+        [ -n "$d" ] && tag_pane "$d" panel
     elif [ -z "$h" ]; then
-        heal_log "$WINDOW: health pane gone — respawning beside the panel"
-        tmux split-window -d -h -l 50% -t "$d" -c "$CWD" "$COCK/health.sh loop" 2>/dev/null || return 1
-        h="$(untagged | grep -Fxv "$sess" | head -1)"
+        heal_log "$WINDOW: health pane gone — respawning as the full-height right column"
+        h="$(split_health "$sess")" || return 1
         [ -n "$h" ] && tag_pane "$h" health
     else
-        # -b: BEFORE the target, i.e. to its left. Without it the panel comes back on the
-        # right and the band is mirrored.
-        heal_log "$WINDOW: panel pane gone — respawning left of health"
-        tmux split-window -d -h -b -l 50% -t "$h" -c "$CWD" "$COCK/panel-run.sh" 2>/dev/null || return 1
-        d="$(untagged | grep -Fxv "$sess" | head -1)"
+        heal_log "$WINDOW: panel pane gone — respawning below the session"
+        d="$(split_panel "$sess")" || return 1
         [ -n "$d" ] && tag_pane "$d" panel
     fi
-    normalize_sides
+    normalize_geometry
     tmux select-pane -t "$sess" 2>/dev/null || true
 }
 
@@ -422,7 +491,7 @@ up)
 
     sess="$(session_pane)"
     if [ -z "$sess" ]; then
-        # Every pane is a dashboard: the session pane died and the band inherited the
+        # Every pane is a dashboard: the session pane died and the dashboards inherited the
         # window. Open its replacement FIRST — killing the dashboards to make room would
         # empty the window, and an empty window is a destroyed window.
         sess=$(tmux split-window -P -F '#{pane_id}' -b -v -l 60% -t "$(all_tagged | head -1)" -c "$CWD") \
@@ -430,18 +499,21 @@ up)
         echo "cockpit: session pane was gone — opened a shell at $sess"
     fi
 
-    # Rebuild the band from scratch. Killing first is what makes `up` a repair: a duplicated
+    # Rebuild the dashboards from scratch. Killing first is what makes `up` a repair: a duplicated
     # or mis-nested dashboard from an earlier bad run is removed rather than split again.
     for p in $(all_tagged); do tmux kill-pane -t "$p" 2>/dev/null || true; done
 
-    dec=$(tmux split-window -P -F '#{pane_id}' -d -v -l "${BOTTOM_PCT}%" -t "$sess" -c "$CWD" \
-            "$COCK/panel-run.sh") \
-        || { echo "cockpit: split failed" >&2; exit 1; }
-    tag_pane "$dec" panel
-
-    hea=$(tmux split-window -P -F '#{pane_id}' -d -h -l 50% -t "$dec" -c "$CWD" "$COCK/health.sh loop") \
-        || { echo "cockpit: second split failed" >&2; exit 1; }
+    # THE COLUMN FIRST. Splitting the window horizontally while the session pane still owns
+    # all of it is the whole trick: the new pane inherits the window's height, and only
+    # afterwards is what remains divided between the session and the panel. Reverse these
+    # two lines and the dashboard is a quadrant again.
+    hea=$(split_health "$sess") \
+        || { echo "cockpit: health split failed" >&2; exit 1; }
     tag_pane "$hea" health
+
+    dec=$(split_panel "$sess") \
+        || { echo "cockpit: panel split failed" >&2; exit 1; }
+    tag_pane "$dec" panel
 
     echo "cockpit: up in $WINDOW (session $sess · panel $dec · health $hea)"
     # ALWAYS hand focus back to the session pane: hunk-open sends keys to the active pane.

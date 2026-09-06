@@ -73,9 +73,14 @@
 # very little reason to differ.
 # COCKPIT_DB = $HOME/.local/share/spira/db
 
-# How much of the window the bottom band takes, as a percentage. A 13-inch laptop and a
-# 32-inch monitor do not want the same band.
+# How much of the LEFT COLUMN the attention panel takes, as a percentage of the window's
+# height. The left column holds your session on top and the panel beneath it.
 # COCKPIT_BOTTOM_PCT = 28
+
+# How wide the ops dashboard column is, as a percentage of the window. It is a full-height
+# column down the right-hand side, so this is the only dimension it has. A 13-inch laptop
+# and a 32-inch monitor do not want the same width.
+# COCKPIT_RIGHT_PCT = 33
 
 # The directory the cockpit's panes open in. The top pane holds YOUR session, so this decides
 # which project's instructions that session loads — not a cosmetic choice.

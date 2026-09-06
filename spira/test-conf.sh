@@ -65,6 +65,11 @@ case "$db" in "$CLONE"*) bad "the default database is outside the checkout" "$db
 for k in SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI_HOOK SPIRA_DOLT_DATA; do
     is "$k defaults to empty" "" "$(probe "$NONE" "$k")"
 done
+# THE COCKPIT'S GEOMETRY HAS A DEFAULT TOO. A clean clone with no config builds a cockpit,
+# and the two percentages are what decide its shape — a missing default is a `%` split with
+# an empty number, which tmux rejects and `up` reports as a failed split.
+is "COCKPIT_RIGHT_PCT defaults to 33"  "33" "$(probe "$NONE" COCKPIT_RIGHT_PCT)"
+is "COCKPIT_BOTTOM_PCT defaults to 28" "28" "$(probe "$NONE" COCKPIT_BOTTOM_PCT)"
 # AND THE MAP FALLS BACK TO THE EXAMPLE, which is the whole reason a clean clone resolves.
 is "repo-map falls back to the example" "$CLONE/spira/repo-map.example" \
    "$(probe "$NONE" SPIRA_REPO_MAP)"
@@ -86,6 +91,7 @@ SPIRA_PATH = /opt/one:/opt/two
 SPIRA_TOWN = $HOME/town
 SPIRA_OPERATOR = "a quoted name"
 COCKPIT_BOTTOM_PCT = 41
+COCKPIT_RIGHT_PCT = 47
 EOF
 is "a plain key"                 "/tmp/some/db"  "$(probe "$CONF" SPIRA_DB)"
 is "no spaces around ="          "tight"         "$(probe "$CONF" SPIRA_HOME_REPO)"
@@ -93,6 +99,7 @@ is "spaces on both sides"        "spaced-out"    "$(probe "$CONF" SPIRA_GOAL)"
 is "\$HOME expands"              "$TMP/home/town" "$(probe "$CONF" SPIRA_TOWN)"
 is "quotes are stripped"         "a quoted name" "$(probe "$CONF" SPIRA_OPERATOR)"
 is "a COCKPIT_ key is honoured"  "41"            "$(probe "$CONF" COCKPIT_BOTTOM_PCT)"
+is "and so is the second one"    "47"            "$(probe "$CONF" COCKPIT_RIGHT_PCT)"
 # EVERY KEY IN THE ALLOWLIST MUST ACTUALLY MATCH IT. This is the regression for the newline
 # bug: the list spans lines, and a key at a line boundary was refused as unknown. Driving
 # each key through the file one at a time is the only shape that would have caught it.
@@ -159,7 +166,7 @@ done
 is "no location-derived key is exported" "" "$leaked"
 # And the ones that MUST reach a non-shell child, because nothing else carries them there.
 missing=""
-for k in SPIRA_DB COCKPIT_DB SPIRA_TOWN SPIRA_PATH SPIRA_OPERATOR COCKPIT_BOTTOM_PCT; do
+for k in SPIRA_DB COCKPIT_DB SPIRA_TOWN SPIRA_PATH SPIRA_OPERATOR COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT; do
     got="$(env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$CONF" \
            bash -c ". '$CONF_SH' 2>/dev/null; env" | grep -c "^$k=" || true)"
     [ "$got" = 1 ] || missing="$missing $k"

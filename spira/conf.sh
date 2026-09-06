@@ -54,7 +54,7 @@ SPIRA_CONF_KEYS="
 SPIRA_HOME_REPO SPIRA_DB SPIRA_RUN SPIRA_GOAL
 SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER
 SPIRA_COCKPIT SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
-COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_CWD
+COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_ALERT_GLOB
 SPIRA_FAYTHS SPIRA_MAX_AEONS
@@ -208,6 +208,12 @@ spira_conf_defaults() {
     : "${SPIRA_WIKI:=}"
     : "${COCKPIT_DB:=$SPIRA_DB}"
     : "${COCKPIT_BOTTOM_PCT:=28}"
+    # How wide the ops column is, as a percentage of the window. The dashboard is a
+    # FULL-HEIGHT right column, so this is the only dimension it has; COCKPIT_BOTTOM_PCT
+    # divides the left column between the session and the attention panel and no longer
+    # touches it. A column is what lets each section grow to the space it can use instead
+    # of every one of them being cut to a single row.
+    : "${COCKPIT_RIGHT_PCT:=33}"
     # WHERE THE COCKPIT'S PANES OPEN. The top pane holds the operator's own session, so its
     # working directory decides which project's instructions that session loads — not a
     # cosmetic choice. It defaults to the wiki when one is configured, because an operator
@@ -302,7 +308,7 @@ export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin
 # test suite through systemd and made the suite assert the host's roster instead of the
 # defaults it was written to check.
 # --------------------------------------------------------------------------------------
-export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_CWD SPIRA_PATH SPIRA_GOAL \
+export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIRA_PATH SPIRA_GOAL \
        SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \

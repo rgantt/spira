@@ -192,5 +192,186 @@ else
 fi
 
 echo
+echo "the sections are sized to the pane, and none of them can be starved"
+
+# THE PANE IS A FULL-HEIGHT COLUMN NOW, so the four sections that have more to say than fits
+# — NOW, NEXT, RECENT, CI — are allocated rows rather than cut to one each. The expensive
+# failure is not a missing row but a section that vanishes entirely while the pane still
+# looks full: CI is the only place a run parked since yesterday appears, and it is the last
+# section in the order, so a greedy allocator starves exactly the one nothing else reports.
+PANE="$HERE/../cockpit/health.sh"
+PD="$TMP/pane"; mkdir -p "$PD/repo/.runtime/spira" "$PD/home"
+SNAPF="$PD/repo/.runtime/spira/cockpit.env"
+
+# Written the way the collector writes it: every value SINGLE-QUOTED. `SP_NEXT0=P1 sp-a A
+# title` unquoted is not an assignment, it is an assignment followed by a command, and the
+# value arrives as one word with the rest run as a program.
+snap() {
+    python3 -c '
+import sys
+for line in sys.stdin.read().splitlines():
+    if not line.strip(): continue
+    k, _, v = line.partition("=")
+    print("%s=%s" % (k, "\x27" + v.replace("\x27", "\x27\\\x27\x27") + "\x27"))
+' > "$SNAPF"
+}
+
+# An explicit minimal environment, and SPIRA_CONF pointed at a file that does not exist so
+# no operator's spira.conf can decide a verdict here (law-gates-run-in-a-clean-environment).
+# LC_ALL IS PASSED THROUGH, because the assertions count CHARACTERS and half the frame is
+# multibyte. Without it the suite would measure bytes and disagree with the pane about what
+# fits — and the pane would be right.
+pane() {                 # pane <rows> [cols] -> the frame, ANSI stripped
+    env -i PATH="$PATH" HOME="$PD/home" TERM=dumb LC_ALL=C.UTF-8 \
+        SPIRA_CONF="$PD/no.conf" SPIRA_REPO="$PD/repo" SPIRA_RUN="$PD/repo/.runtime/spira" \
+        bash "$PANE" once "$1" "${2:-0}" 2>/dev/null | sed 's/\x1b\[[?0-9;]*[a-zA-Z]//g'
+}
+rows_of() { printf '%s\n' "$1" | awk -v l=" $2" 'index($0,l)==1{n=1;next} n && /^ [A-Z]/{exit} n{n++} END{print n+0}'; }
+
+if [ ! -f "$PANE" ]; then
+    fail=$((fail+1)); printf '  FAIL  cannot find the pane at %s\n' "$PANE"
+else
+{
+    printf 'SP_AEON_N=3\n'
+    for i in 0 1 2; do
+        printf 'SP_AEON%d_NAME=aeon%d\nSP_AEON%d_FAYTH=builder\nSP_AEON%d_BEAD=sp-w%d\n' "$i" "$i" "$i" "$i" "$i"
+        printf 'SP_AEON%d_MIN=5\nSP_AEON%d_ACT=doing a thing\nSP_AEON%d_TITLE=A worked bead\n' "$i" "$i" "$i"
+    done
+    printf 'SP_NEXT_N=25\n'
+    for i in $(seq 0 19); do printf 'SP_NEXT%d=P1 sp-n%d A queued bead\n' "$i" "$i"; done
+    for i in $(seq 0 19); do printf 'SP_EVENT%d=%dm ago landed spira/sp-e%d\n' "$i" "$i" "$i"; done
+    printf 'SP_AWAITING_N=20\nSP_AWAITING_OLDEST=sp-c0\nSP_AWAITING_AGE=9h\n'
+    for i in $(seq 0 19); do printf 'SP_AWAITING%d=sp-c%d 9h A parked bead\n' "$i" "$i"; done
+} | snap
+
+# THE POSITIVE CONTROL FOR THE ONE BELOW IT. NOW can show nine rows here and must not be
+# given all nine at this height — if it were, there would be no contention and "CI survived"
+# would be passing for the wrong reason.
+busy="$(pane 20)"
+n_now="$(rows_of "$busy" NOW)"
+if [ "$n_now" -ge 1 ] && [ "$n_now" -lt 9 ]; then
+    pass=$((pass+1)); printf '  ok    a nine-row NOW is held to %s rows in a 20-row pane\n' "$n_now"
+else
+    fail=$((fail+1)); printf '  FAIL  NOW took %s of its 9 rows — nothing was rationed\n' "$n_now"
+fi
+if grep -q '^ CI ' <<< "$busy"; then
+    pass=$((pass+1)); printf '  ok    and CI still has its row\n'
+else
+    fail=$((fail+1)); printf '  FAIL  CI was starved out of a 20-row pane:\n%s\n' "$busy"
+fi
+is_n() { if [ "$2" = "$3" ]; then pass=$((pass+1)); printf '  ok    %s\n' "$1"
+         else fail=$((fail+1)); printf '  FAIL  %s: want [%s] got [%s]\n' "$1" "$2" "$3"; fi; }
+is_n "a 20-row pane is filled to exactly 20 rows" 20 "$(printf '%s\n' "$busy" | wc -l)"
+
+# EVERY SECTION KEEPS ITS FIRST ROW. Four sections and nine standing lines do not fit in
+# thirteen once the header is counted, and what must NOT happen is a section being allocated
+# zero rows: that is a section vanishing with nothing on screen saying it did.
+tight="$(pane 13)"
+missing=""
+for l in NOW NEXT RECENT CI; do grep -q "^ $l " <<< "$tight" || missing="$missing $l"; done
+is_n "every section survives a 13-row pane" "" "$missing"
+
+# ...and in a pane too short even for that, the overflow is MARKED. A dashboard that hides
+# its own content without saying so is the failure it exists to prevent.
+short="$(pane 5)"
+is_n "a 5-row pane shows 5 rows" 5 "$(printf '%s\n' "$short" | wc -l)"
+case "$short" in *▾*) pass=$((pass+1)); printf '  ok    and marks the dropped lines on the header\n' ;;
+    *) fail=$((fail+1)); printf '  FAIL  5-row pane dropped lines silently:\n%s\n' "$short" ;; esac
+
+# GROWTH IS CAPPED, AND THE CAP IS IN LINES. A section that keeps growing stops being a
+# glance and becomes a list, which is what `bd ready` is for. Twenty lines of NEXT is its
+# own header plus nineteen beads — the header is a line like any other.
+tall="$(pane 200)"
+is_n "NEXT grows to its cap and no further" 20 "$(rows_of "$tall" NEXT)"
+case "$tall" in *"sp-n18"*) pass=$((pass+1)); printf '  ok    a tall pane shows far more than the old single row\n' ;;
+    *) fail=$((fail+1)); printf '  FAIL  a tall pane still shows only the head of the queue\n' ;; esac
+# And the cap must be SEEN biting, or "20" is a number nobody has watched refuse anything.
+case "$tall" in *"sp-n19"*) fail=$((fail+1)); printf '  FAIL  the 20-line cap did not hold\n' ;;
+    *) pass=$((pass+1)); printf '  ok    and stops there — the 21st line is refused\n' ;; esac
+
+# THE COLUMN IS NARROWER THAN THE QUADRANT IT REPLACED — a third of the window rather than
+# half — so fitting the pane is a question about width as well as height. Autowrap is off,
+# which means the terminal CUTS a long line rather than folding it, and the terminal's cut is
+# silent: exactly the failure the dropped-row marker on the header exists to prevent, arriving
+# by the other axis.
+{
+    printf 'SP_AEON_N=0\nSP_NEXT_N=3\n'
+    printf 'SP_NEXT0=P1 sp-longtitle %s\n' "$(printf 'x%.0s' $(seq 1 120))"
+    printf 'SP_NEXT1=P1 sp-short A short one\n'
+    printf 'SP_EVENT0=2m ago %s\n' "$(printf 'y%.0s' $(seq 1 120))"
+    printf 'SP_AWAITING_N=1\nSP_AWAITING_OLDEST=sp-p\nSP_AWAITING_AGE=1h\n'
+    printf 'SP_AWAITING0=sp-p 1h %s\n' "$(printf 'z%.0s' $(seq 1 120))"
+} | snap
+# MEASURED IN CHARACTERS, WITH PYTHON, NOT WITH awk. The frame is full of multibyte
+# characters and a suite run from a gate inherits the C locale, where awk counts BYTES — the
+# ellipsis this very case is checking for is three bytes and one column, so the assertion
+# would fail by exactly two on every line it cut, and blame the pane.
+cols_of() { python3 -c '
+import sys
+print(max([len(l) for l in sys.stdin.read().splitlines()] or [0]))'; }
+find_len() { python3 -c '
+import sys
+for l in sys.stdin.read().splitlines():
+    if sys.argv[1] in l:
+        print(len(l)); break
+else:
+    print(0)' "$1"; }
+
+narrow="$(pane 40 70)"
+widest="$(printf '%s\n' "$narrow" | cols_of)"
+if [ "$widest" -le 70 ]; then
+    pass=$((pass+1)); printf '  ok    nothing overflows a 70-column pane (widest %s)\n' "$widest"
+else
+    fail=$((fail+1)); printf '  FAIL  a row ran to %s columns in a 70-column pane\n' "$widest"
+fi
+case "$narrow" in *…*) pass=$((pass+1)); printf '  ok    and a cut line is marked with an ellipsis\n' ;;
+    *) fail=$((fail+1)); printf '  FAIL  a 120-character title was cut silently:\n%s\n' "$narrow" ;; esac
+# THE POSITIVE CONTROL. A frame wide enough for everything must carry NO marker, or the one
+# above proves nothing — an ellipsis that is always present says nothing about the cut.
+wide="$(pane 40 200)"
+case "$wide" in *…*) fail=$((fail+1)); printf '  FAIL  a 200-column pane still marked a cut:\n%s\n' "$wide" ;;
+    *) pass=$((pass+1)); printf '  ok    and a pane wide enough for the row marks nothing\n' ;; esac
+# The width must come from the pane, not from a number written into the renderer: the same
+# row has to be longer when there is more room for it.
+w70="$(printf '%s\n' "$narrow" | find_len sp-longtitle)"
+w200="$(printf '%s\n' "$wide" | find_len sp-longtitle)"
+if [ "${w70:-0}" -gt 0 ] && [ "${w200:-0}" -gt "${w70:-0}" ]; then
+    pass=$((pass+1)); printf '  ok    the same row is %s columns at 70 and %s at 200\n' "$w70" "$w200"
+else
+    fail=$((fail+1)); printf '  FAIL  the row did not grow with the pane: 70->[%s] 200->[%s]\n' "$w70" "$w200"
+fi
+
+# ABSENCE AND A FAILED READ ARE NOT THE SAME PIXELS (law-absence-needs-a-positive-control).
+# These two snapshots differ by three values, and rendering the second as the first is the
+# all-clear a broken check must never be able to produce.
+printf 'SP_AEON_N=0\nSP_NEXT_N=0\nSP_AWAITING_N=0\n' | snap
+idle="$(pane 0)"
+for want in 'no aeon working' 'nothing to claim' 'nothing parked on CI'; do
+    if grep -qF "$want" <<< "$idle"; then
+        pass=$((pass+1)); printf '  ok    idle says "%s"\n' "$want"
+    else
+        fail=$((fail+1)); printf '  FAIL  idle did not say "%s":\n%s\n' "$want" "$idle"
+    fi
+done
+printf 'SP_AEON_N=?\nSP_NEXT_N=?\nSP_AWAITING_N=?\n' | snap
+broke="$(pane 0)"
+for l in NOW NEXT CI; do
+    if grep -qE "^ $l +\? " <<< "$broke"; then
+        pass=$((pass+1)); printf '  ok    a failed probe renders %s as ? and not as idle\n' "$l"
+    else
+        fail=$((fail+1)); printf '  FAIL  %s reported a broken read as all-clear:\n%s\n' "$l" "$broke"
+    fi
+done
+# The same absence with no snapshot AT ALL — the case the file's own existence answers.
+rm -f "$SNAPF"
+none="$(pane 0)"
+if grep -qE '^ RECENT +\? ' <<< "$none"; then
+    pass=$((pass+1)); printf '  ok    a missing snapshot renders RECENT as ?, not as an empty log\n'
+else
+    fail=$((fail+1)); printf '  FAIL  a missing snapshot read as "nothing happened":\n%s\n' "$none"
+fi
+fi
+
+echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -100,7 +100,7 @@ import sys, json
 try: d = json.load(sys.stdin); i = (d if isinstance(d, list) else [d])[0]
 except Exception: raise SystemExit
 import re
-print(re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:58])' 2>/dev/null)"
+print(re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80])' 2>/dev/null)"
         echo "SP_AEON${i}_TITLE=${title:-?}"
         echo "SP_AEON${i}_NAME=${name:-?}"
         echo "SP_AEON${i}_FAYTH=${fay:-?}"
@@ -118,8 +118,20 @@ import sys, json
 try: d = json.load(sys.stdin)
 except Exception: raise SystemExit
 rows = d if isinstance(d, list) else [d]
-for n, i in enumerate(rows[:4]):
-    print("SP_NEXT%d=P%s %s %s" % (n, i.get("priority"), i["id"], (i.get("title") or "")[:58].replace("=", "-")))
+# AND THE TITLES ARE CUT AT EIGHTY, NOT FIFTY-EIGHT. The pane cuts a row to the width it
+# has and marks the cut; the collector cannot, because it does not know how wide the column
+# is. A cap here tighter than the pane would be a silent truncation nothing can report, and
+# the width of that column is set by whoever runs the harness.
+#
+# APOSTROPHES ARE FORBIDDEN IN THIS BLOCK. It lives inside python3 -c '...', so one
+# would close the quote and leave the whole file syntactically invalid.
+#
+# TWENTY, NOT FOUR. The pane is a full-height column now and sizes each section to the rows
+# it is given, so the COLLECTOR is the binding constraint before the renderer is: four keys
+# render as four rows into twenty rows of space, which looks broken in a new way. The cap
+# matches health.sh MAX_SECTION_ROWS -- there is no point emitting more than can be shown.
+for n, i in enumerate(rows[:20]):
+    print("SP_NEXT%d=P%s %s %s" % (n, i.get("priority"), i["id"], (i.get("title") or "")[:80].replace("=", "-")))
 print("SP_NEXT_N=%d" % len(rows))
 ' 2>/dev/null
 
@@ -132,7 +144,7 @@ print("SP_NEXT_N=%d" % len(rows))
     # switch explains itself instead of having to be inferred from a clock.
     {
         grep -E 'ACT (landed|reopened|poisoned|reclaimed [0-9]|announced|reaped)' \
-             "$SPIRA_RUN/sentinel.log" 2>/dev/null | tail -12 \
+             "$SPIRA_RUN/sentinel.log" 2>/dev/null | tail -40 \
           | sed -E 's/^([^ ]+) spira: ACT /\1 /'
         # strand.sh's output carries NO timestamp of its own — it is printed inside a pass.
         # Stamping it with now() made a half-hour-old reclaim read "0s ago", which is the
@@ -150,11 +162,13 @@ for line in open(sys.argv[1], errors="replace"):
         parts = line.split()
         if len(parts) > 1:
             out.append("%s reclaimed %s" % (ts, parts[1]))
-print("\n".join(out[-4:]))
+print("\n".join(out[-20:]))
 ' "$SPIRA_RUN/sentinel.log" 2>/dev/null
         awk '$3 ~ /^sp-/ && $2 == "awake" { printf "%s claimed %s\n", $1, $3 }' \
-            "$SPIRA_RUN/aeon-ledger.log" 2>/dev/null | tail -12
-    } | sort -r | head -4 | python3 -c '
+            "$SPIRA_RUN/aeon-ledger.log" 2>/dev/null | tail -40
+    # EVERY STAGE OF THIS PIPELINE IS A CAP AND THE SMALLEST ONE DECIDES. Widening only the
+    # last would still emit four events, because each source is trimmed before the merge.
+    } | sort -r | head -20 | python3 -c '
 import sys, datetime
 now = datetime.datetime.now(datetime.timezone.utc)
 for n, line in enumerate(sys.stdin):
@@ -170,7 +184,7 @@ for n, line in enumerate(sys.stdin):
     elif secs < 5400: rel = "%dm ago" % (secs // 60)
     elif secs < 172800: rel = "%dh ago" % (secs // 3600)
     else: rel = "%dd ago" % (secs // 86400)
-    print("SP_EVENT%d=%-7s %s" % (n, rel, parts[1].strip()[:52].replace("=", "-")))
+    print("SP_EVENT%d=%-7s %s" % (n, rel, parts[1].strip()[:80].replace("=", "-")))
 '
 
     # ---- AWAITING CI: work parked on purpose --------------------------------------------
@@ -195,16 +209,23 @@ if not rows:
 def when(v):
     try: return datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
     except Exception: return None
+def rel(secs):
+    if secs < 90: return "%ds" % secs
+    if secs < 5400: return "%dm" % (secs // 60)
+    if secs < 172800: return "%dh" % (secs // 3600)
+    return "%dd" % (secs // 86400)
 now = datetime.datetime.now(datetime.timezone.utc)
-aged = sorted(((when(i.get("updated_at")) or now, i["id"]) for i in rows))
-t, bid = aged[0]
-secs = int((now - t).total_seconds())
-if secs < 90: rel = "%ds" % secs
-elif secs < 5400: rel = "%dm" % (secs // 60)
-elif secs < 172800: rel = "%dh" % (secs // 3600)
-else: rel = "%dd" % (secs // 86400)
+aged = sorted(((when(i.get("updated_at")) or now, i["id"], i) for i in rows), key=lambda r: r[0])
+t, bid, _ = aged[0]
 print("SP_AWAITING_OLDEST=%s" % bid)
-print("SP_AWAITING_AGE=%s" % rel)
+print("SP_AWAITING_AGE=%s" % rel(int((now - t).total_seconds())))
+# ONE KEY PER PARKED BEAD, oldest first, so the CI section has something to expand INTO.
+# The summary line above answers "is anything parked"; it cannot answer "which of them has
+# been parked since yesterday", and that is the question a stalled run is found by.
+import re
+for n, (t, bid, i) in enumerate(aged[:20]):
+    title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80]
+    print("SP_AWAITING%d=%-10s %-4s %s" % (n, bid, rel(int((now - t).total_seconds())), title))
 ' 2>/dev/null || { echo "SP_AWAITING_N=?"; echo "SP_AWAITING_OLDEST=?"; echo "SP_AWAITING_AGE=?"; }
 
     # ---- FLOW: what is moving between the operator and the harness ------------------------------
