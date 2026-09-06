@@ -81,6 +81,23 @@ if [ "$have" -ge "${FAYTH_MAX_CONCURRENT:-1}" ]; then
     exit 0
 fi
 
+# ---- the account ----------------------------------------------------------------------
+# BOUND HERE AS WELL AS AT summon_fayth, because aeons arrive from two places — the
+# sentinel's CHECK 7 and spira-ops.service — and a guard on one of them binds whichever
+# caller is most disciplined about using it rather than the one that does the damage
+# (law-guard-binds-the-caller). Both doors reach this line; the ready queue is behind it.
+#
+# Checked BEFORE the claim, never after: the whole point is that no bead is holding a lease
+# while the window is shut, so there is nothing to hand back and nothing to charge.
+if capacity_paused; then
+    log "$FAYTH: the account is out of capacity for another ${SPIRA_CAPACITY_LEFT}s — claiming nothing"
+    # LIVED, did not work. Same reading as the concurrency cap above and for the same
+    # reason: an aeon that correctly declined is not a stillbirth, and counting it as one
+    # would put a false number on the panel for the whole of every outage.
+    ledger "awake $FAYTH paused"
+    exit 0
+fi
+
 # ---- claim ---------------------------------------------------------------------------
 # --exclude-type epic: the goal epic is itself "ready" (it has no blockers) and would
 # otherwise be claimed and "implemented", which is not a thing an epic means.
@@ -176,7 +193,7 @@ REPO_NAME="${BEAD_REPO:-$(spira_home_repo)}"
 if ! REPO="$(repo_root "$REPO_NAME")" || [ ! -e "$REPO/.git" ]; then
     log "$FAYTH: $BEAD_ID names repo:$REPO_NAME, which repo-map does not resolve to a checkout"
     bdq note "$BEAD_ID" "Released by aeon.sh: this bead carries repo:$REPO_NAME, and $SPIRA_REPO_MAP has no entry for it (or its path is not a git checkout). Add one, or correct the label. Refusing to work it in the home repo — a fix landed in the wrong repository passes every check downstream." >/dev/null 2>&1
-    bdq unclaim "$BEAD_ID" --if-assignee "aeon-$FAYTH" >/dev/null 2>&1
+    bdq unclaim "$BEAD_ID" --if-assignee "$BEADS_ACTOR" >/dev/null 2>&1
     ledger "done $FAYTH $BEAD_ID rc=1 status=unmapped-repo"
     exit 1
 fi
@@ -201,18 +218,40 @@ else
     log "$FAYTH/$AEON: $BEAD_ID resumes recorded branch $BRANCH"
 fi
 PIDFILE="$SPIRA_RUN/aeon-$FAYTH-$BEAD_ID.pid"
+# DEFINED HERE, ABOVE THE HEARTBEAT, because the heartbeat reads it. It used to be assigned
+# beside the session that writes it, 150 lines below the subshell that forks with a copy of
+# the environment as it stands HERE — so `stat -c %s "$LOGF"` expanded an unbound variable
+# under `set -u` on every beat. That does not kill the beat: the error dies inside the
+# command substitution, `now` comes back empty, and empty compares equal to the previous
+# empty, so the stall counter read "no progress" on a session doing nothing but progress.
+# Every aeon therefore stopped heartbeating after STALL_BEATS beats — 20 minutes — however
+# hard it was working; its lease expired, strand.sh reclaimed it as a ghost and BUMPED ITS
+# ATTEMPT. That is the same harm this bead is about (an attempt spent on something that is
+# not the work's fault) arriving through a second door, and it left 94 `line 257: LOGF:
+# unbound variable` lines in the user journal in six hours to say so.
+LOGF="$SPIRA_RUN/$BEAD_ID.log"
 echo $$ > "$PIDFILE"
 printf '%s' "$AEON" > "${PIDFILE%.pid}.name"
 
 # ---- teardown ------------------------------------------------------------------------
 HB_PID=""
 cleanup() {
-    local rc=$?
+    local rc=$? reset_at
     [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null
     rm -f "$PIDFILE" "${PIDFILE%.pid}.name"
     cd "$REPO" 2>/dev/null || true
     # If the bead is still ours and still open, hand it back rather than holding a lease
     # nobody is working. Lease expiry would do this eventually; doing it now is honest.
+    #
+    # `--if-assignee "$BEADS_ACTOR"`, NEVER "aeon-$FAYTH". --if-assignee is a compare-and-swap
+    # against the CURRENT holder, and the holder is this aeon's own name — `aeon-mindy`, not
+    # `aeon-builder` — because the claim is made under BEADS_ACTOR, which took a per-instance
+    # name the day aeons got identities. So the swap compared against a string no bead has
+    # ever carried: every release silently no-opped, `bd` exited non-zero into >/dev/null, and
+    # the bead sat in_progress until its lease expired and strand.sh ghost-reclaimed it —
+    # CHARGING A SECOND ATTEMPT for the release this line was supposed to perform. "Returned
+    # unchanged" is not achievable without this: a bead still in_progress has not been
+    # returned at all.
     st="$(bdjson show "$BEAD_ID" 2>/dev/null | python3 -c '
 import sys,json
 try: d=json.load(sys.stdin)
@@ -220,8 +259,28 @@ except Exception: print(""); sys.exit()
 d=d if isinstance(d,list) else [d]
 print(d[0].get("status","") if d else "")' 2>/dev/null)"
     if [ "$st" != "closed" ]; then
+        # ASK-AGAIN-LATER IS NOT THIS-BEAD-IS-HARD. A non-zero exit code has meant "the work
+        # failed" since the first version of this script, and an attempt is charged on it —
+        # but the API refusing to serve the session at all produces the same non-zero exit
+        # as a genuine failure, so an outage was being written into the bead as evidence
+        # about its work. Attempts poison, so that is permanent state manufactured from a
+        # transient condition: a bead touched during an outage must end up exactly where it
+        # started. The whole requirement is to wait for capacity to come back without
+        # self-imploding in the meantime.
+        #
+        # capacity_reset_at is deliberately conservative — anything it cannot positively
+        # identify as an account refusal falls through to the ordinary path below, so a bead
+        # that genuinely fails three times still poisons.
+        if reset_at="$(capacity_reset_at "$LOGF")"; then
+            capacity_pause_set "$reset_at" "$BEAD_ID"
+            bdq unclaim "$BEAD_ID" --if-assignee "$BEADS_ACTOR" >/dev/null 2>&1
+            bdq note "$BEAD_ID" "Returned unchanged by aeon.sh: the account's capacity window was spent mid-session, so this bead was never judged. No attempt was charged and nothing about the work is implied. Summoning is paused until the window reopens." >/dev/null 2>&1
+            log "$FAYTH: $BEAD_ID returned unchanged — the account ran out of capacity, no attempt charged"
+            ledger "done $FAYTH $BEAD_ID rc=$rc status=capacity"
+            exit $rc
+        fi
         n="$(bump_attempt "$BEAD_ID")"
-        bdq unclaim "$BEAD_ID" --if-assignee "aeon-$FAYTH" >/dev/null 2>&1
+        bdq unclaim "$BEAD_ID" --if-assignee "$BEADS_ACTOR" >/dev/null 2>&1
         log "$FAYTH: $BEAD_ID not closed (attempt $n), released"
     fi
     ledger "done $FAYTH $BEAD_ID rc=$rc status=${st:-?}"
@@ -399,7 +458,6 @@ $PROMPT
 $REBASE_BRIEF"
 
 # ---- work ----------------------------------------------------------------------------
-LOGF="$SPIRA_RUN/$BEAD_ID.log"
 log "$FAYTH: working $BEAD_ID on $BRANCH (log: $LOGF)"
 set +e
 cd "$WORK" || die "worktree missing: $WORK"
@@ -414,8 +472,14 @@ cd "$WORK" || die "worktree missing: $WORK"
 # answer "is it working". stream-json emits an event per message and per tool use, which
 # makes the log the authoritative progress signal and lets the heartbeat stop guessing from
 # CPU ticks and file mtimes.
+# THE BINARY IS INJECTABLE, like `bd`, `gh` and `systemd-run` before it, and for the same
+# reason: it is the one thing a test of this path must be able to replace. And a PATH shim
+# CANNOT do it — conf.sh REPLACES $PATH outright a few lines into this script, so a suite
+# that puts a fake `claude` first on PATH runs the real model against the operator's account,
+# silently and at full cost. That is not hypothetical; it is how this line came to be
+# written. A test overrides SPIRA_CLAUDE.
 printf '%s' "$FULL" | ${FAYTH_TIMEOUT_SECONDS:+timeout $FAYTH_TIMEOUT_SECONDS} \
-    claude -p --output-format stream-json --verbose --include-partial-messages \
+    "${SPIRA_CLAUDE:-claude}" -p --output-format stream-json --verbose --include-partial-messages \
            --model "${FAYTH_MODEL:-claude-opus-5}" \
            --allowedTools "${FAYTH_TOOLS:-Bash,Read,Edit,Write,Glob,Grep}" \
            --dangerously-skip-permissions \

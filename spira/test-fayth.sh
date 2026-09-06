@@ -254,5 +254,34 @@ nowant "fayth_ready hardcodes no partition"  "spira," \
 
 # ======================================================================================
 echo
+echo "the account's capacity gates every persona:"
+# ======================================================================================
+# A summon during a capacity outage cannot succeed, and it does not fail for free: the aeon
+# claims a bead, the API refuses it, and the bead pays an attempt to discover a fact the
+# harness already knew. Asserted here, with both queues full, so a pass cannot come from the
+# queue happening to be empty.
+export SPIRA_CAPACITY_PAUSE="$TMP/capacity-pause"
+beads "$(bead sp-plan-1 spira,plan)" "$(bead sp-inc-1 spira,incident)"
+is "builder wakes with the window open" 0 "$(summon builder)"
+is "ops wakes with the window open"     0 "$(summon ops)"
+
+printf '%s x sp-fixture\n' "$(( $(date +%s) + 600 ))" > "$SPIRA_CAPACITY_PAUSE"
+is   "builder is withheld while the account is out" 1 "$(summon builder)"
+want "and the log says the account, not the queue"  "out of capacity" "$(summon_log)"
+nowant "and does not blame the concurrency cap"     "at concurrency cap" "$(summon_log)"
+is   "ops is withheld too — it is the account, not a partition" 1 "$(summon ops)"
+is   "and nothing was handed to systemd-run"        "" "$(recorded)"
+
+# The pause has to LIFT on its own. A window that reopens and a harness that stays shut is
+# the worse failure of the two: it is silent, and it looks exactly like an empty queue.
+printf '%s x sp-fixture\n' "$(( $(date +%s) - 10 ))" > "$SPIRA_CAPACITY_PAUSE"
+is   "an expired pause does not withhold"     0 "$(summon builder)"
+want "and announces that the window reopened" "reopened" "$(summon_log)"
+[ ! -f "$SPIRA_CAPACITY_PAUSE" ] && ok "and clears the pause file" \
+    || bad "and clears the pause file" "still there"
+rm -f "$SPIRA_CAPACITY_PAUSE"
+
+# ======================================================================================
+echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -168,8 +168,13 @@ def ledger_metrics(lines, since):
             born += 1
         elif event == "awake":
             lived += 1
-            # `capacity` and `idle` are healthy no-ops; only a claim is work.
-            if rest not in ("capacity", "idle", ""):
+            # Healthy no-ops, all three; only a claim is work. `capacity` is the
+            # CONCURRENCY cap, `paused` is the account being out of API capacity — two
+            # unrelated conditions that share a word, which is most of why the second one
+            # went unhandled for so long. Missing `paused` here would count every aeon that
+            # correctly declined during an outage as one that worked, so the panel would
+            # report peak throughput for the whole of an outage.
+            if rest not in ("capacity", "paused", "idle", ""):
                 worked += 1
     return {
         "SP_AEON_BORN": born,

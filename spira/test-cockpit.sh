@@ -108,6 +108,14 @@ check "an idle aeon still counts as lived" SP_AEON_LIVED 1 -- "" \
     "$(printf '%s born ops 1\n%s awake ops idle\n' "$NOW" "$NOW")"
 check "a claim counts as worked" SP_AEON_WORKED 1 -- "" \
     "$(printf '%s born builder 1\n%s awake builder sp-x\n' "$NOW" "$NOW")"
+# An aeon that declined because the ACCOUNT was out of capacity did not work, exactly as one
+# that declined at the concurrency cap did not. Two unrelated conditions sharing the word
+# "capacity" is most of why the account one went unhandled; counting `paused` as work would
+# make the panel report peak throughput for the whole of an outage.
+check "an aeon paused on the account did not work" SP_AEON_WORKED 0 -- "" \
+    "$(printf '%s born builder 1\n%s awake builder paused\n' "$NOW" "$NOW")"
+check "but it did live" SP_AEON_LIVED 1 -- "" \
+    "$(printf '%s born builder 1\n%s awake builder paused\n' "$NOW" "$NOW")"
 check "stale ledger entries fall out of the window" SP_AEON_BORN 0 -- "" \
     "$(printf '%s born builder 1\n' "$OLD")"
 

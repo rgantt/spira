@@ -281,11 +281,25 @@ spira_lines() {
         "$C_DIM" "$C_RST" "$(num "${SP_DISK_WS_PCT:-?}" 85 '%')" \
         "$C_DIM" "$C_RST" "${SP_CPU_IDLE:-?}" \
         "$C_DIM" "$C_RST" "${SP_LOAD1:-?}"
-    printf ' %sGOV%s    %s%s mode%s  %s\n' \
-        "$C_DIM" "$C_RST" "$C_B" "${SP_GOVERNOR_MODE:-?}" "$C_RST" \
-        "$( [ "${SP_BUDGET:-0}" = 0 ] \
-             && printf '%swould withhold — %s%s' "$C_WARN" "${SP_BUDGET_REASON:-no headroom}" "$C_RST" \
-             || printf '%s%s aeon(s) affordable%s' "$C_OK" "${SP_BUDGET:-?}" "$C_RST")"
+    # THE ACCOUNT OUTRANKS THE BOX on this line. The governor withholds over CPU, memory and
+    # disk; a capacity pause is the API refusing to answer at all, and while one is in force
+    # the governor's verdict is not the reason nothing is moving. Reported on the same row
+    # rather than a sixth one because the pane is five rows and a sixth scrolls the first
+    # away — the GOV row already answers "why is the harness withholding", and this is now
+    # the commonest answer.
+    if [ "${SP_CAPACITY_PAUSED:-0}" = 1 ]; then
+        printf ' %sGOV%s    %s%sACCOUNT OUT OF CAPACITY%s until %s%s%s %s(%sm)%s  %ssummoning paused%s\n' \
+            "$C_DIM" "$C_RST" "$C_BAD" "$C_B" "$C_RST" \
+            "$C_B" "${SP_CAPACITY_AT:-?}" "$C_RST" \
+            "$C_DIM" "$(( ${SP_CAPACITY_LEFT:-0} / 60 ))" "$C_RST" \
+            "$C_DIM" "$C_RST"
+    else
+        printf ' %sGOV%s    %s%s mode%s  %s\n' \
+            "$C_DIM" "$C_RST" "$C_B" "${SP_GOVERNOR_MODE:-?}" "$C_RST" \
+            "$( [ "${SP_BUDGET:-0}" = 0 ] \
+                 && printf '%swould withhold — %s%s' "$C_WARN" "${SP_BUDGET_REASON:-no headroom}" "$C_RST" \
+                 || printf '%s%s aeon(s) affordable%s' "$C_OK" "${SP_BUDGET:-?}" "$C_RST")"
+    fi
 }
 
 

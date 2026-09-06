@@ -200,6 +200,14 @@ fayths_for_labels() {    # fayths_for_labels <labels> -> personas whose partitio
 # least.
 summon_fayth() {
     local f="$1" r free
+    # THE ACCOUNT BEFORE THE QUEUE. A summon during a capacity outage cannot succeed, and it
+    # does not fail for free: the aeon it starts claims a bead, is refused by the API, and
+    # the bead pays an attempt to discover a fact the harness already knew. Asked first, and
+    # before fayth_ready, because the cheapest question is the one that skips the others.
+    if capacity_paused; then
+        log "CHECK7 $f: the account is out of capacity for another ${SPIRA_CAPACITY_LEFT}s — not summoning"
+        return 1
+    fi
     r="$(fayth_ready "$f")" || { log "CHECK7 $f: no fayth in the chamber — skipped"; return 1; }
     if [ "${r:-0}" -eq 0 ]; then log "CHECK7 $f: nothing ready in its partition"; return 1; fi
     free="$(fayth_free "$f")"
@@ -230,6 +238,162 @@ summon_fayth() {
         --property=TimeoutStartSec="$(fayth_get "$f" FAYTH_TIMEOUT_SECONDS 3600)" \
         --setenv=PATH="$PATH" --setenv=HOME="$HOME" \
         "$SPIRA_HOME/aeon.sh" "$f" 2>/dev/null
+}
+
+# ======================================================================================
+# API CAPACITY — the account's own five-hour window, and the third unrelated thing in this
+# harness called "capacity".
+#
+# The other two: FAYTH_MAX_CONCURRENT is how many aeons may run at once, and the governor's
+# budget is CPU, memory and disk. Neither has anything to do with this one, which is whether
+# the API will answer at all. The name collision is why the condition went unhandled for so
+# long — `grep capacity` returned confident, irrelevant hits.
+#
+# WHAT GOES WRONG WITHOUT THIS. aeon.sh takes the session's exit code and any non-zero
+# becomes a failed attempt, so a session the API refused to serve is recorded as work that
+# could not be done. That is not merely a miscount: attempts poison at a threshold, so an
+# outage does not just stop the queue, it DESTROYS it — every bead claimed while the window
+# is spent burns an attempt for a condition that has nothing to do with its work, and beads
+# leave circulation permanently for a fault that heals itself in minutes. A transient
+# condition must not be able to write permanent state.
+#
+# THE DISCRIMINATING FIELD IS `status`, AND IT IS NOT `overageStatus`. Every session on this
+# account emits `"overageStatus":"rejected","overageDisabledReason":"org_level_disabled"` on
+# EVERY rate_limit_event, including at 7% utilization, because overage is disabled at the
+# organisation level as a standing configuration. Keying on it — which the shape of the
+# payload invites — would pause the harness permanently and for ever, at full health. Of 460
+# rate_limit_events captured across 40 session logs here, 443 read `status: allowed`, 16
+# `allowed_warning`, and exactly ONE `status: rejected` — at `utilization: 1`, ending in a
+# synthetic assistant turn reading "You've hit your session limit · resets 12pm (UTC)".
+# That one event is the positive
+# control this detector is tested against (law-absence-needs-a-positive-control).
+#
+# AND `429`/`503` ARE NOT IN THESE LOGS AT ALL. A bare grep for them matches four and five
+# digit token counts — `"cache_read_input_tokens":142902` contains `429` — which is how one
+# log was read as holding "24x 429 and 12x 503" when it holds neither. The stream-json trace
+# never carries a bare HTTP status; the refusal arrives as the rate_limit_event above and as
+# `is_error` on the terminal `result` record. Match the structure, never the substring.
+# ======================================================================================
+SPIRA_CAPACITY_PAUSE="${SPIRA_CAPACITY_PAUSE:-$SPIRA_RUN/capacity-pause}"
+# Used only when the account refused us without saying when it would stop. resetsAt has been
+# present on every rejection observed, so this is the branch that should never run — which is
+# exactly why it must not be a long sleep taken on faith. 15 minutes re-asks cheaply.
+SPIRA_CAPACITY_BACKOFF="${SPIRA_CAPACITY_BACKOFF:-900}"
+
+# capacity_reset_at <session-log> -> prints the epoch the window reopens; rc 0 if the
+# session was ended by the account running out of capacity, rc 1 for anything else.
+#
+# rc 1 covers "the log does not exist", "the log is unparseable" and "the session failed for
+# its own reasons" ALIKE, and that is deliberate: the false direction of this check must be
+# the one that preserves today's behaviour. Reading a genuine failure as an outage would stop
+# a bead ever being poisoned, which is the one property CHECK 4 exists to hold.
+capacity_reset_at() {
+    local logf="${1:-}"
+    [ -n "$logf" ] && [ -s "$logf" ] || return 1
+    python3 - "$logf" <<'PY'
+import json, sys
+
+# The session limit shows up twice in one trace and either alone is enough. The
+# rate_limit_event is preferred because it carries resetsAt as an epoch; the terminal
+# `result` record is the fallback for a refusal that arrives without one.
+LIMIT_TEXT = ("hit your session limit", "usage limit", "rate limit")
+reset, hit = 0, False
+try:
+    fh = open(sys.argv[1], encoding="utf-8", errors="replace")
+except OSError:
+    raise SystemExit(1)
+with fh:
+    for line in fh:
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue          # a partial last line is normal on a killed session
+        if not isinstance(d, dict):
+            continue
+        if d.get("type") == "rate_limit_event":
+            info = d.get("rate_limit_info") or {}
+            # `status`, never `overageStatus` — see the header. A value we have never seen
+            # is not treated as a refusal: an unknown string must not be able to halt the
+            # harness, and a real refusal also lands on the `result` record below.
+            if info.get("status") == "rejected":
+                hit = True
+                try:
+                    reset = max(reset, int(info.get("resetsAt") or 0))
+                except (TypeError, ValueError):
+                    pass
+        elif d.get("type") == "result" and d.get("is_error"):
+            # `subtype` is "success" on this record even though is_error is true, so subtype
+            # cannot be the test. The text is what distinguishes an account refusal from a
+            # session that failed at its own work.
+            text = str(d.get("result") or "").lower()
+            if any(t in text for t in LIMIT_TEXT):
+                hit = True
+if not hit:
+    raise SystemExit(1)
+print(reset)
+PY
+}
+
+# capacity_pause_set <epoch> <reason> — record that the account is out until <epoch>.
+#
+# ANNOUNCED HERE AND ONLY HERE. The bead asked for it to be said "once in the ledger rather
+# than every pass"; the write is the once. An existing pause is only ever EXTENDED, never
+# shortened, so a second aeon dying into the same outage cannot pull the reopening forward
+# to its own — older — reading of resetsAt.
+capacity_pause_set() {
+    local at="${1:-0}" why="${2:-unknown}" now cur
+    now="$(date +%s)"
+    [ "${at:-0}" -gt "$now" ] 2>/dev/null || at=$(( now + SPIRA_CAPACITY_BACKOFF ))
+    cur="$(capacity_pause_until)"
+    [ "${cur:-0}" -ge "$at" ] 2>/dev/null && return 0
+    mkdir -p "$(dirname "$SPIRA_CAPACITY_PAUSE")" 2>/dev/null
+    printf '%s %s %s\n' "$at" "$(date -u -d "@$at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$why" \
+        > "$SPIRA_CAPACITY_PAUSE"
+    log "CAPACITY: the account is out until $(date -u -d "@$at" +%H:%M 2>/dev/null)Z ($(( at - now ))s) — summoning is paused, $why returned unchanged"
+    printf '%s CAPACITY paused until %s %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$(date -u -d "@$at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$why" >> "$SPIRA_RUN/aeon-ledger.log"
+}
+
+capacity_pause_until() {  # -> the epoch a pause runs to, or 0 if none is recorded
+    local at
+    [ -f "$SPIRA_CAPACITY_PAUSE" ] || { printf '0'; return; }
+    at="$(awk 'NR==1{print $1}' "$SPIRA_CAPACITY_PAUSE" 2>/dev/null)"
+    case "${at:-}" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$at" ;; esac
+}
+
+# capacity_paused -> rc 0 while the window is still shut, and sets $SPIRA_CAPACITY_LEFT to
+# the seconds remaining.
+#
+# THE ANSWER IS A GLOBAL, NOT STDOUT, because this function also announces the reopening —
+# and a caller reading it as `left="$(capacity_paused)"` would capture that announcement into
+# a variable it then discards, so the one line saying the harness is moving again would be
+# swallowed by the check that resumed it (law-absence-needs-a-positive-control, in the
+# direction nobody looks: the all-clear that never printed).
+#
+# A pause that has run out is REMOVED here rather than merely ignored, so the file itself is
+# the answer to "is the harness paused" for anything reading it without this library.
+SPIRA_CAPACITY_LEFT=0
+capacity_paused() {
+    local at now
+    at="$(capacity_pause_until)"; now="$(date +%s)"
+    if [ "$at" -gt "$now" ] 2>/dev/null; then
+        SPIRA_CAPACITY_LEFT=$(( at - now )); return 0
+    fi
+    SPIRA_CAPACITY_LEFT=0
+    if [ -f "$SPIRA_CAPACITY_PAUSE" ]; then
+        rm -f "$SPIRA_CAPACITY_PAUSE"
+        log "CAPACITY: the window has reopened — summoning resumes"
+    fi
+    return 1
+}
+
+capacity_pause_why() {   # -> what was being worked when the account ran out
+    [ -f "$SPIRA_CAPACITY_PAUSE" ] || return 1
+    awk 'NR==1{$1="";$2="";sub(/^  */,"");print}' "$SPIRA_CAPACITY_PAUSE" 2>/dev/null
 }
 
 # --------------------------------------------------------------------------------------

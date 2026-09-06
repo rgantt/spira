@@ -406,6 +406,29 @@ print("SP_UNLANDED=%d" % (len(ids) - landed))
     done
     echo "SP_AEONS=$n"
 
+    # ---- the account's own capacity -----------------------------------------------------
+    # "Nothing is moving" and "nothing is moving because the account is out until 15:00" are
+    # the same pixels without this, and the first of those is the reading that prompts
+    # somebody to go looking for a fault that does not exist.
+    #
+    # READ-ONLY, unlike everywhere else this predicate is asked. capacity_paused deletes an
+    # expired pause file and announces the reopening; a collector that ran every minute would
+    # win that race against the sentinel and swallow the announcement into a snapshot nobody
+    # reads. So the epoch is compared here by hand and the file is left for its owner.
+    local cap_at cap_now
+    cap_at="$(capacity_pause_until)"; cap_now="$(date +%s)"
+    if [ "${cap_at:-0}" -gt "$cap_now" ] 2>/dev/null; then
+        echo "SP_CAPACITY_PAUSED=1"
+        echo "SP_CAPACITY_LEFT=$(( cap_at - cap_now ))"
+        echo "SP_CAPACITY_AT=$(date -d "@$cap_at" +%H:%M 2>/dev/null)"
+        echo "SP_CAPACITY_WHY=$(capacity_pause_why 2>/dev/null)"
+    else
+        echo "SP_CAPACITY_PAUSED=0"
+        echo "SP_CAPACITY_LEFT=0"
+        echo "SP_CAPACITY_AT="
+        echo "SP_CAPACITY_WHY="
+    fi
+
     # ---- fiends ------------------------------------------------------------------------
     if [ -f "$SPIRA_RUN/strands.json" ]; then
         python3 -c '

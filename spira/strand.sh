@@ -287,9 +287,21 @@ cmd_check() {
                     # so without this the attempt counter under-counts and a bead that kills
                     # its aeon every time is never poisoned.
                     bdq reclaim --id "$id" --older-than 1s --label "$SPIRA_LABELS" >/dev/null 2>&1
-                    n="$(bump_attempt "$id")"
-                    bdq note "$id" "Reclaimed by strand.sh: in_progress with no live aeon holding it and the lease expired. Attempt $n." >/dev/null 2>&1
-                    printf 'RECLAIMED %s — %s\n' "$id" "$detail"
+                    # THE SECOND DOOR ONTO THE ATTEMPT COUNTER. aeon.sh declines to charge an
+                    # attempt when the API refused the session, but an aeon hard-killed
+                    # mid-outage never reaches that code — it arrives here as a ghost, and
+                    # charging it would restore exactly the harm by another route. Ask the
+                    # bead's own surviving session log first, and fall back to "is the
+                    # harness paused right now", which is true for the whole of an outage and
+                    # is what covers a session killed before it wrote anything.
+                    if capacity_reset_at "$SPIRA_RUN/$id.log" >/dev/null || capacity_paused; then
+                        bdq note "$id" "Reclaimed by strand.sh during a capacity outage: the account was out, so no attempt was charged and nothing about the work is implied." >/dev/null 2>&1
+                        printf 'RECLAIMED %s (no attempt — capacity outage) — %s\n' "$id" "$detail"
+                    else
+                        n="$(bump_attempt "$id")"
+                        bdq note "$id" "Reclaimed by strand.sh: in_progress with no live aeon holding it and the lease expired. Attempt $n." >/dev/null 2>&1
+                        printf 'RECLAIMED %s — %s\n' "$id" "$detail"
+                    fi
                     ;;
                 stale-blocked)
                     bdq recompute-blocked >/dev/null 2>&1
