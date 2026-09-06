@@ -173,6 +173,55 @@ half: unset, it falls back to a default the installation does not use, matches n
 renders an **empty list** rather than an error. The launcher reads the configuration at
 launch, so every respawn picks up the current one.
 
+## The transcript archive
+
+The client writes each session to a transcript under its own directory, unversioned, on
+whatever volume the home directory sits on, with no retention promise to anyone. That file is
+the only record of every decision taken in conversation that never became a bead — which is
+exactly the material nothing else here keeps. `spira/archive.sh` copies it somewhere durable
+and indexes it, so a later "what did we decide that afternoon" is a command.
+
+```
+archive.sh sweep [--force]        archive what has changed and rewrite the index
+archive.sh hook                   a session-end payload on stdin; archive that one transcript
+archive.sh query --since T --until T [--lineage <id>] [--slug <glob>] [--json]
+archive.sh lineage <session-id>   the whole chain that session belongs to, oldest first
+archive.sh restore <id|path>      the original bytes on stdout, checked against their digest
+archive.sh verify [id|path ...]   re-hash every archived body against the index
+archive.sh where                  the root, the row count, and what it costs on disk
+```
+
+**Index the lineage, or every consumer re-implements the same guess.** Clearing the context
+starts a *new* transcript with a new session id, so "the current session log" is only ever the
+tail of the conversation. The client records a stable `bridgeSessionId` in the first lines of
+every file in a lineage, unchanged across those clears — one field that turns a chain of files
+into one queryable conversation, which is what `lineage` reads. Subagent transcripts carry
+their parent session instead of a lineage id, so the index joins them onto it; without that
+they are in the archive and in no answer about it, which is the same as not having them.
+
+`spira-archive.timer` sweeps every twenty minutes, and a pass that finds nothing changed
+writes nothing at all — no body recompressed, no index rewritten, no mtime touched, so "has
+anything happened since?" stays answerable from the archive itself. The fast path is the
+source's size and mtime; `verify` is what re-hashes the stored bytes, and `sweep --force` is
+what repairs whatever it finds, because a check with no remedy only produces alarm.
+
+For the ordinary case, archive at session end too, from the client's own hook:
+
+```json
+{ "hooks": { "SessionEnd": [ { "hooks": [
+    { "type": "command", "command": "/path/to/spira/archive.sh hook" } ] } ] } }
+```
+
+**The bodies never go in a shared repository.** A transcript carries paths, credentials read
+aloud, and everything anyone ever said in it. `SPIRA_ARCHIVE` defaults under the runtime
+directory, which is gitignored for the same reason a beads database is. If something derived
+is ever wanted in git it is the *index* — metadata, no message content, and it is asserted to
+hold none — and even then only where a reader can see that it is derived.
+
+**Retention is a decision, not a default.** Nothing here deletes anything. When the volume
+eventually says otherwise that is yours to decide, and the index is what makes it answerable
+rather than a guess: bytes per lineage, per month, per project directory.
+
 ## Sharing it back
 
 Two fences guard what leaves this repository, and both run from the landing gate.
@@ -244,6 +293,7 @@ Generic mechanism. A colleague clones this and it carries none of the operator's
 | `systemd/` | unit TEMPLATES plus install.sh. The units in force on a machine are generated from these, never edited in place |
 | `concierge.sh` | one named Remote Control session, so a phone can reach the harness |
 | `rule.sh` | enacting a statute writes the beads KV store, which is the harness's substrate |
+| `spira/archive.sh` | keeps every session transcript and indexes it by time range and by the lineage id that survives a clear. The mechanism ships; the transcripts and the store they land in are the operator's own and stay out of every repository |
 | `beads-push.sh` | pushes each database that has a configured Dolt remote. The mechanism ships; the remote it is pointed at is the operator's own and is private |
 | `spira.conf.example` | the annotated template an operator copies to spira.conf. Every key optional, every default derived from where the harness is installed |
 | `README.md` | the harness's own entry point, carrying this table |
@@ -279,6 +329,7 @@ It belongs to whoever runs the harness. No shared repository holds it, and no be
 | the statutes in force | rows in that database's KV store, per-installation. A wiki may render a read-only copy; the harness ships SEED statute text an installer writes into a fresh database |
 | `spira.conf`, `repo-map` | the operator's real paths, repositories and personas. The examples ship; these do not. Both are gitignored, and spira.conf is looked for outside the checkout first for that reason |
 | the systemd units in force | rendered from systemd/ templates by install.sh, filled from spira.conf. Never edited in place — `install.sh --diff` is how you find out somebody did |
+| the transcript archive | compressed session logs plus their index, written by archive.sh. They carry paths, credentials read aloud and everything anyone ever said, so they live outside every checkout and no shared repository holds them. Nothing deletes them: retention is the operator's decision |
 | `.runtime/` | logs, worktrees, leases, cockpit state. Regenerated, machine-local, gitignored |
 
 <!-- BOUNDARY:END -->

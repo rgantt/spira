@@ -1,0 +1,26 @@
+[Unit]
+# The transcripts are the only record of every decision taken in conversation that never
+# became a bead, and the client keeps them unversioned, on whatever volume the home directory
+# sits on, with no retention promise to anyone.
+Description=Spira transcript archive — keep the session logs, indexed by time and lineage
+Documentation=file://@SPIRA_HOME@/archive.sh
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=@SPIRA_HOME@/archive.sh sweep
+# THE FIRST PASS IS THE WHOLE CORPUS and every one after it is only what changed, so the
+# timeout has to cover the former: gigabytes read, hashed and compressed once. A timeout sized
+# for the steady state kills the only pass that had real work to do, every time, and leaves an
+# archive that is permanently one run from complete.
+TimeoutStartSec=3600
+# It compresses, and this box may also be running production and a CI runner. A convenience
+# job must never be able to starve them (law-fence-loops-on-shared-hardware).
+CPUQuota=40%
+Nice=15
+IOSchedulingClass=idle
+StandardOutput=append:@SPIRA_RUN@/archive.log
+StandardError=append:@SPIRA_RUN@/archive.log
+
+[Install]
+WantedBy=default.target

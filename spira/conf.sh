@@ -60,6 +60,7 @@ SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK S
 SPIRA_ALERT_GLOB
 SPIRA_FAYTHS SPIRA_MAX_AEONS
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
+SPIRA_ARCHIVE
 "
 
 # --------------------------------------------------------------------------------------
@@ -275,6 +276,14 @@ spira_conf_defaults() {
     : "${SPIRA_CTX_HIGH:=400000}"
     : "${SPIRA_CTX_LIMIT:=1000000}"
 
+    # WHERE THE TRANSCRIPTS ARE KEPT. The client's own directory is unversioned, on whatever
+    # volume the home directory sits on, and promises nothing about retention — so this is a
+    # copy of it that outlives both. It defaults under the runtime directory because that is
+    # gitignored: the bodies carry paths, credentials read aloud and everything anyone ever
+    # said, and a default inside a shared checkout is one `git add -A` away from publishing
+    # all of it. Point it at whichever volume has the room; nothing here ever deletes.
+    : "${SPIRA_ARCHIVE:=$SPIRA_RUN/archive}"
+
     # THE MAP FALLS BACK TO THE EXAMPLE, and that is what makes a clean clone runnable at
     # all. The real map is one operator's inventory of checkouts and does not ship; the
     # example does. Resolution runs beside the config file first, because that is where an
@@ -384,6 +393,8 @@ spira_bin_purpose() {
         python3) echo "every JSON payload this harness parses" ;;
         cargo)   echo "building the decisions panel; not needed to run the loop" ;;
         jq)      echo "optional JSON convenience" ;;
+        flock)   echo "serialising the writers of the transcript archive" ;;
+        zstd)    echo "compressing archived transcripts; gzip is used when it is absent" ;;
         *)       echo "required by the harness" ;;
     esac
 }

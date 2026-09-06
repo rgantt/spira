@@ -203,6 +203,16 @@
 # news, so it is a key rather than a guess.
 # SPIRA_TOKEN_PROJECTS = $HOME/.claude/projects
 
+# Where the session transcripts are KEPT, which is not where the client writes them: that
+# directory is unversioned, sits on whatever volume the home directory does, and promises
+# nothing about retention. The transcripts are the only record of every decision taken in
+# conversation that never became a bead, so this is a copy that outlives both. It defaults
+# under the runtime directory because that is gitignored — the bodies carry paths,
+# credentials read aloud and everything anyone ever said, and a default inside a shared
+# checkout is one `git add -A` away from publishing all of it. Point it at whichever volume
+# has the room; nothing here ever deletes, because retention is your decision to make.
+# SPIRA_ARCHIVE = $HOME/.local/share/spira/archive
+
 # The thresholds a LIVE session's carried context is measured against, shared by the status line
 # and the dashboard so the two cannot disagree about how close to the edge a session is. Context
 # is re-read in full on every turn, so these are the numbers that decide whether to clear.
