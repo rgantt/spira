@@ -24,12 +24,14 @@ FAYTH_MEMORY_PREFIXES="law-"
 # one. A bead with no `repo:` label is the home repo, which is what Spira's own plan
 # beads are.
 FAYTH_MODEL=claude-opus-5
-# Two, not one. The governor has reported two affordable all evening, the queue has sat at
-# 15 ready, and each landing pass spends 96s in the gate before it can summon again — so a
-# single slot leaves the box idle for most of a landing. Aeons work in separate worktrees
-# and claim atomically, so the risk is contention in a shared repo, not lost work; the
-# governor will withhold in measure mode if that proves wrong.
-FAYTH_MAX_CONCURRENT=2
+# Three (per the operator, 2026-09-06). Two was set when the governor reported two affordable
+# and the queue sat at 15 ready; by the time of this change it sat at 47 ready with two
+# aeons busy, on a plan whose five-hour window, not the box, is the throughput ceiling.
+# Aeons work in separate worktrees and claim atomically, so the risk is contention in a
+# shared repo, not lost work; the governor will withhold in enforce mode if that proves wrong.
+# SPIRA_MAX_AEONS in spira.conf is NOT this number: it is declared and documented but nothing
+# reads it, so this file is the only ceiling that exists.
+FAYTH_MAX_CONCURRENT=3
 
 # The lease TTL the claim carries, and how often the aeon refreshes it. Heartbeats write
 # no Dolt commit, so a fast cadence is free; the reaper's grace window is ~2x the TTL.
