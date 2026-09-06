@@ -204,6 +204,16 @@ kept="$(awk '/^=== spira attempt/{split($NF,a,"="); k=a[2]} END{print k}' "$TL")
 [ "${kept:-0}" -gt 0 ] && ok "and records the bytes already retained, so growth is visible" \
     || bad "and records the bytes already retained" "kept=[$kept]"
 
+# BOTH OF THE MARK'S READS FAIL ON A FIRST ATTEMPT — there is no file for `stat` and no mark
+# for `grep -c` — and those are answers, not errors. Under a caller running `set -e` a bare
+# assignment from either aborts the shell at the one line that opens the log, so a bead's
+# whole attempt would be lost to the file not existing yet. Run in its own errexit shell,
+# because this suite does not set it and so cannot observe the fault by calling the function.
+out="$(bash -c 'set -euo pipefail; . "$1"/lib.sh >/dev/null 2>&1; spira_trace_mark "$2" aeon-x' \
+       _ "$HERE" "$TMP/never-written.log" 2>&1)"
+want "an errexit caller survives the first mark of a bead" "attempt 1" "$out"
+want "and the meter reads nothing kept"                    "kept=0"    "$out"
+
 printf 'capacity: the pause\n'
 rm -f "$SPIRA_CAPACITY_PAUSE"
 capacity_paused; is "no file means no pause" "1" "$?"

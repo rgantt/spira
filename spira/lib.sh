@@ -593,7 +593,12 @@ SPIRA_TRACE_MARK='=== spira attempt'
 spira_trace_mark() {
     local f="${1:-}" who="${2:-?}" kept n
     kept="$(stat -c %s "$f" 2>/dev/null || echo 0)"
-    n="$(grep -c "^$SPIRA_TRACE_MARK " "$f" 2>/dev/null)"
+    # BOTH READS ARE ALLOWED TO FAIL, and both say so. The first attempt on a bead finds no
+    # file at all and a fresh one finds no mark, so `stat` exits 1 and `grep -c` exits 1
+    # having printed `0` — ordinary answers, not errors. Under a caller running `set -e` a
+    # bare assignment from either would abort the shell at the exact line that opens the
+    # log, which is the one place a failure costs the whole attempt.
+    n="$(grep -c "^$SPIRA_TRACE_MARK " "$f" 2>/dev/null || true)"
     printf '%s %s aeon=%s at=%s kept=%s\n' \
         "$SPIRA_TRACE_MARK" "$(( ${n:-0} + 1 ))" "$who" \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${kept:-0}"

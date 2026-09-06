@@ -235,6 +235,46 @@ is   "attempt 2 is charged, and only attempt 2" "1" "$(labels sp-keep-1 | grep -
 [ ! -f "$SPIRA_CAPACITY_PAUSE" ] && ok "and no stale pause was written from the older segment" \
     || bad "and no stale pause was written from the older segment" "$(cat "$SPIRA_CAPACITY_PAUSE")"
 
+# ---- an attempt that never reaches its session --------------------------------------------
+# WHERE THE SEGMENT OPENS IS THE POINT, and it is why the mark is written where LOGF is
+# defined rather than beside the session that fills it. Between those two lines the aeon can
+# still leave three ways — an unresolvable base ref and two worktree failures — and every one
+# of them lands in the teardown that asks capacity_reset_at whether THIS session was refused.
+# An attempt with no segment of its own is answered from its predecessor's, so a repository
+# the harness cannot read would be reported as an account outage: no attempt charged, and
+# summoning paused for an hour against an epoch belonging to a session already over.
+#
+# The order is REFUSED then a pre-session failure, because that is the only pairing where the
+# two answers differ. The base ref is broken to produce it — a real, mechanical failure after
+# the bead is claimed and before the model is called, rather than a fault injected into the
+# code under test.
+echo
+echo "an attempt that dies before its session is judged on its own segment, not the last one's:"
+rm -f "$SPIRA_CAPACITY_PAUSE"
+seed_bead sp-pre-1
+PRE="$SPIRA_RUN/sp-pre-1.log"
+rm -f "$PRE"
+
+trace_refused
+run_aeon
+is   "attempt 1 was refused, so nothing was charged" "" "$(labels sp-pre-1 | grep -oE 'sp-attempt-[0-9]+')"
+want "and a refusal is what the log now holds" "hit your session limit" "$(cat "$PRE")"
+
+rm -f "$SPIRA_CAPACITY_PAUSE"
+printf 'fixture | %s | push | refs/heads/nosuchref | |\n' "$REPO" > "$SPIRA_REPO_MAP"
+run_aeon
+printf 'fixture | %s | push | main | |\n' "$REPO" > "$SPIRA_REPO_MAP"
+
+is   "the session was never reached" "no" "$(shim_ran)"
+is   "but the attempt opened its segment anyway" "2" "$(grep -c '^=== spira attempt ' "$PRE")"
+nowant "and that segment carries no refusal" "hit your session limit" "$(in_lib attempt_trace "$PRE")"
+in_lib capacity_reset_at "$PRE" >/dev/null
+is   "so the teardown does not read one" "1" "$?"
+[ ! -f "$SPIRA_CAPACITY_PAUSE" ] && ok "and summoning is not paused on a spent window" \
+    || bad "and summoning is not paused on a spent window" "$(cat "$SPIRA_CAPACITY_PAUSE")"
+is   "the failure is charged to the bead as a failure" "1" \
+    "$(labels sp-pre-1 | grep -oE 'sp-attempt-[0-9]+' | grep -oE '[0-9]+$' | sort -n | tail -1)"
+
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

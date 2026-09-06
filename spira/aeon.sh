@@ -239,6 +239,17 @@ LOGF="$SPIRA_RUN/$BEAD_ID.log"
 echo $$ > "$PIDFILE"
 printf '%s' "$AEON" > "${PIDFILE%.pid}.name"
 
+# THE SEGMENT OPENS HERE, ABOVE THE TRAP AND ABOVE THE HEARTBEAT, and not beside the session
+# that fills it. Both of those read the log to decide what is happening NOW, and between this
+# line and the session there are three ways to leave — an unresolvable base ref and two
+# worktree failures — every one of which lands in the teardown below. With no mark of its own
+# yet, this attempt's readers would find the PREVIOUS attempt's segment and answer about it:
+# a predecessor refused for want of capacity would make a worktree failure read as a refusal,
+# so no attempt would be charged and summoning would pause against an epoch from a session
+# that is over. Opening the segment first costs a mark line on an attempt that never ran a
+# session, which is worth having anyway — it is the record that the attempt happened at all.
+spira_trace_mark "$LOGF" "$AEON" >> "$LOGF"
+
 # ---- teardown ------------------------------------------------------------------------
 HB_PID=""
 cleanup() {
@@ -524,9 +535,9 @@ $REBASE_BRIEF"
 
 # ---- work ----------------------------------------------------------------------------
 # APPEND, NEVER TRUNCATE — see attempt_trace in lib.sh. A `>` here erased the previous
-# attempt's trace, so a bead only ever had a record of its last session; the mark line is
-# what lets every reader still find where that last session begins.
-spira_trace_mark "$LOGF" "$AEON" >> "$LOGF"
+# attempt's trace, so a bead only ever had a record of its last session; the mark line
+# written when this attempt began is what lets every reader still find where the last
+# session starts.
 log "$FAYTH: working $BEAD_ID on $BRANCH (log: $LOGF)"
 set +e
 cd "$WORK" || die "worktree missing: $WORK"
