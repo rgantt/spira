@@ -252,9 +252,36 @@ spira_trace_mark "$LOGF" "$AEON" >> "$LOGF"
 
 # ---- teardown ------------------------------------------------------------------------
 HB_PID=""
+FIXTURE_LIB=""
+# THE FIXTURE IS DROPPED FIRST, ahead of every branch below — one of them exits on its own,
+# and a teardown that returns before reaching its last step is how a database survives the
+# process that owned it. It shares a server with live data, so litter there is never noticed
+# until it is a problem.
+#
+# `TESTDB_SHARED=0` is what makes testdb_drop stop being a no-op: a BORROWER must never drop
+# a fixture the lender's other readers are still using, so the owner clears the flag to say it
+# is the owner. In a subshell, because the drop is the last thing this fixture is for and
+# sourcing the library into the teardown of a supervisor buys nothing.
+#
+# ONLY A FIXTURE THIS PROCESS BUILT. FIXTURE_LIB is set nowhere but the successful build
+# below, so it doubles as the record of ownership — and it has to, because TESTDB_NAME can
+# arrive from OUTSIDE: the landing gate exports one shared fixture to everything it runs,
+# and a suite under it that summons an aeon would hand that name straight to this function.
+# Dropping there would delete the database the rest of the gate's suites are still using,
+# mid-run, and every one of them would fail for a reason none of them could name.
+fixture_drop() {
+    [ -n "${FIXTURE_LIB:-}" ] && [ -n "${TESTDB_NAME:-}" ] || return 0
+    # The library is read from the worktree, which an aeon may have deleted or renamed out
+    # from under us by the time it exits; the installed copy answers the same question.
+    [ -f "$FIXTURE_LIB" ] || FIXTURE_LIB="$SPIRA_HOME/testdb.sh"
+    [ -f "$FIXTURE_LIB" ] || return 0
+    ( TESTDB_SHARED=0; . "$FIXTURE_LIB" && testdb_drop ) >/dev/null 2>&1
+    return 0
+}
 cleanup() {
     local rc=$? reset_at
     [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null
+    fixture_drop
     rm -f "$PIDFILE" "${PIDFILE%.pid}.name"
     cd "$REPO" 2>/dev/null || true
     # If the bead is still ours and still open, hand it back rather than holding a lease
@@ -434,6 +461,63 @@ A merge conflict is not an escalation — do not close the bead and do not ask a
 "
 fi
 
+# ---- one test fixture for the whole session -------------------------------------------
+# WAITING ON TESTS WAS 43% OF A SESSION'S WALL CLOCK and 73% of its tool time, and the
+# suites here are not CPU-bound, they are database-bound: `bd init` is nearly all of the
+# ~27s (55s under load) each suite spends building its fixture. The landing gate already
+# builds ONE and lets every suite reset it instead — 0.2s — but an aeon running suites by
+# hand got none, so each of its ~15 single-suite runs paid the full build.
+#
+# So the aeon builds one too, here, once, and exports it into the session. Every Bash call
+# the session makes inherits it, which is the whole mechanism: a suite that sources the
+# fixture library sees TESTDB_SHARED and resets rather than rebuilds, with no argument to
+# pass and nothing for the session to remember (law-gate-once-fixture-shared).
+#
+# BUILT FROM THE WORKTREE'S OWN COPY, not the installed one. The tree whose suites will
+# consume the fixture is the tree that should build it — the same rule the landing gate
+# follows — so a bead that changes what a baseline means changes both halves together.
+# A repository with no such file gets no fixture and no error; that is what decides which
+# repositories this applies to, rather than a list of names.
+#
+# AND ALWAYS ITS OWN. Anything inherited is cleared first: a caller that already exported a
+# shared fixture — the landing gate does, to everything it runs — would otherwise have its
+# database reset under it here and dropped at this aeon's exit, while its own suites were
+# still reading it.
+#
+# THE COST IS ONE BUILD PER SESSION, PAID EVEN BY A BEAD THAT RUNS NO TESTS, and the log
+# line below is the meter that says when that stops being a good trade (the number to watch
+# is this build against the count of suite runs in the session's own trace).
+fixture_ms=0
+if [ -f "$WORK/$SPIRA_TESTDB_LIB" ]; then
+    fixture_err="$(mktemp)"
+    fixture_t0="$(date +%s%3N)"
+    # A subshell, so the fixture library's functions never enter the supervisor: this is
+    # branch code, and aeon.sh is the process that decides whether the branch's bead may be
+    # reclaimed. The five values it prints are the whole interface.
+    fixture_out="$(
+        TESTDB_SHARED=0 TESTDB_NAME="" TESTDB_DIR="" TESTDB_BASELINE=""
+        . "$WORK/$SPIRA_TESTDB_LIB" && testdb_up "aeon${BEAD_ID//[^a-zA-Z0-9]/}" >&2 &&
+        printf '%s\n%s\n%s\n%s\n%s\n' \
+            "$TESTDB_NAME" "$TESTDB_DIR" "$TESTDB_BASELINE" "$TESTDB_HOST" "$TESTDB_PORT"
+    )" 2>"$fixture_err"
+    fixture_ms=$(( $(date +%s%3N) - fixture_t0 ))
+    if [ -n "$fixture_out" ]; then
+        { read -r TESTDB_NAME; read -r TESTDB_DIR; read -r TESTDB_BASELINE
+          read -r TESTDB_HOST; read -r TESTDB_PORT; } <<< "$fixture_out"
+        export TESTDB_SHARED=1 TESTDB_NAME TESTDB_DIR TESTDB_BASELINE TESTDB_HOST TESTDB_PORT
+        FIXTURE_LIB="$WORK/$SPIRA_TESTDB_LIB"
+        log "$FAYTH: $BEAD_ID shares one test fixture $TESTDB_NAME, built in ${fixture_ms}ms"
+    else
+        # A FIXTURE THAT WILL NOT BUILD IS NOT A REFUSAL TO WORK. The suites fall back to
+        # building their own, which is slow and correct; what must not happen is a bead going
+        # unworked because a database server was busy. The reason is logged rather than
+        # swallowed, because "slower than it should be" is otherwise invisible.
+        log "$FAYTH: $BEAD_ID has no shared test fixture — its suites will each build their own: $(tail -3 "$fixture_err" | tr '\n' ' ')"
+        unset TESTDB_SHARED
+    fi
+    rm -f "$fixture_err"
+fi
+
 # ---- prompt --------------------------------------------------------------------------
 # HOW THIS BRANCH LANDS IS PART OF THE BRIEF. An aeon that believes its commit goes straight
 # to main writes a different commit from one that knows a reviewer and a CI run stand
@@ -499,6 +583,23 @@ When the work is committed on your branch, close the bead with its evidence and 
 branch reaches \`$BASE_BRANCH\` from there is described above, and none of it needs you."
 fi
 
+# WHAT THIS SESSION IS ACTUALLY HOLDING. The brief is read by aeons working every repository
+# and most of them have no fixture library at all, so a persona that stated flatly "your
+# fixture is already built" would be wrong more often than right — and an instruction that is
+# visibly false about something checkable is a reason to distrust the rest of the brief.
+if [ -n "$FIXTURE_LIB" ]; then
+    FIXTURE_BRIEF="**The fixture is already built.** One throwaway database was created for this
+session and exported into your environment (\`TESTDB_SHARED=1\`, \`TESTDB_NAME=$TESTDB_NAME\`),
+so a suite that sources \`$SPIRA_TESTDB_LIB\` and calls \`testdb_up\` resets it in a fraction of
+a second instead of spending the ${fixture_ms}ms that build cost. Never unset those variables
+and never build a database of your own: a suite that reaches past \`testdb_up\` pays the build
+again on every run, and nothing anywhere reports that it did."
+else
+    FIXTURE_BRIEF="This repository has no shared test fixture, so a suite that needs one builds
+its own. If that turns out to be the slowest thing in your session, say so when you close the
+bead — the number is worth having."
+fi
+
 BEAD_BODY="$(bdq show "$BEAD_ID" 2>/dev/null | grep -vE '^💡|^warning|^  Fix|^  Or')"
 PROMPT="$(sed -e "s|{{BEAD_ID}}|$BEAD_ID|g" -e "s|{{BRANCH}}|$BRANCH|g" \
               -e "s|{{REPO}}|$WORK|g" -e "s|{{REPO_NAME}}|$REPO_NAME|g" \
@@ -509,6 +610,7 @@ PROMPT="$(sed -e "s|{{BEAD_ID}}|$BEAD_ID|g" -e "s|{{BRANCH}}|$BRANCH|g" \
 # would leave an aeon with no instruction at all about how its work is meant to end.
 PROMPT="${PROMPT/\{\{BEAD\}\}/$BEAD_BODY}"
 PROMPT="${PROMPT/\{\{PARK\}\}/$PARK_BRIEF}"
+PROMPT="${PROMPT/\{\{FIXTURE\}\}/$FIXTURE_BRIEF}"
 
 # The memory book. Every agent reads it on every session; this is the delivery mechanism
 # for an aeon, standing in for the SessionStart hook an interactive session gets.

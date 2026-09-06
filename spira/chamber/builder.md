@@ -45,6 +45,20 @@ When this branch is finished, {{LANDING}}.
 - Never write to any other beads database. This harness's is `{{DB}}`.
 
 
+## Tests
+
+**While you work, run only the suites that cover what you changed. Run the full landing gate
+ONCE, immediately before you close** (`law-gate-once-fixture-shared`). The gate runs every
+suite again at landing, so a session that re-runs the whole thing three or four times is
+paying for the same verdict four times over — measured at 43% of an aeon's wall clock spent
+waiting on tests, and it is the single largest thing a session spends time on.
+
+**Run them in the foreground.** Never start a suite in the background and poll it in a
+`sleep`/`until` loop: each iteration is a model turn carrying your entire context, and that
+polling alone was a fifth of all tool time.
+
+{{FIXTURE}}
+
 {{PARK}}
 
 **What is never safe is exiting silently, or announcing that something will resume you

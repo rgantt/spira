@@ -64,6 +64,7 @@ SPIRA_FAYTHS SPIRA_MAX_AEONS
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
 SPIRA_ARCHIVE
 SPIRA_ARCHIVIST_AT SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
+SPIRA_TESTDB_LIB
 "
 
 # --------------------------------------------------------------------------------------
@@ -378,6 +379,21 @@ spira_conf_defaults() {
     # while it runs, so an archivist wedged on a huge transcript would stop every other session
     # from ever being looked at.
     : "${SPIRA_ARCHIVIST_TIMEOUT:=900}"
+    # WHERE A REPOSITORY'S TEST-FIXTURE LIBRARY SITS, relative to that repository's ROOT.
+    # An aeon builds one fixture at summon for a repository that has one and exports it, so
+    # every suite the session runs resets that fixture instead of building its own — measured
+    # here at 0.2s against 55s, against ~15 single-suite runs in a session.
+    #
+    # RELATIVE, because it is resolved inside the aeon's WORKTREE: the tree whose suites will
+    # consume the fixture is the tree that should build it, which is the same reason the
+    # landing gate builds from the branch's copy and not the installed one. A repository that
+    # has no such file simply gets no fixture, and that is how "which repositories does this
+    # apply to" is answered without a list of repository names.
+    #
+    # The default is this harness's own directory name, so a clone that keeps the layout needs
+    # no configuration at all.
+    local _tdb; _tdb="$(basename "$SPIRA_HOME")"
+    : "${SPIRA_TESTDB_LIB:=$_tdb/testdb.sh}"
 
     # THE MAP FALLS BACK TO THE EXAMPLE, and that is what makes a clean clone runnable at
     # all. The real map is one operator's inventory of checkouts and does not ship; the
