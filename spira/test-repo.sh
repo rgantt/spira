@@ -31,7 +31,8 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 
 SH="$TMP/spira"; RUN="$TMP/run"; WS="$TMP/ws"
 mkdir -p "$SH" "$RUN/worktree" "$WS"
-cp "$HERE/conf.sh" "$HERE/lib.sh" "$HERE/gate.sh" "$HERE/sending.sh" "$HERE/exclude.sh" "$SH/"
+cp "$HERE/conf.sh" "$HERE/lib.sh" "$HERE/gate.sh" "$HERE/sending.sh" "$HERE/exclude.sh" \
+   "$HERE/skew.sh" "$SH/"
 
 mkrepo() {               # mkrepo <name> — a repo with a real bare origin
     local n="$1"
@@ -316,8 +317,32 @@ out="$(gate spira/sp-alpha alpha)"; rc=$?
                 || bad "and judges the whole tree, not the diff" "rc=0"
 
 git -C "$w" rm -qr .beads; git -C "$w" commit -q -m "sp-alpha: remove the database"
+
+# ALPHA IS NOW THE HARNESS, and the gate has a second universal fence that says so: a branch
+# may not change a COPY of the harness in a repository that is not the harness's own. Three
+# commits ago this fixture gave alpha's branch the signature, so from here the gate must be
+# told which repository the harness is installed in — otherwise it is judging a copy.
+#
+# That is asserted in both directions rather than merely worked around. Left to derive,
+# SPIRA_REPO is the fixture's parent directory and alpha is somebody else's tree, so the same
+# branch must be refused; declared, it is the harness's own and passes.
 out="$(gate spira/sp-alpha alpha)"; rc=$?
-is "and passes once the database is gone" "0" "$rc"
+[ "$rc" -ne 0 ] && ok "a branch changing a harness in another repository is refused" \
+                || bad "a branch changing a harness in another repository is refused" "rc=0"
+want "and says where the work belongs" "belongs in the harness" "$out"
+
+out="$(SPIRA_REPO="$WS/alpha" gate spira/sp-alpha alpha)"; rc=$?
+is "and passes once the database is gone, in the harness's own repository" "0" "$rc"
+
+# THE CURE IS NOT THE OFFENCE. A branch that DELETES a vendored copy is exactly the work this
+# fence exists to make unnecessary, and refusing it would leave the second copy standing
+# forever. It is allowed by construction — the fence reads the branch's own tree, and a branch
+# that removed the signature carries no harness for it to judge — and that is asserted here
+# because "by construction" is how a regression gets in unnoticed.
+git -C "$w" rm -q boundary lib.sh gate.sh
+git -C "$w" commit -q -m "sp-alpha: delete the vendored harness"
+out="$(gate spira/sp-alpha alpha)"; rc=$?
+is "a branch that DELETES a vendored harness is allowed" "0" "$rc"
 
 # The check FAILS CLOSED on its own absence. `bash <missing> | ...` yields an empty offender
 # list, which reads exactly like a clean tree — a check that could not run reporting

@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+#
+# skew.sh — is the harness that RUNS the harness that LANDED?
+#
+#   skew.sh check                          audit this box; escalate on divergence
+#   skew.sh copies                         every mapped repository carrying a harness copy
+#   skew.sh foreign <repo> <base> <ref>    may this branch land? — the landing gate's fence
+#
+# WHAT THIS IS FOR
+# ----------------
+# Landing and running are two claims, and a harness that verifies only the first has a blind
+# spot exactly the width of the second. A bead is judged against the branch it named; nothing
+# afterwards asks whether the copy the service manager executes IS that branch. This is
+# law-closed-is-not-landed one layer further out — landed is not in effect.
+#
+# It is silent by construction. When the harness exists in two trees — its own repository and
+# a copy vendored into another — work lands in one of them and the other goes on running.
+# Every check passes, because the tree that was edited is self-consistent: the suites there
+# are green, the gate there is satisfied, the commit is on the branch it named. The only
+# thing wrong is that nothing executes it, and no test can see that from inside either tree.
+# It has caught an unattended worker and a human on the same day, so it is not carelessness;
+# it is a property of having two copies and no comparison between them.
+#
+# THREE FINDINGS, and they are three different faults with three different fixes:
+#
+#   BEHIND   the copy in force is missing commits that are on the ref it lands on. Somebody
+#            landed work and nothing pulled it here.
+#   DIRTY    the copy in force carries modifications that are on no branch at all. Whatever
+#            is executing was reviewed by nobody.
+#   COPY     another mapped repository carries a second harness. Work aimed at the harness
+#            can land there, pass everything, and never run.
+#
+# THE OFFENCE IS REPORTED, NOT REPAIRED. A pull here would fast-forward a tree that a session
+# may be working in, and deleting somebody's second copy is not a check's decision to make.
+#
+# EXIT   0  checked, and the copy in force is the code that landed
+#        1  checked, and it is not — the finding is on stdout and has been escalated
+#        3  could not check — said out loud, never a silent pass
+#              (law-absence-needs-a-positive-control)
+set -uo pipefail
+. "$(dirname "$0")/lib.sh"
+
+EXCLUDE="$(dirname "$0")/exclude.sh"
+
+# harness_in <repo-path> -> the harness directories in its WORKING TREE, one per line.
+# Exit 1 when it holds none, which is the ordinary answer for most repositories.
+harness_in() {
+    local root="$1"
+    [ -e "$root/.git" ] || return 1
+    git -C "$root" ls-files 2>/dev/null | bash "$EXCLUDE" harness-in 2>/dev/null
+}
+
+# harness_in_ref <repo-path> <ref> -> the harness directories in that REF, one per line.
+# The ref and not the checkout: the question a landing gate asks is what the repository would
+# contain after this branch merges, and the branch may be the thing that adds the copy.
+harness_in_ref() {
+    local root="$1" ref="$2"
+    git -C "$root" ls-tree -r --name-only "$ref" 2>/dev/null | bash "$EXCLUDE" harness-in 2>/dev/null
+}
+
+# =======================================================================================
+# foreign — the landing gate's fence.
+#
+# A branch in a repository that is NOT the harness's own may not change files inside a copy
+# of the harness. Correct work landing there is work nothing will execute, and the aeon that
+# wrote it has no way to tell: it committed, on a branch, naming its bead, and every suite in
+# the tree it edited passed.
+#
+# IT FAILS CLOSED, including on its own confusion. A fence that cannot tell whether the rule
+# was broken must not answer "not broken" — that is the one output a broken fence produces
+# every time.
+#
+# IT IS SCOPED TO THE COPY, NOT TO THE REPOSITORY. A repository may legitimately carry a
+# vendored harness and still have a thousand files of its own; only changes INSIDE the copy
+# are the offence, so ordinary work in a repository that happens to hold one is untouched.
+# =======================================================================================
+foreign() {
+    local repo="${1:-}" base="${2:-}" ref="${3:-}" dirs d f hit="" home
+    [ -n "$repo" ] && [ -n "$base" ] && [ -n "$ref" ] || {
+        echo "skew: foreign needs <repo> <base> <ref>" >&2; return 1; }
+
+    # THE OVERRIDE IS HONOURED HERE, in the fence itself, not in the one caller. A fence is a
+    # polite refusal and not a wall, and an override that only works from whichever program
+    # happened to invoke it is an override nobody finds when they need it.
+    [ -n "${SPIRA_ALLOW_FOREIGN_HARNESS:-}" ] && return 0
+
+    # The harness's own repository is exempt, and that is the whole point of the rule rather
+    # than an exception to it: this fence exists to send harness work THERE.
+    if spira_same_repo "$repo" "$SPIRA_REPO"; then return 0; fi
+
+    dirs="$(harness_in_ref "$repo" "$ref")"
+    [ -n "$dirs" ] || return 0          # no copy in that ref; nothing this fence judges
+
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            case "$d" in
+                .) hit="$hit$f"$'\n' ;;
+                *) case "$f/" in "$d"/*) hit="$hit$f"$'\n' ;; esac ;;
+            esac
+        done <<< "$dirs"
+    done < <(git -C "$repo" diff --name-only "$base...$ref" 2>/dev/null)
+
+    [ -n "$hit" ] || return 0
+    printf '%s' "$hit" | sort -u
+    home="$(spira_home_repo)"
+    {
+        echo
+        echo "REFUSED by skew.sh — this branch changes a COPY of the harness."
+        echo
+        printf '%s' "$hit" | sort -u | sed 's/^/    /'
+        echo
+        echo "Those paths are inside a vendored copy of the harness, in a repository that is"
+        echo "not the harness's own. The harness in force is ${SPIRA_REPO}, so work landing"
+        echo "here would pass its gate, close its bead, and never run. Nothing downstream can"
+        echo "tell the difference: the tree that was edited is self-consistent."
+        echo
+        echo "Move the change to repo:${home} and re-cut the branch there. If the vendored copy"
+        echo "is what you actually meant to change, say so:  SPIRA_ALLOW_FOREIGN_HARNESS=1"
+    } >&2
+    return 1
+}
+
+# =======================================================================================
+# copies — every mapped repository that carries a harness, and whether it is ours.
+#
+# One line per copy: `<repo-name> <path> <harness-dir> self|second`. A repository the map
+# names but this box does not have is skipped in silence, because a map is shared across
+# boxes and a row for another machine is not a fault here.
+# =======================================================================================
+copies() {
+    local n p d found=0
+    for n in $(repo_names); do
+        p="$(repo_root "$n" 2>/dev/null)" || continue
+        [ -n "$p" ] && [ -e "$p/.git" ] || continue
+        while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            found=1
+            if spira_same_repo "$p" "$SPIRA_REPO"; then
+                printf '%s %s %s self\n' "$n" "$p" "$d"
+            else
+                printf '%s %s %s second\n' "$n" "$p" "$d"
+            fi
+        done < <(harness_in "$p")
+    done
+    [ "$found" = 1 ]
+}
+
+# =======================================================================================
+# check — the standing audit.
+# =======================================================================================
+check() {
+    local findings="" hard=0 base remote behind dirty control c_name c_path c_dir c_kind
+
+    # THE POSITIVE CONTROL, FIRST AND UNCONDITIONALLY. Every finding below is an absence
+    # claim resting on one matcher, and a matcher that has stopped matching reports a clean
+    # box in exactly the state this exists to catch. So prove it can find the harness it is
+    # running from before believing it about anywhere else.
+    control="$(harness_in "$SPIRA_REPO")"
+    if [ -z "$control" ]; then
+        echo "skew: cannot find the harness in ${SPIRA_REPO}, which is the tree running this check." >&2
+        echo "skew: Either the matcher has stopped matching, or that path is not a checkout of" >&2
+        echo "skew: the harness at all." >&2
+        echo "skew: Refusing to report a clean box from a check that could not have found anything." >&2
+        return 3
+    fi
+
+    # ---------------------------------------------------------------- BEHIND
+    # Against the remote-tracking ref, refreshed. A verdict of "in effect" read from a ref
+    # nobody has fetched is a verdict about this box's memory of the remote, and the whole
+    # failure being checked for is a tree that has stopped keeping up.
+    if base="$(spira_landref "$SPIRA_REPO")"; then
+        remote="$(ref_remote "$base" 2>/dev/null)" || remote=""
+        if [ -n "$remote" ]; then
+            timeout "${SPIRA_SKEW_FETCH_TIMEOUT:-60}" \
+                git -C "$SPIRA_REPO" fetch -q "$remote" 2>/dev/null || {
+                # A fetch that failed is not a pass. It can still prove divergence — a ref
+                # already ahead stays ahead — but it cannot prove the absence of any, so a
+                # clean answer below is downgraded to "could not check".
+                findings="${findings}CANNOT-FETCH could not reach $remote; the verdict below is against this box's last fetch of $base
+"; }
+        fi
+        behind="$(git -C "$SPIRA_REPO" rev-list --count "HEAD..$base" 2>/dev/null || echo 0)"
+        if [ "${behind:-0}" -gt 0 ]; then
+            hard=1
+            findings="${findings}BEHIND $SPIRA_REPO is $behind commit(s) behind $base
+$(git -C "$SPIRA_REPO" log --oneline --no-decorate -20 "HEAD..$base" 2>/dev/null | sed 's/^/    /')
+"
+        fi
+    else
+        findings="${findings}CANNOT-RESOLVE no ref could be resolved for what $SPIRA_REPO lands on, so 'is it current' has no answer
+"
+    fi
+
+    # ---------------------------------------------------------------- DIRTY
+    # Tracked files only. An operator's untracked notes beside the code are their own
+    # business; a MODIFIED tracked file is code in force that is on no branch anywhere.
+    dirty="$(git -C "$SPIRA_REPO" status --porcelain --untracked-files=no 2>/dev/null)"
+    if [ -n "$dirty" ]; then
+        hard=1
+        findings="${findings}DIRTY $SPIRA_REPO carries modifications that are on no branch
+$(printf '%s\n' "$dirty" | head -20 | sed 's/^/    /')
+"
+    fi
+
+    # ---------------------------------------------------------------- COPY
+    while read -r c_name c_path c_dir c_kind; do
+        [ "${c_kind:-}" = second ] || continue
+        hard=1
+        findings="${findings}COPY repo:$c_name carries a second harness at $c_path/$c_dir
+    Work aimed at the harness can land there, pass its gate, and never run.
+"
+    done < <(copies 2>/dev/null)
+
+    if [ -z "$findings" ]; then
+        printf 'skew: in effect — %s is %s, clean, and is the only harness the map names\n' \
+            "$SPIRA_REPO" "${base:-its base ref}"
+        return 0
+    fi
+
+    printf '%s' "$findings"
+
+    # A CANNOT- line ON ITS OWN is not a verdict in either direction, and must not be
+    # escalated as one: the operator would be handed a decision about a divergence nobody has
+    # established. It is also not a pass. Say so, and exit 3.
+    if [ "$hard" = 0 ]; then
+        echo "skew: the check could not complete — this is not a clean verdict" >&2
+        return 3
+    fi
+    escalate "$findings"
+    return 1
+}
+
+# =======================================================================================
+# escalate — once per distinct state, not once per pass.
+#
+# Keyed on a fingerprint of the findings rather than on a clock. The condition persists until
+# somebody acts on it, and an hourly repetition of a decision already in front of the
+# operator is the noise that teaches them to scroll past the one that matters
+# (law-alerts-must-be-actionable). A CHANGE in the findings is new information and does ask
+# again.
+# =======================================================================================
+escalate() {
+    local findings="$1" stamp="$SPIRA_RUN/skew.escalated" fp prev=""
+    fp="$(printf '%s' "$findings" | cksum | tr -d ' ')"
+    [ -f "$stamp" ] && prev="$(cat "$stamp" 2>/dev/null)"
+    [ "$fp" = "$prev" ] && return 0
+    mkdir -p "$SPIRA_RUN" 2>/dev/null
+    printf '%s' "$fp" > "$stamp"
+
+    [ -x "$SPIRA_NOTIFY" ] || {
+        echo "skew: no escalation path at $SPIRA_NOTIFY — the finding above reaches nobody" >&2
+        return 0; }
+
+    # The installer sits beside the harness directory, not inside it, so it is derived
+    # rather than written — the two layouts put it in different places and a hardcoded one
+    # would be wrong in whichever the reader is standing in.
+    local installer; installer="$(cd "$SPIRA_HOME/../systemd" 2>/dev/null && pwd -P)/install.sh"
+
+    "$SPIRA_NOTIFY" add \
+        "The Spira copy in force is not the code that landed" \
+        --default "pull $SPIRA_REPO onto its base ref and re-run $installer; if a second harness is named below, delete that copy so the repository it sits in carries none" \
+        --why "beads can be closed, gated and merged while the behaviour they changed never takes effect — the tree that was edited is self-consistent, so nothing downstream reports a fault" \
+        --evidence "$findings" >/dev/null 2>&1
+}
+
+case "${1:-check}" in
+    check)   check ;;
+    copies)  copies || { echo "skew: no mapped repository carries a harness — the map or the matcher is wrong" >&2; exit 3; } ;;
+    foreign) shift; foreign "$@" ;;
+    *)       sed -n '3,7p' "$0" >&2; exit 2 ;;
+esac

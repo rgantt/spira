@@ -6,6 +6,8 @@
 #   exclude.sh staged  [root]   the pre-commit entry point — audits what is staged
 #   exclude.sh filter           stdin: repo-relative paths -> stdout: the forbidden ones
 #   exclude.sh scope   [root]   print the harness scope, one prefix per line
+#   exclude.sh harness [root]   print the harness DIRECTORY itself, one per line
+#   exclude.sh harness-in       stdin: repo-relative paths -> the harness directories in them
 #   exclude.sh install [root]   write the .gitignore stanza and point core.hooksPath here
 #
 # WHY THIS EXISTS AS A PROGRAM AND NOT A PARAGRAPH.
@@ -83,13 +85,17 @@ forbidden() {                       # forbidden <repo-relative-path> -> 0 if it 
 #
 # Prints "." when the harness IS the root — the post-move state, where everything counts.
 # ---------------------------------------------------------------------------------------
-scope_from_paths() {                # stdin: paths -> stdout: one prefix, or nothing
-    awk '
+# `all` prints every directory carrying the signature rather than stopping at the first.
+# A repository is SUPPOSED to hold at most one harness, and the callers that ask about their
+# own tree want a single answer; the caller asking whether some OTHER repository has quietly
+# grown a copy wants all of them, because the second one is the finding.
+scope_from_paths() {                # [all] — stdin: paths -> stdout: harness directories
+    awk -v all="${1:-}" '
         { n = split($0, c, "/"); d = (n == 1 ? "." : substr($0, 1, length($0) - length(c[n]) - 1))
           seen[d "/" c[n]] = 1; dirs[d] = 1 }
         END { for (d in dirs)
                   if ((d "/boundary") in seen && (d "/gate.sh") in seen && (d "/lib.sh") in seen)
-                      { print d; exit } }
+                      { print d; if (all == "") exit } }
     '
 }
 
@@ -180,6 +186,34 @@ filter)
 
 scope)
     scope_of_root "$ROOT"
+    ;;
+
+# ---------------------------------------------------------------------------------------
+# harness / harness-in — WHERE the harness is, as opposed to what these fences judge.
+#
+# They differ, and only in the case that matters: a harness ONE LEVEL under the root means
+# the repository exists to hold it, so `scope` widens to "." while the code still lives in
+# its own directory. A caller asking "does this tree contain a copy of the harness" must
+# have the directory, not the widened scope, or every repository whose root it is answers
+# the same as one that carries no harness at all.
+#
+# EXPOSED RATHER THAN RESTATED. The signature — `boundary`, `gate.sh` and `lib.sh` in one
+# directory — is the only thing here that knows what a harness looks like, and a second
+# program carrying its own copy of that definition is how two programs come to disagree
+# about which trees are the harness. `harness-in` is the pure form: it reads a path list and
+# touches no filesystem, so it can answer about a ref rather than about a checkout.
+# ---------------------------------------------------------------------------------------
+harness)
+    harness_of_root "$ROOT"
+    ;;
+
+harness-in)
+    d="$(scope_from_paths all)"
+    if [ -z "$d" ]; then
+        echo "exclude: no harness tree in the path list" >&2
+        exit 3
+    fi
+    printf '%s\n' "$d"
     ;;
 
 # ---------------------------------------------------------------------------------------

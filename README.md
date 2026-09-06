@@ -101,6 +101,29 @@ file or directory" into a journal nobody is watching.
 Never edit an installed unit. Edit the template and re-run the installer; `install.sh --diff`
 is how you find out that somebody did.
 
+### One copy, and a check that says so
+
+The units execute one checkout. **Landed is not in effect** — a bead is judged against the
+branch it named, and nothing in that judgement asks whether the tree systemd runs is that
+branch. Keep exactly one copy of this harness on a box. If a second exists — vendored into
+another repository, left behind by a move — work aimed at the harness lands in one of them and
+the other goes on running, and nothing reports a fault: the tree that was edited is
+self-consistent, so its suites pass, its gate is satisfied, and its bead closes naming a real
+commit on a real branch.
+
+Two mechanisms, because a convention nobody can see is not one:
+
+- `spira/skew.sh check` runs hourly from `spira-skew.timer`, rendered to the copy systemd
+  actually executes, so it reports on itself. It escalates when that copy is behind the ref it
+  lands on, carries changes on no branch, or is not the only harness the repository map
+  reaches — once per distinct finding, never once per pass.
+- The landing gate refuses any branch that changes a copy of the harness in a repository that
+  is not this one, and names where the work belongs instead. Override it, if the vendored copy
+  is genuinely what you meant to change, with `SPIRA_ALLOW_FOREIGN_HARNESS=1`.
+
+`spira/doctor.sh` reports the count as part of its preflight, and `spira/skew.sh copies` names
+every copy the map can reach.
+
 ## Escalations, and their answers
 
 An escalation has two halves — the ask and the answer — and both need a mechanism. Build the
@@ -190,6 +213,7 @@ Generic mechanism. A colleague clones this and it carries none of the operator's
 | `spira/inventory.sh` | the fence that keeps one operator's infrastructure out of a repository meant to be cloned — repository names, hosts, paths, people, dates. It scans comments, which is where all of it was |
 | `spira/inventory-deny` | the tokens that fence refuses beyond the structural ones. Ships EMPTY: a list of somebody else's names is itself the inventory |
 | `spira/actors.example` | commit author to harness, for authors the commit graph cannot vote on. Its rows are one installation's roster |
+| `spira/skew.sh` | is the harness in force the harness that landed — the hourly check that the executing copy is current, clean and the only one, and the landing gate's fence against work landing in a copy nothing executes |
 | `spira/doctor.sh` | read-only preflight — every missing program, unreadable database, unmapped repository and unbuilt panel, named in one pass |
 | `spira/statutes/` | the SEED statute book, one file per statute. Statutes live in the beads KV store, which is per-installation, so a clone gets the mechanism and none of the law unless it ships as text |
 | `spira/seed.sh` | writes those statutes into a fresh database, and never over one already in force |

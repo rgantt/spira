@@ -813,6 +813,34 @@ repo_root() {
     printf '%s' "$p"
 }
 
+# spira_same_repo <a> <b> -> 0 if those two paths are the same repository.
+#
+# BY OBJECT STORE, NEVER BY PATH STRING. A worktree and the checkout it was cut from are one
+# repository under two paths, and this harness runs from both — every aeon works in a
+# worktree and the landing gate extracts one. A string comparison therefore calls the copy in
+# force "some other repository", so a fence keyed on it fires on every branch, and a check
+# keyed on it reports a second copy that does not exist.
+#
+# `--git-common-dir` and not `--git-dir`: a worktree has a private git dir and a shared common
+# one, and only the shared one identifies the repository. Resolved by `cd` + `pwd -P` rather
+# than `--path-format=absolute`, which is newer than the git a colleague may be running, and
+# because the answer is relative when the command is run from inside the repository.
+spira_same_repo() {      # spira_same_repo <path-a> <path-b>
+    local a b
+    a="$(_spira_gitstore "${1:-}")" || return 1
+    b="$(_spira_gitstore "${2:-}")" || return 1
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" = "$b" ]
+}
+
+_spira_gitstore() {      # _spira_gitstore <path> -> its shared git directory, absolute
+    local d
+    d="$( cd "${1:-/nonexistent}" 2>/dev/null \
+          && d="$(git rev-parse --git-common-dir 2>/dev/null)" && [ -n "$d" ] \
+          && cd "$d" 2>/dev/null && pwd -P )" || return 1
+    [ -n "$d" ] || return 1
+    printf '%s' "$d"
+}
+
 repo_land() {            # repo_land <name> -> push | pr | hold
     local m; m="$(repo_field "${1:-}" land)"
     printf '%s' "${m:-push}"

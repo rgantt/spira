@@ -1,0 +1,32 @@
+[Unit]
+# Landed is not in effect. A bead is judged against the branch it named, and nothing
+# afterwards asks whether the copy THIS service manager executes is that branch — so when
+# the harness exists in two trees, correct work lands in one and the other goes on running,
+# with every check passing because the tree that was edited is self-consistent.
+Description=Spira skew — is the harness in force the harness that landed?
+Documentation=file://@SPIRA_HOME@/skew.sh
+After=default.target
+
+[Service]
+Type=oneshot
+# @SPIRA_HOME@ is the point of the unit, not an implementation detail: this renders to the
+# copy the service manager actually runs, so the check reports on ITSELF. A unit pointed at
+# some other checkout would answer about a tree nothing executes, which is the fault it
+# exists to find.
+ExecStart=@SPIRA_HOME@/skew.sh check
+# DIVERGENCE IS NOT A UNIT FAILURE. skew.sh exits 1 when it found something and has already
+# put the decision in front of the operator; leaving the unit red on top of that is a second
+# alert for one condition, and a unit permanently red is one whose next genuine failure
+# nobody looks at (law-alerts-must-be-actionable). Exit 3 — could not check — stays a
+# failure, because that one is the check itself being broken and reaches nobody otherwise.
+SuccessExitStatus=1
+# A fetch and an ls-files per mapped repository. Cheap, but this box may also be running
+# production and a CI runner (law-fence-loops-on-shared-hardware).
+TimeoutStartSec=300
+CPUQuota=20%
+Nice=10
+StandardOutput=append:@SPIRA_RUN@/skew.log
+StandardError=append:@SPIRA_RUN@/skew.log
+
+[Install]
+WantedBy=default.target

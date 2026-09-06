@@ -1,0 +1,19 @@
+[Unit]
+Description=Check hourly that the harness in force is the harness that landed
+
+[Timer]
+# HOURLY, not every two minutes. The window this closes is "work landed and nothing here is
+# running it", which is measured in hours before it costs anything and is not made shorter by
+# asking more often — while a check that escalates is one whose repetition rate IS its noise
+# floor. It escalates once per distinct finding rather than once per pass, so the cadence
+# decides how fast a NEW divergence is noticed and nothing else.
+OnBootSec=10min
+OnUnitActiveSec=1h
+# Loose, because nothing downstream is waiting on the answer, and a wide window lets the
+# service manager batch this with whatever else is due.
+AccuracySec=5min
+Persistent=true
+Unit=spira-skew.service
+
+[Install]
+WantedBy=timers.target

@@ -132,6 +132,36 @@ else
             OK "repo:$n — $p on $b"
         fi
     done
+
+    # HOW MANY COPIES OF THE HARNESS THIS BOX HAS. One is the answer; anything else means
+    # work aimed at the harness can land in a tree nothing executes, pass every check there,
+    # and never run. Nothing else here compares the two, which is what makes that failure
+    # silent — landed and in effect quietly became different claims.
+    #
+    # `copies` and not `check`: doctor is read-only, and the full check fetches and
+    # escalates. This is the structural half, which costs an ls-files per repository.
+    #
+    # A repository the map names that this box does not have is skipped by `copies`, so a
+    # verdict of "one" here is about this box and not about the map.
+    if ! copies="$(bash "$SPIRA_HOME/skew.sh" copies 2>/dev/null)"; then
+        WARN "no mapped repository carries a harness this box can find" \
+             "Either no row points at a real checkout, or the signature has changed.
+        $SPIRA_HOME/skew.sh copies"
+    elif [ "$(grep -c ' second$' <<< "$copies")" -gt 0 ]; then
+        while read -r n p d k; do
+            [ "$k" = second ] || continue
+            # WARN and not FAIL, per this file's own line: the loop runs perfectly well with
+            # two copies, which is exactly what makes the fault silent. The loud channel is
+            # skew.sh's escalation; doctor's job is to name it in the one pass.
+            WARN "repo:$n carries a SECOND harness at $p/$d" \
+                 "The harness in force is $SPIRA_REPO. Work landing in that other copy passes
+        its own gate and its own suites, closes its bead naming a real commit, and never runs.
+        Delete the copy, or point this installation at it — but not both.
+        $SPIRA_HOME/skew.sh check"
+        done <<< "$copies"
+    else
+        OK "one harness on this box — $SPIRA_REPO is the only copy the map reaches"
+    fi
 fi
 
 echo

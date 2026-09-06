@@ -23,6 +23,7 @@ DEST="$HOME/.config/systemd/user"
 
 UNITS=(spira-sentinel.service spira-sentinel.timer
        spira-ops.service spira-ops.timer
+       spira-skew.service spira-skew.timer
        spira-cockpit.service
        cockpit-ensure.service cockpit-ensure.timer
        concierge.service concierge.timer
@@ -30,7 +31,8 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
 # Only these get enabled. The .service behind a .timer is started BY the timer; enabling it
 # as well would also run it once at boot, outside the schedule.
 ENABLE=(cockpit-ensure.timer concierge.timer
-        beads-push.timer spira-sentinel.timer spira-ops.timer spira-cockpit.service)
+        beads-push.timer spira-sentinel.timer spira-ops.timer spira-skew.timer
+        spira-cockpit.service)
 
 # cockpit-collector.service probes the PREDECESSOR harness and only that. Without one there is
 # nothing for it to collect, and a service that exits immediately every ten seconds under

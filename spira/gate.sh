@@ -96,6 +96,24 @@ if [ -n "$offenders" ]; then
     exit 1
 fi
 
+# No branch may change a COPY of the harness in a repository that is not the harness's own.
+# The service manager executes one tree; a second copy vendored into another repository is
+# edited by correct work that then never runs, and nothing downstream can tell — the tree
+# that was edited is self-consistent, so its suites are green, its gate is satisfied and its
+# bead closes naming a real commit. Landed and in effect became different claims the moment
+# there were two copies, and this is the only place that compares them
+# (law-closed-is-not-landed, one layer out).
+#
+# Universal for the same reason the two above are: it is not one repository's taste, and it
+# is the harness's own correctness at stake rather than the judged repository's.
+#
+# It fails CLOSED on its own absence, and skew.sh fails closed on its own confusion.
+SKEW="$(dirname "$0")/skew.sh"
+[ -r "$SKEW" ] || { echo "gate: $SKEW is missing — refusing to land unchecked" >&2; exit 1; }
+bash "$SKEW" foreign "$REPO" "$BASE" "$BR" || {
+    echo "gate: $BR belongs in the harness's own repository, not $REPO_NAME." >&2
+    exit 1; }
+
 # ---------------------------------------------------------------------------------------
 # LAYER 2 — the repository's own gate. Empty means syntax was the whole trial.
 # ---------------------------------------------------------------------------------------
