@@ -133,7 +133,22 @@ seed_bead() {   # seed_bead <id> <repo-name>
         | testdb_seed
 }
 clear_trace() { rm -f "$TRACE".{ran,prompt,env,reused,ms,inherited,ready}; }
-run_aeon() { rm -rf "$SPIRA_RUN/worktree"; clear_trace; "$SPIRA_HOME/aeon.sh" builder > "$TMP/out" 2>&1; }
+
+# EVERY AEON HERE IS SUMMONED BY A CALLER THAT ALREADY OWNS A FIXTURE, because that is the
+# real condition and not a contrived one: the landing gate builds one and exports it to
+# everything it runs, so a suite under the gate that summons an aeon hands its database
+# straight through. The aeon must neither pass it on to the session — whose suites would
+# reset a database owned by something else, mid-run — nor drop it at exit. A plain database
+# and a plain directory are enough to hold that ground; nothing here reads either of them.
+CALLER_DB="sptest_caller_$(date +%s)_$$"
+CALLER_DIR="$TMP/caller-workspace"; mkdir -p "$CALLER_DIR"
+testdb_sql "" "create database \`$CALLER_DB\`" >/dev/null 2>&1
+as_caller() {           # as_caller <command...> — run it holding a fixture of our own
+    TESTDB_SHARED=1 TESTDB_NAME="$CALLER_DB" TESTDB_DIR="$CALLER_DIR" TESTDB_BASELINE=nosuchhash \
+        "$@"
+}
+run_aeon() { rm -rf "$SPIRA_RUN/worktree"; clear_trace
+             as_caller "$SPIRA_HOME/aeon.sh" builder > "$TMP/out" 2>&1; }
 sess_env()  { cat "$TRACE.env" 2>/dev/null; }
 # NEVER `| grep -q` UNDER pipefail: grep exits at the first match and the writer dies of
 # SIGPIPE, which pipefail reports as the pipeline's status — so a match reads as a failure.
@@ -155,6 +170,7 @@ case "$FXNAME" in
     *) bad "and it is named for the bead that owns it" "got [$FXNAME]" ;;
 esac
 want "the log names it and says what it cost" "shares one test fixture" "$(cat "$TMP/out")"
+nowant "and it is the aeon's own, not the caller's" "$CALLER_DB" "$(sess_env)"
 
 # THE CENTRAL ASSERTION, and it is the reason the whole bead exists: a suite run inside the
 # session must RESET the inherited database, not build a second one. Same name means it was
@@ -178,6 +194,10 @@ FXDIR="$(sed -n 's/^TESTDB_DIR=//p' "$TRACE.env" 2>/dev/null)"
 [ -n "$FXDIR" ] && ok "the session was told where the workspace is" \
     || bad "the session was told where the workspace is" "no TESTDB_DIR was exported"
 is "and that directory is gone too" "no" "$([ -n "$FXDIR" ] && [ -e "$FXDIR" ] && echo yes || echo no)"
+# THE OTHER HALF OF THE SAME FENCE. A teardown that drops on TESTDB_NAME alone would take the
+# caller's database with it here, and the caller is usually the landing gate mid-run.
+is "the caller's own fixture is untouched" "yes" "$(db_present "$CALLER_DB")"
+is "and so is its workspace"               "yes" "$([ -d "$CALLER_DIR" ] && echo yes || echo no)"
 
 echo
 echo "a repository with no fixture library is worked without one, not refused:"
@@ -188,11 +208,17 @@ want "and the bead was worked" "sp-fx-2" "$(cat "$TMP/out")"
 nowant "with no shared fixture in its environment" "TESTDB_SHARED" "$(sess_env)"
 nowant "and none built for it"                     "TESTDB_NAME"   "$(sess_env)"
 want "the brief says so plainly" "no shared test fixture" "$(cat "$TRACE.prompt")"
+is   "the caller's fixture was not passed on to it" "yes" "$(db_present "$CALLER_DB")"
 
 echo
 echo "a session killed mid-run still takes its fixture with it:"
 seed_bead sp-fx-3 withfx
 rm -rf "$SPIRA_RUN/worktree"; clear_trace
+# THE ASSIGNMENTS GO ON aeon.sh ITSELF, never through as_caller. A backgrounded shell
+# FUNCTION is a subshell, so `$!` would name that subshell and the signal would kill it while
+# aeon.sh — its child, and the thing under test — ran on untouched. The suite then measured a
+# teardown that had never been asked to run and called it a leak.
+TESTDB_SHARED=1 TESTDB_NAME="$CALLER_DB" TESTDB_DIR="$CALLER_DIR" TESTDB_BASELINE=nosuchhash \
 SHIM_SLEEP=10 "$SPIRA_HOME/aeon.sh" builder > "$TMP/out" 2>&1 &
 apid=$!
 # Bounded, and it waits on a FILE the shim writes rather than on a clock: the fixture is built
@@ -224,6 +250,7 @@ testdb_sweep
 is "the sweep collects the abandoned one" "no"  "$(db_present "$OLD")"
 is "and leaves a live one alone"          "yes" "$(db_present "$NEW")"
 testdb_sql "" "drop database \`$NEW\`" >/dev/null 2>&1
+testdb_sql "" "drop database \`$CALLER_DB\`" >/dev/null 2>&1
 
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"

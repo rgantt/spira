@@ -479,14 +479,18 @@ fi
 # A repository with no such file gets no fixture and no error; that is what decides which
 # repositories this applies to, rather than a list of names.
 #
-# AND ALWAYS ITS OWN. Anything inherited is cleared first: a caller that already exported a
-# shared fixture — the landing gate does, to everything it runs — would otherwise have its
-# database reset under it here and dropped at this aeon's exit, while its own suites were
-# still reading it.
+# AND ALWAYS ITS OWN. Whatever the caller had is cleared before anything else, and only what
+# this aeon builds is put back — the landing gate exports one shared fixture to everything it
+# runs, so a suite under it that summons an aeon hands that database straight through. Passed
+# on, the session would reset a database it does not own, mid-run, while the caller's own
+# suites were still reading it, and every one of them would fail for a reason none could name.
+# TESTDB_HOST and TESTDB_PORT survive on purpose: those are the server's coordinates, not the
+# fixture's identity, and a caller that named a different server means it.
 #
 # THE COST IS ONE BUILD PER SESSION, PAID EVEN BY A BEAD THAT RUNS NO TESTS, and the log
 # line below is the meter that says when that stops being a good trade (the number to watch
 # is this build against the count of suite runs in the session's own trace).
+unset TESTDB_SHARED TESTDB_NAME TESTDB_DIR TESTDB_BASELINE
 fixture_ms=0
 if [ -f "$WORK/$SPIRA_TESTDB_LIB" ]; then
     fixture_err="$(mktemp)"
@@ -495,7 +499,6 @@ if [ -f "$WORK/$SPIRA_TESTDB_LIB" ]; then
     # branch code, and aeon.sh is the process that decides whether the branch's bead may be
     # reclaimed. The five values it prints are the whole interface.
     fixture_out="$(
-        TESTDB_SHARED=0 TESTDB_NAME="" TESTDB_DIR="" TESTDB_BASELINE=""
         . "$WORK/$SPIRA_TESTDB_LIB" && testdb_up "aeon${BEAD_ID//[^a-zA-Z0-9]/}" >&2 &&
         printf '%s\n%s\n%s\n%s\n%s\n' \
             "$TESTDB_NAME" "$TESTDB_DIR" "$TESTDB_BASELINE" "$TESTDB_HOST" "$TESTDB_PORT"
@@ -513,7 +516,6 @@ if [ -f "$WORK/$SPIRA_TESTDB_LIB" ]; then
         # unworked because a database server was busy. The reason is logged rather than
         # swallowed, because "slower than it should be" is otherwise invisible.
         log "$FAYTH: $BEAD_ID has no shared test fixture — its suites will each build their own: $(tail -3 "$fixture_err" | tr '\n' ' ')"
-        unset TESTDB_SHARED
     fi
     rm -f "$fixture_err"
 fi
