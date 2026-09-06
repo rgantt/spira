@@ -34,6 +34,12 @@ testdb_require test-aeon-capacity
 TMP="$(mktemp -d)"
 cleanup_all() { testdb_drop; rm -rf "$TMP"; }
 trap cleanup_all EXIT INT TERM
+# THE FIXTURE COMES FROM testdb_up, NEVER A DIRECT `bd init`. The landing gate builds one
+# database for the whole run and exports TESTDB_SHARED; testdb_up honours an inherited one by
+# resetting it to its baseline instead of building a second, which is the same isolation this
+# suite already relies on between its own cases. Measured: 63s when it builds its own against
+# 26s when it inherits, so an edit that reaches past testdb_up to build a database directly
+# adds that difference to every gate run and nothing anywhere reports that it did.
 testdb_up aeoncap || { echo "test-aeon-capacity: could not build a fixture database"; exit 1; }
 
 RESETS="$(( $(date +%s) + 3600 ))"
