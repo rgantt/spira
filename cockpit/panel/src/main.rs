@@ -755,9 +755,9 @@ fn main() {
             //
             // the operator: *"when there is a default decision, i would like an easy way to accept
             // that default (right now i can SEE the default, but i still have to type
-            // something)."* Every ask is supposed to carry a recommendation precisely so they
-            // does not have to decide from scratch — and then the pane made them restate it
-            // in their own words to agree with it. The whole point of a default is that
+            // something)."* Every ask is supposed to carry a recommendation precisely so the
+            // operator does not have to decide from scratch — and then the pane made them
+            // restate it in their own words to agree with it. The whole point of a default is that
             // agreeing should cost one keystroke.
             //
             // The verdict recorded is the default's own text, not the word "accepted", so

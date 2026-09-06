@@ -101,6 +101,32 @@ file or directory" into a journal nobody is watching.
 Never edit an installed unit. Edit the template and re-run the installer; `install.sh --diff`
 is how you find out that somebody did.
 
+## Escalations, and their answers
+
+An escalation has two halves — the ask and the answer — and both need a mechanism. Build the
+second when you build the first: a verdict that reaches nobody is worse than an unanswered
+question, because the decider believes they replied and the next session asks again.
+
+The ask half is a bead labelled with `SPIRA_ASK_LABEL`. Every predicate that decides what an
+aeon may claim excludes it — the sentinel's ready count, the personas in `spira/chamber/`, and
+the stall sweep — so a question can never be claimed as if it were work, nor reported as work
+that has stalled. `cockpit/panel/` is the attention surface it renders on: a Rust TUI, built
+with `cargo build --release`, run from a tmux pane by `cockpit/layout.sh`.
+
+The answer half is `spira/verdicts.sh`. The panel writes a verdict **into the bead** — the
+close reason for a decision, a comment for a reply — so there is no file to tail, and a
+session watching one concludes that nothing was answered. Run `spira/verdicts.sh loop` as a
+watcher in any session that escalates anything; it polls for asks closed since its cursor,
+prints one line each, keeps its high-water mark under `.runtime/`, and is therefore silent
+when nothing has been answered and never replays a verdict twice.
+
+**Launch the panel through `cockpit/panel-run.sh`, never the binary.** tmux gives a new pane
+the environment of the tmux *server*, not of the process that ran `split-window`, so a bare
+binary starts without the database path or the ask label. The label's absence is the dangerous
+half: unset, it falls back to a default the installation does not use, matches nothing, and
+renders an **empty list** rather than an error. The launcher reads the configuration at
+launch, so every respawn picks up the current one.
+
 ## Sharing it back
 
 Two fences guard what leaves this repository, and both run from the landing gate.

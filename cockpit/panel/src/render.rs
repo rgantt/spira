@@ -1366,7 +1366,7 @@ three")]);
     // line or a `⏎ decide` hint to it was wrong.
 
     /// The tab names the view, and the view is FYI. The label the beads carry is `insight`;
-    /// what they needs to know at a glance is that nothing here is owed.
+    /// what they need to know at a glance is that nothing here is owed.
     #[test]
     fn the_tab_says_fyi_not_insights() {
         let items = Ok(vec![insight("a finding", "a body")]);
