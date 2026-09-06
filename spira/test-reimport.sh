@@ -212,7 +212,7 @@ out="$(fence_with 'FAYTH_LABELS="spira,plan"')"; rc=$?
 rcis "a predicate requiring 'spira' is fenced" 0 "$rc"
 out="$(fence_with 'FAYTH_LABELS="plan"')"; rc=$?
 rcis "a predicate without 'spira' is refused" 1 "$rc"
-want "  and says what it would see" "select imported Gas Town work" "$out"
+want "  and says what it would see" "select work another system still owns" "$out"
 out="$(fence_with 'FAYTH_LABELS=""')"; rc=$?
 rcis "an empty predicate is refused" 1 "$rc"
 want "  as selecting everything" "selects the whole database" "$out"
