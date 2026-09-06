@@ -1,0 +1,32 @@
+[Unit]
+# A session near the context ceiling is also the session carrying the most that was never
+# written down, so the cheap fix — clearing it — is the one nobody dares take. This sweeps
+# the live sessions and rescues their unfinished business into beads, asks and notes, reading
+# the transcript rather than the conversation so it costs the session it rescues nothing.
+Description=Spira archivist — persist a full session's unfinished business before it is cleared
+Documentation=file://@SPIRA_HOME@/archivist.sh
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=@SPIRA_HOME@/archivist.sh sweep
+# THE CONCURRENCY CAP IS THIS LINE PLUS Type=oneshot, and it is why archivist.sh spawns
+# nothing: a oneshot service that is still active is not started again by its timer, so a
+# sweep that is in the middle of an archive simply skips its next tick. A lock file would be
+# a second mechanism for a guarantee the service manager already makes.
+#
+# LONGER THAN SPIRA_ARCHIVIST_TIMEOUT, so the timeout that fires first is the one that knows
+# what it is bounding: archivist.sh's own kills a single wedged archive and records it as a
+# failed archive in the state file the operator is already reading, whereas this one kills
+# the sweep mid-write and reports only a red unit.
+TimeoutStartSec=1800
+# This box may also be running production and a CI runner, and an unbounded loop here has
+# cost one a load of 274 (law-fence-loops-on-shared-hardware). The sweep itself is a stat per
+# transcript; the quota is for the archive it may go on to run.
+CPUQuota=30%
+Nice=10
+StandardOutput=append:@SPIRA_RUN@/archivist.log
+StandardError=append:@SPIRA_RUN@/archivist.log
+
+[Install]
+WantedBy=default.target

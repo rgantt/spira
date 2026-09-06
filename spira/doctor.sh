@@ -177,6 +177,44 @@ else WARN "attention panel not built at $SPIRA_PANEL" \
         (law-answers-need-a-delivery-path). Set SPIRA_NOTIFY in ${CONF:-spira.conf}."
 
 echo
+echo "the status line"
+# WHY THIS IS DOCTOR'S BUSINESS AT ALL. The status line is where the context meter and the
+# archivist's state machine are read, and it lives in the CLIENT's settings file, outside every
+# repository — so nothing the harness ships can set it, and nothing that lands here can fix it.
+# What the harness owes instead is to say so, once, in the one pass that names everything else.
+#
+# AND THE REFRESH INTERVAL IS THE LOAD-BEARING HALF. The client re-runs a status-line command on
+# a session starting, a new assistant message, a compaction finishing, a mode change, and a
+# timer — and clearing the session is not on that list. So without the timer the meter goes on
+# displaying the DISCARDED session's context until something is next said, which means the
+# instrument that exists to say whether clearing was worth doing reports that the clear did not
+# work. Every other state this feature renders — sweeping, archiving, safe to clear — likewise
+# changes while the session is IDLE, which is the definition of background work: with no timer
+# the pane can only show what was already true at the last assistant message, and "safe to
+# clear" would arrive one turn after it stopped being useful.
+SETTINGS="$HOME/.claude/settings.json"
+if [ ! -f "$SETTINGS" ]; then
+    WARN "no client settings at $SETTINGS — the context meter is not on the status line" \
+         "Point statusLine.command at $SPIRA_HOME/ctx-meter.sh, with refreshInterval beside it."
+else
+    sl="$(python3 "$SPIRA_HOME/statusline-check.py" "$SETTINGS" "$SPIRA_HOME/ctx-meter.sh")"
+    case "$sl" in
+        unreadable*) WARN "cannot read $SETTINGS — ${sl#unreadable }" ;;
+        absent)      WARN "no status line configured — the context meter is not being shown" \
+                          "Add a statusLine object to $SETTINGS whose command is
+        $SPIRA_HOME/ctx-meter.sh, with \"refreshInterval\": 5 beside it." ;;
+        "other "*)   WARN "the status line runs a different command — the context meter is not being shown" \
+                          "Point statusLine.command at $SPIRA_HOME/ctx-meter.sh." ;;
+        "ours -")    WARN "the status line has no refreshInterval — it cannot update between turns" \
+                          "It will go on showing a cleared session's context until something is next said, and
+        the archivist's state will never change on its own. Add \"refreshInterval\": 5 beside
+        \"command\" in the statusLine object in $SETTINGS." ;;
+        "ours "*)    OK "status line on the context meter, refreshing every ${sl#ours }s" ;;
+        *)           WARN "could not judge the status line configuration in $SETTINGS" ;;
+    esac
+fi
+
+echo
 echo "writable state"
 if mkdir -p "$SPIRA_RUN" 2>/dev/null && [ -w "$SPIRA_RUN" ]; then OK "runtime directory $SPIRA_RUN"
 else FAIL "cannot write $SPIRA_RUN" "Leases, logs and worktrees live here. Set SPIRA_RUN in ${CONF:-spira.conf}."; fi

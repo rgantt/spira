@@ -1,0 +1,530 @@
+#!/usr/bin/env bash
+#
+# archivist.sh — rescue a full session's unfinished business before it is thrown away.
+#
+#   archivist.sh sweep            every live session; archive the ones that crossed a band
+#   archivist.sh now [<session>]  archive one session now, whatever its context (the manual
+#                                 path — "hibernate", before a deliberate clear)
+#   archivist.sh list             what the sweep can see, and what it would do about each
+#   archivist.sh mark <s> <state> [<n>]   the running archivist's own progress writes
+#   archivist.sh state [<s>]      print what the status line and the dashboard are reading
+#   archivist.sh digest <t> [<from-turn>] [--full]
+#                                 the transcript rendered small enough for an agent to read
+#
+# WHAT PROBLEM THIS IS. Context is re-read in full on every turn, so a long session costs many
+# times a fresh one for identical work, and the fix — clearing — is exactly what nobody dares
+# do, because a session near the ceiling is also the session carrying the most that was never
+# written down: questions asked and never answered, findings stated and never filed, verdicts
+# acted on and never recorded. So the expensive state is also the sticky one. This makes
+# clearing cheap by making the loss impossible.
+#
+# IT READS THE TRANSCRIPT, NOT THE CONVERSATION. Everything it needs is already on disk: every
+# turn, every tool result, every verdict. So it costs the session it is rescuing exactly
+# nothing — no turn, no tokens, no interruption. That is not an optimisation, it is the design
+# constraint: a persistence step that itself adds turns makes the problem it exists to solve
+# slightly worse every time it runs, and would be worst in the sessions that need it most.
+#
+# WHY THE ARCHIVIST IS NOT A FAYTH, and this was the open question when this was designed. An
+# aeon's subject is a BEAD: it claims one under a lease, cuts a branch, commits, and is judged
+# by whether a commit names the bead. The archivist's subject is a TRANSCRIPT. Giving it a bead
+# per session would mean the machinery for rescuing unfinished business itself manufactured one
+# unfinished bead per session — and none of the apparatus buys anything here, because it writes
+# beads and wiki notes rather than code, so there is no branch, no landing gate and nothing to
+# rebase. The watcher therefore invokes it directly, and the state file below is what stands in
+# for a lease: it is the record that a sweep happened, how far it got, and when.
+#
+# WHERE THE WATCHER LIVES, and this was the other open question: its own timer, not a sentinel
+# check. The sentinel returns the moment the bead graph is healthy — which is exactly when a
+# session at the keyboard is most likely to be quietly filling up — so a check hung off the end
+# of a pass would miss the common case entirely. Its subject is orthogonal to the bead graph,
+# and its cadence is different: a lease dies in minutes, a session crosses a band over tens of
+# them.
+#
+# THE SWEEP HOLDS NO LOCK OF ITS OWN AND SPAWNS NOTHING. The archivist runs synchronously
+# inside the pass, so the concurrency cap is the service manager's: a `oneshot` unit already
+# active is not started again by its timer, which is one fewer thing to get right than a lock
+# file. What the sweep does hold is a per-session lock, so a manual `now` and a timer pass
+# cannot both archive one session — that would file everything twice.
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "$HERE/lib.sh"
+
+ARC="$SPIRA_RUN/archivist"
+PROMPT_FILE="$SPIRA_CHAMBER/archivist.md"
+
+# THE TRIGGER BAND IS NAMED, NOT NUMBERED, so it can only ever be one of the three thresholds
+# the status line and the dashboard already render — and an unrecognised name is refused here
+# rather than silently never matching. A watcher configured to fire at a band that does not
+# exist reports nothing, forever, and looks exactly like a watcher with nothing to report
+# (law-absence-needs-a-positive-control).
+case "$SPIRA_ARCHIVIST_AT" in
+    warn|high|limit) ;;
+    *) die "SPIRA_ARCHIVIST_AT is '$SPIRA_ARCHIVIST_AT'; it must be warn, high or limit" ;;
+esac
+
+# HOW MANY BANDS A SESSION HAS ALREADY CROSSED, from the threshold it has NOT yet reached.
+# `SP_CTX_NEXT` is the next one above the current context, so "next is high" means warn is
+# behind it. `over` means past every one of them.
+crossed() { case "$1" in warn) echo 0 ;; high) echo 1 ;; limit) echo 2 ;; over) echo 3 ;; *) echo -1 ;; esac; }
+trigger() { case "$SPIRA_ARCHIVIST_AT" in warn) echo 1 ;; high) echo 2 ;; limit) echo 3 ;; esac; }
+
+# ---- the state file, which is a contract with two readers ------------------------------
+# ctx-meter.sh renders it in the status line and cockpit/health.sh renders it on the
+# dashboard, both from $SPIRA_RUN/archivist/<session>.state as flat key=value lines:
+#
+#   state=sweeping|archiving|safe|failed
+#   at_turn=<the session's turn count when this state was computed>
+#   items_filed=<how many beads and notes were written>
+#
+# AT_TURN IS LOAD-BEARING, NOT BOOKKEEPING. "Safe to clear" is a statement about the session as
+# it was when the sweep read it; forty turns later it describes a session that no longer exists,
+# and acting on it discards everything said since. Both readers demote a stale verdict to "safe
+# as of N turns ago" on exactly this number. A state written without it would have the meter
+# telling the operator it is safe to discard work the archivist never saw.
+#
+# AND IT IS WRITTEN AS THE WORK HAPPENS, never only at the end. A long sweep that shows nothing
+# is indistinguishable from an archivist that never ran, which is the state the operator is
+# trying to escape.
+write_state() {          # write_state <session> <state> <at_turn> <items>
+    mkdir -p "$ARC" 2>/dev/null || return 1
+    local tmp="$ARC/.$1.$$"
+    printf 'state=%s\nat_turn=%s\nitems_filed=%s\n' "$2" "$3" "$4" > "$tmp" || return 1
+    mv -f "$tmp" "$ARC/$1.state"
+}
+state_key() {            # state_key <session> <key>
+    sed -n "s/^$2=//p" "$ARC/$1.state" 2>/dev/null | head -1
+}
+
+# ---- the high-water mark, so one crossing fires once ------------------------------------
+# A band is acted on the first time it is crossed and never again. Without this the sweep would
+# summon an archivist on every pass for as long as the session stayed full, which is every pass
+# from the moment it matters until the operator clears — the sessions being rescued are
+# precisely the ones that sit at the top of the range for hours.
+#
+# IT RECORDS THE BAND, NOT A TIMESTAMP, because the question is "has this session been archived
+# at this depth", and a session that keeps growing genuinely does need looking at again: the
+# turns since the last sweep are the ones nobody has persisted.
+set_hwm() {              # set_hwm <session> <band-rank>
+    mkdir -p "$ARC" 2>/dev/null || return 1
+    local tmp="$ARC/.$1.hwm.$$"
+    printf 'band=%s\n' "$2" > "$tmp" && mv -f "$tmp" "$ARC/$1.hwm"
+}
+get_hwm() { sed -n 's/^band=//p' "$ARC/$1.hwm" 2>/dev/null | head -1; }
+
+# ---- how far the transcript has already been read ---------------------------------------
+# A session that crosses `high` and later `limit` is archived twice, over a transcript whose
+# first half is the same both times. Without a covered mark the second pass re-reads what the
+# first already filed and files it again — and the duplicate is not merely noise: two asks
+# carrying one question is the shape that once had a single reply close both, recording a
+# verdict against a question nobody answered.
+#
+# IT IS WRITTEN ONLY AFTER A RUN SUCCEEDS. A failed pass has covered nothing, whatever it read.
+covered() { sed -n 's/^turn=//p' "$ARC/$1.covered" 2>/dev/null | head -1; }
+set_covered() {          # set_covered <session> <turn>
+    local tmp="$ARC/.$1.covered.$$"
+    printf 'turn=%s\n' "$2" > "$tmp" && mv -f "$tmp" "$ARC/$1.covered"
+}
+
+# ---- which transcripts are a live session at the keyboard -------------------------------
+# THREE FILTERS, AND EACH ONE EXISTS BECAUSE ITS ABSENCE PRODUCES A WRONG ANSWER RATHER THAN A
+# NOISY ONE.
+#
+#   too old       Everything this rescues is rescued so the session can be cleared, which only
+#                 matters while somebody is still in it. A transcript untouched for longer than
+#                 SPIRA_ARCHIVIST_IDLE is history, and sweeping the whole disk on every pass is
+#                 the unbounded fan-out this kind of box has a load-274 scar from
+#                 (law-fence-loops-on-shared-hardware).
+#
+#   the harness's own   An aeon's unfinished business is its BEAD — that is the entire point of
+#                 a lease and a reaper — so archiving an aeon's transcript files a second,
+#                 worse copy of work the graph already tracks. The archivist's own session is
+#                 excluded by the same rule, and must be: it runs with its working directory
+#                 inside $SPIRA_RUN precisely so that it is, and without that the sweep would
+#                 eventually archive the archivist.
+#
+#   empty         A session that has not spoken has nothing to rescue.
+#
+# The exclusion is derived from $SPIRA_RUN rather than written out, because the client's
+# project directory is the working directory with every non-alphanumeric character replaced by
+# a hyphen — so any path under the runtime directory has that directory's slug as a prefix. A
+# literal here would be one operator's layout, and would stop matching the day they moved it.
+live_transcripts() {
+    python3 - "$SPIRA_TOKEN_PROJECTS" "$SPIRA_RUN" "$SPIRA_ARCHIVIST_IDLE" <<'PY'
+import glob, os, re, sys, time
+projects, run, idle = sys.argv[1], sys.argv[2], int(sys.argv[3])
+def slug(p): return re.sub(r"[^A-Za-z0-9]", "-", p)
+# BOTH THE PATH AS CONFIGURED AND THE PATH RESOLVED. The client derives a project directory
+# from the working directory it was GIVEN, so a runtime directory reached through a symlink
+# produces a slug of the literal path — while an aeon started from the resolved one produces
+# a slug of that. Matching only one of them lets the other through, and what comes through is
+# the harness's own sessions being archived as if they were the operator's.
+ours = {slug(run), slug(os.path.realpath(run))}
+now = time.time()
+for f in sorted(glob.glob(os.path.join(projects, "*", "*.jsonl"))):
+    d = os.path.basename(os.path.dirname(f))
+    if any(d.startswith(o) for o in ours):
+        continue
+    try:
+        st = os.stat(f)
+    except OSError:
+        continue
+    if st.st_size == 0 or now - st.st_mtime > idle:
+        continue
+    # The client names a transcript for the session it holds, so the basename IS the session
+    # id — the same key both readers of the state file compose their path from.
+    print("%s\t%s" % (os.path.basename(f)[:-6], f))
+PY
+}
+
+# ---- one archive run --------------------------------------------------------------------
+# The whole input is the transcript path and the numbers that say why it is being read. No
+# bead, no branch, no worktree — see the header.
+#
+# THE PROMPT IS A FILE IN THE CHAMBER, beside the personas, because it is the same kind of
+# artifact: what an agent is told it is for. It is not a `.fayth`, and that is deliberate —
+# a fayth declares a partition of the bead graph and this persona has none.
+# ---- what came before this transcript ---------------------------------------------------
+# CLEARING STARTS A NEW TRANSCRIPT WITH A NEW SESSION ID, so "the session log" is only ever the
+# tail of the conversation. The client records a stable lineage id across those clears and
+# archive.sh indexes it, which makes the chain a query instead of a guess — and it is the same
+# query the manual salvage path runs, so the two cannot come to different views of what one
+# conversation is.
+#
+# IT IS A HINT, NEVER A DEPENDENCY. The archive is swept on its own timer, so a session cleared
+# minutes ago may not be indexed yet, and a colleague may have no archive at all. Every failure
+# here is the same answer — a chain of one — because the current transcript is the only one this
+# sweep is actually acting on either way.
+lineage_brief() {        # lineage_brief <session> <this transcript>
+    local rows
+    [ -x "$HERE/archive.sh" ] || { printf 'unknown — no transcript archive on this installation.'; return; }
+    rows="$("$HERE/archive.sh" lineage "$1" --json 2>/dev/null)" || rows=""
+    # THE ROWS GO IN ON STDIN, not interpolated into the script. They carry paths an operator
+    # typed, and a value pasted into a program is a value that can end the string it is in.
+    rows="$(printf '%s' "$rows" | python3 -c '
+import json, sys
+me = sys.argv[1]
+for ln in sys.stdin:
+    try: r = json.loads(ln)
+    except Exception: continue
+    if r.get("source") and r["source"] != me:
+        print("    %s  (%s turns, up to %s)" % (r["source"], r.get("turns"), r.get("last_ts")))
+' "$2")"
+    if [ -n "$rows" ]; then
+        printf 'This session is a continuation. Earlier transcripts in the same conversation,\noldest first:\n\n%s\n\nThey were swept when they were live, so read one only to resolve something the\ncurrent transcript refers to and does not contain.' "$rows"
+    else
+        printf 'A chain of one — nothing earlier belongs to this conversation, or the archive has\nnot indexed it yet.'
+    fi
+}
+
+archive() {              # archive <session> <transcript> <at_turn> <ctx> <why>
+    local sid="$1" tp="$2" at="$3" ctx="$4" why="$5" from
+    from="$(covered "$sid")"; from="${from:-0}"
+    [ -f "$PROMPT_FILE" ] || { log "archivist: no prompt at $PROMPT_FILE"; return 1; }
+    mkdir -p "$ARC/cwd" || return 1
+
+    # A SUBSHELL WITH THE LOCK ON A FILE DESCRIPTOR, so it is released when the shell exits
+    # however it exits — a lock cleared by a trap is a lock leaked whenever the process is
+    # killed, and a stale one would wedge every later sweep of that session silently.
+    (
+        # NON-ZERO, so the caller reads a refused lock as "this pass did not archive it" and
+        # goes no further. Exiting 0 here would have the sweep treat somebody else's run as its
+        # own and act on its results — including sending the one notice, off a count from a run
+        # that is still going.
+        flock -n 9 || { log "archivist: $sid is already being archived"; exit 75; }
+
+        write_state "$sid" sweeping "$at" 0
+        local prompt logf rc items
+        # `${x//y/z}` and not sed: the transcript path and the database path are paths an
+        # operator typed, and a `|` or a `&` in one is a sed expression rather than a value.
+        prompt="$(cat "$PROMPT_FILE")"
+        prompt="${prompt//\{\{TRANSCRIPT\}\}/$tp}"
+        prompt="${prompt//\{\{SESSION\}\}/$sid}"
+        prompt="${prompt//\{\{DB\}\}/$SPIRA_DB}"
+        prompt="${prompt//\{\{CTX\}\}/$ctx}"
+        prompt="${prompt//\{\{TURNS\}\}/$at}"
+        prompt="${prompt//\{\{FROM_TURN\}\}/$from}"
+        prompt="${prompt//\{\{WHY\}\}/$why}"
+        prompt="${prompt//\{\{LINEAGE\}\}/$(lineage_brief "$sid" "$tp")}"
+        prompt="${prompt//\{\{ARCHIVIST\}\}/$HERE/archivist.sh}"
+        prompt="${prompt//\{\{NOTIFY\}\}/$SPIRA_NOTIFY}"
+        # EMPTY IS "YOU HAVE NO WIKI", NEVER A GUESS, and it substitutes a whole paragraph
+        # rather than a path — a brief that rendered as a bare empty string would leave the
+        # agent with a sentence pointing at nowhere, which is worse than no sentence. A
+        # colleague cloning this has no wiki at all, and a path invented for them is a
+        # directory an agent would create and fill.
+        if [ -n "$SPIRA_WIKI" ]; then
+            prompt="${prompt//\{\{WIKI\}\}/Craft knowledge — how a tool really behaves, which approach failed and why, the
+shape of a recurring hazard — goes on a page under \`$SPIRA_WIKI\`, not into a bead.
+Append to the page it belongs on; create one only if none fits.}"
+        else
+            prompt="${prompt//\{\{WIKI\}\}/There is no wiki configured on this installation, so craft knowledge has nowhere
+better to go than an insight. Record it as one and say in the body that it wants a
+home.}"
+        fi
+
+        logf="$SPIRA_RUN/archivist-$sid.log"
+        log "archivist: $sid — $why (ctx $ctx, turn $at) -> $logf"
+        # STREAMED, like an aeon's, so the log is a live trace rather than a buffered dump: with
+        # the default format nothing reaches it until the session ends, so it cannot answer "is
+        # this working" during the only window in which that question is asked.
+        #
+        # THE BINARY IS INJECTABLE for the same reason it is in aeon.sh, and a PATH shim cannot
+        # substitute: conf.sh replaces $PATH outright, so a suite that put a fake `claude` first
+        # on PATH would run the real model against the operator's account, silently and at cost.
+        #
+        # NO Edit IN THE TOOL LIST. The archivist writes beads, notes and pages; a tool for
+        # changing a line in a file that already exists is the one it would need in order to
+        # start finishing the work it finds, which is the one thing it must not do.
+        #
+        # AND IT RUNS IN $ARC/cwd. The client derives a transcript's project directory from the
+        # working directory, so this is what keeps the archivist's own transcript inside
+        # $SPIRA_RUN and therefore outside its own sweep.
+        cd "$ARC/cwd" || exit 1
+        printf '%s' "$prompt" | timeout "$SPIRA_ARCHIVIST_TIMEOUT" \
+            "${SPIRA_CLAUDE:-claude}" -p --output-format stream-json --verbose \
+                   --model "$SPIRA_ARCHIVIST_MODEL" \
+                   --allowedTools "Bash,Read,Grep,Glob,Write" \
+                   --dangerously-skip-permissions \
+            > "$logf" 2>&1
+        rc=$?
+
+        # THE COUNT COMES FROM THE STATE FILE, which the run itself has been updating as it
+        # filed each item — not from parsing the session's output. A number scraped out of a
+        # model's prose is a number the model chose to print, and one that was silently absent
+        # would render as "0 filed" beside a green "safe to clear": the reading that says the
+        # sweep found nothing worth keeping, which is the one claim that must never be a
+        # parsing failure in disguise.
+        items="$(state_key "$sid" items_filed)"; items="${items:-0}"
+        # AT_TURN STAYS AT THE TURN THE SWEEP READ UP TO, deliberately, and is not refreshed to
+        # the turn it finished at. The session may have kept talking while this ran, and those
+        # turns are exactly the ones nobody persisted — so the verdict must describe the
+        # session the archivist actually saw, and be demoted by both readers if it has moved on.
+        if [ "$rc" -eq 0 ]; then
+            write_state "$sid" safe "$at" "$items"
+            set_covered "$sid" "$at"
+            log "archivist: $sid safe to clear — $items item(s) filed"
+        else
+            write_state "$sid" failed "$at" "$items"
+            log "archivist: $sid FAILED rc=$rc after $items item(s) — see $logf"
+        fi
+        exit "$rc"
+    ) 9>"$ARC/$sid.lock"
+}
+
+# ---- the modes ---------------------------------------------------------------------------
+case "${1:-sweep}" in
+
+sweep|list)
+    MODE="${1:-sweep}"
+    [ "$MODE" = list ] && printf '%-40s %10s %6s %8s %s\n' SESSION CONTEXT TURNS BAND WOULD
+    want="$(trigger)"
+    while IFS=$'\t' read -r sid tp; do
+        [ -n "$sid" ] || continue
+        # ONE MEASUREMENT, SHARED. ctx-meter.sh is what the status line and the dashboard read,
+        # so asking it — rather than parsing the transcript again here — is what stops the
+        # watcher from acting on a number the operator is not being shown.
+        e="$("$HERE/ctx-meter.sh" env "$tp" 2>/dev/null)" || e=""
+        ctx="$(sed -n 's/^SP_CTX_NOW=//p' <<<"$e")"
+        turns="$(sed -n 's/^SP_CTX_TURNS=//p' <<<"$e")"
+        nxt="$(sed -n 's/^SP_CTX_NEXT=//p' <<<"$e")"
+        band="$(crossed "${nxt:-}")"
+        [ "$band" -lt 0 ] 2>/dev/null && continue          # the meter could not read it
+        seen="$(get_hwm "$sid")"; seen="${seen:-0}"
+        would=hold
+        if [ "$band" -ge "$want" ] && [ "$band" -gt "$seen" ]; then would=archive; fi
+        if [ "$MODE" = list ]; then
+            printf '%-40s %10s %6s %8s %s\n' "$sid" "${ctx:--}" "${turns:--}" "$band" "$would"
+            continue
+        fi
+        [ "$would" = archive ] || continue
+        # THE MARK IS SET BEFORE THE RUN, NOT AFTER IT. A crossing that summoned an archivist
+        # which then failed has still been acted on; re-firing it on the next pass would retry
+        # the same failure every two minutes for as long as the session stayed full. The
+        # failure is reported through the state file, where the operator is already looking.
+        set_hwm "$sid" "$band"
+        archive "$sid" "$tp" "${turns:-0}" "${ctx:-0}" "crossed into $SPIRA_ARCHIVIST_AT or beyond" \
+            || continue
+
+        # THE ONE PUSH, AND ONLY FROM THE TOP BAND. Everything below this is already delivered
+        # by the two readers of the state file — the status line and the dashboard both render
+        # "safe to clear (n filed)" the moment it is written, at no cost and with nothing to
+        # dismiss. Sending a message on every archive as well would put a notice in front of
+        # the operator on every long session, and a standing list that never changes becomes
+        # wallpaper — which is how a real one comes to land in a pane they have learned to
+        # ignore (law-alerts-must-be-actionable).
+        #
+        # Past the LIMIT is different: the session is at the ceiling, every further turn is
+        # charged at the full context, and they may not be looking at either pane. So: once per
+        # session, never repeated, and only when there was something to say.
+        [ "$band" -ge 3 ] || continue
+        [ -e "$ARC/$sid.notified" ] && continue
+        filed="$(state_key "$sid" items_filed)"; filed="${filed:-0}"
+        [ "$filed" -gt 0 ] 2>/dev/null || continue
+        : > "$ARC/$sid.notified"
+        [ -x "$SPIRA_NOTIFY" ] && "$SPIRA_NOTIFY" insight \
+            "A session at the keyboard is carrying $ctx tokens; its unfinished business is now saved ($filed item(s)) and it is safe to clear" \
+            --why "Every further turn re-reads all of it. The archivist swept it at turn $turns; anything said since is not covered." \
+            >/dev/null 2>&1
+    done < <(live_transcripts)
+
+    # ---- what the sessions that no longer exist left behind ---------------------------
+    # A state, a mark and a log per session, forever, in a directory nothing else prunes.
+    # Tied to the TRANSCRIPT rather than to an age: while the client still holds the
+    # transcript the state is still the truth about it, and once the transcript is gone
+    # there is no session for any of it to describe.
+    [ "$MODE" = sweep ] || exit 0
+    for f in "$ARC"/*.state; do
+        [ -e "$f" ] || break
+        s="$(basename "$f")"; s="${s%.state}"
+        [ -z "$(find "$SPIRA_TOKEN_PROJECTS" -name "$s.jsonl" -print -quit 2>/dev/null)" ] || continue
+        rm -f "$ARC/$s.state" "$ARC/$s.hwm" "$ARC/$s.covered" "$ARC/$s.notified" \
+              "$ARC/$s.lock" "$SPIRA_RUN/archivist-$s.log"
+        log "archivist: forgot $s — its transcript is gone"
+    done
+    ;;
+
+now)
+    # THE MANUAL PATH — hibernate. Same machinery, different trigger: no threshold, no
+    # high-water mark, because the operator asking is the trigger and asking twice is a
+    # deliberate act. With no argument it takes the session most recently written to, which is
+    # the one they are sitting in.
+    sid="${2:-}"; tp=""
+    if [ -n "$sid" ]; then
+        case "$sid" in
+            */*) tp="$sid"; sid="$(basename "$tp")"; sid="${sid%.jsonl}" ;;
+            *)   tp="$(live_transcripts | awk -F'\t' -v s="$sid" '$1==s{print $2; exit}')" ;;
+        esac
+    else
+        read -r sid tp < <(python3 - "$SPIRA_TOKEN_PROJECTS" <<'PY'
+import glob, os, sys
+c = glob.glob(os.path.join(sys.argv[1], "*", "*.jsonl"))
+c = [f for f in c if os.path.getsize(f) > 0]
+if c:
+    f = max(c, key=os.path.getmtime)
+    print("%s %s" % (os.path.basename(f)[:-6], f))
+PY
+)
+    fi
+    [ -n "$tp" ] && [ -f "$tp" ] || die "no transcript for '${2:-the newest session}'"
+    e="$("$HERE/ctx-meter.sh" env "$tp" 2>/dev/null)" || e=""
+    ctx="$(sed -n 's/^SP_CTX_NOW=//p' <<<"$e")"
+    turns="$(sed -n 's/^SP_CTX_TURNS=//p' <<<"$e")"
+    archive "$sid" "$tp" "${turns:-0}" "${ctx:-0}" "asked for by hand"
+    ;;
+
+mark)
+    # THE RUNNING ARCHIVIST'S OWN PROGRESS WRITES. It calls this as it works — `archiving` the
+    # moment it files the first item, then again with a running count — so the pane moves while
+    # the sweep is happening rather than jumping from nothing to a verdict.
+    sid="${2:?mark needs a session}"; st="${3:?mark needs a state}"
+    case "$st" in
+        sweeping|archiving|safe|failed) ;;
+        *) die "unknown archivist state '$st'" ;;
+    esac
+    # AT_TURN IS NEVER INVENTED HERE. There is no state file to take it from unless a run is in
+    # progress, and a fabricated 0 would make every later verdict read as freshly computed at
+    # turn zero — which both readers would render as a very stale "safe", or worse, as a fresh
+    # one on a session with no turns.
+    at="$(state_key "$sid" at_turn)"
+    [ -n "$at" ] || die "no archivist run in progress for $sid — nothing to mark"
+    items="${4:-$(state_key "$sid" items_filed)}"
+    write_state "$sid" "$st" "$at" "${items:-0}"
+    ;;
+
+digest)
+    # THE TRANSCRIPT, RENDERED SMALL ENOUGH TO READ. This is shipped rather than left to the
+    # archivist to improvise because the cost of getting it wrong is the whole feature: a long
+    # session's transcript is megabytes of JSON, and an agent that reads it whole spends more
+    # context rescuing the session than the session was carrying. Deterministic, so two runs
+    # over one transcript see the same thing, and testable, which a prompt is not.
+    #
+    # TOOL RESULTS ARE DROPPED AND TOOL CALLS ARE KEPT. The results are the bulk of the bytes by
+    # an order of magnitude and are the one part already summarised in the prose beside them —
+    # whereas the CALLS are the record of work in flight, which is half of what is being hunted:
+    # which branches were touched, which beads were claimed, what was half-done. `--full` keeps
+    # a truncated head of each result for a session whose findings really are in its output.
+    tp="${2:?digest needs a transcript}"; from="${3:-0}"; full=0
+    case "${4:-}" in --full) full=1 ;; esac
+    python3 - "$tp" "$from" "$full" <<'PY'
+import json, sys
+tp, frm, full = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1"
+
+def text(c):
+    """The human-readable parts of a content field, which may be a string or a block list."""
+    if isinstance(c, str): return [("text", c)]
+    out = []
+    for b in c if isinstance(c, list) else []:
+        if not isinstance(b, dict): continue
+        t = b.get("type")
+        if t == "text" and b.get("text", "").strip():
+            out.append(("text", b["text"]))
+        elif t == "tool_use":
+            inp = b.get("input") or {}
+            # ONE LINE PER CALL, and the line is whichever field says what it acted ON. A tool
+            # name alone ("Edit") records that something was edited and loses the only part
+            # that matters, which is what.
+            arg = ""
+            for k in ("command", "file_path", "pattern", "path", "url", "prompt", "description"):
+                if isinstance(inp.get(k), str) and inp[k].strip():
+                    arg = " ".join(inp[k].split())[:160]; break
+            out.append(("tool", "%s %s" % (b.get("name") or "?", arg)))
+        elif t == "tool_result" and full:
+            c2 = b.get("content")
+            if isinstance(c2, list):
+                c2 = " ".join(x.get("text", "") for x in c2 if isinstance(x, dict))
+            if isinstance(c2, str) and c2.strip():
+                out.append(("result", " ".join(c2.split())[:300]))
+    return out
+
+turn, last = 0, ""
+try:
+    fh = open(tp, errors="ignore")
+except OSError:
+    sys.exit("digest: cannot read %s" % tp)
+with fh:
+    for ln in fh:
+        try: o = json.loads(ln)
+        except Exception: continue
+        m = o.get("message")
+        if not isinstance(m, dict): continue
+        role = m.get("role") or o.get("type")
+        # TURNS ARE COUNTED THE WAY THE METER COUNTS THEM — one per distinct assistant message
+        # id — so "turn 240" here and "240t" in the status line are the same turn. Two counting
+        # rules would make the covered mark skip or repeat a stretch of the session.
+        if role == "assistant":
+            mid = m.get("id")
+            if mid and mid != last: turn += 1; last = mid
+        parts = text(m.get("content"))
+        if not parts: continue
+        # A PROMPT IS NUMBERED FOR THE TURN IT PRODUCES, not the one before it. The counter
+        # advances on the assistant's reply, so a user message read literally lands one turn
+        # early — and at the covered mark that is the difference between resuming at the
+        # operator's instruction and resuming at the answer to it, having dropped the
+        # instruction. A user row carrying only tool results belongs to the turn that made the
+        # calls, which is the one already counted.
+        shown = turn + 1 if (role == "user" and any(k == "text" for k, _ in parts)) else turn
+        if shown < frm: continue
+        print("--- turn %d [%s]" % (shown, role))
+        for kind, body in parts:
+            if kind == "text":     print(body.strip())
+            elif kind == "tool":   print("    · %s" % body)
+            else:                  print("    > %s" % body)
+PY
+    ;;
+
+state)
+    sid="${2:-}"
+    if [ -n "$sid" ]; then cat "$ARC/$sid.state" 2>/dev/null || echo "state=none"
+    else
+        for f in "$ARC"/*.state; do
+            [ -e "$f" ] || { echo "no session has been archived"; break; }
+            s="$(basename "$f")"
+            printf '%s\t%s\t%s turn\t%s filed\n' "${s%.state}" \
+                "$(state_key "${s%.state}" state)" "$(state_key "${s%.state}" at_turn)" \
+                "$(state_key "${s%.state}" items_filed)"
+        done
+    fi
+    ;;
+
+*) sed -n '3,10p' "$0" >&2; exit 2 ;;
+esac

@@ -3,6 +3,7 @@
 #
 #   ctx-meter.sh          read the status-line hook on stdin, print one coloured line
 #   ctx-meter.sh env      read no stdin, print SP_CTX_* key=value for the collector
+#   ctx-meter.sh env <t>  the same, but about the transcript named rather than the newest
 #
 # WHY. Context is re-read in full on every turn, so a long session costs many times a fresh one
 # for identical work: measured on this project, a session starts near 50,000 tokens and every
@@ -44,11 +45,13 @@ IN=""
 [ "$MODE" = "line" ] && IN="$(cat 2>/dev/null || true)"
 
 python3 - "$IN" "$SPIRA_CTX_WARN" "$SPIRA_CTX_HIGH" "$SPIRA_CTX_LIMIT" \
-              "$MODE" "$SPIRA_TOKEN_PROJECTS" "$SPIRA_RUN" <<'PY'
+              "$MODE" "$SPIRA_TOKEN_PROJECTS" "$SPIRA_RUN" "${2:-}" <<'PY'
 import json, sys, os, glob, time, hashlib, re
 
 raw, warn, high, limit = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
 mode, projects, run = sys.argv[5], sys.argv[6], sys.argv[7]
+# The transcript a caller named, if it named one. `env` mode only; see below.
+pick = sys.argv[8] if len(sys.argv) > 8 else ""
 try: hook = json.loads(raw) if raw.strip() else {}
 except Exception: hook = {}
 if not isinstance(hook, dict): hook = {}
@@ -78,13 +81,20 @@ named = bool(sid or hp)
 
 tp = ""
 if mode == "env":
-    # NO HOOK, SO "THE LIVE SESSION" IS THE TRANSCRIPT BEING WRITTEN RIGHT NOW — the newest
-    # across every project, not the one belonging to any particular directory. The collector
-    # cannot know which project the operator is sitting in, and guessing one would report a
-    # session that ended yesterday as though it were live. Its age is published alongside so
-    # a stale answer is legible as stale rather than as calm.
-    cands = glob.glob(os.path.join(projects, "*", "*.jsonl"))
-    tp = max(cands, key=os.path.getmtime) if cands else ""
+    # A NAMED TRANSCRIPT WINS, because a caller that named one is not asking about "the live
+    # session" — the archivist's sweep walks every live session in turn, and answering each of
+    # them with the newest on disk would report one session's context under every name.
+    #
+    # OTHERWISE, NO HOOK MEANS "THE LIVE SESSION" IS THE TRANSCRIPT BEING WRITTEN RIGHT NOW —
+    # the newest across every project, not the one belonging to any particular directory. The
+    # collector cannot know which project the operator is sitting in, and guessing one would
+    # report a session that ended yesterday as though it were live. Its age is published
+    # alongside so a stale answer is legible as stale rather than as calm.
+    if pick:
+        tp = pick
+    else:
+        cands = glob.glob(os.path.join(projects, "*", "*.jsonl"))
+        tp = max(cands, key=os.path.getmtime) if cands else ""
 else:
     cwd = (hook.get("workspace") or {}).get("current_dir") or hook.get("cwd") or os.getcwd()
     order = []
@@ -236,6 +246,7 @@ if mode == "env":
             print(f"SP_CTX_{k}=-")
         print("SP_CTX_ARCHIVIST=-")
         print("SP_CTX_ARCHIVIST_BEHIND=-")
+        print("SP_CTX_ARCHIVIST_FILED=-")
         print(f"SP_CTX_SCAN_BYTES={scanned}")
         raise SystemExit
     # THE NEXT THRESHOLD, not the ceiling. "248k to the limit" is true and useless when the
@@ -258,6 +269,10 @@ if mode == "env":
     print(f"SP_CTX_AGE={age}")
     print(f"SP_CTX_ARCHIVIST={arc_name or '-'}")
     print(f"SP_CTX_ARCHIVIST_BEHIND={arc_behind}")
+    # HOW MUCH WAS RESCUED, which is the difference between "the sweep ran" and "the sweep was
+    # worth running". A pane reporting only that the archivist finished cannot distinguish a
+    # session with nothing left to save from one whose fourteen loose ends are now beads.
+    print(f"SP_CTX_ARCHIVIST_FILED={arc_filed}")
     # HOW MUCH OF THE TRANSCRIPT THIS PASS HAD TO READ. The incremental cursor is what keeps a
     # five-second status line off the CPU, and a cursor that has quietly stopped working looks
     # exactly like one that is working. This is the number that tells them apart.

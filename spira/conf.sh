@@ -61,6 +61,7 @@ SPIRA_ALERT_GLOB
 SPIRA_FAYTHS SPIRA_MAX_AEONS
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
 SPIRA_ARCHIVE
+SPIRA_ARCHIVIST_AT SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
 "
 
 # --------------------------------------------------------------------------------------
@@ -283,6 +284,35 @@ spira_conf_defaults() {
     # said, and a default inside a shared checkout is one `git add -A` away from publishing
     # all of it. Point it at whichever volume has the room; nothing here ever deletes.
     : "${SPIRA_ARCHIVE:=$SPIRA_RUN/archive}"
+
+    # ---- THE ARCHIVIST: WHEN A FULL SESSION GETS ITS UNFINISHED BUSINESS RESCUED ---------
+    # WHICH BAND SUMMONS IT, named rather than numbered, so it can only ever be one of the
+    # three thresholds above — the same three the status line and the dashboard render. A
+    # fourth number here would be a second opinion about how close to the edge a session is,
+    # and the operator would be reading one while the archivist acted on the other.
+    #
+    # `high` and not `warn` because the bands mean different things. Crossing `warn` is the
+    # NOTICE, and it is already delivered for free: both readers begin rendering "· not
+    # archived" at exactly that point. Crossing `high` is where acting pays, and crossing
+    # `limit` is where it is urgent. Summoning at `warn` would spend a session on most of the
+    # sessions that never get long enough to need one.
+    : "${SPIRA_ARCHIVIST_AT:=high}"
+    # HOW RECENTLY A TRANSCRIPT MUST HAVE BEEN WRITTEN TO COUNT AS LIVE. Everything the
+    # archivist rescues is rescued so that the session can be cleared, which only matters
+    # while somebody is still sitting in it. Far too short and a session that pauses to read
+    # is declared over; far too long and every transcript on the disk is swept on every pass,
+    # which is the unbounded fan-out this box already has a scar from.
+    : "${SPIRA_ARCHIVIST_IDLE:=1800}"
+    # A KEY BECAUSE THE JUDGEMENT IS THE PRODUCT. What is being asked for is which of a
+    # thousand turns was a question nobody answered and which verdict generalises into law —
+    # not a summary. That is worth the strong model here, and a colleague running mostly
+    # routine sessions may reasonably disagree, which is what makes it configuration.
+    : "${SPIRA_ARCHIVIST_MODEL:=claude-opus-5}"
+    # A HARD CEILING, unlike an aeon's. An aeon has none because a clock cannot tell slow from
+    # stuck and its heartbeat can; this has no heartbeat and no lease, and it holds the sweep
+    # while it runs, so an archivist wedged on a huge transcript would stop every other session
+    # from ever being looked at.
+    : "${SPIRA_ARCHIVIST_TIMEOUT:=900}"
 
     # THE MAP FALLS BACK TO THE EXAMPLE, and that is what makes a clean clone runnable at
     # all. The real map is one operator's inventory of checkouts and does not ship; the

@@ -147,6 +147,66 @@ goes back into the report that would have found it.
 The ops pane reports the two populations separately, because "waiting on a run" is routine and
 "parked with no run to wait for" is a fault.
 
+## Clearing a session without losing it
+
+Context is re-read in full on every turn, so a long session costs many times a fresh one for
+identical work. The fix is to clear it — and a session near the ceiling is also the one
+carrying the most that was never written down: questions asked and never answered, findings
+stated and never filed, verdicts acted on and never recorded. The expensive state is the
+sticky one, which is why nobody clears.
+
+The **archivist** makes clearing cheap. `spira-archivist.timer` sweeps the live sessions every
+five minutes, computes what each is carrying, and when one crosses `SPIRA_ARCHIVIST_AT` it
+summons an agent whose entire input is that session's transcript. The agent reads the log,
+rescues what is loose into asks, insights, notes and — sparingly — beads, and exits.
+
+**It reads the transcript, not the conversation.** Everything it needs is already on disk, so
+it costs the session it is rescuing nothing: no turn, no tokens, no interruption. That is a
+design constraint rather than an optimisation. A persistence step that adds turns makes the
+problem it exists to solve slightly worse every time it runs, and would be worst in the
+sessions that need it most.
+
+It is deliberately **not** a fayth. An aeon's subject is a bead — claimed under a lease,
+worked on a branch, judged by whether a commit names it. The archivist's subject is a
+transcript, and giving it a bead per session would have the machinery for rescuing unfinished
+business manufacture one unfinished bead per session.
+
+    spira/archivist.sh list        every live session, what it carries, what would happen
+    spira/archivist.sh now         archive the session you are in, right now — hibernate
+    spira/archivist.sh sweep       what the timer runs
+
+`now` is the manual path, for a deliberate clear: same machinery, no threshold, no high-water
+mark, because you asking is the trigger.
+
+### What you see while it happens
+
+One small file per session, `$SPIRA_RUN/archivist/<session>.state`, read by the status line
+and by the dashboard:
+
+    state=sweeping|archiving|safe|failed
+    at_turn=<the session's turn count when this state was computed>
+    items_filed=<how many items were written>
+
+**`at_turn` is load-bearing.** "Safe to clear" is a statement about the session as the
+archivist saw it; forty turns later it describes a session that no longer exists, and acting on
+it discards everything said since. Both readers demote a stale verdict to "safe as of N turns
+ago" rather than repeating a green one. A verdict that cannot go stale is one that will
+eventually lie.
+
+For any of it to be visible, the status line needs a **`refreshInterval`**. The client re-runs
+a status-line command on a session starting, a new assistant message, a compaction finishing, a
+mode change and a refresh timer — clearing is not on that list, and neither is anything the
+archivist does, all of which happens while the session is idle. Without the timer the pane can
+only show what was already true at the last assistant message, so a cleared session goes on
+displaying the discarded context: the instrument that exists to say whether clearing was worth
+doing, reporting that the clear did not work. That setting lives in the client's own settings
+file, outside every repository, so nothing here can set it — `spira/doctor.sh` reports its
+absence as a finding with the one-line fix.
+
+Four keys, all with defaults: `SPIRA_ARCHIVIST_AT` (which of the three context thresholds
+summons it), `SPIRA_ARCHIVIST_IDLE` (how recently a transcript must have been written to count
+as live), `SPIRA_ARCHIVIST_MODEL` and `SPIRA_ARCHIVIST_TIMEOUT`.
+
 ## Escalations, and their answers
 
 An escalation has two halves — the ask and the answer — and both need a mechanism. Build the

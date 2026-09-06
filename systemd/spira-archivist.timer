@@ -1,0 +1,21 @@
+[Unit]
+Description=Sweep the live sessions for unfinished business as they approach the context ceiling
+
+[Timer]
+# FIVE MINUTES, not two. What this watches moves in tens of minutes: a session crosses a
+# threshold over many turns, and the archivist's answer stays true for as long as the session
+# is idle. The sentinel is fast because a lease dies in minutes; nothing here does.
+#
+# It is also not free. A crossing summons a model session, so the cadence is the ceiling on
+# how often that can happen — and the high-water mark means a crossing fires once however many
+# times it is swept.
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=1min
+# NOT Persistent. A missed tick is a session that filled up while the box was off, and there
+# is nobody at that keyboard now — catching up on boot would archive a transcript whose
+# session has already ended, which is work nobody is waiting on and a model session spent.
+Unit=spira-archivist.service
+
+[Install]
+WantedBy=timers.target

@@ -313,9 +313,17 @@ tokens_section() {
     local note=""
     case "${SP_CTX_ARCHIVIST:-}" in
         none)               [ "${SP_CTX_NEXT:-}" = warn ] || note="${C_DIM}· not archived${C_RST}" ;;
-        safe)               if [ "${SP_CTX_ARCHIVIST_BEHIND:-0}" -le 2 ] 2>/dev/null
-                            then note="${C_OK}✓ safe to clear${C_RST}"
-                            else note="${C_WARN}✓ safe as of ${SP_CTX_ARCHIVIST_BEHIND}t ago${C_RST}"; fi ;;
+        # HOW MANY ITEMS, not merely that it finished. "Safe to clear" alone cannot distinguish
+        # a session with nothing left to save from one whose fourteen loose ends are now beads,
+        # and those are the two readings the operator is actually deciding between.
+        safe)               f=""
+                            case "${SP_CTX_ARCHIVIST_FILED:-}" in
+                                ''|'-'|'?'|*[!0-9]*) ;;
+                                *) f=" ${C_DIM}(${SP_CTX_ARCHIVIST_FILED} filed)${C_RST}" ;;
+                            esac
+                            if [ "${SP_CTX_ARCHIVIST_BEHIND:-0}" -le 2 ] 2>/dev/null
+                            then note="${C_OK}✓ safe to clear${C_RST}$f"
+                            else note="${C_WARN}✓ safe as of ${SP_CTX_ARCHIVIST_BEHIND}t ago${C_RST}$f"; fi ;;
         sweeping|archiving) note="${C_ACC}⟳ ${SP_CTX_ARCHIVIST}${C_RST}" ;;
         failed)             note="${C_BAD}! archive failed${C_RST}" ;;
         ''|'-')             ;;
