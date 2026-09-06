@@ -11,7 +11,7 @@ FAYTH_DESC="Guardian — claims ready Spira plan beads and implements them"
 # plan work — never beads imported from a predecessor alongside them, which are a replica
 # that the predecessor is still actively working.
 FAYTH_LABELS="spira,plan"
-FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,awaiting-ci"
+FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"
 
 # Statutes only. SOPs are runbooks for production incidents; a builder will never execute
 # one, and a shelf of them would push the law it does have to obey off the end of the

@@ -427,12 +427,71 @@ case "$REPO_LAND" in
     hold) LANDING_BRIEF="Spira does not advance $REPO_NAME's \`$BASE_BRANCH\`, so the sentinel gates \`$BRANCH\` and leaves it for the operator to merge by hand" ;;
     *)    LANDING_BRIEF="the sentinel merges \`$BRANCH\` into \`$BASE_BRANCH\` and pushes it once the landing gate passes — there is no reviewer between your commit and \`$BASE\`" ;;
 esac
+# WHETHER THERE IS ANYTHING TO WAIT FOR IS ALSO PART OF THE BRIEF, and the same fact decides
+# it. Only `pr` opens a pull request; `push` merges the branch itself and `hold` leaves it for
+# a human, so in both of those the landing gate is the only gate and a park waits for an event
+# that cannot occur. Because the park label is excluded from every persona's predicate AND
+# from the stranded-work report — which is what stops parked work looking abandoned — such a
+# park is not merely wrong, it is invisible: not claimable, not reported, and shown to the
+# operator as "in CI", the one description that stops anybody looking for the real cause. One
+# bead reached 22 reclaims that way, not one of them a work failure.
+#
+# The sweep strips a park no run can end, so this is not the guard — it is the brief that
+# stops it being applied in the first place. A rule delivered only as prose is a resolution;
+# the mechanism is in the sweep, and both exist because they fail differently.
+if [ "$REPO_LAND" = pr ]; then
+    PARK_BRIEF="## Your lifetime: do the work, cut the review, then exit
+
+**Do not sit and watch CI.** An Opus session idling for twenty-five minutes while a test
+suite runs is the most expensive way to wait that exists. When your work is pushed and its
+pull request is open, your job is done for now — exit cleanly and let the harness bring the
+bead back when there is something to decide.
+
+What makes that safe is the bead, not your memory of it. Before you exit:
+
+- push your branch, and open or update its pull request
+- label the bead \`$SPIRA_CI_LABEL\` — that is the harness's signal that this is parked ON
+  PURPOSE and not abandoned, so it is not treated as stalled work
+- leave the bead OPEN with a note saying what state it is in and what should happen when
+  the run finishes
+
+The sweep then watches that pull request for you. Green and mergeable, it lands and closes
+the bead. Red, it clears the label and raises the priority so the next aeon picks the bead
+up to fix it — and that aeon is you-in-effect: same bead, same recorded branch, all your
+commits, the failure waiting to be read.
+
+A park is not open-ended. One older than \`SPIRA_CI_PARK_MAX\` (${SPIRA_CI_PARK_MAX}s) is
+treated as lost rather than parked: the sweep takes the label off and the bead goes back into
+the stranded-work report, because a park nothing is watching must not be the one state that
+hides a bead from the report that would have found it."
+else
+    PARK_BRIEF="## Your lifetime: do the work, then exit
+
+**There is no CI run to wait for in this repository.** $REPO_NAME lands by \`$REPO_LAND\`, so
+nothing opens a pull request for \`$BRANCH\` and no run will ever report on it. The landing
+gate is the only gate, and once it passes there is nothing further to wait for.
+
+**So do not label the bead \`$SPIRA_CI_LABEL\`.** That label means \"parked on a run somebody
+else is watching\", and it excludes the bead from every persona's predicate and from the
+stranded-work report — the two mechanisms that would otherwise notice the work had stopped.
+Applied where no run exists it is a permanent, invisible hold: not claimable, not reported,
+and shown to the operator as \"in CI\", which is the one description that stops anybody
+looking for the real cause. The sweep strips such a park; do not make it have to.
+
+When the work is committed on your branch, close the bead with its evidence and exit. How the
+branch reaches \`$BASE_BRANCH\` from there is described above, and none of it needs you."
+fi
+
 BEAD_BODY="$(bdq show "$BEAD_ID" 2>/dev/null | grep -vE '^💡|^warning|^  Fix|^  Or')"
 PROMPT="$(sed -e "s|{{BEAD_ID}}|$BEAD_ID|g" -e "s|{{BRANCH}}|$BRANCH|g" \
               -e "s|{{REPO}}|$WORK|g" -e "s|{{REPO_NAME}}|$REPO_NAME|g" \
               -e "s|{{LANDING}}|$LANDING_BRIEF|g" -e "s|{{DB}}|$SPIRA_DB|g" \
               "$SPIRA_HOME/chamber/$FAYTH.md")"
+# PARAMETER EXPANSION, NOT sed, for the two multi-line substitutions. `s|{{X}}|<many lines>|`
+# is not a thing sed will do, and a brief that silently rendered as the literal `{{PARK}}`
+# would leave an aeon with no instruction at all about how its work is meant to end.
 PROMPT="${PROMPT/\{\{BEAD\}\}/$BEAD_BODY}"
+PROMPT="${PROMPT/\{\{PARK\}\}/$PARK_BRIEF}"
 
 # The memory book. Every agent reads it on every session; this is the delivery mechanism
 # for an aeon, standing in for the SessionStart hook an interactive session gets.

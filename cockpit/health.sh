@@ -334,21 +334,36 @@ recent_section() {
 #
 # IT PRINTS EVEN AT ZERO. It used to print nothing at all when nothing was parked, so
 # "nothing parked" and "this section is broken" were the same absence of pixels.
+#
+# TWO POPULATIONS, AND ONE LINE SAID BOTH. "Waiting on a run" is routine. "Parked with no
+# run to wait for" is a bead that will wait forever: only a repository that lands through
+# pull requests has a run at all, and the park label excludes a bead from every persona's
+# predicate AND from the stranded-work report while it waits. So the second figure is a
+# fault, is coloured like one, and is counted separately — a section reading "in CI" over a
+# park nothing can end is the one description that stops the question being asked.
 ci_section() {
     if [ -z "${SP_AWAITING_N:-}" ] || [ "${SP_AWAITING_N:-}" = "?" ]; then
         unread_row CI "cannot read what is parked on CI"
         return
     fi
-    if [ "${SP_AWAITING_N}" -eq 0 ] 2>/dev/null; then
+    # BOTH COUNTS MUST BE ZERO for "nothing parked". Testing the first alone would report an
+    # empty section over a queue of parks that no run will ever end, which is the failure this
+    # section was split to make impossible.
+    if [ "${SP_AWAITING_N}" -eq 0 ] 2>/dev/null && [ "${SP_AWAITING_STUCK:-0}" -eq 0 ] 2>/dev/null; then
         printf ' %sCI%s     %snothing parked on CI%s\n' "$C_DIM" "$C_RST" "$C_DIM" "$C_RST"
         return
     fi
-    local ci_col="$C_DIM"
+    local ci_col="$C_DIM" stuck_txt=""
     case "${SP_AWAITING_AGE:-}" in *h|*d) ci_col="$C_WARN" ;; esac
-    printf ' %sCI%s     %s%s bead(s) awaiting CI%s   %soldest%s %s %s(%s)%s\n' \
+    if [ "${SP_AWAITING_STUCK:-0}" != 0 ]; then
+        stuck_txt="$(printf '   %s%s parked with no run to wait for%s %s(%s)%s' \
+            "$C_WARN" "${SP_AWAITING_STUCK}" "$C_RST" \
+            "$C_DIM" "${SP_AWAITING_STUCK_ID:-?}" "$C_RST")"
+    fi
+    printf ' %sCI%s     %s%s bead(s) waiting on a run%s   %soldest%s %s %s(%s)%s%s\n' \
         "$C_DIM" "$C_RST" "$C_B" "${SP_AWAITING_N}" "$C_RST" \
         "$C_DIM" "$C_RST" "${SP_AWAITING_OLDEST:-?}" \
-        "$ci_col" "${SP_AWAITING_AGE:-?}" "$C_RST"
+        "$ci_col" "${SP_AWAITING_AGE:-?}" "$C_RST" "$stuck_txt"
     local i=0 row
     while [ "$i" -lt "$MAX_SECTION_ROWS" ]; do
         eval "row=\${SP_AWAITING$i:-}"

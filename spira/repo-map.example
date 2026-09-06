@@ -29,6 +29,14 @@
 #                   repository this harness has no business advancing — one whose checkout is
 #                   owned by something else, where rewriting a branch under someone's working
 #                   tree is not ours to do.
+#
+#          THIS COLUMN ALSO DECIDES WHETHER THERE IS A CI RUN TO WAIT FOR. Only `pr` opens a
+#          pull request, so only `pr` has one — under `push` and `hold` the landing gate is
+#          the whole gate, and a bead parked on CI in one of those waits for an event that
+#          cannot occur. Because the park label is excluded from every persona's predicate
+#          AND from the stranded-work report, that wait is invisible as well as endless. The
+#          sweep strips such a park and the aeon's brief tells it not to apply one, but the
+#          fact both of those read is this column.
 #   base   the ref every branch in that repository is cut from and judged against, written as
 #          git resolves it — `origin/main`, `origin/master`, a differently-named remote, or a
 #          bare local branch for a repository nothing pushes. DO NOT ASSUME `main`: on the box

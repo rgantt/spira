@@ -13,7 +13,7 @@ FAYTH_DESC="Ops — claims incident beads, matches an SOP, executes it or writes
 # label is excluded for the same reason it is everywhere: an escalation must never be dispatched as
 # if it were work.
 FAYTH_LABELS="spira,incident"
-FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,awaiting-ci"
+FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"
 
 # BOTH BOOKS. Statutes are how to behave; SOPs are how to fix — and Ops is the only
 # persona that needs the second. The builder reads `law-` alone, which is what keeps a

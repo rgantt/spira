@@ -54,6 +54,7 @@ SPIRA_CONF_KEYS="
 SPIRA_HOME_REPO SPIRA_DB SPIRA_RUN SPIRA_GOAL
 SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER
 SPIRA_COCKPIT SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
+SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_ALERT_GLOB
@@ -194,6 +195,22 @@ spira_conf_defaults() {
     # so all of those must agree on it — which is why it is one key and not five literals.
     # Changing it on a live installation orphans every bead already carrying the old value.
     : "${SPIRA_ASK_LABEL:=needs-operator}"
+    # THE LABEL THAT MEANS "PARKED ON A CI RUN". An aeon puts it on a bead whose pull request
+    # is open so nothing pays for a session to sit and watch a test suite; the CI sweep takes
+    # it off again when the run resolves. Every predicate that decides what an aeon may claim
+    # excludes it, and so does the stalled-work report — which is what stops parked work
+    # looking abandoned, and is also why a park applied where no run exists is permanent AND
+    # invisible. One key rather than five literals, for the same reason as the ask label: the
+    # sweep, the personas, the report and the panel must agree on it or the panel is the half
+    # nobody notices is wrong, because it simply shows fewer.
+    : "${SPIRA_CI_LABEL:=awaiting-ci}"
+    # HOW LONG A PARK MAY LAST BEFORE IT IS TREATED AS LOST, in seconds. A park is a promise
+    # that something else is watching; past the longest plausible run that promise is false,
+    # and the bead should be back in the report that would have found it rather than excluded
+    # from it. Ninety minutes is longer than any run this was written against — raise it if
+    # your CI is slower, and set it to 0 to disable the deadline, which reinstates the
+    # permanent invisible park and should be a deliberate choice.
+    : "${SPIRA_CI_PARK_MAX:=5400}"
     # The name the operator's OWN comments are recorded under, so the attention panel can tell
     # a reply of theirs from a reply of the agent's. Both write into the same thread, and a
     # panel that cannot separate them announces the agent's own comment back to it as an answer.
@@ -310,6 +327,7 @@ export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin
 # --------------------------------------------------------------------------------------
 export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIRA_PATH SPIRA_GOAL \
        SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL \
+       SPIRA_CI_LABEL SPIRA_CI_PARK_MAX \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \
        SPIRA_CONF_FILE

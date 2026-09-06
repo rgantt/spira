@@ -846,6 +846,58 @@ repo_land() {            # repo_land <name> -> push | pr | hold
     printf '%s' "${m:-push}"
 }
 
+# --------------------------------------------------------------------------------------
+# THE CI PARK, AND THE TWO WAYS IT BECOMES A LIE.
+#
+# An aeon parks a bead on `$SPIRA_CI_LABEL` once its pull request is open, so nothing pays an
+# Opus session to sit and watch a test suite. The label is excluded from every fayth's
+# predicate AND from the stalled-work report, which is what stops parked work looking
+# abandoned — and is exactly what makes a park applied where no run exists permanent and
+# invisible: not claimable, not reported, and displayed as "in CI", the one description that
+# stops anybody looking for the real cause. A bead reached 22 reclaims that way, not one of
+# them a work failure.
+#
+#   no-ci    the repository does not land through pull requests, so there is no run and never
+#            will be one. Only `pr` mode opens one: `push` merges the branch itself and `hold`
+#            leaves it for a human, and for both of those the landing gate IS the gate, so
+#            once it passes there is nothing further to wait for. An UNMAPPED repository
+#            answers here too, and should — a repository the map cannot resolve cannot land
+#            at all, so a park on it is waiting for something that has no mechanism.
+#            This is also the case a check made at the moment of parking could not catch: a
+#            bead that MOVED repository while parked was parked correctly and is not now.
+#   expired  whatever the repository, a park older than the longest plausible run is not
+#            parked, it is lost. Expiring it hands the bead back to the report that would
+#            have found it (law-absence-needs-a-positive-control).
+#   watch    a pull-request repository, inside the deadline. Leave it alone.
+#
+# RC 2 MEANS THE PARK COULD NOT BE AGED — a missing or unparseable timestamp. It prints
+# `watch` with it, because the two callers want different things from that and neither wants
+# a guess: the sweep must not strip a label on the strength of a clock it could not read,
+# while the pane must not paint an unreadable check as normal. A broken check that renders as
+# all-clear displaces the suspicion that would have prompted a look.
+#
+# Pure decision — no database, no network, no writes — so the sweep and the pane share one
+# answer instead of two that can disagree, and a suite can drive every branch of it.
+# --------------------------------------------------------------------------------------
+spira_ci_park_state() {  # spira_ci_park_state <repo-name> <updated-at> -> watch|no-ci|expired
+    local name="${1:-}" ts="${2:-}" max t now
+    [ "$(repo_land "$name")" = pr ] || { printf 'no-ci'; return 0; }
+    max="${SPIRA_CI_PARK_MAX:-5400}"
+    case "$max" in ''|*[!0-9]*) max=5400 ;; esac
+    [ "$max" -gt 0 ] || { printf 'watch'; return 0; }   # 0 disables the deadline, deliberately
+    # THE EMPTY TIMESTAMP IS REFUSED BEFORE `date` SEES IT. `date -d ""` does not fail — it
+    # answers midnight today — so an absent updated_at read as a park several hours old and
+    # expired itself, silently, on a field the caller never had. A missing input must reach
+    # the caller as "could not age this", never as a verdict.
+    [ -n "$ts" ] || { printf 'watch'; return 2; }
+    # `date -d` and not python: this is called once per parked bead from a pane that repaints,
+    # and an interpreter start per bead is the cost that makes a dashboard shell out and freeze.
+    t="$(date -u -d "$ts" +%s 2>/dev/null)" || t=""
+    [ -n "$t" ] || { printf 'watch'; return 2; }
+    now="$(date -u +%s)"
+    if [ "$(( now - t ))" -gt "$max" ]; then printf 'expired'; else printf 'watch'; fi
+}
+
 repo_gate() {            # repo_gate <name> -> the repo's own gate command, possibly empty
     repo_field "${1:-}" gate
 }

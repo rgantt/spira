@@ -112,6 +112,28 @@
 # keep the old label, and nothing is looking for it any more. Relabel them, or leave it alone.
 # SPIRA_ASK_LABEL = needs-operator
 
+# The label that means "parked on a CI run". An aeon puts it on a bead once its pull request is
+# open, so nothing pays for a session to sit and watch a test suite; the sweep takes it off when
+# the run resolves. Same argument as the ask label for it being one key: the sweep, both
+# personas, the stranded-work report and the ops pane must agree on it, and the pane is the half
+# nobody notices is wrong, because it simply shows fewer.
+# SPIRA_CI_LABEL = awaiting-ci
+
+# How long a park may last, in seconds, before the sweep treats it as lost rather than parked.
+#
+# THE LABEL IS EXCLUDED FROM EVERY PREDICATE AND FROM THE STRANDED-WORK REPORT — that is what
+# stops parked work looking abandoned, and it is also why a park nothing will ever end is worse
+# than a stall: not claimable, not reported, and shown as "in CI", which is the one description
+# that stops anybody looking for the real cause. Past the longest run your CI can plausibly
+# take, the promise that something else is watching is false, so the sweep unparks the bead and
+# lets the report that would have found it find it.
+#
+# Ninety minutes is longer than any run this was written against; raise it if yours are slower.
+# 0 disables the deadline and reinstates the permanent invisible park — a deliberate choice, not
+# a default. Parks in repositories whose land mode is not `pr` are stripped regardless: those
+# open no pull request, so there is no run to wait for at any deadline.
+# SPIRA_CI_PARK_MAX = 5400
+
 # The timezone dates are written in. Empty means the host's own, which is right until the host
 # is a server in one zone and you read its output in another — the case where an evening's
 # work lands under tomorrow's date and a chronological log stops being chronological.

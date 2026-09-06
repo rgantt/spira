@@ -187,25 +187,36 @@ for n, line in enumerate(sys.stdin):
     print("SP_EVENT%d=%-7s %s" % (n, rel, parts[1].strip()[:80].replace("=", "-")))
 '
 
-    # ---- AWAITING CI: work parked on purpose --------------------------------------------
-    # A bead labelled `awaiting-ci` has no aeon and is not stranded — its review is open and
-    # the sweep is watching. That makes it invisible in every other figure on the pane: not
-    # in progress, not ready, nothing moving. Without a line of its own, work parked for an
-    # hour looks exactly like work nobody started.
+    # ---- AWAITING CI: parked on a run, and parked on nothing -----------------------------
+    # A parked bead has no aeon and is not stranded — its review is open and the sweep is
+    # watching. That makes it invisible in every other figure on this pane: not in progress,
+    # not ready, nothing moving. Without a line of its own, work parked for an hour looks
+    # exactly like work nobody started.
     #
-    # Age comes from updated_at, which the label write moves. It is a proxy for "entered
-    # this state" and a good one, since a parked bead is not otherwise touched.
+    # TWO POPULATIONS, AND THE SMALLER ONE IS THE ONE THAT MATTERS. "Waiting on a run" is
+    # routine and needs no reader. "Parked with no run to wait for" is a bead that will wait
+    # forever: the label excludes it from every predicate and from the stranded-work report,
+    # so a park in a repository that opens no pull requests is not merely stalled, it is
+    # invisible — and this pane called it "in CI", which is the one description that stops
+    # anybody looking for the real cause. spira_ci_park_state decides which it is, and it is
+    # the same function the sweep acts on, so the pane cannot disagree with the harness.
+    #
+    # Age comes from updated_at, which the label write moves. It is a proxy for "entered this
+    # state" and a good one, since a parked bead is not otherwise touched.
     # NOT `--status open`. A parked bead may still be in_progress — the aeon that labelled
     # it has not necessarily exited yet — and filtering on open alone reported zero while a
     # bead sat labelled and visible in `bd show`. Take everything not closed.
-    bdjson list --limit 0 --label awaiting-ci 2>/dev/null | python3 -c '
-import sys, json, datetime
-try: d = json.load(sys.stdin)
-except Exception: raise SystemExit
+    # ONE PYTHON PASS FOR THE ORDERING, ONE BASH PASS FOR THE VERDICT. The rows come out
+    # oldest first with their age already rendered, because the timestamps are python's to
+    # parse; the classification is spira_ci_park_state, which is the SAME function the sweep
+    # acts on, so this pane cannot disagree with the harness about what is parked on nothing.
+    local ci_rows ci_id ci_repo ci_at ci_rel ci_title ci_state ci_n=0
+    local ci_watch=0 ci_stuck=0 ci_oldest=- ci_age=- ci_stuck_id=-
+    if ci_rows="$(bdjson list --all --limit 0 --label "$SPIRA_CI_LABEL" 2>/dev/null | python3 -c '
+import sys, json, datetime, re
+d = json.load(sys.stdin)
+home = sys.argv[1]
 rows = [i for i in (d if isinstance(d, list) else [d]) if i.get("status") != "closed"]
-print("SP_AWAITING_N=%d" % len(rows))
-if not rows:
-    print("SP_AWAITING_OLDEST=-"); print("SP_AWAITING_AGE=-"); raise SystemExit
 def when(v):
     try: return datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
     except Exception: return None
@@ -215,18 +226,53 @@ def rel(secs):
     if secs < 172800: return "%dh" % (secs // 3600)
     return "%dd" % (secs // 86400)
 now = datetime.datetime.now(datetime.timezone.utc)
-aged = sorted(((when(i.get("updated_at")) or now, i["id"], i) for i in rows), key=lambda r: r[0])
-t, bid, _ = aged[0]
-print("SP_AWAITING_OLDEST=%s" % bid)
-print("SP_AWAITING_AGE=%s" % rel(int((now - t).total_seconds())))
-# ONE KEY PER PARKED BEAD, oldest first, so the CI section has something to expand INTO.
-# The summary line above answers "is anything parked"; it cannot answer "which of them has
-# been parked since yesterday", and that is the question a stalled run is found by.
-import re
-for n, (t, bid, i) in enumerate(aged[:20]):
+aged = sorted(((when(i.get("updated_at")) or now, i) for i in rows), key=lambda r: r[0])
+for t, i in aged[:20]:
+    repo = next((l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")), home)
+    # The title is sanitised and the fields are tab separated, so a title carrying a tab or a
+    # control character cannot shift the columns the reader below splits on.
     title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80]
-    print("SP_AWAITING%d=%-10s %-4s %s" % (n, bid, rel(int((now - t).total_seconds())), title))
-' 2>/dev/null || { echo "SP_AWAITING_N=?"; echo "SP_AWAITING_OLDEST=?"; echo "SP_AWAITING_AGE=?"; }
+    print("%s\t%s\t%s\t%s\t%s" % (i["id"], repo, i.get("updated_at") or "",
+                                    rel(int((now - t).total_seconds())), title))' "$(spira_home_repo)" 2>/dev/null)"
+    then
+        while IFS="$(printf '\t')" read -r ci_id ci_repo ci_at ci_rel ci_title; do
+            [ -n "$ci_id" ] || continue
+            # A PARK THIS CANNOT AGE COUNTS AS STUCK, which is where the pane and the sweep
+            # deliberately part company: the sweep will not strip a label on the strength of a
+            # clock it could not read, but a pane that paints an unreadable check as normal
+            # displaces the suspicion that would have prompted a look.
+            ci_state="$(spira_ci_park_state "$ci_repo" "$ci_at")" || ci_state=no-ci
+            # OLDEST FIRST, so the first row is the oldest and the first STUCK row is the
+            # oldest of those — no second sort, and no arithmetic that can disagree with the
+            # order the section renders in.
+            [ "$ci_oldest" = - ] && { ci_oldest="$ci_id"; ci_age="$ci_rel"; }
+            if [ "$ci_state" = watch ]; then
+                ci_watch=$(( ci_watch + 1 ))
+            else
+                ci_stuck=$(( ci_stuck + 1 ))
+                [ "$ci_stuck_id" = - ] && ci_stuck_id="$ci_id"
+                # THE ROW CARRIES ITS OWN REASON. A count in the summary says how many are
+                # stuck; only the row says which, and a reader looking at one bead should not
+                # have to work out which population it fell into.
+                ci_title="no run to wait for · $ci_title"
+            fi
+            # ONE KEY PER PARKED BEAD, so the CI section has something to expand INTO. The
+            # summary line answers "is anything parked"; it cannot answer "which of them has
+            # been parked since yesterday", and that is the question a stalled run is found by.
+            printf 'SP_AWAITING%d=%-10s %-4s %s\n' "$ci_n" "$ci_id" "$ci_rel" "$ci_title"
+            ci_n=$(( ci_n + 1 ))
+        done <<< "$ci_rows"
+        echo "SP_AWAITING_N=$ci_watch"
+        echo "SP_AWAITING_STUCK=$ci_stuck"
+        echo "SP_AWAITING_STUCK_ID=$ci_stuck_id"
+        echo "SP_AWAITING_OLDEST=$ci_oldest"
+        echo "SP_AWAITING_AGE=$ci_age"
+    else
+        # A FAILED PROBE RENDERS `?`, NEVER 0. The first version of this pane returned 0 from
+        # its exception handler, so a broken parser displayed as "no parked beads".
+        echo "SP_AWAITING_N=?"; echo "SP_AWAITING_STUCK=?"; echo "SP_AWAITING_STUCK_ID=?"
+        echo "SP_AWAITING_OLDEST=?"; echo "SP_AWAITING_AGE=?"
+    fi
 
     # ---- FLOW: what is moving between the operator and the harness ------------------------------
     local waiting unread

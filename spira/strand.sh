@@ -52,11 +52,18 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/lib.sh"
 
 SPIRA_LABELS="${SPIRA_LABELS:-spira,plan}"
-# PARKED IS NOT STRANDED. A bead labelled `awaiting-ci` has no live aeon on purpose: its
+# PARKED IS NOT STRANDED. A bead carrying $SPIRA_CI_LABEL has no live aeon on purpose: its
 # work is pushed, its review is open, and the CI sweep is watching the run. Without it here
 # that reads exactly like abandoned work — open, unclaimed, nothing moving — and gets
 # reclaimed or escalated for doing the right thing.
-SPIRA_EXCLUDE_LABELS="${SPIRA_EXCLUDE_LABELS:-spira-poison,$SPIRA_ASK_LABEL,awaiting-ci}"
+#
+# THE EXCLUSION IS UNCONDITIONAL HERE, AND THE PARK IS WHAT EXPIRES. A park in a repository
+# with no CI, or one that has outlived the longest plausible run, is not parked but lost —
+# and it must be reported rather than excluded from the report that would have found it. The
+# sweep strips the label in both cases, so such a bead arrives here already unparked and is
+# classified like any other. Ageing the exclusion here as well would be a second predicate
+# answering the same question, and two predicates that can disagree is the defect, not the fix.
+SPIRA_EXCLUDE_LABELS="${SPIRA_EXCLUDE_LABELS:-spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL}"
 # THE PERSONAS THAT WORK THIS PARTITION, not every persona that exists. live_aeons below
 # answers "is anything working the beads this report is about", and a running Ops aeon says
 # nothing about a starved plan — counting it would suppress the one escalation this file

@@ -124,6 +124,29 @@ Two mechanisms, because a convention nobody can see is not one:
 `spira/doctor.sh` reports the count as part of its preflight, and `spira/skew.sh copies` names
 every copy the map can reach.
 
+## Parking on a CI run
+
+An aeon that has opened a pull request labels its bead with `SPIRA_CI_LABEL` and exits, rather
+than paying a model session to sit on a test suite. The sweep watches the run and brings the
+bead back: green, it lands; red, it clears the label and raises the priority so the next aeon
+is handed the failure.
+
+That label is excluded from every persona's predicate **and** from the stranded-work report,
+which is what stops parked work looking abandoned — and is exactly why a park nothing can end
+is worse than a stall. It is not claimable, not reported, and shown as "in CI", the one
+description that stops anybody looking for the real cause.
+
+Two conditions end a park that would otherwise be permanent, and the `land` column in your
+`repo-map` decides the first. Only `pr` opens a pull request, so only `pr` has a run; under
+`push` and `hold` the landing gate is the whole gate and the sweep strips the label as soon as
+it sees it — which also covers a bead that moved repository while parked, a case no check made
+at the moment of parking could catch. The second is `SPIRA_CI_PARK_MAX`: past the longest run
+your CI can plausibly take, the promise that something else is watching is false, so the bead
+goes back into the report that would have found it.
+
+The ops pane reports the two populations separately, because "waiting on a run" is routine and
+"parked with no run to wait for" is a fault.
+
 ## Escalations, and their answers
 
 An escalation has two halves — the ask and the answer — and both need a mechanism. Build the

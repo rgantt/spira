@@ -502,19 +502,61 @@ fi
 #
 # WHY NOT LET THE AEON WAIT. It costs an Opus session to sit on a `gh run watch` for
 # twenty-five minutes, and the session can die in that window carrying everything it knows.
-# A bead labelled `awaiting-ci` costs nothing to leave parked, and this check is three
-# cheap `gh` calls.
+# A parked bead costs nothing to leave parked, and this check is three cheap `gh` calls.
 #
 # The label is also what stops parked work looking abandoned: strand.sh sees a bead with no
 # live aeon and would otherwise call it stranded.
+#
+# WHICH IS EXACTLY WHY THE PARK IS JUDGED BEFORE THE RUN IS. Everything below that asks `gh`
+# a question can give up quietly — an unmapped repository, a path that is not a checkout, a
+# pull request that does not exist — and every one of those exits leaves the label standing.
+# A park in a repository that opens no pull requests therefore never ends: not claimable, not
+# reported, and displayed as "in CI", which is the one description that stops anybody looking
+# for the real cause. So the two verdicts that need no network are taken first, at the top of
+# the loop body, above every `continue`. spira_ci_park_state holds the rule; this acts on it.
 # ======================================================================================
-for id in $(bdjson list --status open --limit 0 --label awaiting-ci 2>/dev/null | python3 -c '
-import sys, json
-try: d = json.load(sys.stdin)
-except Exception: raise SystemExit
-for i in (d if isinstance(d, list) else [d]): print(i["id"])' 2>/dev/null); do
+# NOT `--status open`. A parked bead may still be in_progress — the aeon that labelled it
+# has not necessarily exited yet — and filtering on open alone reported zero while a bead sat
+# labelled and plainly visible in `bd show`. Take everything not closed.
+#
+# The repo name and the park's age come out of THIS listing rather than a `bd show` per bead:
+# the JSON is already in hand, and a query per parked bead is a cost paid every two minutes
+# to learn what was already on the screen.
+while IFS="$(printf '\t')" read -r id park_repo park_at; do
+    [ -n "$id" ] || continue
+    park_state="$(spira_ci_park_state "$park_repo" "$park_at")" || {
+        # THE CLOCK, NOT THE BEAD. The park could not be aged, so leave it standing —
+        # stripping a label on the strength of a timestamp we could not read would summon an
+        # aeon for nothing — and say so in the log, because a check that could not run must
+        # never pass for a check that found nothing (law-absence-needs-a-positive-control).
+        log "CHECK6c $id: parked with an updated_at this cannot read [$park_at] — the park was not aged"
+        park_state=watch
+    }
+    case "$park_state" in
+        no-ci)
+            # NO RUN EXISTS AND NONE WILL. Only `pr` mode opens a pull request; `push` merges
+            # the branch itself and `hold` leaves it for a human, so for both of those the
+            # landing gate is the only gate and there is nothing further to wait for. This
+            # also catches a bead that MOVED repository while parked, which no check made at
+            # the moment of parking could have seen.
+            bdq label remove "$id" "$SPIRA_CI_LABEL" >/dev/null 2>&1
+            bdq note "$id" "Unparked by the CI sweep: repo:$park_repo lands by $(repo_land "$park_repo"), so nothing opens a pull request for it and no CI run exists — a park here waits for an event that cannot occur, and the label excludes the bead from every predicate and from the stranded-work report while it waits. The landing gate is the only gate for this repository. If the work is done, close the bead and the sentinel lands the branch; if it is not, carry on with it." >/dev/null 2>&1
+            progress "$id: unparked — repo:$park_repo has no CI to wait for"
+            continue
+            ;;
+        expired)
+            # A PARK IS A PROMISE THAT SOMETHING ELSE IS WATCHING. Past the longest plausible
+            # run that promise is false, and the bead belongs back in the report that would
+            # have found it rather than excluded from it. The priority is deliberately left
+            # alone: this says the park is over, not that the work is urgent.
+            bdq label remove "$id" "$SPIRA_CI_LABEL" >/dev/null 2>&1
+            bdq note "$id" "Unparked by the CI sweep: this bead had been parked for longer than SPIRA_CI_PARK_MAX (${SPIRA_CI_PARK_MAX}s). A park that outlives the longest plausible run is not parked, it is lost, and the label was keeping it out of the stranded-work report that would have found it. The branch and its commits are recorded on this bead — read its run before assuming anything about it." >/dev/null 2>&1
+            progress "$id: unparked — the park outlived SPIRA_CI_PARK_MAX"
+            continue
+            ;;
+    esac
     br="$(bead_branch "$id")"
-    repo="$(repo_root "$(bead_repo "$id")" 2>/dev/null)" || continue
+    repo="$(repo_root "$park_repo" 2>/dev/null)" || continue
     [ -d "$repo/.git" ] || continue
     state="$( cd "$repo" && ghq pr view "$br" --json state,mergeable,statusCheckRollup \
                 -q '"\(.state) \(.mergeable) \([.statusCheckRollup[]?|.conclusion//.state]|join(","))"' 2>/dev/null )"
@@ -523,25 +565,40 @@ for i in (d if isinstance(d, list) else [d]): print(i["id"])' 2>/dev/null); do
         *FAILURE*|*TIMED_OUT*|*ERROR*|*CANCELLED*)
             # RED: hand it back to an aeon, at the top of the queue. The failure is the
             # work now, and the bead already carries the branch that produced it.
-            bdq label remove "$id" awaiting-ci >/dev/null 2>&1
+            bdq label remove "$id" "$SPIRA_CI_LABEL" >/dev/null 2>&1
             bdq update "$id" -p 0 >/dev/null 2>&1
-            bdq note "$id" "CI failed on $br. Cleared awaiting-ci and raised to P0 so an aeon resumes it — the branch and its commits are recorded on this bead." >/dev/null 2>&1
+            bdq note "$id" "CI failed on $br. Cleared $SPIRA_CI_LABEL and raised to P0 so an aeon resumes it — the branch and its commits are recorded on this bead." >/dev/null 2>&1
             progress "CI red on $id — handed back to the queue at P0"
             ;;
         *PENDING*|*IN_PROGRESS*|*QUEUED*|*" null"*)
             : ;;   # still running; leave it parked, and say nothing
         MERGED*|CLOSED*)
-            bdq label remove "$id" awaiting-ci >/dev/null 2>&1
+            bdq label remove "$id" "$SPIRA_CI_LABEL" >/dev/null 2>&1
             progress "$id: its pull request is $state — no longer awaiting CI"
             ;;
         *)
             # GREEN: nothing left to decide, so let CHECK 6 land it on the next pass.
-            bdq label remove "$id" awaiting-ci >/dev/null 2>&1
+            bdq label remove "$id" "$SPIRA_CI_LABEL" >/dev/null 2>&1
             bdq note "$id" "CI green on $br; released to the landing check." >/dev/null 2>&1
             progress "CI green on $id — released to land"
             ;;
     esac
-done
+# THE LISTING IS REDIRECTED IN, NOT PIPED. A pipeline runs its right-hand side in a subshell,
+# and `progress` writes a counter this pass's judgement gate reads — piped, every action taken
+# here would be counted in a shell that exits at `done`, and a busy sweep would report an idle
+# harness.
+done < <(bdjson list --all --limit 0 --label "$SPIRA_CI_LABEL" 2>/dev/null | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: raise SystemExit
+home = sys.argv[1]
+for i in (d if isinstance(d, list) else [d]):
+    if i.get("status") == "closed":
+        continue
+    repo = next((l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")), home)
+    # updated_at is a proxy for "entered this state", and a good one: writing the label moves
+    # it, and a parked bead is not otherwise touched.
+    print("%s\t%s\t%s" % (i["id"], repo, i.get("updated_at") or ""))' "$(spira_home_repo)" 2>/dev/null)
 
 # CHECK 7 — idle capacity. Ready work and a free aeon is the whole point of the system.
 #

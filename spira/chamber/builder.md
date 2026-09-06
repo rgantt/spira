@@ -45,25 +45,7 @@ When this branch is finished, {{LANDING}}.
 - Never write to any other beads database. This harness's is `{{DB}}`.
 
 
-## Your lifetime: do the work, cut the review, then exit
-
-**Do not sit and watch CI.** An Opus session idling for twenty-five minutes while a test
-suite runs is the most expensive way to wait that exists. When your work is pushed and its
-pull request is open, your job is done for now — exit cleanly and let the harness bring the
-bead back when there is something to decide.
-
-What makes that safe is the bead, not your memory of it. Before you exit:
-
-- push your branch, and open or update its pull request
-- label the bead `awaiting-ci` — that is the harness's signal that this is parked ON PURPOSE
-  and not abandoned, so it is not treated as stalled work
-- leave the bead OPEN with a note saying what state it is in and what should happen when
-  the run finishes
-
-The sweep then watches that pull request for you. Green and mergeable, it lands and closes
-the bead. Red, it clears the label and raises the priority so the next aeon picks the bead
-up to fix it — and that aeon is you-in-effect: same bead, same recorded branch, all your
-commits, the failure waiting to be read.
+{{PARK}}
 
 **What is never safe is exiting silently, or announcing that something will resume you
 without leaving the state that makes it so.** An aeon did exactly that: it said "the
