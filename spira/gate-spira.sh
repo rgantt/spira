@@ -43,9 +43,11 @@ if ! out="$(bash spira/exclude.sh check . 2>&1)"; then
     fail=1
 fi
 
-# The inventory fence reads the git INDEX, and an extracted tree has no index. Scan the files
-# on disk instead, one at a time, through the same matcher — the whole-tree entry point is a
-# convenience over exactly this.
+# The inventory fence's whole-tree entry point reads the git INDEX. Scan the files on disk
+# instead, one at a time, through the same matcher — that entry point is a convenience over
+# exactly this. Two reasons to go the long way round: the tree under trial is not guaranteed
+# to be a checkout, and an index answers only for what is tracked, whereas what a gate must
+# judge is every file the tree actually holds.
 inv=""
 while IFS= read -r f; do
     case "$f" in */inventory.sh|*/inventory-deny|*/test-inventory.sh) continue ;; esac

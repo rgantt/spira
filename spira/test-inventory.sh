@@ -62,14 +62,12 @@ hits="$(SPIRA_INVENTORY_DENY="$T/none" bash "$INV" --scan "$T/probe")"
 
 echo
 echo "the whole-tree run"
-# THIS FILE IS EXEMPT FROM THE WHOLE-TREE SCAN, and it has to be: every probe above plants an
-# offender, so a fence that judged its own suite would refuse the tree that proves it works.
-# The exemption is asserted rather than assumed, because it is also the one place a real
-# offender could hide.
-case "$(bash "$INV" 2>&1)" in
-    *test-inventory.sh*) bad "the suite is exempt from the whole-tree scan" ;;
-    *) ok "the suite is exempt from the whole-tree scan" ;;
-esac
+# EVERY CASE HERE RUNS AGAINST A THROWAWAY REPOSITORY, not the real checkout. The whole-tree
+# entry point reads the git INDEX, so a case that needs it needs a checkout — and this suite
+# is run by the landing gate against a tree taken from a branch, which is not guaranteed to
+# have one. Where the tree is ours, the run is known to have happened, which is what makes a
+# silent result mean anything (law-absence-needs-a-positive-control).
+#
 # It must refuse rather than report clean when it has nothing to scan — an empty file list
 # and a clean tree are indistinguishable in the output that anyone reads.
 git init -q "$T/empty" && ( cd "$T/empty" && mkdir -p spira && cp "$INV" spira/ )
@@ -93,10 +91,57 @@ out="$(cd "$T/empty" && bash spira/inventory.sh 2>&1)"; rc=$?
 [ "$rc" = 0 ] && ok "it does not flag its own pattern list" \
               || bad "it does not flag its own pattern list" "$out"
 
+# AND THIS FILE IS EXEMPT TOO, which it has to be: every probe above plants an offender, so a
+# fence that judged its own suite would refuse the tree that proves it works. Asserted in the
+# fixture rather than against the real checkout, because the exemption only means anything if
+# the scan RAN — and a run that refused for want of an index names no files either, so it
+# reads exactly like a working exemption. Here the scan is known to have exited 0 over a known
+# file list, and this file carries an offender of every shape above, so a broken exemption
+# goes red instead of silent.
+( cd "$T/empty" && cp "$HERE/test-inventory.sh" spira/ && git add -A \
+  && git -c user.email=dev@example.invalid -c user.name=t commit -qm z )
+out="$(cd "$T/empty" && bash spira/inventory.sh 2>&1)"; rc=$?
+[ "$rc" = 0 ] && ok "the suite is exempt from the whole-tree scan" \
+              || bad "the suite is exempt from the whole-tree scan" "rc=$rc: $out"
+
 # THE REAL TREE, last: everything above proves the fence works, so this one means something.
-out="$(bash "$INV" 2>&1)"; rc=$?
-[ "$rc" = 0 ] && ok "this repository names no operator infrastructure" \
-              || { bad "this repository names no operator infrastructure"; printf '%s\n' "$out" | head -20; }
+#
+# It is the only case that needs a git checkout, and it must SKIP rather than fail when there
+# is none. The landing gate runs this suite against a tree taken from the branch under trial;
+# a suite that assumes an index there fails on every branch, for a reason that is about the
+# gate's plumbing rather than the branch. Deleting the case is not the alternative — it is
+# what distinguishes a sanitising pass from an intention to have done one.
+#
+# A SKIP IS ANNOUNCED, NEVER SWALLOWED. gate-spira.sh reports a suite whose output carries one,
+# because a check that could not run must not read as all-clear (law-alerts-must-be-actionable).
+# The branch itself is still scanned when this skips: the gate walks the tree's files through
+# `inventory.sh --scan` directly, which is what the whole-tree entry point is a convenience over.
+if git -C "$HERE" rev-parse --git-dir >/dev/null 2>&1; then
+    out="$(bash "$INV" 2>&1)"; rc=$?
+    [ "$rc" = 0 ] && ok "this repository names no operator infrastructure" \
+                  || { bad "this repository names no operator infrastructure"; printf '%s\n' "$out" | head -20; }
+else
+    echo "  SKIP  not a git checkout — the real tree was not scanned"
+fi
+
+# AND THE SKIP IS PROVED, not assumed: run this file where there is no `.git` and require it to
+# come back green with the announcement the gate looks for. That is the defect itself as a
+# check — the suite was believed to be gate-safe and was not — and it is one recursion deep, so
+# it carries its own guard. GIT_CEILING_DIRECTORIES makes the tree treeless on any host, rather
+# than trusting that the temporary directory sits outside every repository.
+if [ -z "${SPIRA_TEST_INVENTORY_TREELESS:-}" ]; then
+    mkdir -p "$T/treeless/spira"
+    cp "$INV" "$HERE/test-inventory.sh" "$T/treeless/spira/"
+    out="$(SPIRA_TEST_INVENTORY_TREELESS=1 GIT_CEILING_DIRECTORIES="$T" \
+           bash "$T/treeless/spira/test-inventory.sh" 2>&1)"; rc=$?
+    [ "$rc" = 0 ] && ok "the suite passes where there is no git checkout" \
+                  || { bad "the suite passes where there is no git checkout" "rc=$rc"
+                       printf '%s\n' "$out" | tail -8 | sed 's/^/      /'; }
+    case "$out" in
+        *SKIP*) ok "and announces the skip the gate reports" ;;
+        *) bad "and announces the skip the gate reports" "no SKIP line in its output" ;;
+    esac
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 if [ "$fail" -eq 0 ]; then echo "PASS: inventory"; exit 0; fi
