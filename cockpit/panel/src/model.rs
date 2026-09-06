@@ -189,7 +189,19 @@ pub fn act(view: View, item: &Item, reason: &str, dismissed: bool) -> Result<(),
     match view {
         View::Decisions => {
             let db = crate::store::db();
-            run("bd", &["-C", &db, "close", &item.id, "--reason", reason])
+            // CLOSED AS THE OPERATOR, for the same reason a comment is. beads records the
+            // closing actor in its audit events and nowhere else -- the issue row has no
+            // `closed_by` -- so that event is the only thing that can tell their verdict
+            // from an agent's close. Left unstamped, the actor was whatever git identity
+            // the pane inherited, and a watcher announced an agent's OWN close back to it
+            // as an answer the operator never gave. A session that acts on that is acting
+            // on its own echo, and it is silent because the text reads exactly like a
+            // real verdict.
+            run_as(
+                "bd",
+                &["-C", &db, "close", &item.id, "--reason", reason],
+                Some(&operator_actor()),
+            )
         }
         View::Insights => {
             let db = crate::store::db();

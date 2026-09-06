@@ -38,6 +38,7 @@ while true; do
   raw=$(cockpit_beads) || raw=""
   if [ -n "$raw" ]; then
     printf '%s' "$raw" | STATE="$STATE" BD_BIN="$BD" COCKPIT_DB="$COCKPIT_DB" \
+      SPIRA_OPERATOR_ACTOR="${SPIRA_OPERATOR_ACTOR:-operator}" \
       SELF_CLOSED="${SELF_CLOSED:-$(dirname "$0")/.runtime/self-closed}" python3 -c '
 import json, os, sys
 ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")
@@ -100,22 +101,25 @@ for r in rows:
     # Only its comments are signal.
     if is_insight:
         if ccount > (prev.get("comments") or 0):
-            events.append((rid, ccount, title))
+            events.append(("comment", rid, ccount, title))
         continue
     if prev.get("status") != "closed" and status == "closed":
-        # Not if I closed it. A beads close records no actor -- there is no closed_by, and
-        # the Dolt committer is always "beads" whatever BEADS_ACTOR says -- so resolve.sh
-        # records the id and this skips it. Without that, a close made by the harness came back
-        # to me as an answer from the operator, which is the comment-path bug all over again.
+        # Not if I closed it. Authorship is recorded, but not where it is cheap: the issue
+        # row has no closed_by and the Dolt committer is always "beads" whatever BEADS_ACTOR
+        # says, so the only witness is the audit event, one `bd history` away. resolve.sh
+        # records the id it closed, which skips that call for the common case; the trail is
+        # read for the rest, because a close made by an agent NOT through resolve.sh came
+        # back as an answer the operator never gave -- announced twice, once per attached
+        # watcher -- and a session acting on that is acting on its own echo.
         if rid in self_closed:
             continue
         reason = (r.get("close_reason") or "").strip() or "(no reason given)"
-        events.append(f"{WHO} ANSWERED {rid}: {reason}  --  {title}")
+        events.append(("close", rid, reason, title))
     elif ccount > (prev.get("comments") or 0):
         # Only if the newest comment is not mine. This session and the pane both wrote as
         # "overseer" at first, so the watcher announced my OWN reply back to me as though the
-        # operator had commented -- a notification loop with itself. Mine are authored "claude".
-        events.append((rid, ccount, title))
+        # operator had commented -- a notification loop with itself.
+        events.append(("comment", rid, ccount, title))
 
 tmp = state_path + ".tmp"
 with open(tmp, "w") as fh:
@@ -123,11 +127,43 @@ with open(tmp, "w") as fh:
 os.replace(tmp, state_path)
 
 import subprocess
+
+def bd_json(args):
+    try:
+        out = subprocess.run(
+            [os.environ.get("BD_BIN", "bd"), "-C", os.environ["COCKPIT_DB"]] + args,
+            capture_output=True, text=True, timeout=30).stdout
+    except Exception:
+        return None
+    i = min((out.find(c) for c in "[{" if out.find(c) >= 0), default=-1)
+    if i < 0:
+        return None
+    try:
+        return json.loads(out[i:])
+    except Exception:
+        return None
+
+# WHOSE VOICE. The operator writes as OP; every agent here writes as something else. An
+# unreadable audit trail is reported rather than assumed either way: silence would hide a
+# real answer, and announcing it would resurrect the echo.
+OP = os.environ.get("SPIRA_OPERATOR_ACTOR", "operator")
 for ev in events:
-    if isinstance(ev, str):
-        print(ev, flush=True)
+    if ev[0] == "close":
+        _, rid, reason, title = ev
+        doc = bd_json(["history", rid, "--events", "--json"])
+        evs = doc if isinstance(doc, list) else (doc or {}).get("events") or []
+        closes = sorted((e for e in evs if (e.get("event_type") or "") == "closed"),
+                        key=lambda e: e.get("created_at") or "")
+        actor = closes[-1].get("actor") if closes else None
+        if actor is not None and actor != OP:
+            continue
+        if actor is None:
+            print(f"{rid} closed, author unknown (no audit event): {reason}  --  {title}",
+                  flush=True)
+            continue
+        print(f"{WHO} ANSWERED {rid}: {reason}  --  {title}", flush=True)
         continue
-    rid, ccount, title = ev
+    _, rid, ccount, title = ev
     who = None
     try:
         out = subprocess.run(
@@ -141,8 +177,11 @@ for ev in events:
         who = cs[-1].get("author") if cs else None
     except Exception:
         who = None
-    if who == "claude":
-        continue          # my own reply; not news
+    # ONLY THE OPERATOR IS NEWS. Matching one agent name by literal was the same bug with a
+    # smaller blast radius: every OTHER agent name -- and every other installation -- read as
+    # the operator. Compare against the one name that is theirs.
+    if who != OP:
+        continue
     print(f"{WHO} COMMENTED on {rid} ({ccount} total)  --  {title}", flush=True)
 '
   fi

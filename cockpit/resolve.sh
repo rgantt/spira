@@ -10,11 +10,12 @@
 # non-destructive actions."* — law-check-it-yourself-before-asking.
 #
 # Closing is now routine for me, which created a second-order bug the moment it started:
-# watch-answers.sh announced the harness's OWN close back to it as "THE OPERATOR ANSWERED". The
-# comment path already checks authorship; the close path could not, because a beads close
-# records no actor — there is no closed_by in the payload, and the Dolt committer is
-# always the literal string "beads" whatever BEADS_ACTOR says. So the id is recorded here
-# instead, and the watcher skips what it finds.
+# watch-answers.sh announced the harness's OWN close back to it as "THE OPERATOR ANSWERED".
+# Authorship is recorded — beads writes an audit event of type `closed` carrying the actor,
+# which `bd history <id> --events` reads — but it is NOT on the issue row, where there is no
+# closed_by, and it is not the Dolt committer, which is the literal string "beads" whatever
+# BEADS_ACTOR says. The watcher reads the event. BEADS_ACTOR below is what puts the right
+# name on it; the id recorded here is the cheap pre-filter that saves reading the trail.
 #
 # Reasons carry their evidence. A close that says "done" is a claim with nothing behind it;
 # quote the command and its output, so the bead is still readable as a decision months on.

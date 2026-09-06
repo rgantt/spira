@@ -1,59 +1,46 @@
 #!/usr/bin/env bash
-# verdicts.sh — surface the operator's answers to escalations, so a verdict reaches the session.
+# verdicts.sh — surface what the operator said, so an answer reaches the session.
 #
-# WHY THIS EXISTS. An escalation has two halves, the ask and the answer, and both need a
-# mechanism. This is the answer's. The panel writes a verdict straight into the bead — a close
-# reason for a decision, a comment for a reply — so there is no file for a session to tail, and
-# an earlier design that promised one left the operator answering into a pane while nothing
-# reached the agent. A verdict that reaches nobody is worse than an unanswered question: the
-# decider believes they replied, and the next session asks again.
+#   verdicts.sh once     one pass; prints nothing when nothing is new
+#   verdicts.sh loop     the same, on an interval — the Monitor form
 #
-# A CURSOR, NOT A TAIL. The record is a row in the database, so this polls and prints only what
-# is new since the last run, keeping the high-water mark beside the other runtime state. That
-# makes it safe to run from a watcher: it is quiet when nothing has been answered, which is
-# most of the time.
+# WHY THIS EXISTS. An escalation queue has two halves, the ask and the answer, and for a
+# long time only the ask had a mechanism. The operator answered in the attention pane,
+# correctly, and nothing reached the agent — they had to say so themselves. Twice: once for
+# a close carrying a verdict, and again for a COMMENT on an FYI, which no leg could see at
+# all because an FYI is created closed and carries no escalation label.
+#
+# Both legs live in answers.py, which cockpit/answered-since.sh also runs. One implementation
+# rather than two: the previous arrangement had a close-watcher here and a different one in
+# the cockpit, and the FYI blindness had to be found separately in each.
+#
+# This file's job is only to decide WHICH DATABASE and hold the cursors.
 set -uo pipefail
-HERE="$(cd "$(dirname "$0")" && pwd)"
-. "$HERE/lib.sh" >/dev/null 2>&1
-CURSOR="$SPIRA_RUN/.verdict-cursor"
+HERE="$(cd "$(dirname "$0")" && pwd -P)"
+. "$HERE/lib.sh"
 INTERVAL="${VERDICT_INTERVAL:-30}"
 
-emit() {                 # emit <since-iso> — prints verdicts, rewrites the cursor
-    local since="$1"
-    # The cursor is written by python to a named file rather than carried back through a
-    # second stream: an earlier version routed it over stderr through a process substitution,
-    # which raced the parent's read and left the mark unmoved, so every verdict was either
-    # replayed forever or lost. One writer, one file.
-    bdjson list --all --limit 0 --label "$SPIRA_ASK_LABEL" 2>/dev/null | python3 -c '
-import json, sys
-since, cursor_path, who = sys.argv[1], sys.argv[2], sys.argv[3]
-try: d = json.load(sys.stdin)
-except Exception: sys.exit(0)
-newest = since
-rows = []
-for i in (d if isinstance(d, list) else [d]):
-    # A verdict is a CLOSE carrying a reason: for an ask, the reason IS the answer.
-    if i.get("status") != "closed":
-        continue
-    at = i.get("closed_at") or i.get("updated_at") or ""
-    if not at or at <= since:
-        continue
-    newest = max(newest, at)
-    reason = (i.get("close_reason") or "").strip() or "(closed with no reason given)"
-    rows.append((at, i.get("id", "?"), (i.get("title") or "")[:90], reason))
-for at, ident, title, reason in sorted(rows):
-    print(f"{who} ANSWERED {ident} — {title}")
-    print(f"  verdict: {reason}")
-open(cursor_path, "w").write(newest + "\n")
-' "$since" "$CURSOR" "$SPIRA_OPERATOR"
+# Two marks, because a close and a comment are ordered by different clocks: a comment does
+# NOT bump the bead's updated_at, so a cursor over closes cannot express how far the comment
+# leg has read. One file for one question.
+VERDICT_CURSOR="${VERDICT_CURSOR:-$SPIRA_RUN/.verdict-cursor}"
+COMMENT_CURSOR="${COMMENT_CURSOR:-$SPIRA_RUN/.comment-cursor}"
+
+emit() {
+    # `bd --json` can print warnings on stdout before the payload; json_only strips them.
+    # --all because an FYI is created CLOSED and `bd list` hides closed issues, which on its
+    # own would make this blind to the exact case it was written for.
+    bdjson list --all --limit 0 \
+        | python3 "$HERE/answers.py" \
+            "bd=${SPIRA_BD:-bd}" "db=$SPIRA_DB" \
+            "ask_label=$SPIRA_ASK_LABEL" "operator_actor=$SPIRA_OPERATOR_ACTOR" \
+            "operator=$SPIRA_OPERATOR" \
+            "verdict_cursor=$VERDICT_CURSOR" "comment_cursor=$COMMENT_CURSOR" \
+            format=monitor
 }
 
-[ -s "$CURSOR" ] || date -u +%Y-%m-%dT%H:%M:%SZ > "$CURSOR"
 case "${1:-loop}" in
-    once) emit "$(cat "$CURSOR")" ;;
-    loop) while true; do
-              emit "$(cat "$CURSOR")"
-              sleep "$INTERVAL"
-          done ;;
+    once) emit ;;
+    loop) while true; do emit; sleep "$INTERVAL"; done ;;
     *) echo "usage: verdicts.sh [once|loop]" >&2; exit 2 ;;
 esac
