@@ -132,6 +132,36 @@ want "a spike may search the web"                       "WebSearch"             
 want "and it may build"                                 "Bash"                                     "$fayth_src"
 want "and edit"                                         "Edit"                                     "$fayth_src"
 
+# ======================================================================================
+echo
+echo "a refusal hands the bead back through the one helper that clears the claim:"
+# ======================================================================================
+# A REFUSED SPIKE IS A REOPEN LIKE ANY OTHER, and this is where the rule is enforced for all
+# of them. `bd reopen` leaves the assignee in place; `bd ready --claim` skips an assigned bead
+# while `bd ready` still lists it. So a reopen that forgets to release the claim puts the bead
+# back on the board wearing a dead aeon's name — visible, counted as ready, and claimable by
+# nobody. That failure is invisible by construction: `bd reopen` exits 0, the bead really does
+# go back to open, and only the claim that never comes says otherwise.
+#
+# So the rule is structural rather than a comment: `reopen` is called in lib.sh's bead_reopen
+# and nowhere else. It is checked here because the confinement refusal is a reopen path, and
+# because the check has already caught one site whose correctness rested on a clearing sixty
+# lines away that no later edit to either could see.
+reopen_sites() {                # every direct `bd … reopen` outside the helper that owns it
+    # COMMENTS ARE NOT CALL SITES. The scar is explained in prose in several of these files,
+    # so a matcher that reads `# \`bd reopen\` keeps the assignee` as a violation fails on the
+    # very comments saying why the rule exists — and a check that goes red for documenting
+    # itself gets deleted rather than obeyed.
+    grep -rnE '\b(bd|bdq)[A-Za-z_]* +[^|;&#]*\breopen\b' "$1"/*.sh 2>/dev/null \
+      | grep -vE '^[^:]*:[0-9]+: *#' \
+      | grep -v '/lib\.sh:' | grep -v '/test-'
+}
+PLANT="$(mktemp -d)"; cp "$HERE"/*.sh "$PLANT/" 2>/dev/null
+printf 'bdq reopen "$id"\n' > "$PLANT/planted.sh"
+want "the reopen check can see a direct call at all" "planted.sh" "$(reopen_sites "$PLANT")"
+rm -rf "$PLANT"
+is   "and no harness script reopens a bead outside bead_reopen" "" "$(reopen_sites "$HERE")"
+
 # shellcheck disable=SC1090
 . "$HERE/testdb.sh"
 testdb_require test-spike

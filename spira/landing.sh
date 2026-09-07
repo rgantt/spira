@@ -498,6 +498,12 @@ print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_hom
             bead_reopen "$id" "Reopened by sentinel: $gate_out"
             progress "reopened $id — spike branch is not confined to its document"
             log "CHECK6 $id: $(printf '%s' "$gate_out" | head -1)"
+            # RED, LIKE ANY OTHER FAULT OF THE BRANCH'S OWN. A refusal here is the branch
+            # being wrong rather than the repository or the pass being busy, so it belongs in
+            # the record beside the rebase failure and the gate failure. The stretch between
+            # DONE and LANDED is the one with no witness, and a branch that stops for good in
+            # the middle of it is exactly the case that record exists to make visible.
+            land_mark "$id" RED "$tip" confine
             continue
         fi
 
