@@ -258,12 +258,44 @@ ready_count() {
         --json 2>/dev/null | json_only | json_count
 }
 
+# fayth_exclude <fayth> -> the persona's own exclusions, plus every OTHER persona's claim.
+#
+# THE ENCOUNTER CHOOSES THE PARTY (the operator, 2026-09-07: "Spira is the world. there are
+# many parties within it — with different compositions — and hence many concurrent
+# encounters... having beads declare the personas they prefer is a nice touch").
+#
+# Until now the arrow pointed the other way: each persona carried a predicate and trawled the
+# whole graph for beads it liked, so a bead had no say in who worked it and two personas
+# whose partitions overlapped raced for the same work. A bead may now carry `fayth:<name>`
+# and that is a claim on WHO: the named persona sees it, every other persona does not.
+#
+# A BEAD THAT NAMES NOBODY BEHAVES EXACTLY AS BEFORE, which is what makes this safe to land
+# on a live graph — the 89 beads out there today declare no preference and every one of them
+# stays claimable by whoever the partition already allowed.
+#
+# IT NARROWS, IT NEVER WIDENS. `fayth:ops` on a bead outside Ops's partition does not hand it
+# to Ops; the partition still decides WHETHER the work is yours, and this decides only that
+# it is not somebody else's. A preference that could also grant would be a way to route work
+# past a persona's own predicate, which is the one thing FAYTH_LABELS exists to guarantee.
+#
+# `--exclude-label` is OR (verified against bd: adding an unused label to the list does not
+# change the count), so appending is exactly the semantics wanted here.
+fayth_exclude() {        # fayth_exclude <fayth> -> comma-separated exclusions
+    local me="$1" own="${2:-}" f out
+    out="$own"
+    for f in $(spira_fayths 2>/dev/null); do
+        [ "$f" = "$me" ] && continue
+        out="${out:+$out,}fayth:$f"
+    done
+    printf '%s' "$out"
+}
+
 fayth_ready() {          # fayth_ready <fayth> -> claimable beads under ITS OWN predicate
     local f="$1" F="$SPIRA_HOME/chamber/$1.fayth"
     [ -f "$F" ] || { printf '0'; return 1; }
     # shellcheck disable=SC1090
     ( . "$F" 2>/dev/null
-      ready_count "${FAYTH_LABELS:-}" "${FAYTH_EXCLUDE_LABELS:-}" )
+      ready_count "${FAYTH_LABELS:-}" "$(fayth_exclude "$f" "${FAYTH_EXCLUDE_LABELS:-}")" )
 }
 
 # bead_reopen <id> <note> — hand a bead back to the graph so the NEXT aeon can claim it.

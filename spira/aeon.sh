@@ -104,13 +104,19 @@ fi
 # an aeon is summoned every two minutes for work it cannot take. That is what each of the
 # three flags in READY_ARGS is there to prevent, and it happened when only some of them
 # were written here.
+# THE EXCLUSIONS ARE COMPUTED, NOT READ. A bead may name the persona it wants with a
+# `fayth:<name>` label, so this persona must not claim one that named somebody else — and
+# the count CHECK 7 summoned on was computed the same way. The two definitions drifting is
+# the day an aeon is summoned every two minutes for work it cannot take, which is what
+# READY_ARGS is shared to prevent; fayth_exclude is shared for the same reason.
+CLAIM_EXCLUDE="$(fayth_exclude "$FAYTH" "$FAYTH_EXCLUDE_LABELS")"
 claim_args=("${READY_ARGS[@]}" --claim
-            --label "$FAYTH_LABELS" --exclude-label "$FAYTH_EXCLUDE_LABELS")
+            --label "$FAYTH_LABELS" --exclude-label "$CLAIM_EXCLUDE")
 
 if [ "$DRY" = 1 ]; then
     log "$FAYTH: dry run — candidates:"
     bdq "${READY_ARGS[@]}" --label "$FAYTH_LABELS" \
-        --exclude-label "$FAYTH_EXCLUDE_LABELS" 2>/dev/null | grep -vE '^💡|^warning|^  Fix|^  Or' | head -10
+        --exclude-label "$CLAIM_EXCLUDE" 2>/dev/null | grep -vE '^💡|^warning|^  Fix|^  Or' | head -10
     exit 0
 fi
 
