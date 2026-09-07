@@ -411,6 +411,12 @@ land_log_tail() {
 # (law-alerts-must-be-actionable).
 land_escalate() {        # land_escalate <subject-tail> <evidence>
     local why="$1" ev="$2" cd="$SPIRA_RUN/landing.escalated" now last
+    # ALREADY ON HIS SCREEN? THEN DO NOT ASK AGAIN. The clock below is a floor, not the
+    # answer: a dead landing leg stays dead until somebody fixes it, so an hourly re-ask put
+    # NINE identical "Spira is landing nothing" decisions in the operator's pane in one day.
+    # He closed eight of them and the ninth arrived anyway — "why do i keep getting this."
+    # The queue is the database, so ask the database rather than this box's memory of it.
+    ask_already_open "Spira is landing nothing" && return 0
     now="$(date +%s)"; last=0
     [ -f "$cd" ] && last="$(cat "$cd" 2>/dev/null || echo 0)"
     [ $(( now - last )) -lt "${SPIRA_LAND_ESCALATE_EVERY:-3600}" ] && return 0

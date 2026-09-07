@@ -51,6 +51,32 @@ json_only() { sed -n '/^[[{]/,$p'; }
 
 bdjson() { bdq "$@" --json 2>/dev/null | json_only; }
 
+# ask_already_open <subject> -> 0 when an OPEN operator ask already carries that subject.
+#
+# THE STRONGEST DEDUPE IS "IS IT ALREADY IN FRONT OF HIM", not a clock and not a stamp file.
+# A clock re-asks a question already on his screen — land_escalate was rate limited to once
+# an hour, which over one day put NINE identical "Spira is landing nothing" decisions in the
+# operator's pane; he closed eight and the ninth arrived anyway. A stamp file is better but
+# still answers a question about this box's memory rather than about his queue, and it is
+# lost whenever $SPIRA_RUN is cleared.
+#
+# The database is the queue, so ask the database. An ask he has ALREADY CLOSED does not
+# suppress a new one: a closed ask is an answered question, and the condition recurring after
+# an answer is new information (law-alerts-must-be-actionable).
+ask_already_open() {     # ask_already_open <subject>
+    local subject="$1" hits
+    [ -n "$subject" ] || return 1
+    hits="$(bdjson list --status open --label "${SPIRA_ASK_LABEL:-needs-ryan}" --limit 0 2>/dev/null \
+        | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: raise SystemExit(0)
+rows = d if isinstance(d, list) else [d]
+want = sys.argv[1]
+print(sum(1 for i in rows if want in (i.get("title") or "")))' "$subject" 2>/dev/null)"
+    [ "${hits:-0}" -gt 0 ] 2>/dev/null
+}
+
 # How many rows a `bd --json` payload carries. Never `| wc -l` and never a grep: the payload
 # is one line, and a warning printed before it would be counted as a row.
 json_count() {           # stdin: JSON; stdout: an integer, 0 on anything unparseable
