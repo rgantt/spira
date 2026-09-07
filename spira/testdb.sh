@@ -139,6 +139,39 @@ testdb_up() {            # testdb_up <tag>
         export SPIRA_DB="$TESTDB_DIR"; unset SPIRA_BD
         return 0
     fi
+    # SERIALISED, because `bd init` holds ONE global schema-migration lock across 61
+    # migrations. Concurrent builds do not merely queue inside Dolt — they time each other
+    # out, and the server closes a connection held that long, so several gates building at
+    # once turn a ~20s build into a cascade of failures that look like broken suites on
+    # branches that changed nothing (sp-ko4a, the operator's call: "serialise fixture
+    # creation with an flock, so concurrent landing passes queue instead of colliding").
+    #
+    # THE LOCK IS NOT AROUND THE WHOLE FUNCTION. The TESTDB_SHARED fast path above returns
+    # before here; it resets a fixture this process already owns and must never queue behind
+    # somebody else's build, or one landing pass would serialise every gate on the box.
+    #
+    # NOT A SUBSHELL. The build sets TESTDB_NAME, TESTDB_DIR and TESTDB_BASELINE for the
+    # caller, so fd 9 is opened in this shell and closed on every exit path below.
+    #
+    # gate-spira.sh has told operators this lock exists, and named this exact path, since
+    # 3a36f74 — while `git log -S flock -- spira/testdb.sh` was empty. The message was true
+    # of nothing. It is true now.
+    spira_require flock || return 1
+    local lock="${SPIRA_RUN:-/tmp}/testdb-init.lock" lock_t0 waited
+    mkdir -p "$(dirname "$lock")" 2>/dev/null
+    exec 9>"$lock" || { printf 'testdb: cannot open the fixture lock at %s\n' "$lock" >&2; return 1; }
+    lock_t0=$(date +%s)
+    # A TIMEOUT IS ITS OWN FAILURE, reported as itself. The gate distinguishes "the lock could
+    # not be taken" from "the init genuinely failed" in the advice it prints; until this
+    # existed both arrived as `bd init failed` and the advice was unfollowable.
+    if ! flock -w "${SPIRA_TESTDB_LOCK_WAIT:-900}" 9; then
+        printf 'testdb: could not take the fixture lock at %s within %ss — another build is holding it\n' \
+            "$lock" "${SPIRA_TESTDB_LOCK_WAIT:-900}" >&2
+        exec 9>&-; return 1
+    fi
+    waited=$(( $(date +%s) - lock_t0 ))
+    [ "$waited" -gt 5 ] && printf 'testdb: waited %ss for the fixture lock\n' "$waited" >&2
+
     testdb_sweep
     TESTDB_NAME="sptest_${tag}_$(date +%s)_$$"
     TESTDB_DIR="$(mktemp -d)"
@@ -163,7 +196,7 @@ testdb_up() {            # testdb_up <tag>
         printf 'testdb: bd init failed (rc=%s) for %s at %s:%s in %s\n' \
             "$init_rc" "$TESTDB_NAME" "$TESTDB_HOST" "$TESTDB_PORT" "$TESTDB_DIR" >&2
         printf '%s\n' "$init_out" | sed 's/^/testdb:   /' >&2
-        testdb_drop; return 1; }
+        testdb_drop; exec 9>&-; return 1; }
     git -C "$TESTDB_DIR" config beads.role maintainer 2>/dev/null
 
     # THE BASELINE IS COMMITTED HERE, not inherited. `bd init` leaves the `config` table
@@ -173,9 +206,13 @@ testdb_up() {            # testdb_up <tag>
     testdb_sql "$TESTDB_NAME" "call dolt_commit('-A','-m','testdb baseline','--skip-empty')" >/dev/null 2>&1
     TESTDB_BASELINE="$(testdb_sql "$TESTDB_NAME" "select hashof('HEAD')" | tail -1)"
     [ -n "$TESTDB_BASELINE" ] || { printf 'testdb: no baseline commit for %s\n' "$TESTDB_NAME" >&2
-                                   testdb_drop; return 1; }
+                                   testdb_drop; exec 9>&-; return 1; }
     export SPIRA_DB="$TESTDB_DIR"
     unset SPIRA_BD
+    # RELEASED HERE, not at process exit. The fixture is built; everything after this is the
+    # caller's own work and holding the lock through it would serialise entire gate runs
+    # rather than the one contended operation.
+    exec 9>&-
     return 0
 }
 
