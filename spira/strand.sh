@@ -51,7 +51,12 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/lib.sh"
 
-SPIRA_LABELS="${SPIRA_LABELS:-spira,plan}"
+# EVERY PARTITION THE CHAMBER DECLARES, NOT ONE NAMED HERE. This defaulted to `spira,plan`
+# — the builder's partition standing in for every persona — so stalled work belonging to any
+# other persona was never reported as stalled, by a report whose empty output reads as a
+# healthy harness. SPIRA_LABELS still narrows this to one partition, which is what a targeted
+# report wants and what the fixtures below pin.
+SPIRA_LABELS="${SPIRA_LABELS:-}"
 # PARKED IS NOT STRANDED. A bead carrying $SPIRA_CI_LABEL has no live aeon on purpose: its
 # work is pushed, its review is open, and the CI sweep is watching the run. Without it here
 # that reads exactly like abandoned work — open, unclaimed, nothing moving — and gets
@@ -63,14 +68,11 @@ SPIRA_LABELS="${SPIRA_LABELS:-spira,plan}"
 # sweep strips the label in both cases, so such a bead arrives here already unparked and is
 # classified like any other. Ageing the exclusion here as well would be a second predicate
 # answering the same question, and two predicates that can disagree is the defect, not the fix.
-SPIRA_EXCLUDE_LABELS="${SPIRA_EXCLUDE_LABELS:-spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL}"
-# THE PERSONAS THAT WORK THIS PARTITION, not every persona that exists. live_aeons below
-# answers "is anything working the beads this report is about", and a running Ops aeon says
-# nothing about a starved plan — counting it would suppress the one escalation this file
-# exists to raise. So the fayths are selected by their own FAYTH_LABELS matching the
-# partition being reported on, falling back to the whole chamber if none declares it.
-FAYTHS="$(fayths_for_labels "$SPIRA_LABELS" | tr '\n' ' ')"
-[ -n "${FAYTHS// /}" ] || FAYTHS="$(spira_fayths)"
+# A PARTITION'S EXCLUSIONS ARE ITS OWN, read from the persona that works it. Set
+# SPIRA_EXCLUDE_LABELS to override every partition at once; EXCLUDE_DEFAULT is what a
+# partition whose fayth declares none falls back to.
+SPIRA_EXCLUDE_LABELS="${SPIRA_EXCLUDE_LABELS:-}"
+EXCLUDE_DEFAULT="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"
 # A lease outlives its aeon by design; the grace window is what separates "dead" from the
 # few seconds between `bd ready --claim` and the pidfile being written, and the few seconds
 # between the pidfile being removed and the unclaim. Default is one lease TTL.
@@ -117,7 +119,37 @@ holder_alive() {   # holder_alive <bead-id>
     return 1
 }
 
-live_aeons() { local n=0 f; for f in $FAYTHS; do n=$((n + $(aeon_count "$f"))); done; printf '%d' "$n"; }
+# THE PERSONAS THAT WORK ONE PARTITION, not every persona that exists. This answers "is
+# anything working the beads this row is about", and a running ops aeon says nothing about a
+# starved plan — counting it would suppress the one escalation this file exists to raise. So
+# the fayths are selected by their own FAYTH_LABELS matching the partition being asked about,
+# falling back to the whole chamber if no persona declares it.
+live_aeons() {   # live_aeons <labels> -> live aeons working THAT partition
+    local fs n=0 f
+    fs="$(fayths_for_labels "$1" | tr '\n' ' ')"
+    [ -n "${fs// /}" ] || fs="$(spira_fayths)"
+    for f in $fs; do n=$((n + $(aeon_count "$f"))); done
+    printf '%d' "$n"
+}
+
+# THE PARTITIONS THIS RUN COVERS: one "<labels>\t<exclude-labels>" a line. SPIRA_LABELS
+# narrows it to a single partition; otherwise it is every partition in the chamber, so
+# installing a persona is the whole of having its work watched.
+partitions() {
+    local labels exclude
+    if [ -n "$SPIRA_LABELS" ]; then
+        printf '%s\t%s\n' "$SPIRA_LABELS" "${SPIRA_EXCLUDE_LABELS:-$EXCLUDE_DEFAULT}"
+        return 0
+    fi
+    while IFS=$'\t' read -r labels exclude; do
+        [ -n "$labels" ] || continue
+        printf '%s\t%s\n' "$labels" "${SPIRA_EXCLUDE_LABELS:-${exclude:-$EXCLUDE_DEFAULT}}"
+    done < <(fayth_partitions)
+    return 0
+}
+
+# The partitions named, for a human: what an empty report is an empty report ABOUT.
+watching() { partitions | cut -f1 | paste -sd' ' -; }
 
 # The harness's own pulse, for the case where this is run from outside it.
 harness_state() {
@@ -137,14 +169,41 @@ harness_state() {
 # claimable set. is_blocked is not in that payload and is deliberately not trusted here:
 # `bd ready` is the authority on what a fayth can actually claim.
 # ======================================================================================
+# Every row carries the partition it came from as its first column, because the partition is
+# part of a strand's identity: the episode state keyed on kind and id alone let one starved
+# partition suppress the escalation for the next one to starve, and a report of several
+# partitions cannot name an action without saying which queue it is about.
 classify() {
-    local beads ready live holders id
-    if [ "$FROM" = - ]; then cat; return 0; fi
-    if [ -n "$FROM" ]; then cat -- "$FROM"; return 0; fi
-    beads="$(bdjson list --limit 0 --label "$SPIRA_LABELS")"
-    ready="$(bdjson ready --limit 0 --exclude-type epic --label "$SPIRA_LABELS" \
-                    --exclude-label "$SPIRA_EXCLUDE_LABELS")"
-    live="$(live_aeons)"
+    local labels exclude n=0
+    if [ -n "$FROM" ]; then
+        # A saved TSV is already classified, so the partition dimension does not apply to it:
+        # the rows are attributed to SPIRA_LABELS if one was named, and to `-` otherwise.
+        { [ "$FROM" = - ] && cat || cat -- "$FROM"; } \
+        | while IFS= read -r r; do
+              [ -n "$r" ] && printf '%s\t%s\n' "${SPIRA_LABELS:--}" "$r"
+          done
+        return 0
+    fi
+    while IFS=$'\t' read -r labels exclude; do
+        [ -n "$labels" ] || continue
+        n=$((n+1))
+        classify_one "$labels" "$exclude" \
+        | while IFS= read -r r; do
+              [ -n "$r" ] && printf '%s\t%s\n' "$labels" "$r"
+          done
+    done < <(partitions)
+    # NOTHING WATCHED AND NOTHING STRANDED ARE THE SAME SILENCE unless one of them says so
+    # (law-absence-needs-a-positive-control).
+    [ "$n" -gt 0 ] || log "WARN no persona in the chamber declares a partition — no work is being watched for strands" >&2
+    return 0
+}
+
+classify_one() {   # classify_one <labels> <exclude-labels> -> the classifier's own TSV
+    local labels="$1" exclude="$2" beads ready live holders id
+    beads="$(bdjson list --limit 0 --label "$labels")"
+    ready="$(bdjson ready --limit 0 --exclude-type epic --label "$labels" \
+                    --exclude-label "$exclude")"
+    live="$(live_aeons "$labels")"
 
     holders="$(printf '%s' "$beads" | python3 -c '
 import sys, json
@@ -189,11 +248,15 @@ except Exception: st = {}
 now = int(time.time())
 keep = {}
 out = []
-for kind, ident, disp, detail, action in rows:
-    key = "%s:%s" % (kind, ident)
+for part, kind, ident, disp, detail, action in rows:
+    # THE PARTITION IS PART OF THE IDENTITY. Keyed on kind and id alone, the `starved` row —
+    # whose id is "-" because it is about a queue rather than a bead — collided across
+    # partitions, so the second queue to starve inherited the first's suppression and its
+    # escalation was never raised.
+    key = "%s:%s:%s" % (part, kind, ident)
     e = st.get(key) or {"first": now, "acted": 0, "escalated": 0}
     keep[key] = e
-    out.append("\t".join([kind, ident, disp, str(now - int(e["first"])),
+    out.append("\t".join([part, kind, ident, disp, str(now - int(e["first"])),
                           str(e.get("acted") or 0), str(e.get("escalated") or 0), detail, action]))
 if os.environ.get("WRITE") == "1":
     with open(path + ".tmp", "w") as fh: json.dump(keep, fh)
@@ -202,8 +265,8 @@ print("\n".join(out))
 PY
 }
 
-state_mark() {    # state_mark <kind> <id> <acted|escalated>
-    KEY="$1:$2" FIELD="$3" STATE_FILE="$STATE" python3 <<'PY'
+state_mark() {    # state_mark <partition> <kind> <id> <acted|escalated>
+    KEY="$1:$2:$3" FIELD="$4" STATE_FILE="$STATE" python3 <<'PY'
 import json, os, time
 path = os.environ["STATE_FILE"]
 try:
@@ -230,8 +293,8 @@ import json, os
 rows = []
 for r in (os.environ.get("ROWS") or "").splitlines():
     if not r.strip(): continue
-    k, i, d, age, acted, esc, detail, action = r.split("\t")
-    rows.append({"kind": k, "id": i, "disposition": d, "age_seconds": int(age),
+    part, k, i, d, age, acted, esc, detail, action = r.split("\t")
+    rows.append({"partition": part, "kind": k, "id": i, "disposition": d, "age_seconds": int(age),
                  "acted_at": int(acted), "escalated_at": int(esc),
                  "detail": detail, "action": action})
 print(json.dumps({"sentinel_timer": os.environ["ACTIVE"],
@@ -244,26 +307,32 @@ PY
     printf 'sentinel timer: %s   last pass: %ss ago\n\n' "$active" "$age"
     n="$(printf '%s' "$rows" | grep -c . || true)"
     if [ "${n:-0}" -eq 0 ]; then
-        echo "no stranded work in $SPIRA_LABELS"
+        # NAME WHAT WAS LOOKED AT. "no stranded work" over a partition nobody works reads
+        # exactly like a healthy harness, which is the defect this file was scoped by.
+        echo "no stranded work in [$(watching)]"
         return 0
     fi
-    printf '%-20s %-16s %-9s %6s  %s\n' KIND ID DISPOSITION AGE DETAIL
-    while IFS=$'\t' read -r kind id disp age acted esc detail action; do
+    printf '%-16s %-20s %-16s %-9s %6s  %s\n' PARTITION KIND ID DISPOSITION AGE DETAIL
+    while IFS=$'\t' read -r part kind id disp age acted esc detail action; do
         [ -n "${kind:-}" ] || continue
-        printf '%-20s %-16s %-9s %5sm  %s\n' "$kind" "$id" "$disp" "$(( age / 60 ))" "$detail"
-        printf '%54s→ %s\n' "" "$action"
+        printf '%-16s %-20s %-16s %-9s %5sm  %s\n' "$part" "$kind" "$id" "$disp" "$(( age / 60 ))" "$detail"
+        printf '%71s→ %s\n' "" "$action"
     done <<< "$rows"
 }
 
 # ======================================================================================
 # check — the timer path
 # ======================================================================================
-escalate() {   # escalate <kind> <id> <detail> <action>
-    local kind="$1" id="$2" detail="$3" action="$4" title ctx
-    # A TITLE BUILT FROM A MISSING ID READS AS A BUG. `starved` is about the plan, not a
-    # bead, so $id is "-" and the ask arrived titled "Spira stranded (starved): -".
+escalate() {   # escalate <partition> <kind> <id> <detail> <action>
+    local part="$1" kind="$2" id="$3" detail="$4" action="$5" title ctx
+    # A TITLE BUILT FROM A MISSING ID READS AS A BUG. `starved` is about a queue, not a
+    # bead, so $id is "-" and the ask arrived titled "Spira stranded (starved): -". The
+    # queue is then named by its partition, because "the plan is stranded" is the wrong
+    # sentence about an incident queue and the operator cannot tell which one is meant.
     if [ -n "$id" ] && [ "$id" != "-" ]; then
         title="Spira: $id is stranded ($kind)"
+    elif [ -n "$part" ] && [ "$part" != "-" ]; then
+        title="Spira: the [$part] queue is stranded ($kind)"
     else
         title="Spira: the plan is stranded ($kind)"
     fi
@@ -284,16 +353,16 @@ $(tail -n 12 "$SENTINEL_LOG" 2>/dev/null || echo '(sentinel log unreadable)')"
 }
 
 cmd_check() {
-    local rows acted=0 n
+    local rows acted=0 n; local -a scope
     rows="$(classify | state_apply 1)"
     [ -n "$rows" ] || return 0
 
-    while IFS=$'\t' read -r kind id disp age was_acted was_esc detail action; do
+    while IFS=$'\t' read -r part kind id disp age was_acted was_esc detail action; do
         [ -n "${kind:-}" ] || continue
         [ "$disp" = info ] && continue
 
         if [ "$DRY" = 1 ]; then
-            log "would $disp $kind $id (${age}s, acted=$was_acted escalated=$was_esc): $detail"
+            log "would $disp $kind $id in [$part] (${age}s, acted=$was_acted escalated=$was_esc): $detail"
             continue
         fi
 
@@ -305,7 +374,11 @@ cmd_check() {
                     # The bump is the point — a hard-killed aeon never runs its cleanup trap,
                     # so without this the attempt counter under-counts and a bead that kills
                     # its aeon every time is never poisoned.
-                    bdq reclaim --id "$id" --older-than 1s --label "$SPIRA_LABELS" >/dev/null 2>&1
+                    # SCOPED TO THE ROW'S OWN PARTITION, never to one named here: a
+                    # reclaim filtered by the builder's labels is a no-op on every other
+                    # persona's bead, and it exits 0 saying nothing.
+                    scope=(); [ "$part" != "-" ] && scope=(--label "$part")
+                    bdq reclaim --id "$id" --older-than 1s "${scope[@]}" >/dev/null 2>&1
                     # THE SECOND DOOR ONTO THE ATTEMPT COUNTER. aeon.sh declines to charge an
                     # attempt when the API refused the session, but an aeon hard-killed
                     # mid-outage never reaches that code — it arrives here as a ghost, and
@@ -327,7 +400,7 @@ cmd_check() {
                     printf 'RECOMPUTED is_blocked — %s stuck with every blocker closed\n' "$id"
                     ;;
             esac
-            state_mark "$kind" "$id" acted
+            state_mark "$part" "$kind" "$id" acted
             acted=$((acted+1))
             continue
         fi
@@ -341,8 +414,8 @@ cmd_check() {
         elif [ "$age" -lt "$STRAND_GRACE" ]; then
             continue
         fi
-        escalate "$kind" "$id" "$detail" "$action"
-        state_mark "$kind" "$id" escalated
+        escalate "$part" "$kind" "$id" "$detail" "$action"
+        state_mark "$part" "$kind" "$id" escalated
         printf 'STRANDED %s %s — %s\n' "$kind" "$id" "$detail"
         acted=$((acted+1))
     done <<< "$rows"

@@ -37,6 +37,11 @@ POISON_AT="${SPIRA_POISON_AT:-3}"
 #. SPIRA_FAYTHS still overrides, because which personas a HOST runs is deployment
 # configuration; what it must not be is the only thing that makes a persona exist.
 FAYTHS="$(spira_fayths)"
+# THE PARTITIONS THIS PASS SWEEPS, read from the chamber once. Every check below that asks
+# the database a question about "the work" asks it once per partition: naming one of them —
+# `spira,plan`, the builder's — is how reaping, stalled-work reporting and landing
+# verification came to watch a single persona while reading as if they watched the harness.
+PARTITIONS="$(fayth_partitions)"
 COOLDOWN="$SPIRA_RUN/inference.cooldown"
 INFERENCE_EVERY="${SPIRA_INFERENCE_EVERY:-3600}"   # seconds; judgement is expensive
 
@@ -120,11 +125,25 @@ fi
 # reclaim in the filtered scope" — so every pass reported an action it had not taken. That
 # is a false alert, and it was not merely noise: `acted` was never 0, so CHECK 8 could
 # never fire and the harness could never notice it was starved.
-out="$(bdq reclaim --older-than 180m --label spira,plan 2>&1)"
-if ! grep -q 'No stale leases' <<< "$out"; then
+#
+# ONE RECLAIM PER PARTITION, ASKED THROUGH THE CHAMBER. This named `spira,plan` — the
+# builder's partition standing in for every persona — so an ops or spike aeon that died left
+# its bead in_progress with a dead lease and no time-based reaper ever looked at it. The
+# /proc ghost sweep in CHECK 2b catches that case faster in practice, but the backstop for
+# everything /proc cannot see did not exist for those partitions at all.
+n_parts=0; n_reclaimed=0
+while IFS=$'\t' read -r part _; do
+    [ -n "$part" ] || continue
+    n_parts=$((n_parts+1))
+    out="$(bdq reclaim --older-than 180m --label "$part" 2>&1)"
+    grep -q 'No stale leases' <<< "$out" && continue
     n="$(grep -cE '^(✓|Reclaimed)' <<< "$out" || true)"
-    [ "${n:-0}" -gt 0 ] && progress "reclaimed $n stale lease(s)"
-fi
+    n_reclaimed=$(( n_reclaimed + ${n:-0} ))
+done <<< "$PARTITIONS"
+# A REAPER WITH NOTHING TO REAP OVER SAYS SO. With no partition declared this writes nothing
+# and returns clean, which reads exactly like a harness with no dead leases.
+[ "$n_parts" -eq 0 ] && log "CHECK2 no persona in the chamber declares a partition — no lease is being reaped"
+[ "$n_reclaimed" -gt 0 ] && progress "reclaimed $n_reclaimed stale lease(s)"
 
 # ======================================================================================
 # CHECK 2b — stranded work. This is `gt convoy stranded` rebuilt, and it sits here because
@@ -259,7 +278,16 @@ while IFS=$'\t' read -r id r_name superseded; do
         bdq note "$id" "Reopened by sentinel: closed, but no commit on ${subj_base:-the base} or on spira/$id names it in $r_name. Closed is not landed." >/dev/null 2>&1
         progress "reopened $id — closed without landing"
     fi
-done < <(bdjson list --status closed --limit 0 --label spira,plan 2>/dev/null | python3 -c '
+done < <(
+    # EVERY PERSONA'S PARTITION, NOT THE BUILDER'S. This listed `--label spira,plan`, so a
+    # bead of any other persona closed without a commit naming it was invisible to the one
+    # check that exists to catch that — law-closed-is-not-landed, pointed at one partition
+    # of several. A chamber that declares no partition is named below rather than read as a
+    # clean sweep.
+    home_repo="$(spira_home_repo)"
+    while IFS=$'\t' read -r part _; do
+        [ -n "$part" ] || continue
+        bdjson list --status closed --limit 0 --label "$part" 2>/dev/null | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
@@ -269,7 +297,15 @@ for i in (d if isinstance(d, list) else [d]):
     # The third column is supersession, read from the dependencies this query already
     # returns rather than fetched per bead.
     sup = 1 if any(x.get("dependency_type") == "supersedes" for x in (i.get("dependencies") or [])) else 0
-    print("%s\t%s\t%s" % (i["id"], repo, sup))' "$(spira_home_repo)" 2>/dev/null)
+    print("%s\t%s\t%s" % (i["id"], repo, sup))' "$home_repo" 2>/dev/null
+    done <<< "$PARTITIONS" |
+    # Sorted on the REPOSITORY column first, because the loop above caches one `git log`
+    # walk per repository and re-walks whenever the repository changes between rows; `-u`
+    # then drops the duplicate a bead carrying two personas' labels would produce. Both
+    # keys together are the whole line, so nothing is deduplicated on a partial key.
+    sort -u -t$'\t' -k2,2 -k1,1
+)
+[ -n "$PARTITIONS" ] || log "CHECK5 no persona in the chamber declares a partition — no closed bead is being checked for landing"
 
 # ======================================================================================
 # CHECK 6 — land finished branches. THE WORK IS NOT DONE HERE; it is dispatched to

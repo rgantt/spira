@@ -309,5 +309,98 @@ rm -f "$SPIRA_CAPACITY_PAUSE"
 
 # ======================================================================================
 echo
+echo "every partition in the chamber is swept, not the builder's:"
+# ======================================================================================
+# THE SAME DEFECT, THREE MORE DOORS. Reaping a dead lease, reporting stalled work and
+# verifying that a closed bead landed each named `spira,plan` — the builder's partition
+# standing in for every persona. So an ops or spike aeon that died left its bead in_progress
+# with no time-based reaper looking at it, its stall was never reported as a stall, and its
+# bead could close with nothing on the commit graph naming it and pass the sweep that exists
+# for exactly that. fayth_partitions is what those three checks ask instead.
+fayth spike spira,spike 'FAYTH_MAX_CONCURRENT=1'
+is "fayth_partitions lists every partition in the chamber" "spira,plan spira,incident spira,spike" \
+   "$(fayth_partitions | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+# A sweep excludes what the persona working the partition excludes, not a list of its own.
+is "and each partition carries its own exclusions" "spira-poison,$SPIRA_ASK_LABEL" \
+   "$(fayth_partitions | awk -F'\t' '$1 == "spira,incident" { print $2 }')"
+
+# Two personas may legitimately share a partition — a relief persona, a second builder — and
+# a sweep run twice over one partition does the same work twice and counts it twice.
+fayth relief spira,incident 'FAYTH_MAX_CONCURRENT=1'
+is "a partition two personas share is swept once" "spira,plan spira,incident spira,spike" \
+   "$(fayth_partitions | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+rm -f "$SPIRA_HOME/chamber/relief.fayth"
+
+is "the roster narrows the sweep with the personas" "spira,incident" \
+   "$(SPIRA_FAYTHS=ops fayth_partitions | cut -f1)"
+# An empty label is not a partition, it is a predicate that matches the whole database.
+printf 'FAYTH_NAME=mute\n' > "$SPIRA_HOME/chamber/mute.fayth"
+is "a persona that declares no partition contributes none" "spira,plan spira,incident spira,spike" \
+   "$(fayth_partitions | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+rm -f "$SPIRA_HOME/chamber/mute.fayth"
+is "an empty chamber sweeps nothing, rather than a default" "" \
+   "$(SPIRA_HOME="$TMP/empty" fayth_partitions)"
+
+# ======================================================================================
+echo
+echo "strand.sh reports a partition that is not the plan's:"
+# ======================================================================================
+# THE BUG AS A FIXTURE, END TO END, over a real `bd`: an incident and a spike are stranded
+# and the plan queue is empty. Scoped to `spira,plan` — which is what strand.sh defaulted to
+# — every one of these returns "no stranded work" over a harness with two stalled queues.
+export SPIRA_NOTIFY="$TMP/ask.sh"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$TMP/asks" > "$SPIRA_NOTIFY"
+chmod +x "$SPIRA_NOTIFY"
+: > "$TMP/asks"
+export SPIRA_STRAND_GRACE=0
+rm -f "$SPIRA_RUN"/aeon-*.pid "$SPIRA_RUN/strands.json"
+beads "$(bead sp-inc-1 spira,incident)" "$(bead sp-spk-1 spira,spike)"
+
+report="$("$HERE/strand.sh" report 2>&1)"
+want "the incident queue is reported stranded" "spira,incident" "$report"
+want "and the spike queue as well"             "spira,spike"    "$report"
+want "each named as a starved queue"           "starved"        "$report"
+
+# The negative control, which is the defect itself: the same fixture under the old scope.
+report="$(SPIRA_LABELS=spira,plan "$HERE/strand.sh" report 2>&1)"
+want "scoped to the plan alone, the same harness reads clean" "no stranded work" "$report"
+# ...and an empty report says WHAT it is empty about, because "nothing is stranded" and
+# "nothing is being watched" are otherwise the same sentence.
+want "and names the partition it looked at"                   "[spira,plan]" "$report"
+
+# Both queues escalate. Keyed on kind and id alone the `starved` row — whose id is "-",
+# because it is about a queue and not a bead — collided across partitions, and the second
+# queue to starve inherited the first's suppression and was never raised at all.
+out="$("$HERE/strand.sh" check 2>&1)"
+want "the incident queue escalates"  "STRANDED starved" "$out"
+asks="$(cat "$TMP/asks")"
+want "the ask names the incident queue" "[spira,incident] queue is stranded" "$asks"
+want "and the spike queue separately"   "[spira,spike] queue is stranded"    "$asks"
+: > "$TMP/asks"
+out="$("$HERE/strand.sh" check 2>&1)"
+is "and neither escalates twice" "" "$(cat "$TMP/asks")"
+
+rm -f "$SPIRA_HOME/chamber/spike.fayth" "$SPIRA_RUN/strands.json"
+unset SPIRA_NOTIFY SPIRA_STRAND_GRACE
+
+# ======================================================================================
+echo
+echo "no check names a partition of its own:"
+# ======================================================================================
+# The behavioural cases above are the proof; these are the guards on the one edit that would
+# reintroduce the defect while reading as a simplification.
+# Matched on the CODE, never on the phrase: both sections explain the defect they carry, so
+# a guard looking for the words finds the comment describing them and fails on the fix.
+c2="$(sed -n '/^# CHECK 2 — dead workers/,/^# CHECK 2b/p' "$HERE/sentinel.sh")"
+c5="$(sed -n '/^# CHECK 5 — closed but not landed/,/^# CHECK 6 — land finished/p' "$HERE/sentinel.sh")"
+want   "the reaper sweeps the chamber's partitions"     'PARTITIONS' "$c2"
+nowant "and reclaims under no partition of its own"     'reclaim --older-than 180m --label spira' "$c2"
+want   "the closed-not-landed sweep does too"           'PARTITIONS' "$c5"
+nowant "and lists closed beads under none of its own"   'list --status closed --limit 0 --label spira' "$c5"
+nowant "and strand.sh defaults to no partition of its own" 'SPIRA_LABELS:-spira' \
+  "$(cat "$HERE/strand.sh")"
+
+# ======================================================================================
+echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

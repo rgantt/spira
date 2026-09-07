@@ -70,7 +70,12 @@ stub reflect.sh    'touch "$SPIRA_RUN/reflect.fired"'
 stub ask.sh        'printf "%s\n" "$*" >> "$ASK_LOG"'
 # Concurrency 0, so CHECK 7 never reaches systemd-run: this suite is about accounting, and a
 # summon in a test would put a real aeon on a real database.
-echo 'FAYTH_MAX_CONCURRENT=0' > "$SH/chamber/t.fayth"
+#
+# TWO PERSONAS, EACH WITH A PARTITION OF ITS OWN. The reaper and the closed-not-landed sweep
+# ask the chamber which partitions exist, and a single-persona chamber cannot tell a sweep of
+# the chamber apart from a sweep of one hardcoded partition — which is what both of them were.
+printf 'FAYTH_LABELS="spira,plan"\nFAYTH_MAX_CONCURRENT=0\n'     > "$SH/chamber/t.fayth"
+printf 'FAYTH_LABELS="spira,incident"\nFAYTH_MAX_CONCURRENT=0\n' > "$SH/chamber/tinc.fayth"
 
 B() { bd -C "$SPIRA_DB" "$@"; }
 status_of() { B show "$1" --json 2>/dev/null | python3 -c '
@@ -94,7 +99,7 @@ sentinel() {
     rm -f "$RUN/reflect.fired" "$RUN/inference.cooldown"
     SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" \
     SPIRA_REPO="$REPO" \
-    SPIRA_GOAL=sp-goal SPIRA_FAYTHS=t SPIRA_INFERENCE_EVERY=0 \
+    SPIRA_GOAL=sp-goal SPIRA_FAYTHS="${ROSTER:-t tinc}" SPIRA_INFERENCE_EVERY=0 \
     SPIRA_NOTIFY="$SH/ask.sh" \
     SPIRA_LAUNCH="$TMP/launch" SPIRA_SYSTEMCTL="$TMP/systemctl" \
         bash "$SH/sentinel.sh" 2>&1
@@ -171,6 +176,72 @@ notjudged "and defers judgement one pass"
 seed; out="$(SENDING_OUT='REAPED spira/sp-gone branch+worktree' sentinel)"
 want   "a reap is counted as an action" "reaped 1 landed branch(es)" "$out"
 judged "but does not mute judgement"
+
+# ======================================================================================
+# EVERY PARTITION IN THE CHAMBER, NOT THE BUILDER'S. CHECK 2 reclaimed with `--label
+# spira,plan` and CHECK 5 listed closed beads the same way, so an aeon of any other persona
+# that died left its bead in_progress with no time-based reaper looking at it, and a bead of
+# any other persona could close with nothing on the commit graph naming it and pass the one
+# sweep that exists to catch that. Both checks returned clean over exactly that state, which
+# is indistinguishable from a healthy harness (law-absence-needs-a-positive-control).
+#
+# So each case here is a PAIR: the incident work is seen with the incident persona in the
+# roster, and NOT seen with the roster narrowed to the plan — which is the shape of the bug,
+# and the proof that the passing half could have failed.
+# ======================================================================================
+echo
+
+# The plan's own fixture, plus an incident bead held under a lease that died. The lease is a
+# REAL one taken by `bd ready --claim` and then backdated: `bd reclaim` reaps only leases
+# this replica granted, so an imported lease_expires_at is not a lease at all and the check
+# would pass over it for a reason that has nothing to do with the partition.
+seed_dead_incident() {
+    seed
+    testdb_seed <<'JSONL'
+{"id":"sp-inc","title":"an incident","status":"open","issue_type":"task","labels":["spira","incident"],"updated_at":"2026-09-04T00:00:00Z"}
+JSONL
+    B ready --claim --limit 0 --label spira,incident >/dev/null 2>&1
+    testdb_sql "$TESTDB_NAME" \
+        "update leases set granted_at='2026-09-01 00:00:00', lease_expires_at='2026-09-01 00:00:00', \
+                           heartbeat_at='2026-09-01 00:00:00' where issue_id='sp-inc'; \
+         update issues set lease_expires_at='2026-09-01 00:00:00', heartbeat_at='2026-09-01 00:00:00' \
+                           where id='sp-inc'; \
+         call dolt_commit('-A','-m','a dead lease','--skip-empty');" >/dev/null 2>&1
+}
+
+seed_dead_incident
+is   "the fixture starts with the incident held" "in_progress" "$(status_of sp-inc)"
+out="$(ROSTER=t sentinel)"
+nowant "a roster of the plan alone reaps nothing" "reclaimed" "$out"
+is     "and the incident bead is still held"      "in_progress" "$(status_of sp-inc)"
+out="$(sentinel)"
+want "the reaper sweeps the incident partition too" "reclaimed 1 stale lease(s)" "$out"
+is   "and the bead is claimable again"              "open" "$(status_of sp-inc)"
+
+# A closed bead with no commit naming it, in a partition that is not the plan's. Only beads
+# an aeon worked are judged, which is what the session log stands for.
+seed_closed_incident() {
+    seed
+    testdb_seed <<'JSONL'
+{"id":"sp-incx","title":"an incident, closed","status":"closed","issue_type":"task","labels":["spira","incident"],"updated_at":"2026-09-04T00:00:00Z"}
+JSONL
+    : > "$RUN/sp-incx.log"
+}
+
+seed_closed_incident
+out="$(ROSTER=t sentinel)"
+nowant "a roster of the plan alone judges no incident bead" "sp-incx" "$out"
+is     "and it stays closed on a lie"                       "closed" "$(status_of sp-incx)"
+out="$(sentinel)"
+want "closed-not-landed sweeps the incident partition too" "reopened sp-incx — closed without landing" "$out"
+is   "and the bead is open again"                          "open" "$(status_of sp-incx)"
+
+# ...and a chamber that declares no partition at all says so, rather than sweeping nothing
+# quietly. A reaper with nothing to reap over and a harness with no dead leases write the
+# same empty output.
+seed_dead_incident; out="$(ROSTER=nosuchfayth sentinel)"
+want "a chamber with no partition says the reaper is idle" "no lease is being reaped" "$out"
+want "and that nothing is being checked for landing"       "no closed bead is being checked" "$out"
 
 # ======================================================================================
 # CHECK 6 — DISPATCH, NOT LANDING. The landing worker is its own program with its own suite

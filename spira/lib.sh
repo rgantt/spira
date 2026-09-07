@@ -186,6 +186,35 @@ fayth_free() {           # fayth_free <fayth> -> free concurrency slots, never n
     printf '%d' "$free"
 }
 
+# fayth_partitions -> every partition this host watches, one "<labels>\t<exclude-labels>" a line.
+#
+# THE ROSTER ANSWERS "WHOSE WORK IS THERE" FOR EVERY CHECK, not only for summoning. Reaping
+# a dead lease, reporting stalled work and verifying that a closed bead actually landed were
+# each written against one hardcoded partition — the builder's — which is CHECK 7's defect
+# arriving by three more doors. An aeon of any other persona that died left its bead
+# in_progress with no reaper looking at it, its stall was never reported as stalled, and its
+# bead could close without landing and pass the sweep that exists to catch exactly that. The
+# fix is the same one fayth_ready made: ask each persona's OWN predicate.
+#
+# DEDUPLICATED, because two personas may legitimately share a partition and a sweep run twice
+# over the same labels does the same work twice and counts it twice.
+#
+# EMPTY WHEN THE CHAMBER IS EMPTY, and callers must say so rather than fall back to a
+# partition name: a fallback would restore the hardcoded constant by another route, and a
+# sweep that silently watches nothing is indistinguishable from one that found nothing
+# (law-absence-needs-a-positive-control).
+fayth_partitions() {
+    local f l seen=""
+    for f in $(spira_fayths); do
+        l="$(fayth_get "$f" FAYTH_LABELS)"
+        [ -n "$l" ] || continue
+        case "$seen" in *"|$l|"*) continue ;; esac
+        seen="$seen|$l|"
+        printf '%s\t%s\n' "$l" "$(fayth_get "$f" FAYTH_EXCLUDE_LABELS)"
+    done
+    return 0
+}
+
 fayths_for_labels() {    # fayths_for_labels <labels> -> personas whose partition IS <labels>
     # For the question "is anything working THESE beads". Counting every live aeon would
     # let a running Ops aeon mask a genuinely starved plan, which is the same
