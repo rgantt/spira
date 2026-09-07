@@ -614,7 +614,9 @@ print("SP_STRANDS_ESCALATED=%d" % sum(1 for v in d.values() if v.get("escalated"
     "$HERE/ctx-meter.sh" env 2>/dev/null \
       || { for k in SP_CTX_NOW SP_CTX_TURNS SP_CTX_GROWTH SP_CTX_NEXT SP_CTX_HEADROOM \
                     SP_CTX_TURNS_LEFT SP_CTX_AGE SP_CTX_ARCHIVIST SP_CTX_ARCHIVIST_BEHIND \
-                    SP_CTX_SCAN_BYTES SP_CTX_ARCHIVIST_FILED; do
+                    SP_CTX_SCAN_BYTES SP_CTX_ARCHIVIST_FILED \
+                    SP_LIMIT_5H_PCT SP_LIMIT_5H_ETA SP_LIMIT_7D_PCT SP_LIMIT_7D_ETA \
+                    SP_LIMIT_AGE; do
                echo "$k=?"
            done; }
 
