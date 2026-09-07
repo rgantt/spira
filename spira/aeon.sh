@@ -307,8 +307,28 @@ fixture_drop() {
     ( TESTDB_SHARED=0; . "$FIXTURE_LIB" && testdb_drop ) >/dev/null 2>&1
     return 0
 }
+# gate_unfinished -> 0, printing why, if a gate for this branch is still deciding.
+#
+# ASKED THROUGH gate-run.sh rather than reimplemented here, because that is the only thing
+# holding both witnesses: its own state directory when the gate was started through it, and
+# the process table when it was not — an agent that ran `gate.sh` in its own foreground and
+# had it moved to the background leaves no state at all. Binding only the well-behaved path
+# would miss exactly the mistake this exists for (law-guard-binds-the-caller).
+#
+# Exit 2 is its "still deciding". EVERY OTHER ANSWER, including a missing runner, means
+# nothing is in flight: this must never invent a reason to withhold an attempt, or a session
+# that failed at its own work would stop counting toward poison.
+gate_unfinished() {
+    local out st
+    [ -f "$SPIRA_HOME/gate-run.sh" ] || return 1
+    out="$(bash "$SPIRA_HOME/gate-run.sh" --status "$BRANCH" "$REPO_NAME" 2>/dev/null)"; st=$?
+    [ "$st" -eq 2 ] || return 1
+    printf '%s' "$out"
+    return 0
+}
+
 cleanup() {
-    local rc=$? reset_at
+    local rc=$? reset_at gate_why
     [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null
     fixture_drop
     rm -f "$PIDFILE" "${PIDFILE%.pid}.name"
@@ -361,9 +381,36 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
             ledger "done $FAYTH $BEAD_ID rc=$rc status=slain"
             exit $rc
         fi
+        # A VERDICT NOBODY HAS IS NOT A FAILED ATTEMPT. The landing gate outgrew the ceiling
+        # an agent's tool puts on one command, so a session that ran it in the foreground had
+        # it moved to the background, ended its turn to wait — which ends the session — and
+        # left the bead in_progress with an attempt charged for a race it did not lose. A
+        # fresh aeon was then summoned onto the same bead to run the same long gate again.
+        # Seventeen sessions ended that way before anything counted them.
+        #
+        # So the same reading as a spent capacity window and a slain aeon: released, no
+        # attempt, and the reason recorded on the bead rather than only in a log. This cannot
+        # become a way to avoid poison — the next attempt starts its own gate and either
+        # reaches a verdict or fails at the work, and only the gate's own unfinished business
+        # is exempted here.
+        if gate_why="$(gate_unfinished)"; then
+            bdq unclaim "$BEAD_ID" --if-assignee "$BEADS_ACTOR" >/dev/null 2>&1
+            bdq note "$BEAD_ID" "Released by aeon.sh: the session ended while its landing gate was still running, so it never held a verdict about its own work. No attempt was charged and nothing about the work is implied — $gate_why. Run the gate through gate-run.sh, which waits in bounded slices, and do not end the session while it is unfinished." >/dev/null 2>&1
+            log "$FAYTH: $BEAD_ID released with its gate still running — no attempt charged ($gate_why)"
+            ledger "done $FAYTH $BEAD_ID rc=$rc status=gate-unfinished"
+            exit $rc
+        fi
         n="$(bump_attempt "$BEAD_ID")"
         bdq unclaim "$BEAD_ID" --if-assignee "$BEADS_ACTOR" >/dev/null 2>&1
         log "$FAYTH: $BEAD_ID not closed (attempt $n), released"
+    elif gate_why="$(gate_unfinished)"; then
+        # CLOSED WITH THE GATE STILL RUNNING is not reopened: the work is committed, and the
+        # landing pass gates the branch again before it merges and reopens the bead itself if
+        # it fails. What must not happen is for it to be silent — a close reached without a
+        # verdict is a claim the session could not back, and the note is the only place a
+        # reader would ever learn that.
+        bdq note "$BEAD_ID" "Closed by the session while its landing gate was still running — $gate_why. The close carries no gate verdict; the landing pass gates this branch again and reopens the bead if it fails." >/dev/null 2>&1
+        log "$FAYTH: $BEAD_ID closed with its gate still running ($gate_why)"
     fi
     ledger "done $FAYTH $BEAD_ID rc=$rc status=${st:-?}"
     exit $rc
@@ -695,6 +742,35 @@ its own. If that turns out to be the slowest thing in your session, say so when 
 bead — the number is worth having."
 fi
 
+# HOW TO RUN THE GATE IS PART OF THE BRIEF, because running it the obvious way does not
+# work. The gate outgrew the ceiling an agent's tool puts on a single command: past it the
+# tool moves the command to the background and hands back a task id instead of a verdict,
+# and no `timeout` the session chooses can move that — the tool's ceiling fires first.
+#
+# A session that then ends its turn to wait ends the SESSION, and the bead is released
+# in_progress with an attempt charged for a race it did not lose. gate-run.sh runs the gate
+# detached and waits a bounded slice per call, so the session always holds either a verdict
+# or the knowledge that there is not one yet.
+#
+# The path is rendered rather than named, for the same reason every other path in this brief
+# is: an aeon works in a worktree of some repository and the harness is not inside it.
+GATE_BRIEF="**Run the landing gate through the runner, never \`gate.sh\` directly:**
+
+    bash $SPIRA_HOME/gate-run.sh $BRANCH $REPO_NAME
+
+The gate takes longer than your Bash tool will run one command. Past its ceiling the tool
+moves your command to the background and hands you a task id instead of a verdict — and
+ending your turn to wait for that ends this session, which returns the bead unfinished.
+
+The runner starts the gate detached and waits a bounded slice of it, so each call is a real
+wait rather than a poll. It exits **0** when the gate passed, **1** when it failed — the
+output is printed for you — and **2** when it is still deciding. On a 2, run the exact same
+command again; it picks the same run back up rather than starting another.
+
+**Never end your turn while it is unfinished.** The exit path checks: a session that ends
+with its gate still running has the bead released with a note saying so, and records no
+verdict it did not have."
+
 BEAD_BODY="$(bdq show "$BEAD_ID" 2>/dev/null | grep -vE '^💡|^warning|^  Fix|^  Or')"
 PROMPT="$(sed -e "s|{{BEAD_ID}}|$BEAD_ID|g" -e "s|{{BRANCH}}|$BRANCH|g" \
               -e "s|{{REPO}}|$WORK|g" -e "s|{{REPO_NAME}}|$REPO_NAME|g" \
@@ -706,6 +782,7 @@ PROMPT="$(sed -e "s|{{BEAD_ID}}|$BEAD_ID|g" -e "s|{{BRANCH}}|$BRANCH|g" \
 PROMPT="${PROMPT/\{\{BEAD\}\}/$BEAD_BODY}"
 PROMPT="${PROMPT/\{\{PARK\}\}/$PARK_BRIEF}"
 PROMPT="${PROMPT/\{\{FIXTURE\}\}/$FIXTURE_BRIEF}"
+PROMPT="${PROMPT/\{\{GATE\}\}/$GATE_BRIEF}"
 
 # The memory book. Every agent reads it on every session; this is the delivery mechanism
 # for an aeon, standing in for the SessionStart hook an interactive session gets.

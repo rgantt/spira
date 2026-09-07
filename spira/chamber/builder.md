@@ -64,6 +64,8 @@ verdict left to the landing pass tells everyone something.
 `sleep`/`until` loop: each iteration is a model turn carrying your entire context, and that
 polling alone was a fifth of all tool time.
 
+{{GATE}}
+
 {{FIXTURE}}
 
 {{PARK}}

@@ -272,6 +272,34 @@ it to be discovered by the defect it let through.
 
 Set `SPIRA_GATE_ALL=1` to run everything regardless.
 
+### And it is run in bounded slices, because an agent's tool has a ceiling
+
+An agent's Bash tool moves a foreground command to the background at a fixed ceiling and
+hands the session a task id instead of a result. The gate outgrew that ceiling, and the
+sessions running it never saw a verdict: each ended its turn to wait, ending the turn ended
+the session, and the bead came back unfinished with an attempt charged for a race it was
+never given a chance to run. No `timeout` the session chooses moves that ceiling — the
+tool's fires first — so selection alone does not fix it, since a branch touching a shared
+file legitimately runs everything.
+
+`spira/gate-run.sh <branch> [repo]` is what an aeon runs instead of `gate.sh`. It starts the
+gate detached and waits a bounded slice per call: **0** when the gate passed, **1** when it
+failed, **2** when it is still deciding — on a 2 the same command is run again and picks up
+the same run rather than starting another. `SPIRA_GATE_POLL` is the slice, and it must stay
+under the ceiling it exists to respect. A verdict is keyed to the branch commit and the base
+it was judged against, so a rebase or a new commit starts a fresh run rather than handing
+back an answer about the tree before it, and a run whose process is gone without an exit code
+is reported as a failure — never as a pass and never as still deciding.
+
+The other half is the exit path. `aeon.sh` asks the runner, before it records anything, whether
+a gate is still deciding for this branch — from the runner's own state, and from the process
+table for a session that reached past the runner and ran `gate.sh` itself, which is the shape
+that produced the bug. If one is, the bead is released with a note and **no attempt is
+charged**: the same reading as a spent capacity window or an aeon the operator stopped. A
+session that closed its bead with a gate still running keeps the close — the landing pass
+gates that branch again before merging — but the bead says the close carried no verdict.
+
+
 ## The browser page
 
 `loom/` is a browser surface over the live bead graph: where the work is, what blocks what,

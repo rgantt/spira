@@ -315,7 +315,25 @@ if not d: raise SystemExit
 i = d[0]
 repo = next((l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")), sys.argv[1])
 print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
-        [ "${st:-}" = "closed" ] || continue
+        # A BRANCH SKIPPED FOR A BEAD THAT IS NOT CLOSED HAS TO HAVE A VOICE. This was a bare
+        # `continue`, so the one state that most needs saying — a branch whose bead sits
+        # in_progress while nothing is holding it — left no trace anywhere in this log, and
+        # the only witness was a KEEP line from the reaper that reads identically to work
+        # legitimately in flight. Absence and health looked the same
+        # (law-absence-needs-a-positive-control).
+        #
+        # ONCE PER BRANCH PER PASS, which is what this loop already gives: the noise floor is
+        # one line per unlanded branch every pass, and the distinction that makes it worth
+        # reading is whether anybody is home. A live holder is ordinary; no holder on an
+        # in_progress bead is a lease nobody is working, and it is named as such.
+        if [ "${st:-}" != "closed" ]; then
+            if holder_alive "$id"; then
+                log "CHECK6 $id: $br not landed — its bead is ${st:--}, held by a live aeon"
+            else
+                log "CHECK6 $id: $br not landed — its bead is ${st:--} and no aeon holds it"
+            fi
+            continue
+        fi
 
         # THE BRANCH BEING HERE IS NOT EVIDENCE THAT IT BELONGS HERE. A branch is only landed
         # in the repository its BEAD names; a ref that says otherwise is a bug elsewhere, and

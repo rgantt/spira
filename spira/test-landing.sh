@@ -165,6 +165,45 @@ want "and the reopen is a movement"     "reopened sp-bad"                   "$(m
 is   "the reopen actually happened"     open                                "$(status_of sp-bad)"
 is   "and the dead claimant's name is gone, so it can be claimed again" "" "$(assignee_of sp-bad)"
 
+# --------------------------------------------------------------------------------------
+# A BRANCH WHOSE BEAD IS NOT CLOSED IS SKIPPED — AND THE SKIP HAS TO HAVE A VOICE. This was a
+# bare `continue`, so the one state most worth saying — a branch whose bead sits in_progress
+# while nothing is holding it — left no trace in this log at all, and the only witness was a
+# KEEP line from the reaper that reads identically to work legitimately in flight. It is the
+# state a session leaves behind when it ends mid-gate, which is how it came to be looked for.
+#
+# ONCE PER BRANCH PER PASS AT MOST. The line is written for every unlanded branch on every
+# pass, so a second copy per pass would double a standing noise floor rather than add
+# information — and a log nobody can skim is a log nobody reads (law-alerts-must-be-actionable).
+# --------------------------------------------------------------------------------------
+seed
+git -C "$REPO" worktree add -q -b spira/sp-live "$RUN/worktree/sp-live" main
+echo live > "$RUN/worktree/sp-live/sp-live.txt"
+git -C "$RUN/worktree/sp-live" add -A
+git -C "$RUN/worktree/sp-live" commit -q -m "feat: sp-live — work in flight"
+printf '{"id":"sp-live","title":"sp-live","status":"in_progress","issue_type":"task","labels":[],"updated_at":"2026-09-04T00:00:00Z"}\n' | testdb_seed
+out="$(landing)"
+want "an unlanded branch says so rather than vanishing" "spira/sp-live not landed" "$out"
+want "and names the status that stopped it"             "its bead is in_progress"  "$out"
+is   "exactly once in the pass"  "1" "$(grep -c 'spira/sp-live not landed' <<< "$out")"
+nowant "and nothing was landed"  "landed spira/sp-live" "$out"
+want   "and the pass moved nothing"  "SP_LAND_MOVED=0" "$(status)"
+
+# WHETHER ANYBODY IS HOME IS THE WHOLE DISTINCTION. A live holder is ordinary; an in_progress
+# bead with no holder is a lease nobody is working, which is exactly what a session that ended
+# mid-gate leaves. holder_alive reads /proc for a live aeon, so the witness here is a real
+# process with a real argv and not a file the test asserts about.
+want "with no aeon home, the log says so" "no aeon holds it" "$out"
+printf '#!/usr/bin/env bash\nsleep 60\n' > "$TMP/aeon.sh"; chmod +x "$TMP/aeon.sh"
+"$TMP/aeon.sh" & holder=$!
+echo "$holder" > "$RUN/aeon-builder-sp-live.pid"
+out="$(landing)"
+want "and with one home, it says that instead" "held by a live aeon" "$out"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+rm -f "$RUN/aeon-builder-sp-live.pid"
+git -C "$REPO" worktree remove --force "$RUN/worktree/sp-live" >/dev/null 2>&1
+git -C "$REPO" branch -D spira/sp-live >/dev/null 2>&1
+
 # ======================================================================================
 # ACROSS REPOSITORIES. The bead names its repository through a `repo:` label, so a branch
 # lives in the checkout its aeon cut it from — and a worker that landed only one repository
