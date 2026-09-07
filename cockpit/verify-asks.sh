@@ -59,7 +59,10 @@ while IFS=$'\t' read -r id cmd; do
   if [ "$rc" -eq 0 ]; then
     echo "  SATISFIED  $id  ($cmd)"
     if [ -n "$apply" ]; then
-      BEADS_ACTOR=claude "$BD" -C "$db" close "$id" \
+      # `--force`: an ask decomposed out of an epic inherits its `blocks` edges, and a
+      # blocked close is refused. The evidence here is the ask's OWN check passing, which is
+      # a stronger statement than the dependency graph's guess about ordering.
+      BEADS_ACTOR=claude "$BD" -C "$db" close "$id" --force \
         --reason "Verified already done — its own VERIFY check now passes: ${cmd} → exit 0. Evidence: ${short}" \
         >/dev/null 2>&1 && { echo "    closed"; closed=$((closed+1)); }
     fi

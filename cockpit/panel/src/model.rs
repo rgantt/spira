@@ -294,6 +294,42 @@ fn run_as(cmd: &str, args: &[&str], actor: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// A VERDICT IS NEVER BLOCKED, AND IS NEVER DISCARDED. Both halves were learned from one
+/// bead: sp-wok.5, an operator task decomposed out of an epic and therefore carrying a
+/// `blocks` edge onto a sibling that had not landed. `bd close` refuses a blocked issue —
+/// *"cannot close blocked issue: sp-wok.5 is blocked by [sp-wok.3] (use --force to
+/// override)"* — so every answer typed into this pane failed, and because the text lived
+/// only in the argument list of a command that exited 1, each one was thrown away. The
+/// operator answered it more than three times and it came back untouched, with no comment on
+/// the bead to show any of it had happened.
+///
+/// `--force`, because beads' blocked-close guard is aimed at an AGENT closing work whose
+/// prerequisite is unbuilt, and this pane is the one place where the human who owns the
+/// decision is the one pressing the key. Their dependency edges order the WORK; they do not
+/// order the answer. A hollow close is still caught downstream — the ALERTS tab raises
+/// HOLLOW-CLOSE for exactly this — so forcing here loses no signal, it just stops the pane
+/// from arguing with its own operator. `resolve.sh` has always closed this way; only the
+/// pane and `ask.sh` were left behind.
+///
+/// And should the close fail anyway, the typed text is written to the bead as a comment
+/// before the error is returned. Whatever else goes wrong, the answer survives in the one
+/// place the next reader will look.
+fn close_decision(db: &str, id: &str, reason: &str) -> Result<(), String> {
+    let actor = operator_actor();
+    let e = match run_as(
+        "bd",
+        &["-C", db, "close", id, "--reason", reason, "--force"],
+        Some(&actor),
+    ) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    match run_as("bd", &["-C", db, "comments", "add", id, reason], Some(&actor)) {
+        Ok(()) => Err(format!("{e} — still open; your answer is kept as a comment")),
+        Err(_) => Err(format!("{e} — AND THE ANSWER WAS NOT SAVED: {reason}")),
+    }
+}
+
 /// Mark every notification read in one call. `gt mail mark-read` costs ~3.8s per message;
 /// at 80 unread that is five minutes of keypresses to clear an inbox nobody had read. The
 /// bulk form is a single call.
@@ -333,11 +369,7 @@ pub fn act(
         // as an answer the operator never gave. A session that acts on that is acting
         // on its own echo, and it is silent because the text reads exactly like a
         // real verdict.
-        (View::Decisions, _) => run_as(
-            "bd",
-            &["-C", &db, "close", &item.id, "--reason", reason],
-            Some(&operator_actor()),
-        ),
+        (View::Decisions, _) => close_decision(&db, &item.id, reason),
         (View::Insights, _) => run(
             "bd",
             &[

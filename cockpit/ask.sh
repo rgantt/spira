@@ -221,7 +221,24 @@ promote)
 answered)
     id="${2:?usage: ask.sh answered <bead-id> \"<verdict>\"}"
     verdict="${3:?a verdict is required — the close reason IS the record}"
-    bdt close "$id" --reason "$verdict" 2>&1 | strip_warn | tail -2
+    # `--force`, and the exit status actually read. An ask decomposed out of an epic carries
+    # the epic's `blocks` edges, and `bd close` refuses a blocked issue: *"cannot close
+    # blocked issue: sp-wok.5 is blocked by [sp-wok.3] (use --force to override)"*. Those
+    # edges order the WORK; they do not order the operator's answer, and the pane is where
+    # the person who owns the decision is the one pressing the key. A hollow close is still
+    # caught downstream by the ALERTS tab's HOLLOW-CLOSE check, so nothing is lost by forcing.
+    #
+    # The status matters as much as the flag. Piping into `tail -2` made $? the pipeline's
+    # last stage, so a refused close printed its error and was followed, unconditionally, by
+    # the "does this verdict generalise" trailer — reading exactly like a recorded verdict.
+    # And the verdict itself existed only as an argument to a command that failed, so it was
+    # gone. Keep it on the bead before saying anything went wrong.
+    if bdt close "$id" --reason "$verdict" --force 2>&1 | strip_warn | tail -2; [ "${PIPESTATUS[0]}" -ne 0 ]; then
+        bdt comments add "$id" "$verdict" >/dev/null 2>&1 \
+            && echo "  NOT CLOSED — your answer is kept on $id as a comment." \
+            || echo "  NOT CLOSED, AND THE ANSWER WAS NOT SAVED: $verdict"
+        exit 1
+    fi
     echo
     echo "  Does this verdict generalise? If so it is law, not a closed bead:"
     echo "    $(dirname "$SPIRA_HOME")/rule.sh enact <slug> \"<statute + the case that produced it>\""
@@ -229,7 +246,9 @@ answered)
 
 drop|dismiss)
     id="${2:?usage: ask.sh drop <bead-id> \"<reason>\"}"
-    bdt close "$id" --reason "dismissed: ${3:-not needed}" 2>&1 | strip_warn | tail -2
+    # `--force` for the same reason `answered` uses it: a dependency edge orders the work,
+    # not the operator's dismissal of the ask.
+    bdt close "$id" --reason "dismissed: ${3:-not needed}" --force 2>&1 | strip_warn | tail -2
     ;;
 
 list)
