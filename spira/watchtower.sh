@@ -102,6 +102,27 @@ if [ -d "$SPIRA_RUN/noverdict" ]; then
     done < <(find "$SPIRA_RUN/noverdict" -maxdepth 1 -type f 2>/dev/null)
 fi
 
+# AEONS ARE COUNTED HERE, FROM /proc, NOT READ OUT OF THE SNAPSHOT. The collector's file is
+# up to a minute old, and the first live sweep reported "0 aeons" while two were running —
+# because the snapshot predated the summon. Every other number here tolerates being a minute
+# stale; this one does not, because "ready work and no workers" is the single shape that
+# most looks like a stalled loop, and reporting it wrongly sends Ops to diagnose a stall that
+# is not happening. It costs one pass over /proc.
+#
+# THROUGH aeon_count, THE HARNESS'S OWN PRIMITIVE, not a second implementation. The first
+# version of this scanned /proc for a command line containing "aeon.sh" and counted 7 where
+# there were 3 — because the scan matched the shell pipelines that were themselves grepping
+# for the string, this program's own diagnostics included. That is the `pgrep -f` failure
+# exactly, arriving in a hand-rolled shape, three lines under a comment warning about it.
+#
+# aeon_count reads the pidfiles, which are the authoritative record of a claim, and confirms
+# each against /proc on argv rather than on a substring. It is also what the sentinel's pool
+# arithmetic uses, so the number reported here and the number the loop acts on cannot drift.
+aeons_live=0
+for _f in $(spira_fayths 2>/dev/null); do
+    aeons_live=$(( aeons_live + $(aeon_count "$_f" 2>/dev/null || echo 0) ))
+done
+
 snapshot() {
 cat <<EOF
 ## Spira pipeline, $(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -119,7 +140,7 @@ reading \`?\` is one this pass COULD NOT READ — never treat it as a zero.
 
 ### The workers
 
-  aeons alive                         $(g SP_AEONS)
+  aeons alive                         ${aeons_live}      (counted now, not from the snapshot)
   beads in progress                   $(g SP_INPROG)
   ready to claim                      $(g SP_READY)
   poisoned                            $(g SP_POISON)
@@ -155,4 +176,4 @@ INC="$(dirname "$0")/incident.sh"
 [ -x "$INC" ] || [ -r "$INC" ] || { log "watchtower: $INC is missing — the sweep reaches nobody"; exit 1; }
 snapshot | bash "$INC" file "Spira sweep — is the pipeline moving?" - >/dev/null || {
     log "watchtower: could not file the sweep"; exit 1; }
-log "watchtower: swept — ${since_land}m since the last landing, $(g SP_UNLANDED) unlanded, $(g SP_AEONS) aeons"
+log "watchtower: swept — ${since_land}m since the last landing, $(g SP_UNLANDED) unlanded, ${aeons_live} aeons"
