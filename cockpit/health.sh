@@ -475,7 +475,7 @@ next_row() {
 # A row that does not split is printed as it came — a formatter must never drop content it
 # failed to parse.
 recent_row() {          # recent_row "<age> <verb> <bead> <title>" <indent-cols>
-    local raw="$1" pad="$2" age verb id rest
+    local raw="$1" pad="$2" age verb id rest vw
     # THE AGE IS TWO WORDS. The collector emits `%-7s` of a relative time — "2m ago", "18h
     # ago" — so splitting on the first space made the verb "ago" and the id "landed", and
     # every row rendered its colours one field to the left. Matched as a whole rather than
@@ -485,10 +485,20 @@ recent_row() {          # recent_row "<age> <verb> <bead> <title>" <indent-cols>
     else
         # UNPARSED IS PRINTED AS IT CAME. A formatter must never drop content it could not
         # split — the event is the load-bearing half and the colour is the ornament.
-        printf '%s%s%s\n' "$C_DIM" "$raw" "$C_RST"; return
+        # IT IS STILL CUT TO THE PANE. Autowrap is off, so a row wider than the pane is cut by
+        # the terminal instead, and the terminal's cut is silent — the one thing this pane must
+        # never do. Failing to parse a row is not a licence to overflow the column.
+        fit "$raw" $(( COLS - pad ))
+        printf '%s%s%s\n' "$C_DIM" "$FIT" "$C_RST"; return
     fi
-    fit "$rest" $(( COLS - pad - 10 - ${#verb} - (${#id} > 14 ? ${#id} : 14) ))
-    printf '%s%-7s%s %s%s%s %s%-14s%s %s%s%s\n' \
+    # THE VERB IS PADDED, like the age and the id either side of it. Unpadded, the id and
+    # title columns began wherever the verb happened to end — `ended` to `reclaimed` is five
+    # columns of drift in the one section whose purpose is to be scanned straight down. Nine
+    # is the longest verb the collector emits; a longer one widens its own row rather than
+    # being cut, so the arithmetic below takes whichever is greater.
+    vw=${#verb}; if [ "$vw" -lt 9 ]; then vw=9; fi
+    fit "$rest" $(( COLS - pad - 10 - vw - (${#id} > 14 ? ${#id} : 14) ))
+    printf '%s%-7s%s %s%-9s%s %s%-14s%s %s%s%s\n' \
         "$C_DIM" "$age" "$C_RST" \
         "$(verb_colour "$verb")" "$verb" "$C_RST" \
         "$C_ACC" "$id" "$C_RST" \
@@ -536,12 +546,18 @@ recent_section() {
         fi
         return
     fi
-    printf ' %sRECENT%s %s' "$C_DIM" "$C_RST" "$(recent_row "$ev" 8)"
+    # THE `\n` IS LOAD-BEARING, and it belongs to these format strings rather than to
+    # recent_row: `$( )` strips trailing newlines, so the row's own one never survives being
+    # captured. Without it every event was emitted onto one physical line — and because
+    # `frame` sizes this section by the number of LINES it produced, the allocator was then
+    # told RECENT wanted a single row and handed the rest of the column to NEXT. The section
+    # rendering itself wrong and the column's arithmetic being wrong were one defect.
+    printf ' %sRECENT%s %s\n' "$C_DIM" "$C_RST" "$(recent_row "$ev" 8)"
     i=1
     while [ "$i" -lt "$MAX_SECTION_ROWS" ]; do
         eval "ev=\${SP_EVENT$i:-}"
         [ -n "$ev" ] || break
-        printf '        %s' "$(recent_row "$ev" 8)"
+        printf '        %s\n' "$(recent_row "$ev" 8)"
         i=$((i+1))
     done
 }
