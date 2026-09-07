@@ -129,9 +129,14 @@ reclassify)
             # THE RESULT IS CHECKED. A removal that failed and still printed RESTORED would
             # be a claim the ledger then makes permanent, and the attempt would stay charged
             # with nothing left saying so.
-            if ! bdq label remove "$id" "sp-attempt-$cur" >/dev/null 2>&1; then
-                printf 'REFUSED  %-20s could not remove sp-attempt-%s — left charged, nothing recorded\n' \
-                    "$id" "$cur"
+            #
+            # THE RUNG IS FOUND, NEVER RECONSTRUCTED as "sp-attempt-$cur": a rung carries the
+            # outcome that charged it (`sp-attempt-2-unlanded`), so the reconstructed name
+            # matches no label and the removal withdraws nothing at all.
+            rung="$(counter_label "$id" sp-attempt "$cur")" || rung="sp-attempt-$cur"
+            if ! bdq label remove "$id" "$rung" >/dev/null 2>&1; then
+                printf 'REFUSED  %-20s could not remove %s — left charged, nothing recorded\n' \
+                    "$id" "$rung"
                 n=$((n-1)); refused=$((refused+1))
                 continue
             fi

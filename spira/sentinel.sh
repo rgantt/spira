@@ -233,9 +233,15 @@ for id in $dispatchable; do
     n="$(attempts_of "$id")"; n="${n:-0}"
     if [ "$n" -ge "$POISON_AT" ]; then
         if ! bdq label list "$id" 2>/dev/null | grep -q spira-poison; then
+            # THE POISON NAMES THE OUTCOMES THAT CHARGED IT, never just their count. A poison
+            # nobody can audit takes a bead out of circulation for reasons that have already
+            # scrolled away, and "three attempts" is only a reason to stop if all three were
+            # the work failing. Rungs predating the cause label read `unrecorded`, which is
+            # honest rather than an assumption about what they were.
+            charges="$(attempt_causes "$id" | awk '{printf "%s#%s ", $1, $2}')"
             bdq label add "$id" spira-poison >/dev/null 2>&1
-            bdq note "$id" "Poisoned after $n attempts. Not retried until a human changes the approach. Any live holder keeps its claim and releases on its own exit path; no persona can claim it again while the label stands." >/dev/null 2>&1
-            progress "poisoned $id after $n attempts"
+            bdq note "$id" "Poisoned after $n attempts, charged by: ${charges:-unrecorded}. Not retried until a human changes the approach. Any live holder keeps its claim and releases on its own exit path; no persona can claim it again while the label stands." >/dev/null 2>&1
+            progress "poisoned $id after $n attempts (${charges:-unrecorded})"
             # The ask carries the failure itself. A path is not evidence: the operator reads this
             # in a tmux pane and cannot open a file from it.
             # THE BEAD FIRST, THEN THE FAILURE. A log tail says what broke; it cannot say
@@ -250,7 +256,8 @@ for id in $dispatchable; do
             ev="$ev
 
 REPO      $r_name${r_path:+ ($r_path)}
-ATTEMPTS  $n (poison threshold $POISON_AT)
+ATTEMPTS  $n (poison threshold $POISON_AT) — charged by: ${charges:-unrecorded}
+RECLAIMS  $(reclaims_of "$id" || true) — times the aeon died holding it; these do NOT count toward poison
 BRANCH    $( [ -n "$r_path" ] && git -C "$r_path" show-ref --verify -q "refs/heads/spira/$id" && echo "spira/$id exists, with work on it" || echo 'none — nothing was committed')
 
 --- last session log (tail) ---

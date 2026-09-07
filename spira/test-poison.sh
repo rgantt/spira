@@ -216,8 +216,19 @@ out="$(sentinel)"
 ispoisoned "a held bead at the threshold is still poisoned" sp-orphan
 is   "but it is not unclaimed under its holder" "in_progress" "$(status_of sp-orphan)"
 is   "and the holder is untouched"              "aeon-holder" "$(assignee_of sp-orphan)"
+# WHITESPACE-NORMALISED, because `bd show` WRAPS a note to the terminal width: the phrase
+# being looked for is in the bead, but a newline lands in the middle of it as soon as
+# anything earlier in the note changes its length. Matching the rendering rather than the
+# content makes an unrelated edit fail a test that is not about it.
+flat() { tr -s ' \n\t' ' ' <<<"$1"; }
 want "the note says the holder keeps its claim" "releases on its own exit path" \
-     "$(B show sp-orphan 2>/dev/null)"
+     "$(flat "$(B show sp-orphan 2>/dev/null)")"
+# AND IT NAMES WHAT CHARGED IT. "Three attempts" is only a reason to stop if all three were
+# the work failing, so a poison that cannot say which outcomes charged it removes a bead from
+# circulation for reasons that have already scrolled away. These rungs carry no cause, and
+# `unrecorded` is the honest reading of that rather than a guess about what they were.
+want "and names the outcomes that charged it" "charged by: 3#unrecorded" \
+     "$(flat "$(B show sp-orphan 2>/dev/null)")"
 
 # ...and once the holder lets go, CHECK 7 declines to summon for it. The pair is the point:
 # the same fixture with the label cleared IS summoned for, so a green result here cannot be

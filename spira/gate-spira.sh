@@ -118,8 +118,15 @@ run() {                  # run <suite> — its output only when it matters
 # whether its matcher fires or never could, so the fence alone would be a green light nobody
 # had tested; this plants an offender of each shape and requires it to be named. Under a
 # second, no database.
+#
+# THE SIXTH IS THE POISON COUNTER'S OWN, and it is here because poison is the one piece of
+# state the pipeline writes that nothing undoes on its own. A bead wrongly poisoned is not
+# retried, not reported and not claimable, so the failure is silent by construction — and the
+# counter charged for worker deaths and rate-limit refusals for as long as nobody was reading
+# it. The suite pins the charging rule to default-deny and pins the counter to one door; both
+# are properties an edit can remove without anything failing.
 for s in spira/test-soak.sh spira/test-poison.sh spira/test-aeon-verdict.sh spira/test-watchtower.sh \
-         spira/test-hermetic.sh; do
+         spira/test-hermetic.sh spira/test-attempts.sh; do
     [ -r "$s" ] || { say "$s is missing — refusing to report a pass without it"; exit 1; }
     run "$s"
 done
