@@ -393,12 +393,39 @@ print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
             return 0
         fi
         if ! gate_out="$("$SPIRA_HOME/gate.sh" "$br" "$name" 2>&1)"; then
-            bead_reopen "$id" "Reopened by sentinel: branch $br failed $name's landing gate.
+            # ADVISORY MODE — the gate reports, the work lands anyway.
+            #
+            # The operator's call, 2026-09-07, after two days in which nothing shipped:
+            # "get shit landing, or remove the gates entirely. i would rather have broken
+            # software i can fix quickly than 'working' software that i can't iterate on for
+            # a whole fucking day."
+            #
+            # A blocking gate is only worth its cost while its red means THIS BRANCH is
+            # broken. Across that stall every red was a fact about the box or about main —
+            # a hardcoded path failing the inventory fence, concurrent fixture builds
+            # colliding on one migration lock, an order-dependent assertion — and each one
+            # reopened a finished bead and charged it an attempt. A gate in that state is not
+            # protecting the base branch; it is a random number generator that costs an aeon.
+            #
+            # SO IT STILL RUNS AND STILL SPEAKS. Advisory is not "off": the verdict is
+            # recorded on the bead and in the log, so the failures stay visible and stay
+            # fixable. What changes is that a red no longer un-does finished work.
+            #
+            # Turn it back into a wall with SPIRA_GATE_ADVISORY=0 in spira.conf, which is
+            # where this belongs the moment its red is trustworthy again.
+            if [ "${SPIRA_GATE_ADVISORY:-0}" = 1 ]; then
+                bdq note "$id" "ADVISORY: branch $br failed $name's landing gate, and was landed anyway (SPIRA_GATE_ADVISORY=1).
+
+$(printf '%s' "$gate_out" | tail -20)" >/dev/null 2>&1
+                log "CHECK6 $id: gate FAILED but advisory mode is on — landing anyway: $(printf '%s' "$gate_out" | tail -3 | tr '\n' ' ')"
+            else
+                bead_reopen "$id" "Reopened by sentinel: branch $br failed $name's landing gate.
 
 $(printf '%s' "$gate_out" | tail -20)"
-            progress "reopened $id — failed the gate"
-            log "CHECK6 $id: gate output — $(printf '%s' "$gate_out" | tail -3 | tr '\n' ' ')"
-            continue
+                progress "reopened $id — failed the gate"
+                log "CHECK6 $id: gate output — $(printf '%s' "$gate_out" | tail -3 | tr '\n' ' ')"
+                continue
+            fi
         fi
 
         case "$mode" in

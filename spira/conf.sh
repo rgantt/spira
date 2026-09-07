@@ -65,7 +65,7 @@ SPIRA_FAYTHS SPIRA_MAX_AEONS
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
 SPIRA_ARCHIVE
 SPIRA_ARCHIVIST_AT SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
-SPIRA_TESTDB_LIB SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT
+SPIRA_TESTDB_LIB SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT SPIRA_GATE_ADVISORY
 "
 
 # --------------------------------------------------------------------------------------
@@ -282,6 +282,13 @@ spira_conf_defaults() {
     # only, it could not be raised without editing the harness — a host tuning knob that no
     # host could turn.
     : "${SPIRA_LAND_MAXSEC:=3600}"
+    # ADVISORY GATE — 1 runs the gate, records the verdict, and lands the work anyway.
+    # For the state where the gate's red says more about the box than about the branch:
+    # across 2026-09-06/07 every red was a hardcoded path, a fixture collision or an
+    # order-dependent assertion, and each one reopened finished work and charged it an
+    # attempt. Default 0 — a wall — because that is what a gate is for once its red is
+    # trustworthy. This is the knob to turn, not a reason to delete the gate.
+    : "${SPIRA_GATE_ADVISORY:=0}"
     : "${SPIRA_LAND_GATE_RESERVE:=1200}"
     # ---- THE READ SURFACE OVER THE LIVE GRAPH ------------------------------------------
     # Where Loom listens. Localhost is the default because a bead carries internal working
@@ -487,7 +494,7 @@ export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin
 export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIRA_PATH SPIRA_GOAL \
        SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL \
        SPIRA_CI_LABEL SPIRA_CI_PARK_MAX \
-       SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT \
+       SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT SPIRA_GATE_ADVISORY \
        SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE \
        SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
