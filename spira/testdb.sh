@@ -43,18 +43,22 @@
 # over metadata.json, so reading metadata alone would connect the fixtures somewhere bd would
 # not.
 TESTDB_HOST="${TESTDB_HOST:-127.0.0.1}"
-TESTDB_PORT="${TESTDB_PORT:-$(python3 -c '
-import json, sys
-db = sys.argv[1]
-for f, get in ((db + "/.beads/dolt-server.port", lambda h: int(h.read().strip())),
-               (db + "/.beads/metadata.json", lambda h: json.load(h)["dolt_server_port"])):
-    try:
-        print(get(open(f))); break
-    except Exception:
-        continue
-else:
-    print(3307)' "$SPIRA_DB" 2>/dev/null)}"
-[ -n "$TESTDB_PORT" ] || TESTDB_PORT=3307
+# THE FIXTURE SERVER IS NOT THE PRODUCTION SERVER, and that is the whole point of this block.
+#
+# This used to resolve the port from $SPIRA_DB/.beads — Spira's own store — so every fixture
+# was a database alongside the real ones. Measured 2026-09-07: a build cost 6s against an
+# empty server and 84s against production, because production carries nine real databases and
+# whatever fixtures earlier runs leaked into it. Leaks were the compounding part: a suite
+# killed by `timeout`, a stopped unit or a slain aeon never runs its trap, twenty-four had
+# accumulated, and the age-based sweep that reclaimed them ran on every build — ~144 DROP
+# DATABASE for six concurrent builds, against the server those builds were migrating on. That
+# pushed them past the server's read timeout, killed connections mid-migration as `no root
+# value found in session`, and made the gate fall back to 36 individual builds.
+#
+# Now they land on a server whose store is disposable, so a leak costs disk and nothing else.
+# SPIRA_TESTDB_PORT is read through conf.sh so a host can move it; the literal default exists
+# because this file is sourced by suites that do not load conf.sh.
+TESTDB_PORT="${TESTDB_PORT:-${SPIRA_TESTDB_PORT:-3308}}"
 TESTDB_BD="${TESTDB_BD:-bd}"
 # Preserved if already set, so a caller that built a shared fixture and exported it is not
 # erased by the act of sourcing this file. Blanking these unconditionally is what made the
@@ -85,7 +89,12 @@ testdb_require() {       # testdb_require <suite-name>
     testdb_available && return 0
     printf 'SKIP %s: no Dolt server at %s:%s — these suites run against a real bd.\n' \
         "$1" "$TESTDB_HOST" "$TESTDB_PORT" >&2
-    printf '  start it with: bd -C %s dolt start\n' "$SPIRA_DB" >&2
+    # NAME THE FIXTURE SERVER, not Spira's. The old text pointed at `bd -C $SPIRA_DB dolt
+    # start`, which starts the PRODUCTION server — so a developer following it on a box where
+    # only the fixture server was down would start the wrong thing, see the suite still skip,
+    # and have no idea why.
+    printf '  start it with: systemctl --user start dolt-beads-test.service\n' >&2
+    printf '  its store is disposable: %s\n' "${SPIRA_TESTDB_DATA:-/workspaces/beads-test}" >&2
     exit 77
 }
 

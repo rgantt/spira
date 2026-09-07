@@ -82,10 +82,10 @@ fi
 # on argv rather than reading an environment that will not have them.
 render() {
     python3 - "$1" "$SPIRA_HOME" "$SPIRA_REPO" "$SPIRA_RUN" "$SPIRA_DB" "$SPIRA_COCKPIT" \
-                   "$SPIRA_DOLT_DATA" "$DOLT" <<'PY'
+                   "$SPIRA_DOLT_DATA" "$SPIRA_TESTDB_DATA" "$DOLT" <<'PY'
 import os, re, sys
 keys = ["SPIRA_HOME", "SPIRA_REPO", "SPIRA_RUN", "SPIRA_DB", "SPIRA_COCKPIT",
-        "SPIRA_DOLT_DATA", "DOLT"]
+        "SPIRA_DOLT_DATA", "SPIRA_TESTDB_DATA", "DOLT"]
 m = dict(zip(keys, sys.argv[2:]))
 text = open(sys.argv[1]).read()
 out = re.sub(r"@([A-Z_]+)@", lambda x: m.get(x.group(1), x.group(0)), text)

@@ -158,11 +158,20 @@ if . spira/testdb.sh 2>/dev/null && testdb_up gate >/dev/null 2>&1; then
     # The owner drops it: TESTDB_SHARED is cleared first so testdb_drop stops being a no-op.
     trap 'TESTDB_SHARED=0 testdb_drop >/dev/null 2>&1' EXIT
 else
-    # A fixture that could not be built is not a pass, and it is not a skip either. Suites fall
-    # back to building their own, which is slow but correct; what must not happen is the gate
-    # quietly running fewer of them.
-    echo "gate: could not build a shared fixture — suites will build their own" >&2
-    unset TESTDB_SHARED
+    # A FIXTURE THAT COULD NOT BE BUILT ABORTS THE GATE. It is not a pass and not a skip, and
+    # it is emphatically not a licence to let 36 suites each build their own: `bd init` holds a
+    # schema-migration lock, so the fallback took the one contended operation and did it
+    # thirty-six more times. Measured 2026-09-07, that is what turned a 776s gate into one that
+    # could not finish at all, stranding aeons and taking the landing leg down for six hours.
+    #
+    # Aborting costs one gate run and says why. Degrading cost a day, and said "could not build
+    # a shared fixture" once, in the middle of output nobody reads until something is already
+    # wrong (law-alerts-must-be-actionable). testdb_up now serialises on flock, so reaching
+    # here means the lock could not be taken in ten minutes or the init genuinely failed —
+    # both of which are facts about this box that a gate must report rather than work around.
+    echo "gate: could not build the shared fixture — refusing to run 36 individual builds against the same lock" >&2
+    echo "gate: see testdb_up's output above; the fixture lock is ${SPIRA_RUN:-/tmp}/testdb-init.lock" >&2
+    exit 1
 fi
 
 skipped=0

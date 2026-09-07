@@ -56,6 +56,7 @@ SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER SPIRA_
 SPIRA_ACTIONABLE SPIRA_ID_PREFIX SPIRA_HEALTH_TIMEOUT SPIRA_ANSWER_STATE
 SPIRA_COCKPIT SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
 SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
+SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
@@ -64,7 +65,7 @@ SPIRA_FAYTHS SPIRA_MAX_AEONS
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
 SPIRA_ARCHIVE
 SPIRA_ARCHIVIST_AT SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
-SPIRA_TESTDB_LIB
+SPIRA_TESTDB_LIB SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT
 "
 
 # --------------------------------------------------------------------------------------
@@ -264,6 +265,20 @@ spira_conf_defaults() {
     # your CI is slower, and set it to 0 to disable the deadline, which reinstates the
     # permanent invisible park and should be a deliberate choice.
     : "${SPIRA_CI_PARK_MAX:=5400}"
+    # THE TEST FIXTURE SERVER, which is deliberately NOT the one holding real data. Fixtures
+    # on the production server leaked into it, slowed it as they piled up, and made their own
+    # cleanup a storm; a fixture build measured 6s against an empty server and 84s against
+    # production. This store is disposable — wiping it costs nothing but the next build.
+    : "${SPIRA_TESTDB_DATA:=/workspaces/beads-test}"
+    : "${SPIRA_TESTDB_PORT:=3308}"
+    # HOW LONG A LANDING PASS MAY RUN, and how much of that it keeps in reserve so it never
+    # begins a gate it cannot finish. Settable because the right number is a fact about this
+    # host's gate: 1800 was correct until the spira gate reached 776s, after which four
+    # consecutive passes were killed mid-gate having landed nothing. Read from the environment
+    # only, it could not be raised without editing the harness — a host tuning knob that no
+    # host could turn.
+    : "${SPIRA_LAND_MAXSEC:=3600}"
+    : "${SPIRA_LAND_GATE_RESERVE:=1200}"
     # ---- THE READ SURFACE OVER THE LIVE GRAPH ------------------------------------------
     # Where Loom listens. Localhost is the default because a bead carries internal working
     # notes and the operator's own judgement, so the address it is reachable at is a
@@ -468,6 +483,8 @@ export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin
 export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIRA_PATH SPIRA_GOAL \
        SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL \
        SPIRA_CI_LABEL SPIRA_CI_PARK_MAX \
+       SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT \
+       SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE \
        SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \
