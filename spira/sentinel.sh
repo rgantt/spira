@@ -274,8 +274,7 @@ while IFS=$'\t' read -r id r_name superseded; do
         if git -C "$r_path" show-ref --verify -q "refs/heads/spira/$id"; then
             continue   # work exists on a branch; CHECK 6 lands it
         fi
-        bdq reopen "$id" >/dev/null 2>&1
-        bdq note "$id" "Reopened by sentinel: closed, but no commit on ${subj_base:-the base} or on spira/$id names it in $r_name. Closed is not landed." >/dev/null 2>&1
+        bead_reopen "$id" "Reopened by sentinel: closed, but no commit on ${subj_base:-the base} or on spira/$id names it in $r_name. Closed is not landed."
         progress "reopened $id — closed without landing"
     fi
 done < <(

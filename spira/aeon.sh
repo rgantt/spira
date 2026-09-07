@@ -587,7 +587,6 @@ if grep -qF "$BEAD_ID" <<< "$subjects"; then committed=yes; else committed=no; f
 log "$FAYTH: $BEAD_ID status=$st committed=$committed"
 
 if [ "$st" = "closed" ] && [ "$committed" = "no" ]; then
-    bdq reopen "$BEAD_ID" >/dev/null 2>&1
-    bdq note "$BEAD_ID" "Reopened by aeon.sh: closed without a commit naming $BEAD_ID on $BRANCH. Closed is not landed." >/dev/null 2>&1
+    bead_reopen "$BEAD_ID" "Reopened by aeon.sh: closed without a commit naming $BEAD_ID on $BRANCH. Closed is not landed."
     log "$FAYTH: $BEAD_ID REOPENED — closed with nothing committed"
 fi

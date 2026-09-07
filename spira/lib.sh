@@ -161,6 +161,23 @@ fayth_ready() {          # fayth_ready <fayth> -> claimable beads under ITS OWN 
       ready_count "${FAYTH_LABELS:-}" "${FAYTH_EXCLUDE_LABELS:-}" )
 }
 
+# bead_reopen <id> <note> — hand a bead back to the graph so the NEXT aeon can claim it.
+#
+# REOPENING IS NOT ENOUGH. `bd reopen` keeps the assignee, and `bd ready --claim` skips any
+# bead that has one even though `bd ready` lists it — so a bead reopened by the landing
+# pass (a rebase conflict, a red gate) or by the aeon's own closed-without-commit check went
+# back into the graph wearing a dead aeon's name and was never claimed again. Seven sat that
+# way for four to eight hours at P0 while aeons took P1 work around them, and every one of
+# the 23 reopens the landing log holds had the same defect. Clearing the assignee is what
+# makes a reopen a reopen; it is done here so no site can forget it.
+bead_reopen() {
+    local id="$1" note="${2:-}"
+    bdq reopen "$id" >/dev/null 2>&1
+    bdq update "$id" --assignee "" >/dev/null 2>&1
+    [ -n "$note" ] && bdq note "$id" "$note" >/dev/null 2>&1
+    return 0
+}
+
 fayth_free() {           # fayth_free <fayth> -> free concurrency slots, never negative
     local f="$1" max have budget
     max="$(fayth_get "$f" FAYTH_MAX_CONCURRENT 1)"; max="${max:-1}"

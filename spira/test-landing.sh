@@ -60,6 +60,10 @@ status_of() { B show "$1" --json 2>/dev/null | python3 -c '
 import json, sys
 d = json.load(sys.stdin); d = d if isinstance(d, list) else [d]
 print(d[0].get("status") or "")'; }
+assignee_of() { B show "$1" --json 2>/dev/null | python3 -c '
+import json, sys
+d = json.load(sys.stdin); d = d if isinstance(d, list) else [d]
+print(d[0].get("assignee") or "")'; }
 
 # The mailbox is drained by the sentinel in production, so each run here starts from empty —
 # otherwise every assertion after the first would be reading an earlier run's lines.
@@ -147,10 +151,17 @@ want   "while still reporting that it looked" "SP_LAND_BRANCHES=1"        "$(sta
 # is what is checked, not a note the fake kept: `bd reopen` is what landing calls, and
 # whether it took is a fact about bd rather than about this script.
 # --------------------------------------------------------------------------------------
-seed; branch sp-bad; out="$(GATE_RC=1 landing)"
+# THE DEAD AEON'S NAME COMES OFF. `bd reopen` keeps the assignee, and `bd ready --claim`
+# skips an assigned bead while `bd ready` still lists it — so a reopened bead that kept its
+# claimant's name went back into the graph unclaimable, and seven sat that way at P0 for
+# hours while P1 work was taken around them. The assignee here is the one the aeon that
+# closed it would have left behind.
+seed; branch sp-bad; B update sp-bad --assignee aeon-dead >/dev/null 2>&1
+out="$(GATE_RC=1 landing)"
 want "a failed gate reopens the bead"   "reopened sp-bad — failed the gate" "$out"
 want "and the reopen is a movement"     "reopened sp-bad"                   "$(mailbox)"
 is   "the reopen actually happened"     open                                "$(status_of sp-bad)"
+is   "and the dead claimant's name is gone, so it can be claimed again" "" "$(assignee_of sp-bad)"
 
 # ======================================================================================
 # ACROSS REPOSITORIES. The bead names its repository through a `repo:` label, so a branch
@@ -360,6 +371,7 @@ printf 'B\n' > "$RUN/worktree/sp-real/f.txt"
 git -C "$RUN/worktree/sp-real" add -A
 git -C "$RUN/worktree/sp-real" commit -q -m "feat: sp-real — second pass"
 closed_child sp-real nine
+B update sp-real --assignee aeon-dead >/dev/null 2>&1
 printf 'C\n' > "$TMP/nine/f.txt"
 git -C "$TMP/nine" add -A
 git -C "$TMP/nine" commit -q -m "somebody else's work"
@@ -370,6 +382,7 @@ git -C "$TMP/nine" fetch -q origin
 out="$(SPIRA_GH="$TMP/gh" landing)"
 want "a branch the base does not contain is still reopened" "reopened sp-real — does not rebase" "$out"
 is   "and its bead is open again"                           "open"  "$(status_of sp-real)"
+is   "and unassigned, so the rebase can be claimed"         ""      "$(assignee_of sp-real)"
 
 # A MERGED PULL REQUEST IS THE OTHER READING OF "ALREADY LANDED", and it is the one that
 # survives what the content test cannot: a squash that merged and was then amended on the

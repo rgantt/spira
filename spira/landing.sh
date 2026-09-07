@@ -328,8 +328,7 @@ print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
                 log "CHECK6 $id: $br does not rebase onto $base, but its pull request is merged — landed, not stuck"
                 continue
             fi
-            bdq reopen "$id" >/dev/null 2>&1
-            bdq note "$id" "Reopened by sentinel: $br does not rebase onto $base in $name; conflicts in ${REBASE_CONFLICTS:-unknown}. A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it." >/dev/null 2>&1
+            bead_reopen "$id" "Reopened by sentinel: $br does not rebase onto $base in $name; conflicts in ${REBASE_CONFLICTS:-unknown}. A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it."
             progress "reopened $id — does not rebase onto $base"
             continue
         fi
@@ -341,10 +340,9 @@ print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
         # distinguishes a branch's own fault from a repository whose gate fails against its
         # base; that distinction is worthless if it stops at a log nobody reads.
         if ! gate_out="$("$SPIRA_HOME/gate.sh" "$br" "$name" 2>&1)"; then
-            bdq reopen "$id" >/dev/null 2>&1
-            bdq note "$id" "Reopened by sentinel: branch $br failed $name's landing gate.
+            bead_reopen "$id" "Reopened by sentinel: branch $br failed $name's landing gate.
 
-$(printf '%s' "$gate_out" | tail -20)" >/dev/null 2>&1
+$(printf '%s' "$gate_out" | tail -20)"
             progress "reopened $id — failed the gate"
             log "CHECK6 $id: gate output — $(printf '%s' "$gate_out" | tail -3 | tr '\n' ' ')"
             continue
@@ -421,8 +419,7 @@ $(printf '%s' "$gate_out" | tail -20)" >/dev/null 2>&1
                 log "landing: $br merges clean but push kept losing the race — retrying next pass"
             else
                 git -C "$land" merge --abort 2>/dev/null
-                bdq reopen "$id" >/dev/null 2>&1
-                bdq note "$id" "Reopened by sentinel: branch $br conflicts with $base. A merge conflict is not an escalation — rebase and finish." >/dev/null 2>&1
+                bead_reopen "$id" "Reopened by sentinel: branch $br conflicts with $base. A merge conflict is not an escalation — rebase and finish."
                 progress "reopened $id — branch conflicts with $base"
             fi
             ;;
