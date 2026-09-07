@@ -384,7 +384,11 @@ def limits_dur(m):
     m = max(0, int(round(m)))
     if m < 60: return "%dm" % m
     h, mm = divmod(m, 60)
-    if h < 24: return "%dh%dm" % (h, mm) if mm else "%dh"
+    # BOTH ARMS FORMAT. `"%dh%dm" % (h, mm) if mm else "%dh"` reads as though the else-arm were
+    # a format too, but the conditional binds looser than `%`, so a whole number of hours
+    # returned the literal string and the meter rendered "resets in %dh". Every case in the
+    # suite used a duration with minutes in it, which is exactly the shape that hides this.
+    if h < 24: return "%dh%dm" % (h, mm) if mm else "%dh" % h
     return "%dd" % (h // 24)
 
 lim_samples, lim_broken = limits_load(lim_path)

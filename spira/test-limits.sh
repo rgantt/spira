@@ -387,6 +387,31 @@ is "and nothing unreadable was ever recorded as a sample" "absent" \
 
 # ==========================================================================================
 echo
+echo "durations render at every scale, including the round ones"
+# ==========================================================================================
+# A WHOLE NUMBER OF HOURS IS ITS OWN CASE. Every other projection here lands on a duration with
+# minutes in it — 1h30m, 1h20m, 3h52m — and that is precisely the shape under which a format
+# string that is never applied cannot be seen. An exact hour took the other arm and rendered
+# the literal "%dh" into the status line.
+#
+# Driven through a window that is already FULL, because that is the one clause whose duration
+# comes straight from the client's resets_at and can therefore be placed on an exact boundary.
+# The climbing cases cannot: their clause is whichever of fill and reset comes sooner, so asking
+# for a reset three days out silently gets a fill two hours out instead.
+dur() {                 # dur <minutes-to-reset> -> what the line calls that duration
+    rm -f "$SAMPLES"
+    feed "$EPOCH" 100 $((EPOCH + $1 * 60)) 41 $((EPOCH + 600000)) | strip \
+        | sed -n 's/.*5h 100% resets in \([^ ]*\).*/\1/p'
+}
+is "minutes alone under an hour"               "47m"   "$(dur 47)"
+is "an exact hour is formatted, not a literal"  "1h"    "$(dur 60)"
+is "hours and minutes together"                "1h30m" "$(dur 90)"
+is "an exact two hours"                         "2h"    "$(dur 120)"
+is "days once past a day"                       "3d"    "$(dur 4320)"
+hasnt "and no unexpanded format ever reaches the line" "$(dur 60)$(dur 120)$(dur 4320)" "%d"
+
+# ==========================================================================================
+echo
 echo "the line stays readable"
 # ==========================================================================================
 rm -f "$SAMPLES"
