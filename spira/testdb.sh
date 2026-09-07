@@ -94,7 +94,9 @@ testdb_require() {       # testdb_require <suite-name>
     # only the fixture server was down would start the wrong thing, see the suite still skip,
     # and have no idea why.
     printf '  start it with: systemctl --user start dolt-beads-test.service\n' >&2
-    printf '  its store is disposable: %s\n' "${SPIRA_TESTDB_DATA:-/workspaces/beads-test}" >&2
+    # THE KEY, with no literal fallback. conf.sh always sets it, and repeating a path here
+    # both duplicates the default and puts one operator's infrastructure in the repository.
+    printf '  its store is disposable: %s\n' "$SPIRA_TESTDB_DATA" >&2
     exit 77
 }
 

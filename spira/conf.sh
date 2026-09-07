@@ -269,7 +269,11 @@ spira_conf_defaults() {
     # on the production server leaked into it, slowed it as they piled up, and made their own
     # cleanup a storm; a fixture build measured 6s against an empty server and 84s against
     # production. This store is disposable — wiping it costs nothing but the next build.
-    : "${SPIRA_TESTDB_DATA:=/workspaces/beads-test}"
+    # DERIVED, never a literal. A hardcoded operator path here is refused by
+    # inventory.sh, which gate-spira.sh runs FIRST and independently of the suites — so
+    # one literal default made origin/main refuse every branch, including the branches
+    # that would have removed it (sp-2p7o, landed 14:15, blocked everything until 15:0x).
+    : "${SPIRA_TESTDB_DATA:=$SPIRA_WORKSPACES/beads-test}"
     : "${SPIRA_TESTDB_PORT:=3308}"
     # HOW LONG A LANDING PASS MAY RUN, and how much of that it keeps in reserve so it never
     # begins a gate it cannot finish. Settable because the right number is a fact about this
