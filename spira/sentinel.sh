@@ -348,6 +348,18 @@ for i in (d if isinstance(d, list) else [d]):
 # a `simple` service, which is what systemd-run creates; TimeoutStartSec would be ignored.
 # ======================================================================================
 LAND_UNIT="${SPIRA_LAND_UNIT:-spira-landing}"
+# THE CAP IS SIZED AGAINST THE GATE, AND THE WORKER IS TOLD WHAT IT IS. At 1800s this leg
+# could not finish a single pass once anything closed: a full spira gate measured 776s cold
+# on 2026-09-07 and far more under contention, so four consecutive passes were SIGTERMed
+# mid-gate having moved nothing while two closed beads waited and the base ref went six hours
+# without a commit. It was invisible until then because a pass with nothing to land finishes
+# in under twenty seconds, so the cap was only ever approached on the one path that matters.
+#
+# Raising it is half the fix and the weaker half — a bigger number just moves the cliff. The
+# other half is in landing.sh, which now refuses to BEGIN a gate it has not time to finish,
+# so a pass ends cleanly and its successor continues rather than restarting the same gate
+# forever. That is why the worker is given the number rather than left to guess it.
+LAND_MAXSEC="${SPIRA_LAND_MAXSEC:-3600}"
 LAND_STALE="${SPIRA_LAND_STALE:-1800}"      # seconds; a leg quieter than this is broken
 LAND_STATUS="$SPIRA_RUN/landing.status"
 LAND_MAILBOX="$SPIRA_RUN/landing.progress"
@@ -437,7 +449,7 @@ if land_active; then
     log "CHECK6: a landing is already in flight — this pass does not start another"
 elif "${SPIRA_LAUNCH:-systemd-run}" --user --collect --quiet \
         --unit="$LAND_UNIT" \
-        --property=RuntimeMaxSec="${SPIRA_LAND_MAXSEC:-1800}" \
+        --property=RuntimeMaxSec="$LAND_MAXSEC" \
         --property=CPUQuota=40% --property=Nice=10 \
         --property=StandardOutput="append:$SPIRA_RUN/landing.log" \
         --property=StandardError="append:$SPIRA_RUN/landing.log" \
@@ -447,6 +459,7 @@ elif "${SPIRA_LAUNCH:-systemd-run}" --user --collect --quiet \
         --setenv=SPIRA_REPO_MAP="$SPIRA_REPO_MAP" \
         --setenv=SPIRA_HOME_REPO="$(spira_home_repo)" \
         --setenv=SPIRA_BD="${SPIRA_BD:-bd}" --setenv=SPIRA_GH="${SPIRA_GH:-gh}" \
+        --setenv=SPIRA_LAND_MAXSEC="$LAND_MAXSEC" \
         "$SPIRA_HOME/landing.sh" 2>/dev/null
 then
     log "CHECK6: landing dispatched as $LAND_UNIT"

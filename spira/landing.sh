@@ -84,6 +84,37 @@ finish() {
 trap finish EXIT
 trap 'exit 143' TERM INT
 
+# ======================================================================================
+# NEVER START A GATE THIS PASS CANNOT FINISH.
+#
+# systemd cuts this worker off at RuntimeMaxSec. A pass killed mid-gate keeps every branch it
+# already pushed — a push is durable and `finish` records the count on the TERM path — so the
+# cap never lost work. What it did was worse in a quieter way: the pass restarts from the top
+# next time, re-gates the SAME branch from scratch, and is killed at the same point. Measured
+# 2026-09-07, four consecutive passes exited 143 having moved nothing, while two closed beads
+# sat unlanded and the base ref went six hours without a commit. Zero progress, forever, with
+# every pass looking merely slow.
+#
+# The cap alone cannot fix that: raising it moves the cliff to wherever the next slow gate is.
+# What removes the loop is refusing to BEGIN a gate there is not time to finish, so a pass
+# always ends cleanly, always keeps what it landed, and always hands the rest to its successor.
+#
+# The reserve is deliberately generous. Under-reserving costs a whole pass; over-reserving
+# costs one branch's turn, and the next pass is two minutes away.
+PASS_START="$(date +%s)"
+LAND_MAXSEC="${SPIRA_LAND_MAXSEC:-3600}"     # what the dispatcher gave us, or the same default
+LAND_GATE_RESERVE="${SPIRA_LAND_GATE_RESERVE:-1200}"
+
+# gate_fits -> 0 if there is room for another gate in this pass, 1 if the pass should stop.
+# ZERO OR NEGATIVE MEANS NO LIMIT, which is how a hand-run pass (no RuntimeMaxSec at all)
+# behaves: an operator draining a backlog must not be told there is no time left by a budget
+# that is not being enforced on them.
+gate_fits() {
+    [ "${LAND_MAXSEC:-0}" -gt 0 ] 2>/dev/null || return 0
+    local spent=$(( $(date +%s) - PASS_START ))
+    [ $(( LAND_MAXSEC - spent )) -ge "$LAND_GATE_RESERVE" ]
+}
+
 log "landing: starting a pass over [$(spira_repos | tr '\n' ' ')]"
 
 # ======================================================================================
@@ -339,6 +370,13 @@ print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
         # poisons and reaches the operator with a reason that is not a reason. The gate already
         # distinguishes a branch's own fault from a repository whose gate fails against its
         # base; that distinction is worthless if it stops at a log nobody reads.
+        # The budget check sits HERE, immediately before the only expensive call in the
+        # loop, rather than at the top of the pass: everything above is cheap, and a branch
+        # that needs no gate should still be processed in the tail of a pass.
+        if ! gate_fits; then
+            log "landing: $(( LAND_MAXSEC - ($(date +%s) - PASS_START) ))s left in this pass — not starting $name's gate for $id; the next pass takes it"
+            return 0
+        fi
         if ! gate_out="$("$SPIRA_HOME/gate.sh" "$br" "$name" 2>&1)"; then
             bead_reopen "$id" "Reopened by sentinel: branch $br failed $name's landing gate.
 

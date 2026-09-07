@@ -453,5 +453,78 @@ is     "and leaves the branch exactly as it was" "$before" "$(git -C "$TMP/seven
 want "the status file is written from an EXIT trap" "trap finish EXIT" "$(cat "$HERE/landing.sh")"
 want "and a systemd kill routes through it"         "trap 'exit 143' TERM INT" "$(cat "$HERE/landing.sh")"
 
+# --------------------------------------------------------------------------------------
+# THE PASS NEVER STARTS A GATE IT CANNOT FINISH.
+#
+# systemd cuts this worker off at RuntimeMaxSec. A pass killed mid-gate keeps what it pushed,
+# so nothing was ever lost -- but it restarts from the top next time, re-gates the SAME branch,
+# and dies at the same point. Measured 2026-09-07: four consecutive passes exited 143 having
+# moved nothing while two closed beads waited and the base ref went six hours without a commit.
+# Zero progress, forever, with every pass looking merely slow.
+#
+# The budget is what breaks that loop, so it is asserted on the SEEN behaviour -- the gate stub
+# records whether it ran -- and not on the log line alone.
+# --------------------------------------------------------------------------------------
+echo
+echo "the gate budget -- a pass that cannot finish a gate does not begin one:"
+# Each case gets a FRESH repo and a fresh bead. Reusing one branch across three passes made
+# the second pass rebase a branch the first had already left a worktree for, and the reopen
+# that produced looked like a budget failure -- a fixture artefact wearing the shape of the
+# bug under test.
+RAN="$RUN/gate-ran"
+bud_case() {             # bud_case <id> -> a fresh repo `eight` holding one closed bead
+    # The landing worktree is registered against the repo being deleted, so it must go too:
+    # a stale .landing.eight pointing at a repository that no longer exists makes the NEXT
+    # case's rebase conflict, which reads exactly like the budget failing.
+    rm -rf "$TMP/eight" "$TMP/eight.git" "$RUN/worktree/$1" \
+           "$RUN/worktree/.landing.eight" "$RUN/worktree/.gate.eight"
+    git init -q --bare "$TMP/eight.git"; git init -q "$TMP/eight"
+    git -C "$TMP/eight" -c user.email=a@a -c user.name=a commit -q --allow-empty -m base
+    git -C "$TMP/eight" branch -M main
+    git -C "$TMP/eight" remote add origin "$TMP/eight.git"
+    git -C "$TMP/eight" push -q origin main; git -C "$TMP/eight" fetch -q origin
+    cat > "$SH/repo-map" <<MAP
+eight | $TMP/eight | push | origin/main | |
+MAP
+    seed; closed_child "$1" eight; branch_in "$TMP/eight" "$1" eight
+    rm -f "$RAN"
+}
+# The stub leaves a footprint, so "did the gate run" is observed rather than inferred.
+# $SPIRA_RUN, not $RUN: landing.sh hands the gate an explicit environment and RUN is not in
+# it, so the footprint silently landed at /gate-ran and the case read as "the gate never ran".
+stub gate.sh 'echo ran >> "$SPIRA_RUN/gate-ran"; exit ${GATE_RC:-0}'
+
+# NO BUDGET LEFT. MAXSEC is tiny, so the reserve cannot fit: the branch is deferred to the
+# next pass untouched, still closed, and the gate is never invoked.
+bud_case sp-bud1; before="$(git -C "$TMP/eight" rev-parse origin/main)"
+out="$(SPIRA_LAND_MAXSEC=1 SPIRA_LAND_GATE_RESERVE=1200 landing)"
+want   "it says it is out of time for this pass"       "not starting" "$out"
+is     "and the gate was never invoked"                ""        "$(cat "$RAN" 2>/dev/null)"
+is     "and origin/main did not move"                  "$before" "$(git -C "$TMP/eight" rev-parse origin/main)"
+is     "and the bead is left closed for the next pass" "closed"  "$(status_of sp-bud1)"
+
+# ROOM TO WORK. Without this the case above would pass just as well against a landing that
+# never gates anything at all.
+bud_case sp-bud2
+out="$(SPIRA_LAND_MAXSEC=3600 SPIRA_LAND_GATE_RESERVE=1200 landing)"
+want   "with room, the gate runs"                      "ran"     "$(cat "$RAN" 2>/dev/null)"
+want   "and the branch lands"                          "landed spira/sp-bud2" "$out"
+
+# A HAND-RUN PASS HAS NO CAP AND MUST NOT INVENT ONE. An operator draining a backlog runs this
+# with no RuntimeMaxSec at all; a budget that refused to work because it could not see a limit
+# would disable the manual escape hatch -- which is the hatch this very defect needed.
+bud_case sp-bud3
+out="$(SPIRA_LAND_MAXSEC=0 landing)"
+want   "an uncapped pass gates regardless"             "ran"     "$(cat "$RAN" 2>/dev/null)"
+nowant "and never claims to be out of time"            "not starting" "$out"
+
+stub gate.sh 'exit ${GATE_RC:-0}'
+
+# The cap must remain a RUNTIME bound and never become a load fence: raising one to fix
+# landing must not hand the box more CPU (law-fence-loops-on-shared-hardware).
+want "the dispatcher still fences the leg at 40% CPU" "CPUQuota=40%" "$(cat "$HERE/sentinel.sh")"
+want "and sizes the cap from SPIRA_LAND_MAXSEC"       'RuntimeMaxSec="$LAND_MAXSEC"' "$(cat "$HERE/sentinel.sh")"
+want "and tells the worker what the cap is"           "setenv=SPIRA_LAND_MAXSEC" "$(cat "$HERE/sentinel.sh")"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
