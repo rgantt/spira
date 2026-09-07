@@ -144,12 +144,23 @@ out="$(rungate spira/good SPIRA_GATE_LOCK_WAIT=1)"; rc=$?
 want "and says there is no verdict" "no verdict" "$out"
 want "and says it is a queue, not the branch's fault" "not a fault in the branch" "$out"
 is "and the gate command never ran" "" "$(cat "$RAN")"
+# "NO VERDICT" MUST BE TELLABLE FROM "FAILED" BY EXIT STATUS ALONE, because that is all its
+# caller has: the landing pass reopens a bead on a red gate, and a queue read as red charges
+# the wait to a branch that was never judged. Asserted against the branch that really does
+# fail, so this pins the two apart rather than pinning one number.
+is "the withheld verdict has its own exit status" 75 "$rc"
+noverdict_rc=$rc
 # THE REFUSAL IS THE READING THE METER EXISTS FOR — a run that waited its whole budget and
 # judged nothing is what says the lock has stopped being enough, so a meter that drops it is
 # blind exactly where it is needed.
-want "and the refusal is metered as a lock-timeout" "rc=1 lock-timeout" "$(meter)"
+want "and the refusal is metered as a lock-timeout" "rc=75 lock-timeout" "$(meter)"
 want "with nothing recorded as having run" "ran=0s" "$(grep lock-timeout "$GATELOG")"
 wait $holder 2>/dev/null
+# PINNED APART FROM A REAL FAILURE, not merely pinned to a number — run once the holder has
+# gone, so this run is judged rather than queued behind it.
+rungate spira/bad >/dev/null 2>&1; redrc=$?
+[ "$redrc" -ne "$noverdict_rc" ] && ok "and a branch that genuinely fails does not share it" \
+    || bad "and a branch that genuinely fails does not share it" "both exited $noverdict_rc"
 
 echo "a tree that cannot be identified is refused, not judged"
 # CONTROL FIRST: the same pre-positioned tree, with real git, is checked out and judged.

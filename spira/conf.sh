@@ -506,6 +506,21 @@ export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin
 # in-process, and exporting SPIRA_FAYTHS is the scar that statute is named for — it reached a
 # test suite through systemd and made the suite assert the host's roster instead of the
 # defaults it was written to check.
+
+# --------------------------------------------------------------------------------------
+# THE EXIT STATUS THAT MEANS "NO VERDICT", as opposed to "failed". The landing gate withholds
+# a verdict when it cannot obtain the tree it judges in, and a caller that reads that as a red
+# gate charges a queue to the branch — reopening a finished bead as having "failed the landing
+# gate", three of which poison it and escalate to the operator over a lock it never contended
+# for. It is a shared constant rather than a literal in the gate and again in its caller,
+# because two programs that disagree about this number fail in exactly that direction.
+#
+# DELIBERATELY NOT SETTABLE, and so not in SPIRA_CONF_KEYS: it is the protocol between the
+# gate and whoever runs it, not a fact about a host. A configurable one could be set to 0,
+# which would turn every withheld verdict into a pass. 75 is EX_TEMPFAIL — "try again" —
+# and is outside the range a gate command of its own would return.
+SPIRA_GATE_NOVERDICT=75
+
 # --------------------------------------------------------------------------------------
 export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIRA_PATH SPIRA_GOAL \
        SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL \
@@ -515,6 +530,7 @@ export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIR
        SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \
+       SPIRA_GATE_NOVERDICT \
        SPIRA_CONF_FILE
 
 # --------------------------------------------------------------------------------------

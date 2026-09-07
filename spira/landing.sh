@@ -125,6 +125,19 @@ gate_fits() {
     [ $(( LAND_MAXSEC - spent )) -ge "$LAND_GATE_RESERVE" ]
 }
 
+# gate_lock_wait -> how long this pass may wait for a repository's gate tree, in seconds.
+#
+# THE RESERVE IS FOR RUNNING THE GATE, NOT FOR QUEUING TO START IT. gate_fits has just
+# guaranteed LAND_GATE_RESERVE seconds remain; spending them waiting on a lock would burn a
+# whole pass to land nothing, so the wait gets a slice and the run keeps the rest. A pass with
+# no limit at all still does not wait forever here — an operator draining a backlog wants the
+# branches whose trees are free, not a pass parked on the first one that is not.
+gate_lock_wait() {
+    local slice=$(( LAND_GATE_RESERVE / 10 ))
+    [ "$slice" -lt 30 ] && slice=30
+    echo "$slice"
+}
+
 log "landing: starting a pass over [$(spira_repos | tr '\n' ' ')]"
 
 # ======================================================================================
@@ -420,7 +433,26 @@ print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
             log "landing: $(( LAND_MAXSEC - ($(date +%s) - PASS_START) ))s left in this pass — not starting $name's gate for $id; the next pass takes it"
             return 0
         fi
-        if ! gate_out="$("$SPIRA_HOME/gate.sh" "$br" "$name" 2>&1)"; then
+        # THE GATE'S TREE IS SHARED WITH EVERY OTHER GATE OF THIS REPOSITORY, so it may be
+        # busy, and a pass on a clock must not sit in that queue: the wait is capped at what
+        # this pass can spare rather than the gate's own default, which is longer than a whole
+        # pass. Waiting it out would land nothing and be killed mid-gate for the privilege.
+        gate_out="$(SPIRA_GATE_LOCK_WAIT="$(gate_lock_wait)" "$SPIRA_HOME/gate.sh" "$br" "$name" 2>&1)"
+        gate_rc=$?
+        # A WITHHELD VERDICT IS NOT A FAILED ONE. The gate judged nothing, so there is nothing
+        # to charge the branch with; reopening it here would say it "failed the landing gate",
+        # and three of those poison the bead and escalate to the operator about a lock. The
+        # branch keeps its turn and the next pass, two minutes away, takes it.
+        #
+        # This is checked BEFORE advisory mode and is not subject to it. Advisory exists so a
+        # red gate cannot un-do finished work; a withheld verdict un-does nothing, it defers by
+        # one pass. Landing on it instead would also blind the lock meter below, which is the
+        # instrument that says when serialising the tree has stopped being enough.
+        if [ "$gate_rc" -eq "$SPIRA_GATE_NOVERDICT" ]; then
+            log "CHECK6 $id: $name's gate tree was busy — no verdict on $br this pass; the next pass takes it"
+            continue
+        fi
+        if [ "$gate_rc" -ne 0 ]; then
             # ADVISORY MODE — the gate reports, the work lands anyway.
             #
             # The operator's call, 2026-09-07, after two days in which nothing shipped:

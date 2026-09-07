@@ -169,17 +169,23 @@ gate_meter() {           # gate_meter <exit-status> [<note>]
 # for two full gate timeouts — the branch's trial, then the same command against the base to
 # establish whose fault a failure is — so a wait shorter than twice the timeout would time
 # out against a single healthy holder and report that as a refusal.
+#
+# A CALLER THAT IS ITSELF ON A CLOCK MUST SET THIS DOWN to what it can afford. The default is
+# longer than a landing pass's whole budget, and a gate cannot know its caller's deadline, so
+# the caller passes one (`SPIRA_GATE_LOCK_WAIT`) rather than the gate guessing.
 GATE_LOCK_WAIT="${SPIRA_GATE_LOCK_WAIT:-$(( ${SPIRA_GATE_TIMEOUT:-900} * 4 ))}"
 GATE_WAIT0=$(date +%s)
 if ! flock -w "$GATE_LOCK_WAIT" 9; then
-    # METERED AS A REFUSAL, marked `lock-timeout` so it is not read as a branch that failed
-    # fast: `ran=0s` beside the full budget is what a queue too long for the lock looks like,
-    # and it is the reading that argues for a tree per branch.
+    # "NO VERDICT" IS ITS OWN EXIT STATUS, not a failure. A queued gate has judged nothing, so
+    # a caller that cannot tell it apart from a red gate charges the wait to the branch: the
+    # landing pass reopened the bead saying it "failed the landing gate", and three of those
+    # poison a bead and escalate to the operator over a lock it never contended for. The
+    # verdict is still withheld — a gate fails closed — but the blame is not the branch's.
     GATE_WAITED=$(( $(date +%s) - GATE_WAIT0 )); GATE_START=$(date +%s)
-    gate_meter 1 lock-timeout
+    gate_meter "$SPIRA_GATE_NOVERDICT" lock-timeout
     echo "gate: another gate has held $TREE for ${GATE_LOCK_WAIT}s — no verdict on $BR" >&2
     echo "gate: this is a queue, not a fault in the branch; retry, or raise SPIRA_GATE_LOCK_WAIT." >&2
-    exit 1
+    exit "$SPIRA_GATE_NOVERDICT"
 fi
 GATE_WAITED=$(( $(date +%s) - GATE_WAIT0 ))
 GATE_START=$(date +%s)

@@ -173,6 +173,25 @@ is   "the reopen actually happened"     open                                "$(s
 is   "and the dead claimant's name is gone, so it can be claimed again" "" "$(assignee_of sp-bad)"
 
 # --------------------------------------------------------------------------------------
+# A WITHHELD VERDICT IS NOT A FAILED ONE. The gate's tree is shared with every other gate of
+# that repository, so a gate may judge nothing and say so; charging that to the branch reopens
+# a finished bead as having "failed the landing gate", and three of those poison it and reach
+# the operator over a lock the work never contended for. The bead is left exactly as the aeon
+# left it — closed, so the next pass simply tries again.
+#
+# Asserted against GATE_RC=1 immediately above, which is the control: the same stub, one
+# status apart, must produce opposite outcomes. A case that only asserted "not reopened" would
+# pass just as well against a landing pass that had stopped gating at all.
+# --------------------------------------------------------------------------------------
+seed; branch sp-bad; B update sp-bad --assignee aeon-live >/dev/null 2>&1
+out="$(GATE_RC=75 landing)"
+want   "a withheld verdict says the tree was busy"  "no verdict on spira/sp-bad" "$out"
+nowant "and does not blame the branch"              "failed the gate"            "$out"
+is     "and the bead is left closed for the next pass" closed "$(status_of sp-bad)"
+is     "and its claimant is untouched"              aeon-live "$(assignee_of sp-bad)"
+is     "and nothing is reported as movement"        ""        "$(mailbox)"
+
+# --------------------------------------------------------------------------------------
 # ADVISORY MODE — the gate reports and the work lands anyway. Its whole purpose is to survive
 # a period when a red gate says more about the box than about the branch, so the property to
 # hold is narrow and easy to get wrong in either direction: the bead must NOT be reopened, the
