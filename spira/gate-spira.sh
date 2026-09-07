@@ -92,7 +92,15 @@ run() {                  # run <suite> — its output only when it matters
 # forever is a queue that has stopped moving, and it costs an Opus session every two minutes
 # while it does — which is more than every quality check this gate deleted was ever worth.
 # 13s.
-for s in spira/test-soak.sh spira/test-poison.sh spira/test-aeon-verdict.sh; do
+#
+# THE FOURTH IS THE WATCHTOWER'S OWN, and it earns its place by the same rule read the other
+# way round. A gate that breaks refuses good work, loudly; a DETECTOR that breaks reports the
+# stall and the healthy case identically, and the reassuring reading is the one it gives.
+# Detection is what this gate deferred to (law-detection-outranks-rejection), so the one
+# check the deleted 17 minutes cannot be traded for is that the detector can still read the
+# far end of the queue. Its headline field was unreadable from the day it shipped and woke
+# three Ops sessions before anyone looked at the bytes. Under a second, no database.
+for s in spira/test-soak.sh spira/test-poison.sh spira/test-aeon-verdict.sh spira/test-watchtower.sh; do
     [ -r "$s" ] || { say "$s is missing — refusing to report a pass without it"; exit 1; }
     run "$s"
 done
