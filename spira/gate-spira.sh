@@ -153,7 +153,23 @@ fi
 #
 # BUILT HERE, NOT IN THE SUITES, so a suite run on its own still builds its own and needs no
 # argument — the sharing is the gate's optimisation, not a precondition of the tests.
-if . spira/testdb.sh 2>/dev/null && testdb_up gate >/dev/null 2>&1; then
+# "NO FIXTURE IS NEEDED" IS NOT "NO FIXTURE COULD BE BUILT", and conflating them was one
+# `&&` wide. A tree with no fixture library made the source fail, the && short-circuit,
+# and control fall into the abort below — so a repository whose suites touch no database
+# was refused for failing to build something it never wanted. The refusal exists to stop a
+# stampede of real `bd init` calls against one schema-migration lock; a tree that builds
+# nothing cannot stampede.
+#
+# It cost test-gate-selection.sh, which drives the REAL gate over a synthetic tree carrying
+# no testdb.sh on purpose — it asserts which suites the gate INVOKES and stubs them so
+# nothing needs a database. Five assertions saw an empty list, on origin/main and on every
+# branch alike, so any change to a gate script or a shared file failed its landing gate for
+# a reason no branch caused (sp-vzje).
+#
+# Asked as aeon.sh asks it, with -f on the library path, so the two callers agree.
+if [ ! -f "${SPIRA_TESTDB_LIB:-spira/testdb.sh}" ]; then
+    echo "gate: this tree carries no ${SPIRA_TESTDB_LIB:-spira/testdb.sh} — its suites build no database, so there is no shared fixture to build" >&2
+elif . "${SPIRA_TESTDB_LIB:-spira/testdb.sh}" 2>/dev/null && testdb_up gate >/dev/null 2>&1; then
     export TESTDB_SHARED=1 TESTDB_NAME TESTDB_DIR TESTDB_BASELINE TESTDB_HOST TESTDB_PORT
     # The owner drops it: TESTDB_SHARED is cleared first so testdb_drop stops being a no-op.
     trap 'TESTDB_SHARED=0 testdb_drop >/dev/null 2>&1' EXIT
