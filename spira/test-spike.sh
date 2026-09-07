@@ -29,6 +29,12 @@
 # SPIRA_SPIKE_PATHS AND SPIRA_SPIKE_LABEL ARE PINNED TO NON-DEFAULTS throughout. Asserting
 # against the shipped defaults would pass just as well if the code had the literal written in,
 # which is the thing those keys exist to prevent.
+#
+# THE CONFINEMENT FENCE IS CLAIMED HERE ALONGSIDE THE WORKER THAT CALLS IT. `confine.sh` alone
+# is not the property under test — the failure it exists to stop is a landing pass that never
+# consults it, which is why a change to `landing.sh` has to select this suite too.
+#
+# covers: spira/confine.sh spira/landing.sh spira/chamber/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

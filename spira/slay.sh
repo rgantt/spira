@@ -206,8 +206,15 @@ case "$MODE" in
             else
                 bdq close "$ID" --reason "$REASON — $note" >/dev/null 2>&1 || { say "bead: close failed"; fail=1; }
             fi ;;
-    reopen) [ "$st" = open ] || bdq reopen "$ID" >/dev/null 2>&1
-            bdq note "$ID" "$note" >/dev/null 2>&1 ;;
+    # THROUGH bead_reopen, LIKE EVERY OTHER REOPEN. The assignee is already cleared above,
+    # where the lease is released — so this path was correct, but correct at a distance: its
+    # correctness rested on a line sixty above it whose purpose is something else entirely,
+    # and a later edit to either has no way to see the other. `bd reopen` keeps the assignee
+    # and `bd ready --claim` skips an assigned bead while `bd ready` still lists it, which
+    # makes a missed clearing invisible by construction — the bead really does go back to
+    # open, and only the claim that never comes says otherwise. The helper is where that is
+    # remembered; a slain aeon's name is the one that must not survive a reopen.
+    reopen) bead_reopen "$ID" "$note" ;;
 esac
 bdjson show "$ID" | python3 -c '
 import sys,json
