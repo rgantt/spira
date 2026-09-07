@@ -235,7 +235,14 @@ load_snapshot() {
 # no stamp at all, and that world is just as stopped.
 halt_banner() {
     local stamp="$SPIRA_RUN/world.halted" why="" since="" tstate
-    tstate="$(systemctl --user is-active spira-sentinel.timer 2>/dev/null)"
+    # THROUGH THE SAME SEAM sentinel.sh ALREADY USES. A bare `systemctl` here reads the real
+    # user session, so this function's output depends on whether the box's own Spira happens
+    # to be running — and test-tokens.sh, which renders this pane, therefore failed two
+    # assertions for the whole of the day Spira was deliberately halted to repair the gate.
+    # The suite was testing the box (law-gates-run-in-a-clean-environment), and it did it in
+    # the one situation where the gate most needed to be trustworthy: the gate could not go
+    # green while the world was stopped, and the world was stopped in order to fix the gate.
+    tstate="$("${SPIRA_SYSTEMCTL:-systemctl}" --user is-active spira-sentinel.timer 2>/dev/null)"
     if [ -f "$stamp" ]; then
         since="$(head -1 "$stamp" 2>/dev/null)"
         why="$(sed -n '''2s/^why: //p''' "$stamp" 2>/dev/null)"

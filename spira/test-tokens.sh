@@ -500,8 +500,26 @@ EOF
 # The pane takes its own size, so the fixture drives it explicitly rather than inheriting a
 # terminal's. LC_ALL matters: the frame is full of multibyte characters and a suite run from
 # the gate inherits the C locale, where a byte count and a column count disagree.
+# SYSTEMD IS PINNED, and this is not cosmetic. health.sh asks systemd whether the sentinel
+# timer is active, and paints a four-line ■ SPIRA STOPPED banner when it is not — so the pane
+# this suite renders depends on whether the box's own Spira happens to be running, and the two
+# fixed-row assertions below failed for the whole of the day Spira was deliberately halted in
+# order to repair the gate. The gate could not go green while the world was stopped, and the
+# world was stopped to fix the gate. A suite that reads the box is testing the box
+# (law-gates-run-in-a-clean-environment); the halted pane has its own case below, which sets
+# this deliberately rather than by accident.
+SYSTEMCTL_STUB="$T/systemctl"
+printf '#!/usr/bin/env bash\necho "${FAKE_UNIT_STATE:-active}"\n' > "$SYSTEMCTL_STUB"
+chmod +x "$SYSTEMCTL_STUB"
 paint() {   # paint [rows] [cols] -> the frame, ANSI stripped
     env -i HOME="$T/home" PATH="$PATH" TERM=dumb LC_ALL=C.UTF-8 SPIRA_CONF="$NONE" \
+        SPIRA_SYSTEMCTL="$SYSTEMCTL_STUB" \
+        SPIRA_REPO="$T" SPIRA_RUN="$T/run" bash "$HEALTH" once "${1:-0}" "${2:-100}" 2>/dev/null \
+        | sed 's/\x1b\[[?0-9;]*[a-zA-Z]//g'
+}
+paint_halted() {   # the same pane with the world stopped, which is its own claim
+    env -i HOME="$T/home" PATH="$PATH" TERM=dumb LC_ALL=C.UTF-8 SPIRA_CONF="$NONE" \
+        SPIRA_SYSTEMCTL="$SYSTEMCTL_STUB" FAKE_UNIT_STATE=inactive \
         SPIRA_REPO="$T" SPIRA_RUN="$T/run" bash "$HEALTH" once "${1:-0}" "${2:-100}" 2>/dev/null \
         | sed 's/\x1b\[[?0-9;]*[a-zA-Z]//g'
 }
@@ -567,6 +585,18 @@ has "and a genuinely idle keyboard says that instead" "$(paint)" "no session at 
 short="$(paint 6 100)"
 has "TOKENS is on the row below the header" "$(sed -n 2p <<<"$short")" "TOKENS"
 has "and CTX survives a pane with six rows" "$short" "CTX"
+
+# THE HALTED PANE IS ITS OWN CLAIM, and the positive control for the pin above. Without it,
+# pinning systemd to `active` would mean the banner this pane exists to show was never
+# rendered by any case — the suite would assert that a stopped world looks exactly like a
+# running one, which is the failure the banner was built to prevent (the operator: "if spira
+# is stopped, i want that to be clear from the pane").
+halted="$(paint_halted)"
+has "a stopped world says so, unmistakably"        "$halted" "SPIRA STOPPED"
+has "and says what it costs"                       "$halted" "nothing lands"
+has "and how to start it again"                    "$halted" "world.sh start"
+case "$(paint)" in *"SPIRA STOPPED"*) bad "and a running world says nothing of the kind" "the banner is unconditional" ;;
+                   *) ok "and a running world says nothing of the kind" ;; esac
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 if [ "$fail" -eq 0 ]; then echo "PASS: tokens"; exit 0; fi
