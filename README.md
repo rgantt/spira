@@ -414,12 +414,37 @@ the stall sweep — so a question can never be claimed as if it were work, nor r
 that has stalled. `cockpit/panel/` is the attention surface it renders on: a Rust TUI, built
 with `cargo build --release`, run from a tmux pane by `cockpit/layout.sh`.
 
-The answer half is `spira/verdicts.sh`. The panel writes a verdict **into the bead** — the
-close reason for a decision, a comment for a reply — so there is no file to tail, and a
-session watching one concludes that nothing was answered. Run `spira/verdicts.sh loop` as a
-watcher in any session that escalates anything; it polls for asks closed since its cursor,
-prints one line each, keeps its high-water mark under `.runtime/`, and is therefore silent
-when nothing has been answered and never replays a verdict twice.
+The answer half is `cockpit/watch-answers.sh`, over `spira/answers.py`. The panel writes a
+verdict **into the bead** — the close reason for a decision, a comment for a reply — so there
+is no file to tail, and a session watching one concludes that nothing was answered. It runs
+as a `spira/watchers` daemon row, and `watch-answers.sh loop` is equally a Monitor command for
+any session that escalates anything; `cockpit/answered-since.sh` is the same two legs at
+session start, for the answers given while nobody was home.
+
+Both legs are needed, because the operator speaks in two ways and only one of them moves the
+bead: a close carrying a reason, and a **comment**, including on a bead they can never close
+because an FYI is created closed. A comment does not bump `updated_at`, so each leg keeps its
+own high-water mark. A mark carries the timestamp **and** the keys already reported at it, so
+two writes in one second are each reported exactly once rather than replayed forever or lost;
+a mark missing while its sibling survives is read as *cleared*, not new, and takes the
+sibling's position rather than seeding at now and swallowing the window in between. Only a
+first arming with neither mark present seeds silently, so attaching a watcher does not replay
+every historical verdict as though it had just landed.
+
+Where it has read and whether it can SEE are different facts in different files. Each pass
+writes the ids its query returned to `SPIRA_ANSWER_STATE`, and the manifest's health assertion
+greps that for one of ours: a watcher reading a database retired underneath it holds rows,
+just not ours, and is otherwise indistinguishable from one with nothing to say. It cannot be
+the marks — a mark names a bead only in the instant one is reported, so a freshly armed
+watcher would read DEGRADED for days while working perfectly, and a false alarm is the
+expensive kind. Only the watcher writes it; a session hook refreshing the same file would let
+a dead watcher read healthy.
+
+A verdict is reported only when the operator's own actor is on the audit event beads records
+for the close. Nothing on the issue row distinguishes their close from an agent's — there is
+no `closed_by`, and the Dolt committer is the literal string `beads` whatever `BEADS_ACTOR`
+says — so without that filter a session acts on its own echo, silently, because the
+announcement reads exactly like a real answer.
 
 **Launch the panel through `cockpit/panel-run.sh`, never the binary.** tmux gives a new pane
 the environment of the tmux *server*, not of the process that ran `split-window`, so a bare

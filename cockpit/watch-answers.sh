@@ -2,192 +2,83 @@
 #
 # watch-answers.sh — tell the session when the operator answers something.
 #
-# WHY THIS EXISTS. The operator answered an escalation in the cockpit pane with "take your
+#   watch-answers.sh once    one pass; prints nothing when nothing is new
+#   watch-answers.sh loop    the same, on an interval — the default, and the daemon form
+#
+# WHY THIS EXISTS. The operator answered an escalation in the attention pane with "take your
 # default" and the session never noticed. They had to ask, hours later, whether a notification
-# job was missing. It was.
+# job was missing. It was: a panel rewrite made the bead the single source of truth — `bd
+# close --reason` IS the verdict now, which is the better data model — and deleted the write
+# to the log a session used to tail, with nothing replacing the notification leg.
 #
-# The regression was mine and it came from an improvement. The old panel wrote every reply
-# to .runtime/replies.log and the session tailed that file. The from-scratch rewrite made
-# beads the single source of truth -- `bd close --reason` IS the verdict now, which is the
-# better data model -- but it deleted the write to replies.log and nothing replaced the
-# notification leg. There is no replies.log on disk at all.
+# The lesson is the one that keeps recurring here: an escalation queue has two halves, the ask
+# and the answer, and only the ask had a mechanism. A verdict that reaches nobody is worse
+# than an unanswered question, because the decider believes they replied.
 #
-# The lesson is the one that keeps recurring here: an escalation queue has two halves, the
-# ask and the answer, and only the ask had a mechanism. A verdict that reaches nobody is
-# indistinguishable from an unanswered question -- and worse, the operator believes they have replied.
+# Emits one line per event, so it is equally a Monitor command and a `watchd` daemon row:
+#   Monitor({command: '<cockpit>/watch-answers.sh', persistent: true})
 #
-# Emits one line per event, so it is a Monitor command:
-#   Monitor({command: '<harness>/cockpit/watch-answers.sh', persistent: true})
-#
-# First run SEEDS SILENTLY. Without that, arming it would replay every historical verdict
-# as if it had just landed.
+# THIS FILE DECIDES ONLY WHICH DATABASE AND WHERE THE MARKS LIVE. Both legs — a close carrying
+# a verdict, and a comment on a bead that can never be closed again — are answers.py, which
+# cockpit/answered-since.sh also runs. One implementation rather than two: the arrangement
+# this replaces had a close-watcher here and a different one beside it, and the blindness to a
+# comment on an FYI had to be found separately in each. Keeping the superseded one standing is
+# what let two sessions attach the blind one.
 set -uo pipefail
 
 . "$(dirname "$0")/db.sh"
-# WHERE THIS FILE LIVES IS CONFIGURATION, NOT A LITERAL. Its path is known in two places —
-# here, and in the health assertion the watcher manifest points at it — and those two
-# disagreeing renders a permanent DEGRADED against a watcher that is working perfectly.
-# ANSWER_STATE stays ahead of it so a test can still hand this script a scratch file.
-STATE="${ANSWER_STATE:-${SPIRA_ANSWER_STATE:-$(dirname "$0")/.runtime/answered-seen.json}}"
+# THE WITNESS: proof this watcher can SEE, kept apart from how far it has read. Every pass
+# writes the ids its query returned here, and the manifest's health assertion greps it for one
+# of ours — a watcher reading a database that was retired underneath it holds rows, just not
+# ours, and is otherwise indistinguishable from a watcher with nothing to say.
+#
+# It is deliberately not the cursors below. A cursor names a bead only in the instant one was
+# reported, so an assertion over it would read DEGRADED on a healthy quiet watcher, which is
+# the expensive kind of alarm (law-alerts-must-be-actionable). Coupling the two is also what
+# made the original blind: sight and position lived in one snapshot, so clearing a poisoned
+# one took the proof with it.
+#
+# WHERE IT LIVES IS CONFIGURATION. The path is known here and in the assertion that reads it,
+# and those two disagreeing is a permanent DEGRADED against a watcher working perfectly.
+# ANSWER_STATE stays ahead of it so a test can hand this script a scratch file.
+WITNESS="${ANSWER_STATE:-${SPIRA_ANSWER_STATE:-$(dirname "$0")/.runtime/answered-seen.json}}"
 INTERVAL="${ANSWER_POLL:-45}"
 
-# WHICH DATABASE IS NOT THIS FILE'S TO DECIDE (db.sh). The first version read only the town.
-# the operator then answered three escalations that live in another repository's database -- one of them
-# "i have answered this multiple times already. JUST FUCKING DO IT." -- and this watcher said
-# nothing, exactly the failure it was built to end. Five copies of that answer existed at one
-# point, and correcting one of them was never going to correct the rest.
-mkdir -p "$(dirname "$STATE")"
+# TWO MARKS, because a close and a comment are ordered by different clocks: a comment does NOT
+# bump the bead's updated_at, so a cursor over closes cannot express how far the comment leg
+# has read. One file for one question — and they cover each other, since answers.py treats a
+# mark missing while its sibling survives as CLEARED rather than new, and takes the sibling's
+# position instead of silently seeding at now.
+#
+# Under SPIRA_RUN, the harness's own runtime directory, rather than inside the shipped tree:
+# these are per-installation state, and they are deliberately not the marks answered-since.sh
+# keeps. That hook and this watcher both report, so a shared mark would mean whichever ran
+# first swallowed the answer for the other.
+mkdir -p "$SPIRA_RUN" "$(dirname "$WITNESS")"
+VERDICT_CURSOR="${VERDICT_CURSOR:-$SPIRA_RUN/.verdict-cursor}"
+COMMENT_CURSOR="${COMMENT_CURSOR:-$SPIRA_RUN/.comment-cursor}"
+ANSWERS="$(cd "$(dirname "$0")/../spira" && pwd -P)/answers.py"
 
-while true; do
-  raw=$(cockpit_beads) || raw=""
-  if [ -n "$raw" ]; then
-    printf '%s' "$raw" | STATE="$STATE" BD_BIN="$BD" COCKPIT_DB="$COCKPIT_DB" \
-      SPIRA_OPERATOR_ACTOR="${SPIRA_OPERATOR_ACTOR:-operator}" \
-      SELF_CLOSED="${SELF_CLOSED:-$(dirname "$0")/.runtime/self-closed}" python3 -c '
-import json, os, sys
-ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")
-# The name of the operator, for the lines a human reads. A literal here would announce
-# the wrong person on every other installation.
-WHO = (os.environ.get("SPIRA_OPERATOR") or "the operator").upper()
+emit() {
+    # NARROWED BY THE SERVER. This ran every 45 seconds against every bead in the database and
+    # threw all but a twentieth of them away one line later; cockpit_attention_beads asks for
+    # the labels the attention surface is actually about. A read that fails is NOT an empty
+    # database — hold silence rather than render a broken check as all-clear.
+    local raw
+    raw=$(cockpit_attention_beads) || return 0
+    printf '%s' "$raw" | python3 "$ANSWERS" \
+        "bd=$BD" "db=$COCKPIT_DB" \
+        "ask_label=${SPIRA_ASK_LABEL:-needs-operator}" \
+        "operator_actor=${SPIRA_OPERATOR_ACTOR:-operator}" \
+        "operator=${SPIRA_OPERATOR:-the operator}" \
+        "verdict_cursor=$VERDICT_CURSOR" "comment_cursor=$COMMENT_CURSOR" \
+        "witness=$WITNESS" \
+        "self_closed=${SELF_CLOSED:-$(dirname "$0")/.runtime/self-closed}" \
+        format=monitor
+}
 
-state_path = os.environ["STATE"]
-text = sys.stdin.read()
-i = min((text.find(c) for c in "[{" if text.find(c) >= 0), default=-1)
-if i < 0:
-    sys.exit(0)
-try:
-    doc = json.loads(text[i:])
-except Exception:
-    sys.exit(0)
-rows = doc if isinstance(doc, list) else doc.get("issues", [])
-
-try:
-    with open(state_path) as fh:
-        seen = json.load(fh)
-    first_run = False
-except Exception:
-    seen, first_run = {}, True
-
-self_closed = set()
-try:
-    with open(os.environ.get("SELF_CLOSED", "")) as fh:
-        self_closed = {line.strip() for line in fh if line.strip()}
-except Exception:
-    pass
-
-now = {}
-events = []
-for r in rows:
-    labels = r.get("labels") or []
-    # The escalation label is the one that MEANS "waiting on the operator" -- the one the gate defers on.
-    # Requiring `overseer` too was wrong: an escalation filed inside a rig never carries it,
-    # and that is how sixteen stayed invisible. Insights are records, not questions.
-    # (No apostrophes in this block: it lives inside a single-quoted bash -c string.)
-    # An insight is a record, not a question -- so its status never matters here. But a
-    # COMMENT on one is the operator speaking, and skipping insights outright meant their reply could
-    # not reach anyone. The operator once answered one with "yes, this seems worth a
-    # fix" and it surfaced only because an unrelated test fixture happened to capture the
-    # pane rendering it. Watch insights for comments alone.
-    is_insight = "insight" in labels
-    if not is_insight and ASK not in labels and "overseer" not in labels:
-        continue
-    rid = r.get("id")
-    if not rid:
-        continue
-    status = r.get("status") or ""
-    ccount = r.get("comment_count") or 0
-    now[rid] = {"status": status, "comments": ccount, "insight": is_insight}
-    prev = seen.get(rid)
-    if first_run or prev is None:
-        continue
-    title = (r.get("title") or "")[:90]
-    # An insight is CREATED closed, so a status transition on one is meaningless noise.
-    # Only its comments are signal.
-    if is_insight:
-        if ccount > (prev.get("comments") or 0):
-            events.append(("comment", rid, ccount, title))
-        continue
-    if prev.get("status") != "closed" and status == "closed":
-        # Not if I closed it. Authorship is recorded, but not where it is cheap: the issue
-        # row has no closed_by and the Dolt committer is always "beads" whatever BEADS_ACTOR
-        # says, so the only witness is the audit event, one `bd history` away. resolve.sh
-        # records the id it closed, which skips that call for the common case; the trail is
-        # read for the rest, because a close made by an agent NOT through resolve.sh came
-        # back as an answer the operator never gave -- announced twice, once per attached
-        # watcher -- and a session acting on that is acting on its own echo.
-        if rid in self_closed:
-            continue
-        reason = (r.get("close_reason") or "").strip() or "(no reason given)"
-        events.append(("close", rid, reason, title))
-    elif ccount > (prev.get("comments") or 0):
-        # Only if the newest comment is not mine. This session and the pane both wrote as
-        # "overseer" at first, so the watcher announced my OWN reply back to me as though the
-        # operator had commented -- a notification loop with itself.
-        events.append(("comment", rid, ccount, title))
-
-tmp = state_path + ".tmp"
-with open(tmp, "w") as fh:
-    json.dump(now, fh)
-os.replace(tmp, state_path)
-
-import subprocess
-
-def bd_json(args):
-    try:
-        out = subprocess.run(
-            [os.environ.get("BD_BIN", "bd"), "-C", os.environ["COCKPIT_DB"]] + args,
-            capture_output=True, text=True, timeout=30).stdout
-    except Exception:
-        return None
-    i = min((out.find(c) for c in "[{" if out.find(c) >= 0), default=-1)
-    if i < 0:
-        return None
-    try:
-        return json.loads(out[i:])
-    except Exception:
-        return None
-
-# WHOSE VOICE. The operator writes as OP; every agent here writes as something else. An
-# unreadable audit trail is reported rather than assumed either way: silence would hide a
-# real answer, and announcing it would resurrect the echo.
-OP = os.environ.get("SPIRA_OPERATOR_ACTOR", "operator")
-for ev in events:
-    if ev[0] == "close":
-        _, rid, reason, title = ev
-        doc = bd_json(["history", rid, "--events", "--json"])
-        evs = doc if isinstance(doc, list) else (doc or {}).get("events") or []
-        closes = sorted((e for e in evs if (e.get("event_type") or "") == "closed"),
-                        key=lambda e: e.get("created_at") or "")
-        actor = closes[-1].get("actor") if closes else None
-        if actor is not None and actor != OP:
-            continue
-        if actor is None:
-            print(f"{rid} closed, author unknown (no audit event): {reason}  --  {title}",
-                  flush=True)
-            continue
-        print(f"{WHO} ANSWERED {rid}: {reason}  --  {title}", flush=True)
-        continue
-    _, rid, ccount, title = ev
-    who = None
-    try:
-        out = subprocess.run(
-            [os.environ.get("BD_BIN", "bd"),
-             "-C", os.environ["COCKPIT_DB"],
-             "comments", rid, "--json"],
-            capture_output=True, text=True, timeout=30).stdout
-        j = out[min((out.find(c) for c in "[{" if out.find(c) >= 0), default=0):]
-        cs = json.loads(j)
-        cs = cs if isinstance(cs, list) else cs.get("comments", [])
-        who = cs[-1].get("author") if cs else None
-    except Exception:
-        who = None
-    # ONLY THE OPERATOR IS NEWS. Matching one agent name by literal was the same bug with a
-    # smaller blast radius: every OTHER agent name -- and every other installation -- read as
-    # the operator. Compare against the one name that is theirs.
-    if who != OP:
-        continue
-    print(f"{WHO} COMMENTED on {rid} ({ccount} total)  --  {title}", flush=True)
-'
-  fi
-  sleep "$INTERVAL"
-done
+case "${1:-loop}" in
+    once) emit ;;
+    loop) while true; do emit; sleep "$INTERVAL"; done ;;
+    *) echo "usage: watch-answers.sh [once|loop]" >&2; exit 2 ;;
+esac

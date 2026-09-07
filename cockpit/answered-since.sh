@@ -28,11 +28,16 @@ ANSWERS="$(cd "$(dirname "$0")/../spira" && pwd -P)/answers.py"
 
 mkdir -p "$RUNTIME"
 
-raw=$(cockpit_beads) || exit 0
+# Narrowed by the server to the labels the attention surface is about — the same rows the
+# live watcher reads, and the same rows answers.py would have kept anyway. A session-start
+# hook is on the critical path of every session, so the whole bead list is a cost paid by a
+# human waiting.
+raw=$(cockpit_attention_beads) || exit 0
 printf '%s' "$raw" | python3 "$ANSWERS" \
     "bd=$BD" "db=$COCKPIT_DB" \
     "ask_label=${SPIRA_ASK_LABEL:-needs-operator}" \
     "operator_actor=${SPIRA_OPERATOR_ACTOR:-operator}" \
     "operator=${SPIRA_OPERATOR:-the operator}" \
     "verdict_cursor=$VERDICT_MARK" "comment_cursor=$COMMENT_MARK" \
+    "self_closed=${SELF_CLOSED:-$(dirname "$0")/.runtime/self-closed}" \
     format=session

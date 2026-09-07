@@ -27,7 +27,10 @@ high-water mark and reports only what is past it, so this is quiet when nothing 
 answered -- which is most of the time, and what makes it safe to run from a Monitor or at
 session start. A bare timestamp cannot express "reported everything up to this second": two
 writes can share one second, and one of them would be replayed forever or lost. So the mark
-carries the timestamp AND the keys already reported AT that timestamp.
+carries the timestamp AND the keys already reported AT that timestamp. A mark that is gone
+while its sibling survives is treated as CLEARED rather than new and adopts the sibling's
+position: the remedy for a poisoned state file is to delete it, and seeding at `now` instead
+would silently swallow every answer given since the last read.
 
 Reads the bead list on stdin, because which database to address is the caller's decision
 and there is one place that decides it. Shells out only for the bodies, one process at a
@@ -96,6 +99,22 @@ class Mark:
         """True when there is no mark yet, so the caller SEEDS rather than replays history."""
         return not self.ts
 
+    def adopt(self, ts):
+        """Take another mark's position as this one's, with no ties carried over.
+
+        A LOST MARK IS COVERED BY ITS SIBLING. Seeding a missing mark at `now` is right for a
+        watcher being armed for the first time and wrong for one whose state was cleared: the
+        remedy for a poisoned state file is to delete it, and a silent seed then swallows
+        every answer given between the last read and the deletion — invisibly, because a
+        watcher that has lost its place and one with nothing to say print exactly the same
+        thing. Adopting the surviving sibling's timestamp re-reports a little rather than
+        losing anything, which is the direction an escalation queue must fail in.
+
+        No ties are adopted, because the sibling's ties are keys from the other leg and mean
+        nothing here; the cost is at most one duplicate line at that exact second.
+        """
+        self.ts, self.seen = ts, set()
+
     def is_new(self, ts, key):
         if not ts:
             return False
@@ -119,6 +138,33 @@ class Mark:
             json.dump({"ts": ts, "seen": sorted(seen)}, fh)
         os.replace(tmp, self.path)
         self.ts, self.seen = ts, seen
+
+
+def write_witness(path, rows):
+    """Record the ids this pass actually saw, for a health assertion to grep.
+
+    SIGHT AND POSITION ARE DIFFERENT FACTS and are kept in different files. A cursor names a
+    bead only in the instant one is reported, so a check over it would call a healthy quiet
+    watcher DEGRADED; and when they shared one file, clearing a poisoned state took the proof
+    of sight with it. This is written on every pass and holds nothing but ids.
+
+    ONLY THE WATCHER WRITES IT. The assertion answers "can THAT process see", so a session
+    hook refreshing the same file would let a dead watcher read healthy. That is why the path
+    arrives as an argument rather than being derived here — the hook does not pass one.
+
+    An empty payload TRUNCATES rather than leaving the last good list standing: a query that
+    returned no bead of ours is exactly the state the assertion exists to catch, and holding
+    the previous answer would report sight that is no longer proved. A read that FAILED never
+    reaches here — the caller holds its silence instead, because a failed read is not an empty
+    database and turning one into an alarm is the false kind (law-alerts-must-be-actionable).
+    """
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        for r in rows:
+            ident = r.get("id") or ""
+            if ident:
+                fh.write(ident + "\n")
+    os.replace(tmp, path)
 
 
 def bd(cfg, args, timeout=30):
@@ -161,9 +207,28 @@ def closed_by(cfg, ident):
     return closes[-1].get("actor") or None
 
 
+def self_closed_ids(path):
+    """Ids the harness closed itself, recorded by cockpit/resolve.sh as it closed them.
+
+    A cheap PRE-FILTER only. It saves a `bd history` call on the common case — every close
+    the harness makes goes through resolve.sh — and it is never the thing that decides: a
+    close made by an agent NOT through resolve.sh is absent from this file and must still be
+    caught, which is what the audit event below is for. Trusting the file alone is how an
+    agent's own close came back as an answer the operator never gave.
+    """
+    if not path:
+        return set()
+    try:
+        with open(path) as fh:
+            return {line.strip() for line in fh if line.strip()}
+    except Exception:
+        return set()
+
+
 def verdicts(cfg, rows, mark):
     """Closes made BY THE OPERATOR since the mark. [(ts, id, title, reason), ...]"""
     ask, overseer = cfg["ask_label"], "overseer"
+    mine = self_closed_ids(cfg.get("self_closed"))
     cands = []
     for r in rows:
         if (r.get("status") or "") != "closed":
@@ -173,6 +238,8 @@ def verdicts(cfg, rows, mark):
         if "insight" in labels:
             continue
         if ask not in labels and overseer not in labels:
+            continue
+        if (r.get("id") or "") in mine:
             continue
         ts = r.get("closed_at") or r.get("updated_at") or ""
         if not mark.is_new(ts, r.get("id") or ""):
@@ -192,7 +259,10 @@ def verdicts(cfg, rows, mark):
 
 
 def comments(cfg, rows, mark):
-    """Comments written BY THE OPERATOR since the mark. [(ts, id, title, text), ...]
+    """Comments written BY THE OPERATOR since the mark. [(ts, id, title, text, key), ...]
+
+    The trailing key is the mark's tie-breaker: a comment does not bump the bead's
+    updated_at, so the comment's own id is what distinguishes two writes in one second.
 
     Every bead that reaches the operator's attention surface is a candidate, FYIs included
     and whatever their status: the whole defect this closes is that an FYI is closed at birth
@@ -228,6 +298,7 @@ def main():
         "ask_label": args.get("ask_label") or os.environ.get("SPIRA_ASK_LABEL") or "needs-operator",
         "operator_actor": (args.get("operator_actor")
                            or os.environ.get("SPIRA_OPERATOR_ACTOR") or "operator"),
+        "self_closed": args.get("self_closed") or os.environ.get("SELF_CLOSED") or "",
     }
     who = (args.get("operator") or os.environ.get("SPIRA_OPERATOR") or "the operator").upper()
     fmt = args.get("format") or "monitor"
@@ -236,12 +307,23 @@ def main():
 
     rows = rows_of(json_only(sys.stdin.read()), "issues")
 
+    if args.get("witness"):
+        write_witness(args["witness"], rows)
+
     vmark = Mark(args["verdict_cursor"]) if args.get("verdict_cursor") else None
     cmark = Mark(args["comment_cursor"]) if args.get("comment_cursor") else None
 
-    # FIRST RUN SEEDS SILENTLY. Without this, arming a watcher replays every historical
-    # answer as though it had just landed -- and a burst of stale verdicts is how a real one
-    # goes unread.
+    # A mark missing while its sibling survives is a CLEARED mark, not a new one, so it takes
+    # the sibling's position rather than seeding at `now` and swallowing the window between.
+    if vmark is not None and cmark is not None:
+        if vmark.fresh() and not cmark.fresh():
+            vmark.adopt(cmark.ts)
+        elif cmark.fresh() and not vmark.fresh():
+            cmark.adopt(vmark.ts)
+
+    # FIRST RUN SEEDS SILENTLY -- a first run being both marks absent, after the line above.
+    # Without this, arming a watcher replays every historical answer as though it had just
+    # landed, and a burst of stale verdicts is how a real one goes unread.
     vs, cs = [], []
     if vmark is not None:
         if vmark.fresh():

@@ -141,15 +141,37 @@ echo "cockpit_beads — every bead, and a failure that reads as one"
 testdb_seed <<EOF
 $(bead sp-open   "$SPIRA_ASK_LABEL,overseer" open   "an ask")
 $(bead sp-shut   insight,overseer    closed "a record")
+$(bead sp-lonely "$SPIRA_ASK_LABEL"   open   "an ask filed inside a rig, with no overseer label")
+$(bead sp-work   spira,plan           open   "ordinary work, which is most of the database")
 EOF
 
 beads() { ( . "$COCKPIT/db.sh"; cockpit_beads ); }
+count() { printf '%s' "$1" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d if isinstance(d,list) else d.get("issues",[])))' 2>/dev/null; }
 raw="$(beads)"
-n="$(printf '%s' "$raw" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d if isinstance(d,list) else d.get("issues",[])))' 2>/dev/null)"
-eq "both beads are returned" "2" "$n"
+eq "every bead is returned" "4" "$(count "$raw")"
 # --all is load-bearing: an insight is CREATED closed, and `bd list` hides closed issues.
 want "a closed insight is included" "sp-shut" "$raw"
 nowant "no row is tagged with a database" '"_db"' "$raw"
+
+echo
+echo "cockpit_attention_beads — narrowed by the server, and narrowed to the CONFIGURED label"
+# The live watcher ran this every 45 seconds against every bead in the database and discarded
+# all but a twentieth of them in Python. Measured on a real database: 1867 rows against 109.
+narrow="$( . "$COCKPIT/db.sh"; cockpit_attention_beads )"
+eq "only the beads the attention surface is about" "3" "$(count "$narrow")"
+nowant "ordinary work is not fetched at all" "sp-work" "$narrow"
+# THE POSITIVE CONTROLS. A narrowed query is a place to go blind, and "nobody answered" and
+# "the filter matches nothing" print identically. Each label the surface uses must be shown
+# pulling a row through — especially the configured one on its own, since an escalation filed
+# inside a rig carries no overseer label and sixteen once stayed invisible for exactly that.
+want "the configured escalation label alone pulls a bead through" "sp-lonely" "$narrow"
+want "an overseer bead is included"                               "sp-open"   "$narrow"
+want "and a CLOSED insight, which is the case a close-cursor cannot see" "sp-shut" "$narrow"
+# A literal label written back into db.sh would still pass every line above on an installation
+# that happens to use the default. This is the line that fails when one is.
+blind="$( SPIRA_ASK_LABEL=a-label-nobody-uses bash -c '. "'"$COCKPIT"'/db.sh"; cockpit_attention_beads' )"
+nowant "the label is read from configuration, not written in" "sp-lonely" "$blind"
+want "and the labels that are not configurable still match" "sp-open" "$blind"
 
 DEAD="$(testdb_unreachable)"
 out="$( COCKPIT_DB="$DEAD" bash -c '. "'"$COCKPIT"'/db.sh"; cockpit_beads' 2>/dev/null )"; rc=$?

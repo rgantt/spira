@@ -53,3 +53,29 @@ cockpit_beads() {
   [ -n "$out" ] || return 1
   printf '%s' "$out"
 }
+
+# Only the beads the attention surface is ABOUT, narrowed by the server rather than by the
+# reader. `--label-any` is an OR, and these three labels are exactly what answers.py then
+# filters on: the escalation label and `overseer` for a question, `insight` for an FYI, which
+# is created closed and carries neither.
+#
+# WHY IT IS A SEPARATE FUNCTION. `cockpit_beads` promises every bead and something may yet
+# want that; this promises a subset and says which. Measured on a live database: 1867 rows in
+# 644ms against 109 rows in 342ms, every 45 seconds, forever — and the whole difference was
+# being thrown away in Python one line later. It also keeps the payload well under
+# answers.py's scan ceiling, which is announced but still a ceiling.
+#
+# A NARROWED QUERY IS A PLACE TO GO BLIND, which is why the label comes from configuration
+# and never from a literal: an installation whose escalation label is its own would otherwise
+# match nothing and report, in perfect silence, that nobody has answered anything
+# (law-absence-needs-a-positive-control). spira/test-cockpit-db.sh pins it to a non-default and
+# asserts the count, so a literal written back in here fails the gate.
+cockpit_attention_beads() {
+  local db out
+  db=$(cockpit_db) || return 1
+  out=$("$BD" -C "$db" list --all --limit 0 \
+        --label-any "insight,${SPIRA_ASK_LABEL:-needs-operator},overseer" --json 2>/dev/null \
+        | sed -n '/^[[{]/,$p')
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
