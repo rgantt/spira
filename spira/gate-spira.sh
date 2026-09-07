@@ -87,7 +87,12 @@ run() {                  # run <suite> — its output only when it matters
     esac
 }
 
-for s in spira/test-soak.sh spira/test-poison.sh; do
+# THE THIRD IS THE VERDICT CHECK, and it earns its place by the same rule as the other two:
+# it is a property of the pipeline, not of a function's return value. A bead that is reopened
+# forever is a queue that has stopped moving, and it costs an Opus session every two minutes
+# while it does — which is more than every quality check this gate deleted was ever worth.
+# 13s.
+for s in spira/test-soak.sh spira/test-poison.sh spira/test-aeon-verdict.sh; do
     [ -r "$s" ] || { say "$s is missing — refusing to report a pass without it"; exit 1; }
     run "$s"
 done

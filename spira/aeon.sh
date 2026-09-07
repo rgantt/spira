@@ -871,12 +871,28 @@ log "$FAYTH: $BEAD_ID session exited rc=$rc"
 # ---- verdict -------------------------------------------------------------------------
 # Closed is not landed. The aeon may have closed the bead; that claim is only believed if
 # a commit on its branch actually names the bead id.
-st="$(bdjson show "$BEAD_ID" 2>/dev/null | python3 -c '
+# ONE `bd show`, TWO FACTS — the status AND whether the bead was superseded. Status alone
+# cannot judge the close, because A SUPERSEDED BEAD WILL NEVER HAVE A COMMIT NAMING IT: its
+# work was carried onto the successor's branch and landed under the successor's id. Reopening
+# it says "closed without landing" about work that is already on the base branch, and since
+# the next summon re-cuts the branch and runs a whole session against a duplicate, the bead
+# cycles forever. One did, five times over, after the identical exemption was added to the
+# sentinel's closed-but-not-landed check and not to this one — the two ask the same question
+# and must answer it the same way.
+#
+# `bd list` AND `bd show` NAME THE SAME FIELD DIFFERENTLY: show returns "dependency_type",
+# list returns "type". Accept either spelling rather than the one this call happens to
+# return, because nothing here can tell which shape it was handed.
+verdict="$(bdjson show "$BEAD_ID" 2>/dev/null | python3 -c '
 import sys,json
 try: d=json.load(sys.stdin)
-except Exception: print(""); sys.exit()
+except Exception: print(" 0"); sys.exit()
 d=d if isinstance(d,list) else [d]
-print(d[0].get("status","") if d else "")' 2>/dev/null)"
+if not d: print(" 0"); sys.exit()
+sup = 1 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
+               for x in (d[0].get("dependencies") or [])) else 0
+print("%s %s" % (d[0].get("status",""), sup))' 2>/dev/null)"
+st="${verdict%% *}"; superseded="${verdict##* }"
 # NEVER `git log | grep -q` under `set -o pipefail`. grep -q exits on the first match and
 # closes the pipe; git log then dies of SIGPIPE and pipefail propagates 141 as the
 # pipeline's status, so a MATCH reads as a failure. This exact line reported "closed with
@@ -884,11 +900,16 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
 # reopened finished work. Capture first, match second.
 subjects="$(git -C "$REPO" log --format='%s%n%b' -n 50 "$BRANCH" 2>/dev/null)"
 if grep -qF "$BEAD_ID" <<< "$subjects"; then committed=yes; else committed=no; fi
-log "$FAYTH: $BEAD_ID status=$st committed=$committed"
+log "$FAYTH: $BEAD_ID status=$st committed=$committed superseded=$superseded"
 
-if [ "$st" = "closed" ] && [ "$committed" = "no" ]; then
+if [ "$st" = "closed" ] && [ "$committed" = "no" ] && [ "$superseded" != 1 ]; then
     bead_reopen "$BEAD_ID" "Reopened by aeon.sh: closed without a commit naming $BEAD_ID on $BRANCH. Closed is not landed."
     log "$FAYTH: $BEAD_ID REOPENED — closed with nothing committed"
+elif [ "$st" = "closed" ] && [ "$committed" = "no" ]; then
+    # SAID OUT LOUD. This is the one path where the harness sees a bead closed with nothing
+    # committed and declines to act, and a silent decline is indistinguishable from the
+    # check never having run at all.
+    log "$FAYTH: $BEAD_ID closed with nothing committed and NOT reopened — superseded, so its work landed under another id"
 fi
 
 # CLOSED BEHIND THE BASE IS NOT FINISHED. The brief asked for a rebase as the last step; this
