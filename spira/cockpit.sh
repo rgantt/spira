@@ -40,10 +40,15 @@ SNAP="$SPIRA_RUN/cockpit.env"
 WINDOW_HOURS="${SPIRA_COCKPIT_WINDOW_HOURS:-24}"
 INTERVAL="${SPIRA_COCKPIT_INTERVAL:-60}"
 
-# The sentinel's own ready predicate, verbatim. A dashboard that counts ready work by a
-# different rule than the harness acting on it is a second opinion, not a view.
-READY_ARGS=(ready --limit 0 --exclude-type epic --label spira,plan
-            --exclude-label "spira-poison,$SPIRA_ASK_LABEL")
+# The sentinel's own ready predicate — the ARRAY from lib.sh, not a copy of it, and not a
+# variable of the same name shadowing it. "Verbatim" was the intent of the copy that stood
+# here and the copy had already drifted: lib.sh grew `-u` and this had not, so the panel
+# would have gone on reporting as ready the very beads no aeon could claim while the queue
+# starved. A dashboard that counts ready work by a different rule than the harness acting on
+# it is a second opinion, not a view — and a copy is a rule that agrees only until somebody
+# edits one of them.
+PLAN_READY_ARGS=("${READY_ARGS[@]}" --label spira,plan
+                 --exclude-label "spira-poison,$SPIRA_ASK_LABEL")
 
 # count <bd-args...> -> number of rows, or `?` if the query or the parse failed.
 count() {
@@ -121,8 +126,9 @@ print("%s\t%s" % (i.get("priority"), re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.
     echo "SP_AEON_N=$i"
 
     # ---- NEXT: what the graph says to do, in the order it will be claimed ---------------
-    bdjson ready --limit 0 --exclude-type epic --label spira,plan \
-           --exclude-label "spira-poison,$SPIRA_ASK_LABEL" 2>/dev/null | python3 -c '
+    # The same predicate again — NEXT claims to be "the order it will be claimed", so a bead
+    # listed here that an aeon would skip is the panel inviting a wait for work never taken.
+    bdjson "${PLAN_READY_ARGS[@]}" 2>/dev/null | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
 except Exception: raise SystemExit
@@ -456,7 +462,7 @@ print("SP_POISON=%d"    % sum(1 for i in work if i.get("status") != "closed" and
 print("SP_NEEDSOP=%d"  % sum(1 for i in work if i.get("status") != "closed" and has(i, ASK)))
 ' 2>/dev/null || { echo "SP_OPEN=?"; echo "SP_INPROG=?"; echo "SP_POISON=?"; echo "SP_NEEDSOP=?"; }
 
-    echo "SP_READY=$(count "${READY_ARGS[@]}")"
+    echo "SP_READY=$(count "${PLAN_READY_ARGS[@]}")"
 
     # ---- closed versus landed ----------------------------------------------------------
     # law-closed-is-not-landed as a running total. A bead closed with no commit naming it

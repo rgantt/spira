@@ -169,13 +169,36 @@ fayth_get() {            # fayth_get <fayth> <VAR> [default] -> one field of a f
     ( . "$F" 2>/dev/null; eval "printf '%s' \"\${$var:-\$def}\"" )
 }
 
-# ready_count <labels> <exclude-labels> -> how many beads that predicate can claim.
+# READY_ARGS — the ONE definition of "a bead an aeon can take". Everything that counts
+# candidates, lists them or claims one reads this array, so the count the sentinel summons
+# on and the query the aeon claims through cannot ask different questions. Copies of a
+# predicate agree only until somebody edits one of them, and the disagreement presents as a
+# healthy queue.
 #
 # `--limit 0` is not optional. `bd ready` pages at 100 and silently drops the rest, and an
 # installation that imported a predecessor's beads sorts thousands of them above every native
 # plan bead — the plan read as having no workable step at all until this was found.
+#
+# `--exclude-type epic` is not optional. The goal epic has no blockers, so it reads as ready
+# and would be claimed and "implemented", which is not a thing an epic means.
+#
+# `-u` is not optional, and it is the hardest of the three to see. `bd ready` counts a bead
+# by status and blockers; `bd ready --claim` refuses one already carrying another actor's
+# assignee. So a bead orphaned by a dead aeon is counted forever and taken never. Measured
+# 2026-09-06: 13 plan beads were open, unleased and assigned to aeons that no longer existed,
+# and CHECK 7 summoned an aeon every two minutes to report idle within one second. Both
+# programs were right and they were answering different questions; `-u` makes it one
+# question (law-absence-needs-a-positive-control — a "ready" that cannot be claimed is worse
+# than a zero, because it reads as a healthy queue).
+#
+# claim.pools is unset on this installation, so nothing is legitimately pre-assigned to an
+# alias an aeon could still claim. If that ever changes, this is the line that must learn
+# about it: `-u` would then hide pool work that `--claim` would happily take.
+READY_ARGS=(ready --limit 0 --exclude-type epic -u)
+
+# ready_count <labels> <exclude-labels> -> how many beads that predicate can claim.
 ready_count() {
-    bdq ready --limit 0 --exclude-type epic --label "$1" --exclude-label "$2" \
+    bdq "${READY_ARGS[@]}" --label "$1" --exclude-label "$2" \
         --json 2>/dev/null | json_only | json_count
 }
 
@@ -196,11 +219,93 @@ fayth_ready() {          # fayth_ready <fayth> -> claimable beads under ITS OWN 
 # way for four to eight hours at P0 while aeons took P1 work around them, and every one of
 # the 23 reopens the landing log holds had the same defect. Clearing the assignee is what
 # makes a reopen a reopen; it is done here so no site can forget it.
+#
+# IT ALWAYS RETURNS 0, and that is load-bearing rather than sloppy. Callers reopen under
+# `set -e`, and a bd that refuses either half would otherwise abort the caller partway —
+# leaving a bead reopened with no record of WHY, so the next aeon reads an ordinary open
+# bead and repeats whatever produced it. That is worse than not reopening at all. Each half
+# is guarded for the same reason, and bd's refusal is reported on stderr where the harness
+# log keeps it.
 bead_reopen() {
-    local id="$1" note="${2:-}"
-    bdq reopen "$id" >/dev/null 2>&1
-    bdq update "$id" --assignee "" >/dev/null 2>&1
-    [ -n "$note" ] && bdq note "$id" "$note" >/dev/null 2>&1
+    local id="$1" note="${2:-}" rc=0
+    bdq reopen "$id" >/dev/null 2>&1 || rc=1
+    release_claim "$id" || rc=1
+    [ -n "$note" ] && { bdq note "$id" "$note" >/dev/null 2>&1 || rc=1; }
+    [ "$rc" = 0 ] || printf 'bead_reopen: %s — bd refused the reopen, the release or the note\n' "$id" >&2
+    return 0
+}
+
+# --------------------------------------------------------------------------------------
+# ENDING A CLAIM. An assignee is written when a bead is claimed, and it is the ONLY thing
+# standing between the next aeon and the work, because `bd ready --claim` refuses a bead
+# carrying another actor's name. So every path that ends a claim without the work being
+# done has to unwrite it.
+#
+# `bd reopen` sets the status and clears closed_at; it does not touch the assignee. `bd
+# reclaim` does not reach these either — it reverts stale-lease IN_PROGRESS issues, and an
+# orphan is OPEN with a null lease, outside its predicate by construction, because
+# something already reset the status without touching the name.
+#
+# WHY `bd assign <id> ""` AND NOT `bd unclaim --force`. assign refuses to overwrite another
+# actor's LIVE in_progress claim unless forced; unclaim --force by definition does not. That
+# refusal is the safety property, because these run from a timer against a database aeons
+# are claiming out of concurrently: the primitive that loses a race harmlessly is the
+# correct one, and --force is how a sweep robs a live worker.
+# --------------------------------------------------------------------------------------
+release_claim() {        # release_claim <id> -> 0 if the assignee is now clear
+    bdq assign "$1" "" >/dev/null 2>&1
+}
+
+# release_own_claim <id> — an aeon hands back a bead it is still holding.
+#
+# --if-assignee is the inverse of --claim: an atomic compare-and-swap that releases only
+# while the bead is STILL ours, so a supervisor that reclaimed it and handed it to another
+# aeon meanwhile is never clobbered.
+#
+# THE NAME IS THE AEON'S, NOT THE FAYTH'S. aeon.sh claims under BEADS_ACTOR="aeon-$AEON",
+# the per-instance name — `aeon-mindy`, not `aeon-builder`. Release sites that derived the
+# actor a second time as "aeon-$FAYTH" compared against a string no bead has ever carried:
+# bd answered "assignee mismatch", exited 1 into >/dev/null, and changed nothing, so every
+# aeon that ended without closing left its name standing and the next `bd ready --claim`
+# skipped that bead forever. Deriving the actor twice is what let the two disagree, which is
+# why there is one function here and no copies of it anywhere.
+release_own_claim() {
+    local id="$1" me="${BEADS_ACTOR:-aeon-${SPIRA_AEON:-}}"
+    [ -n "$me" ] && [ "$me" != "aeon-" ] || return 1
+    bdq unclaim "$id" --if-assignee "$me" >/dev/null 2>&1
+}
+
+# orphan_claims [labels] -> "<id>\t<assignee>" for every bead holding a claim nobody works.
+#
+# The predicate is status=open AND an assignee AND no lease in the future. in_progress is
+# deliberately NOT here: a live claim is `bd reclaim`'s to time out and strand.sh's to
+# witness, and a third opinion about liveness is how work gets robbed mid-flight.
+orphan_claims() {
+    bdjson list --status open --limit 0 --label "${1:-spira,plan}" 2>/dev/null | python3 -c '
+import sys, json, datetime
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+now = datetime.datetime.now(datetime.timezone.utc)
+for i in (d if isinstance(d, list) else [d]):
+    if not (i.get("assignee") or "").strip(): continue
+    lease = i.get("lease_expires_at")
+    if lease:
+        try:
+            if datetime.datetime.fromisoformat(str(lease).replace("Z", "+00:00")) > now: continue
+        except Exception:
+            continue   # unparseable is not evidence of death; leave it alone
+    print("%s\t%s" % (i.get("id"), i.get("assignee")))' 2>/dev/null
+}
+
+release_orphan_claims() {   # release_orphan_claims [labels] -> a RELEASED line per bead freed
+    local id who
+    while IFS=$'\t' read -r id who; do
+        [ -n "${id:-}" ] || continue
+        # Report only what actually moved. An assign that lost a race to a real claim
+        # returns non-zero and changes nothing, and counting it would be a check reporting
+        # an action it did not take.
+        release_claim "$id" && printf 'RELEASED\t%s\t%s\n' "$id" "$who"
+    done < <(orphan_claims "${1:-spira,plan}")
     return 0
 }
 
@@ -1711,6 +1816,60 @@ spira_destroy_branch() {
 }
 
 # --------------------------------------------------------------------------------------
+# worktree_evict_foreign <work> <repo> — move a worktree aside unless it demonstrably belongs
+# to <repo>: another repository's, or one whose `.git` resolves to nothing. Prints the path it
+# was moved to. rc 0 = moved, 1 = nothing to do, 2 = refused.
+#
+# A WORKTREE PATH IS KEYED ON THE BEAD, AND A BEAD'S REPOSITORY CAN CHANGE. `repo:` is a
+# label, and correcting one is a deliberate mechanism — the landing gate refuses a branch cut
+# in the wrong repository, and the answer is to repoint the bead so the next aeon works it in
+# the right checkout. But the worktree path is derived from the bead id alone, so it is the
+# same path before and after, and a caller that reuses whatever it finds there makes the
+# correction unenforceable: one repointed bead kept the OLD repository's worktree, and every
+# summon after it attached to that tree, rebased the old repository's branch onto the old
+# repository's base, and handed the aeon a checkout in which the files the bead names do not
+# exist. Nothing failed and nothing said so, because `git worktree add` was never reached.
+#
+# MOVED ASIDE, NEVER REMOVED. The tree may hold uncommitted work from an aeon that died, and
+# a harness that deletes a tree to unblock itself is one that can destroy the only copy of
+# something. `git worktree move` keeps both registrations honest; a plain mv followed by
+# `worktree repair` is the fallback for a git that refuses the move.
+#
+# THE COMPARISON IS THE COMMON GIT DIR, resolved absolute, not the path or the remote. Two
+# checkouts of the same repository are legitimately different directories, and a worktree
+# always shares its parent's object store — so the common dir is the one identity that
+# answers "is this tree part of that repository" without a guess.
+worktree_evict_foreign() {
+    local work="$1" repo="$2" have want other aside
+    [ -e "$work/.git" ] || return 1
+    want="$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+    [ -n "$want" ] || return 1
+
+    # AN UNREADABLE TREE IS EVICTED TOO, and it is the case that most needs it. A `.git` that
+    # resolves to nothing still satisfies the caller's existence check, so leaving it in place
+    # hands the aeon a broken checkout by the same silent route a foreign one does — and
+    # `git worktree add` is never reached, so again nothing fails. "Not demonstrably ours" is
+    # the test, not "demonstrably another's".
+    have="$(git -C "$work" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || have=""
+    [ "$have" != "$want" ] || return 1
+
+    other="$(basename "$(dirname "$have")")"
+    aside="$work.${other:-foreign}"
+    [ -e "$aside" ] && aside="$aside.$(date +%s)"
+    # `worktree move` keeps the OWNING repository's registration pointing at the tree, which a
+    # prune of the wanted repository cannot do — the foreign tree is registered in the foreign
+    # repo, so pruning this one leaves that one advertising a path that has gone. `repair` is
+    # the same job after a plain mv, and it is BEST EFFORT: once the directory has moved the
+    # eviction has happened, and reporting "refused" for a failed re-registration would make
+    # the caller die over a tree that is already out of the way.
+    if ! git -C "$work" worktree move "$work" "$aside" >/dev/null 2>&1; then
+        mv "$work" "$aside" 2>/dev/null || return 2
+        git -C "$aside" worktree repair "$aside" >/dev/null 2>&1 || true
+    fi
+    printf '%s' "$aside"
+    return 0
+}
+
 # spira_prune_worktrees <repo> — `git worktree prune`, with the one case it gets wrong.
 #
 # Prune is safe on the reading everyone has of it: it drops admin entries for directories

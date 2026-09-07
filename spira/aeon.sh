@@ -99,14 +99,17 @@ if capacity_paused; then
 fi
 
 # ---- claim ---------------------------------------------------------------------------
-# --exclude-type epic: the goal epic is itself "ready" (it has no blockers) and would
-# otherwise be claimed and "implemented", which is not a thing an epic means.
-claim_args=(ready --claim --limit 0 --exclude-type epic
+# READY_ARGS IS THE SENTINEL'S OWN QUERY (lib.sh), not a copy of it. CHECK 7 summons on a
+# count and this claims out of that count, so the day the two definitions drift is the day
+# an aeon is summoned every two minutes for work it cannot take. That is what each of the
+# three flags in READY_ARGS is there to prevent, and it happened when only some of them
+# were written here.
+claim_args=("${READY_ARGS[@]}" --claim
             --label "$FAYTH_LABELS" --exclude-label "$FAYTH_EXCLUDE_LABELS")
 
 if [ "$DRY" = 1 ]; then
     log "$FAYTH: dry run — candidates:"
-    bdq ready --limit 0 --exclude-type epic --label "$FAYTH_LABELS" \
+    bdq "${READY_ARGS[@]}" --label "$FAYTH_LABELS" \
         --exclude-label "$FAYTH_EXCLUDE_LABELS" 2>/dev/null | grep -vE '^💡|^warning|^  Fix|^  Or' | head -10
     exit 0
 fi
@@ -147,7 +150,7 @@ export GIT_COMMITTER_NAME="aeon-$AEON" GIT_COMMITTER_EMAIL="aeon-$AEON@spira.loc
 # priority order — an ordering nothing promises and one this file already learned not to
 # trust for the claim itself.
 resume_id=""
-for cand in $(bdjson ready --limit 0 --exclude-type epic --label "$FAYTH_LABELS" \
+for cand in $(bdjson "${READY_ARGS[@]}" --label "$FAYTH_LABELS" \
                   --exclude-label "$FAYTH_EXCLUDE_LABELS" 2>/dev/null | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
@@ -222,7 +225,7 @@ REPO_NAME="${BEAD_REPO:-$(spira_home_repo)}"
 if ! REPO="$(repo_root "$REPO_NAME")" || [ ! -e "$REPO/.git" ]; then
     log "$FAYTH: $BEAD_ID names repo:$REPO_NAME, which repo-map does not resolve to a checkout"
     bdq note "$BEAD_ID" "Released by aeon.sh: this bead carries repo:$REPO_NAME, and $SPIRA_REPO_MAP has no entry for it (or its path is not a git checkout). Add one, or correct the label. Refusing to work it in the home repo — a fix landed in the wrong repository passes every check downstream." >/dev/null 2>&1
-    bdq unclaim "$BEAD_ID" --if-assignee "$BEADS_ACTOR" >/dev/null 2>&1
+    release_own_claim "$BEAD_ID"
     ledger "done $FAYTH $BEAD_ID rc=1 status=unmapped-repo"
     exit 1
 fi
@@ -336,15 +339,16 @@ cleanup() {
     # If the bead is still ours and still open, hand it back rather than holding a lease
     # nobody is working. Lease expiry would do this eventually; doing it now is honest.
     #
-    # `--if-assignee "$BEADS_ACTOR"`, NEVER "aeon-$FAYTH". --if-assignee is a compare-and-swap
-    # against the CURRENT holder, and the holder is this aeon's own name — `aeon-mindy`, not
-    # `aeon-builder` — because the claim is made under BEADS_ACTOR, which took a per-instance
-    # name the day aeons got identities. So the swap compared against a string no bead has
-    # ever carried: every release silently no-opped, `bd` exited non-zero into >/dev/null, and
-    # the bead sat in_progress until its lease expired and strand.sh ghost-reclaimed it —
-    # CHARGING A SECOND ATTEMPT for the release this line was supposed to perform. "Returned
-    # unchanged" is not achievable without this: a bead still in_progress has not been
-    # returned at all.
+    # release_own_claim (lib.sh), never a hand-written unclaim. It compares against
+    # BEADS_ACTOR, and the holder is this aeon's own name — `aeon-mindy`, not `aeon-builder`
+    # — because the claim is made under BEADS_ACTOR, which took a per-instance name the day
+    # aeons got identities. Release sites that derived the actor a second time as
+    # "aeon-$FAYTH" compared against a string no bead has ever carried: every release
+    # silently no-opped, `bd` exited non-zero into >/dev/null, and the bead sat in_progress
+    # until its lease expired and strand.sh ghost-reclaimed it — CHARGING A SECOND ATTEMPT
+    # for the release this line was supposed to perform. "Returned unchanged" is not
+    # achievable without it: a bead still in_progress has not been returned at all. One
+    # function and no copies, because deriving the name twice is what let the two disagree.
     st="$(bdjson show "$BEAD_ID" 2>/dev/null | python3 -c '
 import sys,json
 try: d=json.load(sys.stdin)
@@ -366,7 +370,7 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
         # that genuinely fails three times still poisons.
         if reset_at="$(capacity_reset_at "$LOGF")"; then
             capacity_pause_set "$reset_at" "$BEAD_ID"
-            bdq unclaim "$BEAD_ID" --if-assignee "$BEADS_ACTOR" >/dev/null 2>&1
+            release_own_claim "$BEAD_ID"
             bdq note "$BEAD_ID" "Returned unchanged by aeon.sh: the account's capacity window was spent mid-session, so this bead was never judged. No attempt was charged and nothing about the work is implied. Summoning is paused until the window reopens." >/dev/null 2>&1
             log "$FAYTH: $BEAD_ID returned unchanged — the account ran out of capacity, no attempt charged"
             ledger "done $FAYTH $BEAD_ID rc=$rc status=capacity"
@@ -376,7 +380,7 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
         # operator stopping an aeon says nothing about whether the bead is hard, so no
         # attempt is charged toward poison, the same reading as a spent capacity window.
         if [ -f "$SPIRA_RUN/$BEAD_ID.slain" ]; then
-            bdq unclaim "$BEAD_ID" --if-assignee "$BEADS_ACTOR" >/dev/null 2>&1
+            release_own_claim "$BEAD_ID"
             log "$FAYTH: $BEAD_ID slain — released, no attempt charged"
             ledger "done $FAYTH $BEAD_ID rc=$rc status=slain"
             exit $rc
@@ -401,7 +405,7 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
             exit $rc
         fi
         n="$(bump_attempt "$BEAD_ID")"
-        bdq unclaim "$BEAD_ID" --if-assignee "$BEADS_ACTOR" >/dev/null 2>&1
+        release_own_claim "$BEAD_ID"
         log "$FAYTH: $BEAD_ID not closed (attempt $n), released"
     elif gate_why="$(gate_unfinished)"; then
         # CLOSED WITH THE GATE STILL RUNNING is not reopened: the work is committed, and the
@@ -502,30 +506,25 @@ if [ -n "$BASE_REMOTE" ]; then
         || log "$FAYTH: fetch of $BASE_REMOTE failed — basing on a possibly stale $BASE"
 fi
 
-# A WORKTREE THAT BELONGS TO ANOTHER REPOSITORY IS NOT OURS, and the path cannot tell.
-# $WORK is keyed on the bead id alone, so a tree left behind when a bead was scoped to a
-# different repo sits at exactly the path this summon wants — and the existence check below
-# reuses it. Measured 2026-09-07: sp-2tv is repo:spira, and worktree/sp-2tv is a detached
-# brain checkout from before it was rescoped. Eight consecutive summons were handed the brain
-# tree, each one burning an aeon and an attempt and unable to finish, while the real work sat
-# in a tree somebody had made by hand beside it. The bead reached ten attempts against a
-# poison threshold of three without one of them being a fact about the work.
+# A WORKTREE PATH IS KEYED ON THE BEAD, AND A BEAD'S REPOSITORY CAN CHANGE. `repo:` is a
+# label, and repointing one is a deliberate mechanism: the landing gate refuses a branch cut
+# in the wrong repository, and the answer is to correct the label so the next aeon works it
+# in the right checkout. But $WORK is the same path either way, and reusing whatever is
+# there made that correction unenforceable — a repointed bead kept the OLD repository's
+# worktree, and every summon after it attached to that tree and was handed a checkout in
+# which the files the bead names do not exist. The repoint had no effect and could have
+# none, forever, and nothing said so: `git worktree add` was never reached, so no command
+# failed.
 #
-# Compared on the COMMON GIT DIR, not on the remote URL: two checkouts of one repository can
-# have different remotes, and a worktree's common dir is its owning repository by definition.
-if [ -e "$WORK/.git" ]; then
-    _own="$(git -C "$WORK" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
-    _want="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
-    if [ -z "$_own" ] || [ "$_own" != "$_want" ]; then
-        _aside="$WORK.foreign.$(date +%s)"
-        log "$FAYTH: $BEAD_ID — $WORK belongs to ${_own:-an unreadable repository}, not repo:$REPO_NAME; moving it to $_aside"
-        # MOVED, NEVER DELETED. It may hold the only copy of somebody's work, which is the
-        # whole reason it was still there. Unregister it first so the repository that owns it
-        # stops advertising a path that has gone.
-        git -C "$REPO" worktree prune >/dev/null 2>&1
-        mv "$WORK" "$_aside" 2>/dev/null || die "could not move the foreign worktree at $WORK aside"
-    fi
-    unset _own _want _aside
+# The stale tree is MOVED ASIDE, never removed (worktree_evict_foreign, lib.sh). It may hold
+# uncommitted work from a dead aeon, and a harness that deletes a tree to unblock itself is
+# one that can destroy the only copy of something.
+aside="$(worktree_evict_foreign "$WORK" "$REPO")"; evicted=$?
+if [ "$evicted" = 2 ]; then
+    die "$WORK belongs to another repository and could not be moved aside"
+elif [ "$evicted" = 0 ]; then
+    log "$FAYTH: $WORK was a worktree of another repository — moved to $aside"
+    bdq note "$BEAD_ID" "Moved aside by aeon.sh: the worktree at $WORK belonged to a different repository than this bead's repo:$REPO_NAME. It is preserved at $aside — nothing was deleted — and a fresh worktree was cut in the right checkout. A bead whose repo: label is corrected keeps its old worktree path, so without this every later summon would go on working it in the old repository." >/dev/null 2>&1
 fi
 
 if [ ! -d "$WORK/.git" ] && [ ! -f "$WORK/.git" ]; then

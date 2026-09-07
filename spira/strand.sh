@@ -201,8 +201,11 @@ classify() {
 classify_one() {   # classify_one <labels> <exclude-labels> -> the classifier's own TSV
     local labels="$1" exclude="$2" beads ready live holders id
     beads="$(bdjson list --limit 0 --label "$labels")"
-    ready="$(bdjson ready --limit 0 --exclude-type epic --label "$labels" \
-                    --exclude-label "$exclude")"
+    # READY_ARGS (lib.sh), not a copy. The classifier asks "is any of this epic's work
+    # actionable"; a bead carrying a dead aeon's assignee is listed by a bare `bd ready` and
+    # refused by `bd ready --claim`, so counting it here would answer yes about work nobody
+    # can take and hide the strand this program exists to find.
+    ready="$(bdjson "${READY_ARGS[@]}" --label "$labels" --exclude-label "$exclude")"
     live="$(live_aeons "$labels")"
 
     holders="$(printf '%s' "$beads" | python3 -c '

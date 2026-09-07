@@ -169,6 +169,34 @@ n_escal="$(grep -cE '^STRANDED' <<< "$stranded" || true)"
 # queries to save that.
 
 # ======================================================================================
+# CHECK 2c — orphaned claims. The third dead-worker case, and the one neither check above
+# can see: a bead that is OPEN, carries an assignee, and holds no lease.
+#
+# CHECK 2 reverts stale-lease in_progress issues and CHECK 2b witnesses a dead holder of
+# one. Both are about a lease. This is about a bead whose STATUS was already reset — by a
+# reopen in the landing pass, in CHECK 5, or in the aeon's own closed-without-a-commit
+# check — while its assignee was left standing. `bd ready` counts such a bead and `bd ready
+# --claim` skips it, so it is ready forever and claimable never, and no lease ever expires
+# to rescue it. Thirteen plan beads were stuck this way on 2026-09-06 while CHECK 7 summoned
+# an aeon every two minutes to report idle within one second.
+#
+# bead_reopen and release_own_claim now write the two facts together, so this should find
+# nothing. It stays because it is the POSITIVE CONTROL on that claim: a path that ends a
+# claim without clearing it is a bug that presents as a healthy queue, and this sweep is
+# what turns that silence into a visible RELEASED line
+# (law-absence-needs-a-positive-control).
+# ======================================================================================
+released="$(release_orphan_claims "spira,plan")"
+[ -n "$released" ] && printf '%s\n' "$released"
+n_rel="$(grep -c '^RELEASED' <<< "$released" || true)"
+if [ "${n_rel:-0}" -gt 0 ]; then
+    progress "released $n_rel orphaned claim(s)"
+    # Every bead the sweep freed is claimable NOW, so the count CHECK 3 and CHECK 8 reason
+    # about is stale by exactly this much. Re-queried only when something actually moved.
+    plan_ready="$(ready_count spira,plan "spira-poison,$SPIRA_ASK_LABEL")"
+fi
+
+# ======================================================================================
 # CHECK 3 — stale blocked flags. is_blocked is a cached column and goes wrong after an
 # import or a pull; a whole DAG can sit "blocked" behind dependencies that all closed.
 # ======================================================================================
