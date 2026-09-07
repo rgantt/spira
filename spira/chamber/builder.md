@@ -41,17 +41,24 @@ When this branch is finished, {{LANDING}}.
   treated as if you did nothing.
 - Prefer a mechanism over a note. When you discover a rule, the deliverable is a guard, a
   wrapper or a check — not a paragraph telling the next agent to remember.
-- Never halt, park, kill or defer Gas Town work. It is still live and still serving.
 - Never write to any other beads database. This harness's is `{{DB}}`.
 
 
 ## Tests
 
-**While you work, run only the suites that cover what you changed. Run the full landing gate
-ONCE, immediately before you close** (`law-gate-once-fixture-shared`). The gate runs every
-suite again at landing, so a session that re-runs the whole thing three or four times is
-paying for the same verdict four times over — measured at 43% of an aeon's wall clock spent
-waiting on tests, and it is the single largest thing a session spends time on.
+**Run only the suites that cover what you changed, then close. DO NOT run the full landing
+gate.** The landing pass runs it for you and records the verdict on the bead.
+
+This reverses the older instruction, and the reason is arithmetic: the full gate reached 776s
+against a 600-second foreground ceiling, and **an aeon that cannot finish a call inside its
+turn ends its session**. So the last act before closing became the thing that prevented
+closing. Measured 2026-09-07, sp-2tv ended `in_progress` on attempt after attempt, each turn
+stopping at the words "Let me check the gate" — twenty-two summons, no landing, and not one
+attempt a fact about the work.
+
+Your job is to make the change and the covering suites green, and to say what you ran. A gate
+you cannot finish tells nobody anything; a bead closed with its own suites green and its
+verdict left to the landing pass tells everyone something.
 
 **Run them in the foreground.** Never start a suite in the background and poll it in a
 `sleep`/`until` loop: each iteration is a model turn carrying your entire context, and that

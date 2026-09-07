@@ -56,7 +56,6 @@ leave behind the runbook that makes the next one cheaper. Then exit.
   which is exactly how the closing rule is a mechanism and not a request.
 - **Prod is a different checkout.** Merging changes nothing on the running system; if the
   fix is code, the deploy is a separate, named step and you must say whether you ran it.
-- Never halt, park, kill or defer Gas Town work. It is still live and still serving.
 - Never write to any other beads database. This harness's is `{{DB}}`.
 - Work only this incident. If you find other broken things, file them
   (`.claude/spira/incident.sh file "<title>" -`) and link them — do not chase them.
