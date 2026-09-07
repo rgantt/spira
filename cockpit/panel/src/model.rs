@@ -152,7 +152,7 @@ pub mod alert {
     /// Present on every alert bead. The DECISIONS view excludes on this too — see the module
     /// header for why not matching is not enough.
     pub const LABEL: &str = "alert";
-    /// Ryan has seen it. Says nothing about the condition, which is why an acked alert STAYS
+    /// The operator has seen it. Says nothing about the condition, which is why an acked alert STAYS
     /// on the tab: hiding a firing alert because someone looked at it is the reassuring lie
     /// this pane exists to prevent.
     pub const ACKED: &str = "acked";
@@ -170,7 +170,7 @@ pub mod alert {
     pub const SILENCE_SECS: i64 = 3600;
 }
 
-/// Has Ryan seen this alert?
+/// Has the operator seen this alert?
 pub fn acked(it: &Item) -> bool {
     it.labels.iter().any(|l| l == alert::ACKED)
 }
@@ -369,7 +369,7 @@ pub fn act(
 
         // `d` IN THE HISTORY LIFTS A SILENCE — and a CLEARED alert has none to lift. Saying so
         // out loud rather than running a no-op `bd` that exits 0: the history holds both kinds
-        // side by side, and a key that appears to work on the wrong one teaches Ryan that the
+        // side by side, and a key that appears to work on the wrong one teaches the operator that the
         // footer is decoration. Same defect `verb` exists to prevent, one layer along.
         (View::Alerts, Act::Primary) if dismissed => match silence_label(item) {
             Some(old) => run("bd", &["-C", &db, "update", &item.id, "--remove-label", old]),
@@ -378,7 +378,7 @@ pub fn act(
 
         // ACKNOWLEDGING SAYS "SEEN" AND NOTHING ELSE. It must never close the bead: closing is
         // the writer's retraction of its own statement, and a hand-closed alert whose condition
-        // is still true is reopened on the next pass — so the pane would have taught Ryan that
+        // is still true is reopened on the next pass — so the pane would have taught the operator that
         // acting on an alert does nothing. See `act_hides`: the row STAYS.
         (View::Alerts, Act::Primary) => {
             if acked(item) {

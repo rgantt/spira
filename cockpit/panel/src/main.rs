@@ -26,7 +26,7 @@
 //! NOTHING IN THIS PANE CLOSES AN ALERT. An alert is a condition that self-clears, so the
 //! only thing that may retract it is whatever asserted it; `D` is therefore unbound there,
 //! and `d` acknowledges without touching the bead's status. A hand-closed alert whose
-//! condition is still true comes straight back on the next pass, which would teach Ryan that
+//! condition is still true comes straight back on the next pass, which would teach the operator that
 //! acting on this tab does nothing — the exact way a pane becomes wallpaper
 //! (law-alerts-must-be-actionable).
 //!

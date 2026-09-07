@@ -891,15 +891,15 @@ mod tests {
         assert_eq!(vec!["sp-typed"], got, "a labelled alert must not vanish on its type");
     }
 
-    /// An alert bead carries `overseer`, and DECISIONS admits `needs-ryan` OR `overseer` — so
+    /// An alert bead carries `overseer`, and DECISIONS admits the escalation label OR `overseer` — so
     /// without an explicit exclusion every firing alert lands in the one list whose whole
-    /// value is that nothing leaves it unless Ryan moved it. This is the check that the
+    /// value is that nothing leaves it unless the operator moved it. This is the check that the
     /// exclusion exists, not merely that the labels happen not to overlap today.
     #[test]
     fn a_firing_alert_is_not_a_decision() {
         let s = snap(vec![
             firing("sp-a1", "2026-09-05T10:00:00Z"),
-            bead("sp-d1", "open", "2026-09-05T10:00:00Z", &["needs-ryan", "overseer"]),
+            bead("sp-d1", "open", "2026-09-05T10:00:00Z", &["needs-operator", "overseer"]),
         ]);
         assert_eq!(ids(view_items(&s, View::Decisions, false, NOW)), ["sp-d1"]);
         assert_eq!(ids(view_items(&s, View::Alerts, false, NOW)), ["sp-a1"]);
@@ -918,7 +918,7 @@ mod tests {
             "sp-d1",
             "open",
             "2026-09-05T10:00:00Z",
-            &["needs-ryan", "overseer"],
+            &["needs-operator", "overseer"],
         )]);
         assert_eq!(view_items(&other, View::Alerts, false, NOW).unwrap().len(), 0);
         // And a reader that is genuinely broken is an error, never an empty list.

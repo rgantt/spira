@@ -1721,7 +1721,7 @@ three")]);
     // is retracted by whatever asserted it.
 
     /// The tab exists, it is fourth, and it is named ALERTS. Not ESCALATIONS: that word
-    /// already means a `needs-ryan` bead carrying a decision and a default, in CLAUDE.md, in
+    /// already means a bead carrying the escalation label, a decision and a default, in
     /// the escalation policy and in several statutes.
     #[test]
     fn the_fourth_tab_is_called_alerts() {
