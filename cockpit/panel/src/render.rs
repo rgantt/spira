@@ -168,6 +168,40 @@ pub fn epoch(iso: &str) -> Option<i64> {
     Some(secs - off)
 }
 
+/// Unix seconds -> "2026-09-05T16:20:00Z". The exact inverse of `epoch`.
+///
+/// It exists because a silence carries its own deadline in a label, and that deadline has to
+/// be readable in `bd show`, in the JSONL export and on the phone — an epoch integer there is
+/// a number nobody can check. Hand-rolled for the same reason `epoch` is: this pane ships as
+/// one static binary and days-from-civil is the whole of what it wants from a date library.
+///
+/// Round-tripping is asserted against `epoch`, and `epoch` itself is asserted against the
+/// system `date` — an arithmetic that agrees only with its own inverse can be wrong in both
+/// directions at once and still pass.
+pub fn iso(secs: i64) -> String {
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Howard Hinnant's civil_from_days.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let y = y + i64::from(m <= 2);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        y,
+        m,
+        d,
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
 /// How long ago `iso` was, coarsely: "now", "26m", "7h", "6d". Blank if there is no stamp.
 ///
 /// THIS IS THE QUESTION THE PANE IS ASKED. (the operator, verbatim: *"i want to know how long
@@ -283,6 +317,11 @@ fn rule(label: &str, w: usize) -> String {
 fn section(it: &Item) -> &'static str {
     if it.badge == "insight" {
         "why it matters"
+    } else if it.badge.starts_with("alert") {
+        // Not "the alert", which names the message; the body says what is TRUE, and it is a
+        // condition rather than a request. Prefix-matched because the badge carries the flap
+        // count — "alert ×3".
+        "the condition"
     } else if it.badge == "decision" {
         "the decision"
     } else if it.badge == "task" {
@@ -426,6 +465,9 @@ pub fn reader(
     let enter = match view {
         View::Decisions => format!(" · {}⏎{} decide", KEY, BAR),
         View::Insights => format!(" · {}⏎{} comment", KEY, BAR),
+        // An alert takes a comment and never a verdict. There is nothing to decide here:
+        // the condition clears when it clears.
+        View::Alerts => format!(" · {}⏎{} comment", KEY, BAR),
         View::Notifications => String::new(),
     };
     out.push(band(
@@ -453,7 +495,7 @@ pub struct Frame<'a> {
     /// lying about how much is waiting, and this pane's whole job is that number.
     pub dismissed: bool,
     pub items: &'a Result<Vec<Item>, String>,
-    pub counts: [Option<usize>; 3],
+    pub counts: [Option<usize>; 4],
     pub sel: usize,
     pub mode: Option<&'a str>,
     pub buf: &'a str,
@@ -630,10 +672,14 @@ pub fn frame(f: &Frame) -> Vec<String> {
         // The FYI tab RENAMES while its history is on screen, because the count beside it
         // then means dismissed-so-far rather than waiting-to-read, and a tab whose number
         // silently changes meaning is worse than one that says which number it is showing.
-        let name = if *v == View::Insights && f.dismissed {
-            "DISMISSED"
-        } else {
-            v.title()
+        let name = match (*v, f.dismissed && *v == f.view) {
+            (View::Insights, true) => "DISMISSED",
+            // "CLEARED" rather than "SILENCED": the history holds both, and what is in it
+            // mostly is conditions that went away. Either way the count beside the tab now
+            // means something else, and a tab whose number silently changes meaning is worse
+            // than one that says which set it is showing.
+            (View::Alerts, true) => "CLEARED",
+            _ => v.title(),
         };
         let label = format!(" {} {} ", name, n);
         if *v == f.view {
@@ -663,10 +709,18 @@ pub fn frame(f: &Frame) -> Vec<String> {
         // WHAT AN EMPTY VIEW SAYS IS ALSO FRAMING. "No unread insights" describes a queue
         // that has been drained; nothing owed describes a record that has been read, which
         // is what this view holds.
+        // AND AN EMPTY ALERTS TAB IS A CLAIM, so it says what it checked. "No alerts" and
+        // "the reader could not see the database" are the same pixels otherwise, and the
+        // wrong one reads as all-clear (law-absence-needs-a-positive-control). `store::alerts`
+        // refuses to return an empty list at all unless it read beads — so reaching this line
+        // means the read is PROVED, and the wording is allowed to assert it. A reader that is
+        // actually broken lands in the error frame above, in red, naming what it could not do.
         let msg = match (f.view, f.dismissed) {
             (View::Decisions, _) => "nothing waiting on you",
             (View::Insights, true) => "nothing dismissed yet",
             (View::Insights, false) => "nothing new to know",
+            (View::Alerts, true) => "nothing has cleared or been silenced yet",
+            (View::Alerts, false) => "read the alerts — none firing",
             (View::Notifications, _) => "inbox clear",
         };
         out.push(String::new());
@@ -721,15 +775,39 @@ pub fn frame(f: &Frame) -> Vec<String> {
         // reply, which is exactly the claim an insight must not make — a `●` on a record is
         // the pane telling them it is their move on something that was only ever a note. There
         // it degrades to `·`: a conversation exists, nobody is waiting.
+        //
+        // AND IN ALERTS THE COLUMN SAYS SOMETHING ELSE ENTIRELY. There is no turn to take —
+        // nobody owes anybody a reply about a condition — so the column carries the state of
+        // the condition itself: `!` firing and unseen, `·` firing and acknowledged, `z`
+        // silenced, `✓` cleared.
+        //
+        // THE LAST TWO ONLY EXIST IN THE HISTORY, and getting them there is not cosmetic: the
+        // history holds cleared and silenced side by side, and a `!` on a condition that went
+        // away by itself says the one thing about this tab that must never be false. `d` also
+        // does different things to the two — it lifts a silence and refuses a cleared one —
+        // so the row has to say which it is before the key is pressed.
         let op = crate::model::operator_actor();
         let turn = match (f.view, it.thread.last()) {
+            (View::Alerts, _) if f.dismissed && crate::model::silenced(it, f.now) => "z",
+            (View::Alerts, _) if f.dismissed => "✓",
+            (View::Alerts, _) if crate::model::acked(it) => "·",
+            (View::Alerts, _) => "!",
             (_, None) => " ",
             (View::Insights, Some(_)) => "·",
             (_, Some((a, _, _))) if a == crate::model::ME => "↩",
             (_, Some((a, _, _))) if *a == op => "●",
             (_, Some(_)) => "·",
         };
-        let title = clip(&it.title, f.w.saturating_sub(12));
+        // THE FLAP COUNT RIDES THE TITLE, because it is what says "this one keeps coming
+        // back" and that is a property of the row rather than of the selection. It is clipped
+        // WITH the title so a long title cannot push it off the end silently.
+        let flaps = crate::model::flaps(it);
+        let title = if f.view == View::Alerts && flaps > 1 {
+            format!("×{flaps} {}", it.title)
+        } else {
+            it.title.clone()
+        };
+        let title = clip(&title, f.w.saturating_sub(12));
         out.push(if cur {
             let line = format!(" {} {} {} {}", marker, when, turn, title);
             format!(
@@ -743,6 +821,10 @@ pub fn frame(f: &Frame) -> Vec<String> {
             let tc = match turn {
                 "↩" => ACC,
                 "●" => OK,
+                // A firing, unacknowledged condition is the one thing in this pane that is
+                // wrong right now. It gets the only red in the list.
+                "!" => BAD,
+                "✓" => OK,
                 _ => MUT,
             };
             format!(
@@ -892,6 +974,23 @@ fn footer(f: &Frame, pos: usize, total: usize) -> String {
             BAR,
             if f.dismissed { "back" } else { "dismissed" }
         )),
+        // NO `a accept default` AND NO `⏎ decide` HERE EITHER, for a different reason: an
+        // alert has nothing to choose until he has looked. `s` is offered only on the live
+        // tab, because silencing something that has already cleared is a key that appears to
+        // work on the wrong thing.
+        View::Alerts => {
+            if !f.dismissed {
+                s.push_str(&format!(" · {}s{} silence 1h", KEY, BAR));
+            }
+            s.push_str(&format!(
+                " · {}⏎{} comment · {}h{} {}",
+                KEY,
+                BAR,
+                KEY,
+                BAR,
+                if f.dismissed { "back" } else { "cleared" }
+            ));
+        }
         View::Notifications => {}
     }
     s.push_str(&format!(
@@ -915,7 +1014,24 @@ mod tests {
             badge: "question".into(),
             when: "2026-09-05T10:06:00Z".into(),
             thread: Vec::new(),
+            labels: Vec::new(),
         }
+    }
+
+    /// A firing alert, as the ALERTS view builds one: no `lead` ever, and the flap count on
+    /// the badge.
+    fn alert(title: &str, body: &str) -> Item {
+        let mut it = item(title, body);
+        it.badge = "alert".into();
+        it.labels = vec!["alert".into(), "overseer".into()];
+        it
+    }
+
+    fn alert_frame<'a>(items: &'a Result<Vec<Item>, String>, dismissed: bool) -> Frame<'a> {
+        let mut f = a_frame(items, 107, 19);
+        f.view = View::Alerts;
+        f.dismissed = dismissed;
+        f
     }
 
     fn insight(title: &str, body: &str) -> Item {
@@ -941,7 +1057,7 @@ mod tests {
             view: View::Decisions,
             dismissed: false,
             items,
-            counts: [Some(1), Some(0), Some(0)],
+            counts: [Some(1), Some(0), Some(0), Some(0)],
             sel: 0,
             mode: None,
             buf: "",
@@ -1597,4 +1713,204 @@ three")]);
             .join("\n")
             .contains("nothing dismissed yet"));
     }
+    // ── ALERTS: a condition, not a request and not a verdict ─────────────────────────
+    //
+    // The FYI checks above assert the absence of decide-shaped affordances because nothing
+    // about the view's shape announced that adding one was wrong. The same holds here twice
+    // over: an alert must not look answerable, and it must not look CLOSEABLE — the condition
+    // is retracted by whatever asserted it.
+
+    /// The tab exists, it is fourth, and it is named ALERTS. Not ESCALATIONS: that word
+    /// already means a `needs-ryan` bead carrying a decision and a default, in CLAUDE.md, in
+    /// the escalation policy and in several statutes.
+    #[test]
+    fn the_fourth_tab_is_called_alerts() {
+        assert_eq!(View::ALL.len(), 4);
+        assert_eq!(View::ALL[3], View::Alerts);
+        let items = Ok(vec![alert("the loop is wedged", "no pass in 40m")]);
+        let head = strip_seq(&frame(&alert_frame(&items, false))[0]);
+        assert!(head.contains("ALERTS"), "{head:?}");
+        assert!(!head.contains("ESCALATION"), "{head:?}");
+        // And it is reachable by cycling, in both directions, from every other view.
+        assert_eq!(View::Notifications.next(), View::Alerts);
+        assert_eq!(View::Alerts.next(), View::Decisions);
+        assert_eq!(View::Decisions.prev(), View::Alerts);
+    }
+
+    /// The footer's verbs are the alert's own. "close" is a decision's — the reason IS the
+    /// verdict — and "dismiss" is an insight's; neither fits a condition that will retract
+    /// itself. An alert is acknowledged, or silenced for a period.
+    #[test]
+    fn the_alert_footer_acknowledges_and_silences_and_never_decides() {
+        let mut it = alert("the loop is wedged", "no pass in 40m");
+        it.lead = "do X".into(); // even if one somehow got through, it must not be offered
+        let items = Ok(vec![it]);
+        let foot = strip_seq(frame(&alert_frame(&items, false)).last().unwrap());
+        assert!(foot.contains("d ack"), "{foot:?}");
+        assert!(foot.contains("s silence 1h"), "{foot:?}");
+        assert!(foot.contains("h cleared"), "the history must be advertised: {foot:?}");
+        assert!(!foot.contains("decide"), "{foot:?}");
+        assert!(!foot.contains("accept default"), "{foot:?}");
+        assert!(!foot.contains("close"), "{foot:?}");
+        assert!(!foot.contains("dismiss"), "{foot:?}");
+    }
+
+    /// And the reader's footer agrees with it. The two surfaces advertised different keys
+    /// once already — `⏎ decide` on an insight, where the key was not even bound.
+    #[test]
+    fn the_alert_reader_offers_no_verdict_either() {
+        let (lines, _) = reader(&alert("wedged", "no pass in 40m"), View::Alerts, NOW, 0, 107, 19);
+        let foot = strip_seq(lines.last().unwrap());
+        assert!(!foot.contains("decide"), "{foot:?}");
+        assert!(foot.contains("comment"), "{foot:?}");
+    }
+
+    /// `s` is not offered over the history: silencing something that has already cleared is a
+    /// key that appears to work on the wrong thing, and the history holds both kinds side by
+    /// side. There `d` lifts a silence instead.
+    #[test]
+    fn the_cleared_view_says_so_and_unsilences() {
+        let items = Ok(vec![alert("was wedged", "cleared at 04:10")]);
+        let rows = frame(&alert_frame(&items, true));
+        assert!(strip_seq(&rows[0]).contains("CLEARED"), "{:?}", strip_seq(&rows[0]));
+        let foot = strip_seq(rows.last().unwrap());
+        assert!(foot.contains("d unsilence"), "{foot:?}");
+        assert!(foot.contains("h back"), "{foot:?}");
+        assert!(!foot.contains("silence 1h"), "{foot:?}");
+    }
+
+    /// The history holds cleared and silenced side by side, and `d` does different things to
+    /// the two — it lifts a silence, and refuses a cleared one. So the row says which it is
+    /// before the key is pressed. A `!` there would be the one claim this tab must never make
+    /// falsely: that a condition which went away by itself is still firing.
+    #[test]
+    fn the_history_tells_cleared_from_silenced() {
+        let mut quiet = alert("still wedged, quietened", "no pass in 40m");
+        quiet.labels.push("silent-until:2026-09-05T17:00:00Z".into());
+        let items = Ok(vec![quiet, alert("was wedged", "cleared at 04:10")]);
+        let rows = text(&frame(&alert_frame(&items, true)));
+        assert!(rows[1].contains('z'), "a silenced condition is quiet, not gone: {:?}", rows[1]);
+        assert!(rows[2].contains('✓'), "a cleared condition says so: {:?}", rows[2]);
+        assert!(!rows[1].contains('!') && !rows[2].contains('!'), "{rows:?}");
+    }
+
+    /// The marker column carries the only state a reader can change here. It is NOT a turn
+    /// marker: `●` claims somebody owes somebody a reply, which about a condition is false —
+    /// the same claim the FYI view had to stop making.
+    #[test]
+    fn an_alert_row_says_unseen_or_acknowledged_and_never_whose_turn() {
+        let mut it = alert("the loop is wedged", "no pass in 40m");
+        it.thread = vec![("ryan".into(), "2026-09-05T15:00:00Z".into(), "hm".into())];
+        let unseen = Ok(vec![it.clone()]);
+        let row = text(&frame(&alert_frame(&unseen, false)))[1].clone();
+        assert!(row.contains('!'), "a firing alert is marked unseen: {row:?}");
+        assert!(!row.contains('●'), "no ball on an alert: {row:?}");
+
+        it.labels.push("acked".into());
+        let seen = Ok(vec![it]);
+        let row = text(&frame(&alert_frame(&seen, false)))[1].clone();
+        assert!(!row.contains('!'), "an acknowledged alert is not still shouting: {row:?}");
+    }
+
+    /// "with the flap count visible where there is one" — on the row, because a condition
+    /// that keeps coming back is a property of the row rather than of the selection. And not
+    /// on one that has only fired once: a "×1" everywhere makes a real "×7" harder to see.
+    #[test]
+    fn a_flapping_alert_shows_its_count_on_the_row() {
+        let mut it = alert("the loop is wedged", "no pass in 40m");
+        it.labels.push("flaps:7".into());
+        let items = Ok(vec![it, alert("disk is full", "94%")]);
+        let rows = text(&frame(&alert_frame(&items, false)));
+        assert!(rows[1].contains("×7 the loop is wedged"), "{:?}", rows[1]);
+        assert!(!rows[2].contains('×'), "{:?}", rows[2]);
+    }
+
+    /// AN EMPTY ALERTS TAB IS A CLAIM AND SAYS WHAT IT CHECKED. "No alerts" and "the reader
+    /// could not see the database" are the same pixels otherwise, and the wrong one reads as
+    /// all-clear (law-absence-needs-a-positive-control). The refusal is in `store::alerts`;
+    /// this is the half of it a reader actually sees.
+    #[test]
+    fn an_empty_alerts_tab_is_distinguishable_from_a_broken_reader() {
+        let none: Result<Vec<Item>, String> = Ok(vec![]);
+        let clear = text(&frame(&alert_frame(&none, false))).join("\n");
+        assert!(clear.contains("read the alerts — none firing"), "{clear}");
+
+        let broken: Result<Vec<Item>, String> =
+            Err("no beads read at all — cannot say whether anything is firing".into());
+        let rows = frame(&alert_frame(&broken, false));
+        let shown = text(&rows).join("\n");
+        assert!(shown.contains("cannot say whether anything is firing"), "{shown}");
+        assert_ne!(clear, shown, "an all-clear and a broken reader render the same");
+        // And the broken one is red, where the all-clear is green. The difference has to
+        // survive being glanced at, not only being read.
+        assert!(rows.iter().any(|l| l.contains(BAD)), "a broken reader must render as a failure");
+        assert!(
+            frame(&alert_frame(&none, false)).iter().any(|l| l.contains(OK)),
+            "an all-clear must render as one"
+        );
+    }
+
+    /// The rule beneath the thread names what is under it. "The alert" names the message; the
+    /// body says what is TRUE, and calling it a question invites an answer there is none of.
+    #[test]
+    fn the_reader_names_an_alerts_body_the_condition() {
+        let mut it = alert("wedged", "no pass in 40m");
+        it.thread = vec![("ryan".into(), "2026-09-05T15:00:00Z".into(), "on it".into())];
+        let (lines, _) = reader(&it, View::Alerts, NOW, 0, 107, 19);
+        let joined = text(&lines).join("\n");
+        assert!(joined.contains("the condition"), "{joined}");
+        assert!(!joined.contains("the question"), "{joined}");
+        // A flapping one keeps it — the badge carries the count, so the match is a prefix.
+        it.badge = "alert ×7".into();
+        let (lines, _) = reader(&it, View::Alerts, NOW, 0, 107, 19);
+        assert!(text(&lines).join("\n").contains("the condition"));
+    }
+
+    /// A fourth tab is a wider header and a longer footer. Both are cut from the right, and a
+    /// row that overflows wraps the terminal and scrolls the tab bar away.
+    #[test]
+    fn the_alerts_view_fits_every_geometry() {
+        let mut long = alert(&"word ".repeat(400), &"word ".repeat(400));
+        long.labels.push("flaps:12".into());
+        let items = Ok(vec![long.clone(), alert("second", "b")]);
+        for (w, h) in [(107, 19), (100, 16), (60, 8), (40, 5)] {
+            for dismissed in [false, true] {
+                let mut f = alert_frame(&items, dismissed);
+                f.w = w;
+                f.h = h;
+                let rows = frame(&f);
+                assert_eq!(rows.len(), h, "{w}x{h} produced {} rows", rows.len());
+                for (i, r) in rows.iter().enumerate() {
+                    assert!(strip_len(r) <= w, "{w}x{h} row {i} is {} wide", strip_len(r));
+                }
+            }
+            let (lines, _) = reader(&long, View::Alerts, NOW, 0, w, h);
+            assert_eq!(lines.len(), h);
+            for r in &lines {
+                assert!(strip_len(r) <= w);
+            }
+        }
+    }
+
+    /// `iso` is the exact inverse of `epoch`, and `epoch` is checked against the system
+    /// `date` above. An arithmetic that agrees only with its own inverse can be wrong in both
+    /// directions at once and still pass, which is why both halves are here.
+    #[test]
+    fn iso_round_trips_through_epoch() {
+        for stamp in [
+            "1970-01-01T00:00:00Z",
+            "2000-02-29T12:00:00Z",
+            "1999-12-31T23:59:59Z",
+            "2026-09-05T16:20:00Z",
+            "2026-12-31T23:59:59Z",
+            "2027-03-01T00:00:01Z",
+        ] {
+            assert_eq!(iso(epoch(stamp).unwrap()), stamp);
+        }
+        assert_eq!(iso(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso(NOW), "2026-09-05T16:20:00Z");
+        // The one this exists for: a silence deadline an hour out.
+        assert_eq!(iso(NOW + 3600), "2026-09-05T17:20:00Z");
+    }
+
 }

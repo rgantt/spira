@@ -254,6 +254,13 @@ fn fetch_threads(beads: &[Value]) -> std::collections::HashMap<String, Vec<Value
             if l.contains(&"insight") {
                 return true;
             }
+            // A CLEARED ALERT KEEPS ITS THREAD for the same reason: `h` brings it back, and a
+            // retrieved record that silently lost the note saying what was done about it is
+            // the reassuring lie one layer along. Bounded the same way — only alerts, only
+            // ones already reporting a comment.
+            if l.contains(&crate::model::alert::LABEL) {
+                return true;
+            }
             if l.contains(&"archived") {
                 return false;
             }
@@ -497,6 +504,124 @@ fn oldest_first(mut t: Vec<(String, String, String)>) -> Vec<(String, String, St
     t
 }
 
+/// The ALERTS view: conditions that are true NOW, oldest first.
+///
+/// OPEN MEANS FIRING; CLOSED MEANS THE CONDITION CLEARED. Nothing in this function closes
+/// anything — the writer retracts its own statement, which is what makes the tab
+/// self-clearing, and the whole reason an alert must not be a decision.
+///
+/// OLDEST FIRST, EXPLICITLY, and not the `out.reverse()` the other views use. First-seen
+/// order is the reading order for conditions: the one that has been true longest is the one
+/// that is not fixing itself. `bd list` orders by recency and nothing promises it will keep
+/// doing so, so the sort is stated here rather than inherited.
+///
+/// THE EMPTY CASE IS A POSITIVE CONTROL (law-absence-needs-a-positive-control). "No alerts"
+/// and "the reader is pointed at the wrong database" are the same pixels otherwise, and the
+/// wrong one reads as all-clear — which displaces exactly the suspicion that would have
+/// prompted a look. So an empty view is only reported after the read is proved: the snapshot
+/// must hold beads. Zero rows from a `bd list --all --limit 0` is not an empty queue, it is a
+/// reader that resolved nothing, and it is refused rather than rendered green.
+fn alerts(s: &Snapshot, dismissed: bool, now: i64) -> Result<Vec<Item>, String> {
+    let all = match (&s.beads, &s.beads_err) {
+        (_, Some(e)) => return Err(e.clone()),
+        (None, _) => return Err("loading…".into()),
+        (Some(all), _) => all,
+    };
+    // The positive control. Not `all.is_empty()` as a convenience check — it IS the check:
+    // the only evidence available here that the query resolved a database at all.
+    if all.is_empty() {
+        return Err("no beads read at all — cannot say whether anything is firing".into());
+    }
+    // THE LABELS ARE THE WHOLE PREDICATE, and `issue_type == "event"` is deliberately not
+    // part of it even though the writer's contract says every alert bead is one. Two reasons,
+    // and the second is the load-bearing one. Every other view here selects on labels alone,
+    // so a type check would be the one place a bead's shape mattered. And a second condition
+    // can only ever REMOVE rows: a correctly-labelled alert filed with the wrong type would
+    // then be a firing condition that the tab silently does not show, which is the failure
+    // direction this whole design refuses — the same reasoning that makes an unparseable
+    // `silent-until:` silence nothing. Being too permissive costs a spurious row somebody can
+    // see and fix; being too strict costs the outage.
+    let mut out: Vec<Item> = all
+        .iter()
+        .filter(|r| {
+            let l = labels(r);
+            l.contains(&crate::model::alert::LABEL) && l.contains(&"overseer")
+        })
+        .map(|r| {
+            let l = labels(r);
+            let flaps: u32 = l
+                .iter()
+                .find_map(|x| x.strip_prefix(crate::model::alert::FLAPS)?.trim().parse().ok())
+                .unwrap_or(1);
+            let it = Item {
+                id: r["id"].as_str().unwrap_or("?").to_string(),
+                title: r["title"].as_str().unwrap_or("").to_string(),
+                // NO `default:` LINE, EVER. An alert carries no recommended default, because
+                // there is nothing to choose until he has looked; `lead` matches any line
+                // containing the word, so leaving it blank HERE is what makes that a
+                // guarantee rather than a tendency. Same reasoning as an insight's.
+                lead: String::new(),
+                body: r["description"].as_str().unwrap_or("").to_string(),
+                // The flap count rides the badge so it reaches the rule and the reader's
+                // header; the list row prints it too. "alert" alone when it has only ever
+                // fired once — a "×1" is noise that makes a real "×7" harder to spot.
+                badge: if flaps > 1 {
+                    format!("alert ×{flaps}")
+                } else {
+                    "alert".into()
+                },
+                // FIRST SEEN, not last. A flapping condition reopens its own bead rather than
+                // cutting a new one, so `created_at` is when the condition was first true and
+                // the age on the row is how long it has been going unfixed.
+                when: r["created_at"].as_str().unwrap_or("").to_string(),
+                thread: oldest_first(
+                    s.threads
+                        .get(r["id"].as_str().unwrap_or(""))
+                        .map(|cs| {
+                            cs.iter()
+                                .map(|c| {
+                                    (
+                                        c["author"].as_str().unwrap_or("?").to_string(),
+                                        c["created_at"]
+                                            .as_str()
+                                            .or_else(|| c["timestamp"].as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        c["text"].as_str().unwrap_or("").to_string(),
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                ),
+                labels: l.iter().map(|x| x.to_string()).collect(),
+            };
+            // Carried alongside rather than added to `Item`: status answers one question in
+            // one branch, and a field the other four views ignore is a field that will drift.
+            (r["status"].as_str() != Some("closed"), it)
+        })
+        // Firing and audible, versus everything the tab is deliberately not showing. A
+        // silence is compared against `now` rather than merely being present, so it expires
+        // by being read and nothing has to run to lift it.
+        .filter(|(firing, it)| {
+            let quiet = crate::model::silenced(it, now);
+            if dismissed {
+                !firing || quiet
+            } else {
+                *firing && !quiet
+            }
+        })
+        .map(|(_, it)| it)
+        .collect();
+    out.sort_by(|a, b| a.when.cmp(&b.when));
+    // The history reads newest-first: what cleared most recently is what a reader coming to
+    // it wants, where the live tab's question is what has been true longest.
+    if dismissed {
+        out.reverse();
+    }
+    Ok(out)
+}
+
 /// Filter the cached rows down to one view. Pure, in memory, instant.
 ///
 /// `dismissed` only means anything in the FYI view, where it swaps the live insights for the
@@ -504,7 +629,15 @@ fn oldest_first(mut t: Vec<(String, String, String)>) -> Vec<(String, String, St
 /// tab count and the destructive key must all agree about which set is on screen: the tab
 /// said 0 while the list showed twelve is exactly the reassuring-lie shape `present_ids`
 /// exists to prevent, one layer up.
-pub fn view_items(s: &Snapshot, view: View, dismissed: bool) -> Result<Vec<Item>, String> {
+pub fn view_items(
+    s: &Snapshot,
+    view: View,
+    dismissed: bool,
+    now: i64,
+) -> Result<Vec<Item>, String> {
+    if view == View::Alerts {
+        return alerts(s, dismissed, now);
+    }
     match view {
         View::Notifications => match (&s.mail, &s.mail_err) {
             (_, Some(e)) => Err(e.clone()),
@@ -519,6 +652,7 @@ pub fn view_items(s: &Snapshot, view: View, dismissed: bool) -> Result<Vec<Item>
                     badge: m["from"].as_str().unwrap_or("?").to_string(),
                     when: m["timestamp"].as_str().unwrap_or("").to_string(),
                     thread: Vec::new(),
+                    labels: Vec::new(),
                 })
                 .collect()),
         },
@@ -556,6 +690,16 @@ pub fn view_items(s: &Snapshot, view: View, dismissed: bool) -> Result<Vec<Item>
                             return !arch || r["comment_count"].as_u64().unwrap_or(0) > 0;
                         }
                         if is_insight {
+                            return false;
+                        }
+                        // AN ALERT IS NEVER A DECISION, and this exclusion is load-bearing
+                        // rather than defensive: an alert bead carries `overseer`, and the
+                        // predicate below admits the escalation label OR `overseer`, so every
+                        // firing alert would otherwise appear HERE — in the one list whose
+                        // whole value is that nothing leaves it unless the operator moved it.
+                        // See the module header of `model` for why the discriminator is
+                        // lifecycle.
+                        if l.contains(&crate::model::alert::LABEL) {
                             return false;
                         }
                         // DECISIONS is "what is waiting on the operator", and the label that
@@ -627,6 +771,7 @@ pub fn view_items(s: &Snapshot, view: View, dismissed: bool) -> Result<Vec<Item>
                                     })
                                     .unwrap_or_default(),
                             ),
+                            labels: l.iter().map(|x| x.to_string()).collect(),
                         }
                     })
                     .collect();
@@ -698,6 +843,176 @@ mod tests {
     fn a_plain_body_is_left_alone() {
         let b = "one line.\n\nand another.";
         assert_eq!(fyi_body(b), b);
+    }
+
+    // ── ALERTS: a condition that self-clears ─────────────────────────────────────────
+    //
+    // Every one of these asserts a property that distinguishes an alert from a decision.
+    // Nothing about the SHAPE of the code announces that letting an alert into DECISIONS, or
+    // letting an empty read render as all-clear, is wrong — so the checks say it instead.
+
+    fn snap(rows: Vec<Value>) -> Snapshot {
+        Snapshot { beads: Some(rows), ..Default::default() }
+    }
+
+    fn bead(id: &str, status: &str, created: &str, labels: &[&str]) -> Value {
+        serde_json::json!({
+            "id": id,
+            "title": format!("{id} fired"),
+            "description": "the condition",
+            "issue_type": "event",
+            "status": status,
+            "created_at": created,
+            "labels": labels,
+        })
+    }
+
+    fn firing(id: &str, created: &str) -> Value {
+        bead(id, "open", created, &["alert", "overseer"])
+    }
+
+    /// 2026-09-05T16:20:00Z, the same frozen instant the render tests use.
+    const NOW: i64 = 1_788_625_200;
+
+    fn ids(r: Result<Vec<Item>, String>) -> Vec<String> {
+        r.unwrap().into_iter().map(|i| i.id).collect()
+    }
+
+    /// The writer's contract says an alert bead is `issue_type: event`, and the tab does NOT
+    /// select on that — see the comment on the filter. Pinned here because the natural
+    /// instinct on reading the contract is to add the check, and adding it would turn a
+    /// mislabelled type into a firing condition nobody is shown. The failure direction has to
+    /// stay "you still see it".
+    #[test]
+    fn a_wrongly_typed_alert_is_still_shown() {
+        let mut odd = firing("sp-typed", "2026-09-05T10:00:00Z");
+        odd["issue_type"] = serde_json::json!("task");
+        let got = ids(alerts(&snap(vec![odd]), false, NOW));
+        assert_eq!(vec!["sp-typed"], got, "a labelled alert must not vanish on its type");
+    }
+
+    /// An alert bead carries `overseer`, and DECISIONS admits `needs-ryan` OR `overseer` — so
+    /// without an explicit exclusion every firing alert lands in the one list whose whole
+    /// value is that nothing leaves it unless Ryan moved it. This is the check that the
+    /// exclusion exists, not merely that the labels happen not to overlap today.
+    #[test]
+    fn a_firing_alert_is_not_a_decision() {
+        let s = snap(vec![
+            firing("sp-a1", "2026-09-05T10:00:00Z"),
+            bead("sp-d1", "open", "2026-09-05T10:00:00Z", &["needs-ryan", "overseer"]),
+        ]);
+        assert_eq!(ids(view_items(&s, View::Decisions, false, NOW)), ["sp-d1"]);
+        assert_eq!(ids(view_items(&s, View::Alerts, false, NOW)), ["sp-a1"]);
+        // And it is not an FYI either — that view wants `insight`.
+        assert!(ids(view_items(&s, View::Insights, false, NOW)).is_empty());
+    }
+
+    /// THE POSITIVE CONTROL (law-absence-needs-a-positive-control). "No alerts" and "the
+    /// reader resolved no database" are the same pixels, and the wrong one reads as
+    /// all-clear. An empty read is refused; a read that returned rows and matched none is
+    /// a genuine all-clear and is allowed through.
+    #[test]
+    fn an_empty_read_is_refused_and_a_proved_read_is_not() {
+        assert!(view_items(&snap(vec![]), View::Alerts, false, NOW).is_err());
+        let other = snap(vec![bead(
+            "sp-d1",
+            "open",
+            "2026-09-05T10:00:00Z",
+            &["needs-ryan", "overseer"],
+        )]);
+        assert_eq!(view_items(&other, View::Alerts, false, NOW).unwrap().len(), 0);
+        // And a reader that is genuinely broken is an error, never an empty list.
+        let broken = Snapshot { beads_err: Some("bd: no such database".into()), ..Default::default() };
+        assert!(view_items(&broken, View::Alerts, false, NOW).is_err());
+    }
+
+    /// Oldest first, and stated rather than inherited from `bd list`'s own ordering: the
+    /// condition that has been true longest is the one that is not fixing itself.
+    #[test]
+    fn alerts_are_sorted_by_first_seen_oldest_first() {
+        let s = snap(vec![
+            firing("sp-new", "2026-09-05T16:00:00Z"),
+            firing("sp-old", "2026-09-01T09:00:00Z"),
+            firing("sp-mid", "2026-09-04T09:00:00Z"),
+        ]);
+        assert_eq!(
+            ids(view_items(&s, View::Alerts, false, NOW)),
+            ["sp-old", "sp-mid", "sp-new"]
+        );
+    }
+
+    /// THE TAB SELF-CLEARS. A closed alert is a retracted statement and leaves with nobody
+    /// touching it — and stays reachable behind the history toggle, the way a dismissed FYI
+    /// does. This is the property that makes an alert not a decision.
+    #[test]
+    fn a_cleared_alert_leaves_the_tab_on_its_own_and_stays_reachable() {
+        let s = snap(vec![
+            firing("sp-live", "2026-09-05T10:00:00Z"),
+            bead("sp-gone", "closed", "2026-09-04T10:00:00Z", &["alert", "overseer"]),
+        ]);
+        assert_eq!(ids(view_items(&s, View::Alerts, false, NOW)), ["sp-live"]);
+        assert_eq!(ids(view_items(&s, View::Alerts, true, NOW)), ["sp-gone"]);
+    }
+
+    /// A SILENCE EXPIRES BY BEING READ. The deadline lives in the label, so nothing has to
+    /// run to lift it — a silence that needs a process to end it is a silence that outlives
+    /// the process, and the condition then sits unreported with no record of why.
+    #[test]
+    fn a_silence_expires_on_its_own_deadline() {
+        let quiet = |until: &str| {
+            snap(vec![bead(
+                "sp-q",
+                "open",
+                "2026-09-05T10:00:00Z",
+                &["alert", "overseer", until],
+            )])
+        };
+        let ahead = quiet("silent-until:2026-09-05T17:00:00Z");
+        assert!(ids(view_items(&ahead, View::Alerts, false, NOW)).is_empty());
+        assert_eq!(ids(view_items(&ahead, View::Alerts, true, NOW)), ["sp-q"]);
+
+        let passed = quiet("silent-until:2026-09-05T15:00:00Z");
+        assert_eq!(ids(view_items(&passed, View::Alerts, false, NOW)), ["sp-q"]);
+        assert!(ids(view_items(&passed, View::Alerts, true, NOW)).is_empty());
+
+        // A deadline that will not parse is NO silence, never an eternal one: the failure
+        // direction has to be "you still see it".
+        let junk = quiet("silent-until:whenever");
+        assert_eq!(ids(view_items(&junk, View::Alerts, false, NOW)), ["sp-q"]);
+    }
+
+    /// ACKNOWLEDGING IS NOT CLEARING. An acked alert is still firing, so it stays on the tab;
+    /// hiding it because someone looked at it is the reassuring lie this pane exists to
+    /// prevent, and it would make the tab disagree with the world.
+    #[test]
+    fn an_acknowledged_alert_is_still_on_the_tab() {
+        let s = snap(vec![bead(
+            "sp-seen",
+            "open",
+            "2026-09-05T10:00:00Z",
+            &["alert", "overseer", "acked"],
+        )]);
+        let got = view_items(&s, View::Alerts, false, NOW).unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(crate::model::acked(&got[0]));
+    }
+
+    /// The flap count reaches the badge, and only when there is one to show: a "×1" on every
+    /// row is noise that makes a real "×7" harder to spot. An alert never carries a default.
+    #[test]
+    fn the_flap_count_rides_the_badge_and_there_is_never_a_default() {
+        let s = snap(vec![
+            bead("sp-f", "open", "2026-09-05T09:00:00Z", &["alert", "overseer", "flaps:7"]),
+            firing("sp-once", "2026-09-05T10:00:00Z"),
+        ]);
+        let got = view_items(&s, View::Alerts, false, NOW).unwrap();
+        assert_eq!(got[0].badge, "alert ×7");
+        assert_eq!(crate::model::flaps(&got[0]), 7);
+        assert_eq!(got[1].badge, "alert");
+        assert_eq!(crate::model::flaps(&got[1]), 1, "no label means it has fired once");
+        for it in &got {
+            assert!(it.lead.is_empty(), "an alert has nothing to choose yet: {:?}", it.lead);
+        }
     }
 
     fn c(author: &str, when: &str) -> (String, String, String) {

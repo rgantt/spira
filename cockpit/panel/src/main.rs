@@ -1,4 +1,4 @@
-//! panel — the cockpit's bottom-left pane: decisions, insights and notifications.
+//! panel — the cockpit's bottom-left pane: decisions, FYI, notifications and alerts.
 //!
 //!     panel           interactive
 //!     panel --once    print one frame and exit
@@ -12,15 +12,23 @@
 //! certain kinds of beads out of band of our normal conversation"*.
 //!
 //! KEYS
-//!     j k ↑ ↓     move                    1 2 3 / tab   view
-//!     d           act — close / dismiss / mark read, one keypress, no prompt
-//!     D           the same, but prompt for a reason
-//!     ⏎           decide (decisions) / comment (FYI)
-//!     h           in FYI: show what has been dismissed; d there restores it
+//!     j k ↑ ↓     move                    tab / shift-tab   view
+//!     d           act — close / dismiss / mark read / acknowledge, one keypress, no prompt
+//!     D           the same, but prompt for a reason (not in ALERTS — see below)
+//!     ⏎           decide (decisions) / comment (FYI, ALERTS)
+//!     s           in ALERTS: silence this condition for an hour
+//!     h           in FYI and ALERTS: show the history; d there undoes
 //!     r           force a sync            esc  cancel input
 //!
 //! `d` acts immediately because dismissing should not cost a sentence: *"i may want to
 //! comment on an insight, but other times i can just read it and move on."*
+//!
+//! NOTHING IN THIS PANE CLOSES AN ALERT. An alert is a condition that self-clears, so the
+//! only thing that may retract it is whatever asserted it; `D` is therefore unbound there,
+//! and `d` acknowledges without touching the bead's status. A hand-closed alert whose
+//! condition is still true comes straight back on the next pass, which would teach Ryan that
+//! acting on this tab does nothing — the exact way a pane becomes wallpaper
+//! (law-alerts-must-be-actionable).
 //!
 //! NOTHING BLOCKS ON A SUBPROCESS. The store refreshes on a background thread; the UI only
 //! reads the last snapshot and filters it in memory. Tab switching used to re-run two
@@ -37,7 +45,7 @@ mod store;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal;
-use model::{act, comment, Item, View};
+use model::{act, comment, Act, Item, View};
 use render::{frame, Frame};
 use std::io::{stdout, Write};
 use std::sync::{Arc, Mutex};
@@ -69,6 +77,16 @@ struct App {
     /// Failures from writes that ran off-thread. A write that fails must surface; the
     /// optimistic hide would otherwise lose the item silently.
     errors: Arc<Mutex<Vec<String>>>,
+    /// Ids to put BACK on screen, because the write that hid them failed.
+    ///
+    /// The optimistic hide is only honest if it is undone when the write it was betting on
+    /// does not land. It was not: `prune` keeps hiding an id for exactly as long as the store
+    /// still returns it, so a failed `bd` left the row hidden until the next `r` — and the
+    /// only trace was a flash that scrolls away on the next keypress. Harmless enough on a
+    /// decision that is still open in the database; not harmless at all on a FIRING ALERT
+    /// silenced by a write that failed, which is a condition removed from the pane with
+    /// nothing anywhere saying it is still true.
+    unhide: Arc<Mutex<Vec<String>>>,
     /// Writes still in flight, so the footer can say so rather than looking idle.
     inflight: Arc<Mutex<usize>>,
     /// The FYI view is showing what has already been dismissed.
@@ -91,6 +109,12 @@ struct App {
     /// Bumped whenever `pending` changes, so the derived cache can key on it exactly
     /// rather than guessing from its length.
     pending_rev: u64,
+    /// The instant every age and every deadline is measured against, frozen by `PANEL_NOW`.
+    ///
+    /// It lives on `App` rather than in the render loop because the ALERTS view needs it too:
+    /// a silence carries its own expiry, so which items the view CONTAINS is a function of the
+    /// clock and not only of the snapshot. See `derive` for what that costs the cache.
+    frozen_now: Option<i64>,
     /// Derived lists, cached.
     ///
     /// WHY (the operator's call): *"when i use the arrow keys to scroll in one item's
@@ -118,7 +142,7 @@ struct Derived {
     dismissed: bool,
     pending_rev: u64,
     items: Result<Vec<Item>, String>,
-    counts: [Option<usize>; 3],
+    counts: [Option<usize>; 4],
 }
 
 /// Where the reader is, and how far down it can usefully go.
@@ -178,6 +202,13 @@ impl App {
     /// only worth hiding while the store still reports it; once the sync no longer returns
     /// it, the write landed and the hide has done its job.
     fn prune(&mut self) {
+        // Failed writes first: a row hidden by a bet that lost comes back before anything
+        // else is decided about what to draw.
+        let failed: Vec<String> = std::mem::take(&mut *self.unhide.lock().unwrap());
+        if !failed.is_empty() {
+            self.pending.retain(|id| !failed.contains(id));
+            self.pending_rev = self.pending_rev.wrapping_add(1);
+        }
         if self.pending.is_empty() {
             return;
         }
@@ -195,7 +226,23 @@ impl App {
         }
     }
 
+    /// Unix seconds, or whatever `PANEL_NOW` froze it at.
+    fn now(&self) -> i64 {
+        self.frozen_now.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0)
+        })
+    }
+
     /// Rebuild the derived lists only when the inputs actually changed.
+    ///
+    /// A SILENCE EXPIRES ON THE NEXT REFRESH, not on the next frame. The clock is an input to
+    /// the ALERTS list and is deliberately NOT in the cache key: keying on it would rebuild
+    /// every frame, which is the per-keystroke megabyte-of-allocation cost this cache was
+    /// written to remove. So an hour-long silence can run up to one refresh interval long.
+    /// That is the right trade for a deadline measured in hours — and `r` forces it.
     ///
     /// Holds the store lock for the rebuild alone, never for a render.
     fn derive(&self) {
@@ -213,12 +260,12 @@ impl App {
             }
         }
         let s = self.shared.lock().unwrap();
-        let items = store::view_items(&s, self.view, self.dismissed).map(|v| {
+        let items = store::view_items(&s, self.view, self.dismissed, self.now()).map(|v| {
             v.into_iter()
                 .filter(|i| !self.pending.contains(&i.id))
                 .collect::<Vec<_>>()
         });
-        let mut counts = [None; 3];
+        let mut counts = [None; 4];
         for (i, v) in View::ALL.iter().enumerate() {
             counts[i] = if *v == self.view {
                 items.as_ref().ok().map(|x| x.len())
@@ -226,7 +273,7 @@ impl App {
                 // A view that is not on screen counts its LIVE items — the dismissed flag
                 // only ever describes the view being looked at. Otherwise the FYI tab would
                 // advertise a history nobody asked to see.
-                store::view_items(&s, *v, false)
+                store::view_items(&s, *v, false, self.now())
                     .ok()
                     .map(|x| x.iter().filter(|i| !self.pending.contains(&i.id)).count())
             };
@@ -250,13 +297,13 @@ impl App {
             .unwrap_or_else(|| Ok(Vec::new()))
     }
 
-    fn counts(&self) -> [Option<usize>; 3] {
+    fn counts(&self) -> [Option<usize>; 4] {
         self.derive();
         self.cache
             .borrow()
             .as_ref()
             .map(|d| d.counts)
-            .unwrap_or([None; 3])
+            .unwrap_or([None; 4])
     }
 
     fn current(&self) -> Option<Item> {
@@ -270,22 +317,37 @@ impl App {
     /// it. the operator: *"it takes almost 10 seconds to get a TUI update when i type 'd' ... and i
     /// can't navigate while it's happening."* The row is hidden immediately, the write goes
     /// to a thread, and a failure puts the item back and says why.
-    fn do_act(&mut self, reason: &str) {
+    fn do_act(&mut self, reason: &str, what: Act) {
         let Some(it) = self.current() else { return };
-        self.pending.push(it.id.clone());
-        self.pending_rev = self.pending_rev.wrapping_add(1);
-        self.flash = format!("{} {}", self.view.verb(self.dismissed), it.id);
+        // NOT EVERY ACT REMOVES ITS ROW. Acknowledging an alert says "seen" and changes
+        // nothing about the condition, so the row must stay — hiding a firing alert because
+        // someone looked at it is precisely the reassuring lie this pane exists to prevent.
+        let hides = model::act_hides(self.view, what);
+        if hides {
+            self.pending.push(it.id.clone());
+            self.pending_rev = self.pending_rev.wrapping_add(1);
+        }
+        self.flash = match what {
+            Act::Silence => format!("silenced {} for an hour", it.id),
+            Act::Primary => format!("{} {}", self.view.verb(self.dismissed), it.id),
+        };
 
         let (view, reason, dismissed) = (self.view, reason.to_string(), self.dismissed);
-        let (errors, inflight, shared) = (
+        let now = self.now();
+        let (errors, inflight, shared, unhide) = (
             Arc::clone(&self.errors),
             Arc::clone(&self.inflight),
             Arc::clone(&self.shared),
+            Arc::clone(&self.unhide),
         );
         *inflight.lock().unwrap() += 1;
         thread::spawn(move || {
-            if let Err(e) = act(view, &it, &reason, dismissed) {
+            if let Err(e) = act(view, &it, &reason, dismissed, what, now) {
                 errors.lock().unwrap().push(format!("{}: {e}", it.id));
+                // Put it back. The hide was a bet on this write, and the bet lost.
+                if hides {
+                    unhide.lock().unwrap().push(it.id.clone());
+                }
             }
             *inflight.lock().unwrap() -= 1;
             store::refresh(&shared);
@@ -344,13 +406,46 @@ impl App {
     }
 }
 
+/// The close reason `d` records, which only two of the four views have one to record.
+///
+/// FYI, ALERTS and NOTIFICATIONS write a label or an inbox flag and never a reason, so the
+/// string is unread there; DECISIONS closes with it, and "done" is what a verdict-less close
+/// has always said. Named rather than inlined because it used to be a two-arm `match` written
+/// out twice — once for the list and once for the reader — which is how the two surfaces come
+/// to disagree about what a key does.
+fn primary_reason(view: View) -> &'static str {
+    match view {
+        View::Decisions => "done",
+        _ => "read",
+    }
+}
+
 fn main() {
     let shared: store::Shared = Arc::new(Mutex::new(store::Snapshot::default()));
     store::refresh(&shared);
     store::spawn_refresher(Arc::clone(&shared), REFRESH);
 
+    // THE CLOCK EVERY AGE AND EVERY DEADLINE IS MEASURED AGAINST. Read per frame, and passed
+    // into the render, which therefore stays a pure function of its inputs.
+    //
+    // It replaces a `date -u` subprocess that ran once at startup — harmless when all it
+    // decided was whether a stamp printed a time or a date, and wrong for an age, which has
+    // to move while the pane is open. `SystemTime` is a vDSO call, so reading it per frame
+    // costs nothing where the subprocess did.
+    //
+    // PANEL_NOW freezes it, given either epoch seconds or an ISO stamp. `tests/fixture.json`
+    // froze the DATA so a render change could be captured before and after against identical
+    // rows; an age read from the wall clock would put that coin toss straight back, because
+    // two captures taken a minute apart then differ for a reason that is not the change.
+    // See capture.sh, which sets it.
+    let frozen_now: Option<i64> = std::env::var("PANEL_NOW").ok().and_then(|v| {
+        let v = v.trim();
+        v.parse::<i64>().ok().or_else(|| render::epoch(v))
+    });
+
     let mut app = App {
         shared,
+        frozen_now,
         view: View::Decisions,
         sel: 0,
         mode: None,
@@ -361,6 +456,7 @@ fn main() {
         dismissed: false,
         cache: std::cell::RefCell::new(None),
         errors: Arc::new(Mutex::new(Vec::new())),
+        unhide: Arc::new(Mutex::new(Vec::new())),
         inflight: Arc::new(Mutex::new(0)),
         reading: false,
         scroll: Scroll::new(),
@@ -431,32 +527,6 @@ fn main() {
         app.sel = n.min(count.saturating_sub(1));
     }
 
-    // THE CLOCK EVERY AGE IS MEASURED AGAINST. Read once per frame and passed into the
-    // render, which therefore stays a pure function of its inputs.
-    //
-    // It replaces a `date -u` subprocess that ran once at startup — harmless when all it
-    // decided was whether a stamp printed a time or a date, and wrong for an age, which has
-    // to move while the pane is open. `SystemTime` is a vDSO call, so reading it per frame
-    // costs nothing where the subprocess did.
-    //
-    // PANEL_NOW freezes it, given either epoch seconds or an ISO stamp. `tests/fixture.json`
-    // froze the DATA so a render change could be captured before and after against identical
-    // rows; an age read from the wall clock would put that coin toss straight back, because
-    // two captures taken a minute apart then differ for a reason that is not the change.
-    // See capture.sh, which sets it.
-    let frozen_now: Option<i64> = std::env::var("PANEL_NOW").ok().and_then(|v| {
-        let v = v.trim();
-        v.parse::<i64>().ok().or_else(|| render::epoch(v))
-    });
-    let now = move || {
-        frozen_now.unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0)
-        })
-    };
-
     let render_once = |app: &App, w: usize, h: usize| {
         let (age, refreshing) = {
             let s = app.shared.lock().unwrap();
@@ -487,7 +557,7 @@ fn main() {
             if let Ok(v) = items {
                 if let Some(it) = v.get(app.sel) {
                     let (lines, max) =
-                        render::reader(it, app.view, now(), app.scroll.get(), w, h);
+                        render::reader(it, app.view, app.now(), app.scroll.get(), w, h);
                     app.scroll.set_max(max);
                     return lines;
                 }
@@ -518,7 +588,7 @@ fn main() {
             flash,
             age,
             refreshing: refreshing || busy,
-            now: now(),
+            now: app.now(),
             w,
             h,
         };
@@ -605,7 +675,7 @@ fn main() {
                         match m.as_str() {
                             "comment" => app.do_comment(&v),
                             // decide and reason both close; the text is the record.
-                            _ => app.do_act(&v),
+                            _ => app.do_act(&v, Act::Primary),
                         }
                     }
                     app.mode = None;
@@ -644,15 +714,24 @@ fn main() {
                 }
                 // The reader's footer advertises this on an insight, and an advertised key
                 // that does nothing is how a footer stops being believed.
-                KeyCode::Enter if app.view == View::Insights => {
+                KeyCode::Enter if app.view == View::Insights || app.view == View::Alerts => {
                     app.mode = Some("comment".into());
                     app.buf.clear();
                     app.reading = false;
                     app.scroll.reset();
                 }
                 KeyCode::Char('d') => {
-                    let d = if app.view == View::Decisions { "done" } else { "read" };
-                    app.do_act(d);
+                    app.do_act(primary_reason(app.view), Act::Primary);
+                    // ACKNOWLEDGING DOES NOT CLOSE THE READER, because the item is still
+                    // there — the condition has not changed and there is nothing to move on
+                    // from. Every other view's `d` empties the thing being read.
+                    if model::act_hides(app.view, Act::Primary) {
+                        app.reading = false;
+                        app.scroll.reset();
+                    }
+                }
+                KeyCode::Char('s') if app.view == View::Alerts && !app.dismissed => {
+                    app.do_act("", Act::Silence);
                     app.reading = false;
                     app.scroll.reset();
                 }
@@ -707,13 +786,14 @@ fn main() {
             }
             // `h` — the retrieval half of dismissal. Only in FYI: DECISIONS has no dismissed
             // set (a closed decision is a verdict, not a hidden row) and mail has `gt mail`.
-            KeyCode::Char('h') if app.view == View::Insights => {
+            KeyCode::Char('h') if app.view.has_history() => {
                 app.dismissed = !app.dismissed;
                 app.sel = 0;
-                app.flash = if app.dismissed {
-                    "showing dismissed — d restores".into()
-                } else {
-                    String::new()
+                app.detail_scroll.reset();
+                app.flash = match (app.dismissed, app.view) {
+                    (false, _) => String::new(),
+                    (true, View::Alerts) => "cleared and silenced — d lifts a silence".into(),
+                    (true, _) => "showing dismissed — d restores".into(),
                 };
             }
             KeyCode::Char('r') => {
@@ -723,14 +803,20 @@ fn main() {
                 store::refresh(&app.shared);
             }
             KeyCode::Char('d') | KeyCode::Char('x') if n > 0 => {
-                let d = match app.view {
-                    View::Decisions => "done",
-                    _ => "read",
-                };
-                app.do_act(d);
+                app.do_act(primary_reason(app.view), Act::Primary)
+            }
+            // `s` — SILENCE, and only on a firing alert. Silencing something that has already
+            // cleared is a key that appears to work on the wrong thing, and the history holds
+            // both kinds side by side.
+            KeyCode::Char('s') if n > 0 && app.view == View::Alerts && !app.dismissed => {
+                app.do_act("", Act::Silence)
             }
             KeyCode::Char('A') if n > 0 => app.do_act_all(),
-            KeyCode::Char('D') | KeyCode::Char('X') if n > 0 => {
+            // `D` PROMPTS FOR A REASON AND THEN CLOSES — which is why it is not bound in
+            // ALERTS. Nothing in this pane may close an alert: the condition is retracted by
+            // whatever asserted it, and a hand-closed one whose condition is still true is
+            // straight back on the next pass.
+            KeyCode::Char('D') | KeyCode::Char('X') if n > 0 && app.view != View::Alerts => {
                 app.mode = Some("reason".into());
                 app.buf.clear();
             }
@@ -743,7 +829,7 @@ fn main() {
                 app.mode = Some("decide".into());
                 app.buf.clear();
             }
-            KeyCode::Enter if n > 0 && app.view == View::Insights => {
+            KeyCode::Enter if n > 0 && (app.view == View::Insights || app.view == View::Alerts) => {
                 app.mode = Some("comment".into());
                 app.buf.clear();
             }
@@ -767,7 +853,7 @@ fn main() {
                 match app.current() {
                     Some(it) if !it.lead.is_empty() => {
                         let verdict = format!("{} (accepted the recommended default)", it.lead);
-                        app.do_act(&verdict);
+                        app.do_act(&verdict, Act::Primary);
                     }
                     _ => app.flash = "no default on this one — ⏎ to decide".into(),
                 }
