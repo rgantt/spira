@@ -39,12 +39,25 @@ FAYTH_MAX_CONCURRENT=1
 # and builders hold theirs for 45-90 minutes. A role that never competes cannot be starved.
 FAYTH_ROLE=party
 
-# Shorter than the builder's on both counts. An incident is a bounded diagnosis against a
-# runbook rather than an implementation, and a lease held for ninety minutes over a
-# production failure is ninety minutes in which nothing else looks at it.
-FAYTH_LEASE_MINUTES=45
-FAYTH_HEARTBEAT_SECONDS=120
-# Ops inherits the same rule: it runs until done, and stalling is what ends it.
-FAYTH_STALL_BEATS=10
+# BOUNDED BY THE SWEEP INTERVAL, which is the number that actually constrains this persona.
+# watchtower.sh files a health sweep every SPIRA_WATCH_EVERY (10 minutes), so an Ops session
+# that can run for an hour — the default TIMEOUT_SECONDS is 3600 — would still be working the
+# 22:30 snapshot while the 22:40, 22:50 and 23:00 ones arrived behind it. Observed at six
+# minutes and climbing on the first live sweep. Sessions must not outlive the cadence that
+# produces their work.
+#
+# EIGHT MINUTES, HARD. systemd kills the unit at TIMEOUT_SECONDS, so this is a wall rather
+# than a request. Two minutes of headroom under the ten, because a sweep that overruns by
+# thirty seconds still collides.
+#
+# THE BOUND IS A FEATURE, not a compromise. An Ops aeon that cannot finish must write what it
+# found into the graph as beads and let the next sweep continue — which is what we want it
+# doing anyway. Findings held in a session that gets killed are lost; findings cut into beads
+# survive and are what the next aeon starts from. The lease matches, so a killed session's
+# bead is reclaimable promptly rather than sitting held for another 37 minutes.
+FAYTH_TIMEOUT_SECONDS=480
+FAYTH_LEASE_MINUTES=10
+FAYTH_HEARTBEAT_SECONDS=60
+FAYTH_STALL_BEATS=6
 
 FAYTH_TOOLS="Bash,Read,Edit,Write,Glob,Grep,TodoWrite"

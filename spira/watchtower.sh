@@ -21,9 +21,13 @@
 # IT DOES NOT DECIDE (the operator's call, 2026-09-07, over a threshold-driven detector).
 # This program gathers and hands over; an Ops aeon reads the snapshot and decides what is
 # wrong and what beads to cut. Thresholds anticipate only the outage you already had — every
-# stall so far has been a shape nobody had a number for. The cost is a model session per
-# cycle against a five-hour account window, which is why the sweep is DEDUPED to one open at
-# a time: a cycle that arrives while Ops is still working the last one adds nothing.
+# stall so far has been a shape nobody had a number for.
+#
+# THE SESSION IS BOUNDED BY THIS CADENCE, and that constraint lives in ops.fayth: a sweep
+# arrives every ten minutes, so an Ops session gets eight. The first live one ran eighteen
+# and would have been working the 22:30 snapshot while 22:40 and 22:50 queued behind it. The
+# sweep is also deduped to one open at a time, so a cycle arriving while Ops is still working
+# the last one bumps a recurrence rather than filing a second.
 #
 # IT IS DETERMINISTIC AND CHEAP, deliberately (law-deterministic-before-inference). It reads
 # files that already exist and shells out to nothing slow, because the one thing a watchtower
@@ -174,6 +178,13 @@ EOF
 # ---------------------------------------------------------------------------------------
 INC="$(dirname "$0")/incident.sh"
 [ -x "$INC" ] || [ -r "$INC" ] || { log "watchtower: $INC is missing — the sweep reaches nobody"; exit 1; }
+# FILED AS A CHORE BY THE WATCHTOWER, not as a bug by whoever ran the timer. The intake
+# defaults to `--type bug --priority 1` because its original caller was a crashed unit; a
+# ten-minute health sweep is routine, and filing it that way put a chore in the operator's
+# own queue wearing his name and a defect's type.
+SPIRA_INCIDENT_TYPE=chore \
+SPIRA_INCIDENT_PRIORITY=2 \
+SPIRA_INCIDENT_ACTOR=watchtower \
 snapshot | bash "$INC" file "Spira sweep — is the pipeline moving?" - >/dev/null || {
     log "watchtower: could not file the sweep"; exit 1; }
 log "watchtower: swept — ${since_land}m since the last landing, $(g SP_UNLANDED) unlanded, ${aeons_live} aeons"

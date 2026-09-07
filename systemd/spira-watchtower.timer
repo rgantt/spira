@@ -2,10 +2,11 @@
 Description=Wake Ops on a timer and hand it the pipeline's vital signs
 
 [Timer]
-# TEN MINUTES, not two. Each sweep is a model session against a five-hour account window, so
-# the interval is a real cost — and the sweep is deduped to one open at a time, so a shorter
-# one would mostly file nothing anyway. Long enough that a quiet system is cheap; short
-# enough that a stall is noticed in minutes rather than the fifty it took on 2026-09-07.
+# TEN MINUTES, AND ops.fayth's FAYTH_TIMEOUT_SECONDS IS SET UNDER IT. The two numbers are a
+# pair: a sweep that arrives faster than Ops can finish one queues snapshots behind a session
+# already working a stale picture, and the first live sweep ran eighteen minutes against this
+# ten. Change one and change the other. Short enough that a stall is noticed in minutes rather
+# than the fifty it took on 2026-09-07.
 OnBootSec=3min
 OnUnitActiveSec=10min
 AccuracySec=30s

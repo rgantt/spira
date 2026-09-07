@@ -105,7 +105,14 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
         return 0
     fi
 
-    id="$(bdq create "$title" --type bug --priority 1 \
+    # THE TYPE AND THE ACTOR ARE THE CALLER'S, because not every intake is a failure. A
+    # crashed unit is a bug and belongs at P1; the watchtower's ten-minute health sweep is
+    # routine work, and filing it as a `bug` owned by whoever ran the timer put a chore in
+    # the operator's queue looking like a defect he had been assigned. Defaults unchanged, so
+    # the systemd path files exactly as it always did.
+    id="$(BEADS_ACTOR="${SPIRA_INCIDENT_ACTOR:-${BEADS_ACTOR:-}}" \
+          bdq create "$title" --type "${SPIRA_INCIDENT_TYPE:-bug}" \
+            --priority "${SPIRA_INCIDENT_PRIORITY:-1}" \
             --labels spira,incident --external-ref "$ref" \
             --body-file "$pf" --silent 2>/dev/null | tr -d '[:space:]')"
     if [ -z "${id:-}" ]; then
@@ -144,9 +151,30 @@ drain_one() {            # drain_one <spool-path>
         printf 'The intake gathered NO payload for %s.\nsystemctl/journalctl produced nothing — suspect the unit name or a journal this user cannot read.\n' \
                "$ref" > "$body"
     fi
+    # SERIALISED, BECAUSE THE DEDUPE IS A CHECK FOLLOWED BY AN ACT. file_one asks whether an
+    # open incident already carries this ref and creates one if not; two callers that ask
+    # before either answers both get "no" and both file. That is not theoretical — the
+    # watchtower's timer and a hand-run of the same unit produced sp-aapz and sp-uvfq at
+    # 22:30:15 on 2026-09-07, same second, same ref, two beads, and each one costs a separate
+    # Ops session working an identical snapshot.
+    #
+    # ONE LOCK FOR THE WHOLE INTAKE, not one per ref. The critical section is a database read
+    # and a write measured in hundreds of milliseconds, incidents do not arrive in floods, and
+    # a per-ref lock would leave two DIFFERENT refs racing on `bd create` anyway. The wait is
+    # bounded and a timeout leaves the entry spooled — which is the write-ahead behaving
+    # exactly as designed rather than a loss.
+    mkdir -p "$(dirname "$SPOOL")" 2>/dev/null
+    local lock="${SPIRA_INCIDENT_LOCK:-$SPIRA_RUN/incident.lock}"
+    exec 8>"$lock" || { ilog "cannot open the intake lock at $lock — $ref stays spooled"; rm -f "$body"; return 1; }
+    if ! flock -w "${SPIRA_INCIDENT_LOCK_WAIT:-30}" 8; then
+        ilog "another intake held $lock for 30s — $ref stays spooled, drain will retry"
+        exec 8>&-; rm -f "$body"; return 1
+    fi
     if id="$(file_one "$ref" "$title" "$body")" && [ -n "$id" ]; then
+        exec 8>&-
         rm -f "$sp" "$body"; printf '%s\n' "$id"; return 0
     fi
+    exec 8>&-
     rm -f "$body"; return 1
 }
 

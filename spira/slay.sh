@@ -154,8 +154,38 @@ elif [ -n "$repo" ]; then
         fi
     fi
     if [ -n "$tip" ] && [ "$fail" = 0 ]; then
+        # PARK THE TIP UNDER A REAL REF BEFORE DELETING THE BRANCH, whenever it carries work
+        # the base does not already have. "The reflog keeps it ~30 days" was true and was not
+        # enough: on 2026-09-07 slaying sp-ee4 left commit 4557385 — a finished feature, 758
+        # insertions across 8 files with its own suite — reachable from nothing but the
+        # reflog, which no tool in this harness reads, no `git log --all` shows, and `gc`
+        # eventually collects. It was recovered only because an Ops aeon went looking at
+        # unlanded branches an hour later and noticed a dangling commit.
+        #
+        # refs/slain/<id> is a real ref: it survives gc, `git branch -a --contains` finds it,
+        # and it is out of refs/heads so nothing here mistakes it for live work. Deleting it
+        # is then a deliberate act by someone who has looked, which is the whole point.
+        #
+        # ONLY WHEN THERE IS SOMETHING TO KEEP. A branch whose commits are already on the base
+        # is exactly what the Sending reaps every pass; parking those would fill the namespace
+        # with refs nobody will ever read and teach everyone to ignore it.
+        parked=""
+        if base="$(spira_landref "$repo" 2>/dev/null)" \
+           && ! git -C "$repo" merge-base --is-ancestor "$br" "$base" 2>/dev/null; then
+            if git -C "$repo" update-ref "refs/slain/$ID" "$br" 2>/dev/null; then
+                parked="refs/slain/$ID"
+                say "work: $br carries work $base does not — parked at $parked"
+            else
+                # A parking failure is not a licence to delete: the ref is the only durable
+                # copy, so without it the deletion is the loss this block exists to prevent.
+                say "work: could not park $br at refs/slain/$ID — REFUSING to delete it"
+                fail=1
+            fi
+        fi
+    fi
+    if [ -n "$tip" ] && [ "$fail" = 0 ]; then
         if spira_destroy_branch "$ID" "$br" "$repo" "slain: $WHY"; then
-            nuked="branch $br deleted at $tip (reflog keeps it ~30 days)"; say "work: $nuked"
+            nuked="branch $br deleted at $tip${parked:+, kept at $parked}"; say "work: $nuked"
         else
             say "work: could not delete $br${SPIRA_DESTROY_ERR:+ — $SPIRA_DESTROY_ERR}"; fail=1
         fi
