@@ -306,10 +306,18 @@ fn run_as(cmd: &str, args: &[&str], actor: Option<&str>) -> Result<(), String> {
 /// `--force`, because beads' blocked-close guard is aimed at an AGENT closing work whose
 /// prerequisite is unbuilt, and this pane is the one place where the human who owns the
 /// decision is the one pressing the key. Their dependency edges order the WORK; they do not
-/// order the answer. A hollow close is still caught downstream — the ALERTS tab raises
-/// HOLLOW-CLOSE for exactly this — so forcing here loses no signal, it just stops the pane
-/// from arguing with its own operator. `resolve.sh` has always closed this way; only the
-/// pane and `ask.sh` were left behind.
+/// order the answer. `resolve.sh` has always closed this way; only the pane and `ask.sh`
+/// were left behind.
+///
+/// NOTHING CURRENTLY CATCHES THE HOLLOW CLOSE THIS PERMITS, and that is stated here rather
+/// than assumed because the first version of this comment asserted the opposite. HOLLOW-CLOSE
+/// was a Gas Town check — `settings/watch-town.sh` mailed it to the Mayor — and Gas Town was
+/// decommissioned. Spira has no equivalent: `bd list --label alert` returns 0 rows because
+/// the ALERTS tab shipped its reader and no writer (sp-alerts, closed, says so in as many
+/// words), and sp-auron, the designated first writer, watches loop staleness and dead leases
+/// rather than the bead graph. So forcing here genuinely does drop a signal that used to
+/// exist. It is still the right trade — the alternative was destroying the operator's typed
+/// verdict, every time — but the missing check is sp-hollow, not a fact about this function.
 ///
 /// And should the close fail anyway, the typed text is written to the bead as a comment
 /// before the error is returned. Whatever else goes wrong, the answer survives in the one

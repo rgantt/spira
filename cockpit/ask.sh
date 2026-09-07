@@ -225,8 +225,9 @@ answered)
     # the epic's `blocks` edges, and `bd close` refuses a blocked issue: *"cannot close
     # blocked issue: sp-wok.5 is blocked by [sp-wok.3] (use --force to override)"*. Those
     # edges order the WORK; they do not order the operator's answer, and the pane is where
-    # the person who owns the decision is the one pressing the key. A hollow close is still
-    # caught downstream by the ALERTS tab's HOLLOW-CLOSE check, so nothing is lost by forcing.
+    # the person who owns the decision is the one pressing the key. Nothing downstream catches
+    # the hollow close this permits — HOLLOW-CLOSE was a Gas Town check and Spira has no
+    # equivalent (see close_decision in panel/src/model.rs, and sp-hollow).
     #
     # The status matters as much as the flag. Piping into `tail -2` made $? the pipeline's
     # last stage, so a refused close printed its error and was followed, unconditionally, by
