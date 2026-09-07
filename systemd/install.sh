@@ -28,6 +28,7 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
        spira-archivist.service spira-archivist.timer
        spira-cockpit.service
        spira-watch@.service
+       spira-watch-notify.service spira-watch-notify.timer
        cockpit-ensure.service cockpit-ensure.timer
        concierge.service concierge.timer
        beads-push.service beads-push.timer
@@ -38,7 +39,7 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
 ENABLE=(cockpit-ensure.timer concierge.timer
         beads-push.timer spira-sentinel.timer spira-ops.timer spira-watchtower.timer spira-skew.timer
         spira-archive.timer
-        spira-archivist.timer
+        spira-archivist.timer spira-watch-notify.timer
         spira-cockpit.service)
 
 # dolt-beads.service supervises the Dolt server itself, which is only this harness's business

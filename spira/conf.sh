@@ -53,7 +53,7 @@ SPIRA_CONF_LOADED=1
 SPIRA_CONF_KEYS="
 SPIRA_HOME_REPO SPIRA_DB SPIRA_RUN SPIRA_GOAL
 SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER SPIRA_WATCHERS
-SPIRA_ACTIONABLE SPIRA_ID_PREFIX SPIRA_HEALTH_TIMEOUT SPIRA_ANSWER_STATE
+SPIRA_ACTIONABLE SPIRA_ID_PREFIX SPIRA_HEALTH_TIMEOUT SPIRA_ANSWER_STATE SPIRA_NOTIFY_AGE
 SPIRA_COCKPIT SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
 SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
 SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE
@@ -240,6 +240,21 @@ spira_conf_defaults() {
     : "${SPIRA_HEALTH_TIMEOUT:=10}"
     : "${SPIRA_COCKPIT:=$(dirname "$SPIRA_HOME")/cockpit}"
     : "${SPIRA_NOTIFY:=$SPIRA_COCKPIT/ask.sh}"
+    # HOW LONG AN ACTIONABLE EVENT MAY WAIT WITH NO READER before it is escalated through a
+    # channel that needs no session, in seconds. `watchd.sh notify` is what enforces it.
+    #
+    # WHY THERE IS A POLL HERE AT ALL. A session hook fires at a SESSION BOUNDARY, which is a
+    # property of one client: when an answer is given while nothing is running, nothing fires
+    # until the next session opens, and for a headless agent that is never. The escalation is
+    # the only path that does not require a reader to exist.
+    #
+    # WHY IT IS THIS LONG. The window has to be comfortably longer than an ordinary gap
+    # between a watcher emitting and somebody latching, because every escalation inside that
+    # gap is a false alarm — and a false alarm is a real cost, not a harmless one
+    # (law-alerts-must-be-actionable). It has to be far shorter than the hours a nobody-is-
+    # running interval actually lasts. Half an hour is between those, and it is a key rather
+    # than a literal because which one an operator's watchers deserve is theirs to say.
+    : "${SPIRA_NOTIFY_AGE:=1800}"
     # WHERE THE ANSWER WATCHER KEEPS WHAT IT HAS ALREADY SEEN. One key rather than two
     # literals: the watcher writes this file and its health assertion reads it, and those two
     # disagreeing is a permanent DEGRADED against a watcher that is working perfectly — a

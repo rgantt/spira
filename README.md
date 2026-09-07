@@ -156,6 +156,7 @@ watchd.sh status                 one line per watcher: is it running, can it see
 watchd.sh drain [name] [--all]   print what nobody has read, and mark it read
 watchd.sh tail <name> [--all]    replay from the cursor, then stream; this is a Monitor command
 watchd.sh restart [name]         restart the unit behind a watcher
+watchd.sh notify                 escalate events nobody has drained; this is what a timer runs
 watchd.sh health-ids <file>      assert a state file names at least one of this database's beads
 watchd.sh manifest | units       what the rows say, and the units they render
 ```
@@ -213,6 +214,32 @@ first thing in it. `SPIRA_ACTIONABLE` is the expression that decides, `tail` use
 so the two cannot disagree, and `--all` is how you ask for everything on purpose. The header
 carries both numbers — `(30 actionable of 300 new)` — because the suppressed lines are the cost
 of the filter, and a filter whose cost is invisible is one nobody can tell has gone wrong.
+
+### Delivery that does not need a reader
+
+A session hook fires at a **session boundary**, which is a property of one client. An event a
+watcher produced while nothing was running therefore waits for the next session to open — and
+for a headless agent that is never. `spira-watch-notify.timer` asks the question a boundary
+cannot: has anything actionable been sitting unread for longer than `SPIRA_NOTIFY_AGE`, and if
+so it escalates it through the channel that needs no session, carrying the events themselves as
+the ask's evidence.
+
+It **does not advance any cursor**. Escalating is an extra copy of the event, never a
+substitute for it, so the next reader to latch still gets everything — a notify that drained
+what it reported would make the ask the only delivery and would silently clear the condition it
+was reporting on.
+
+It escalates **once per backlog, never once per pass**. The suppression is keyed on the
+identity of the backlog — which watcher, which line, at which position — and never on a clock
+or a count, because the condition persists until somebody acts on it and an hourly repetition
+of a decision already in front of you is the noise that teaches you to scroll past the one that
+matters. Draining ends the condition and the suppression with it, so the same events recurring
+later are heard again. That keying is also what makes it loop-safe: raising an ask writes a
+bead, a watcher may well emit a line about that bead, and the key names the *oldest* unread
+event, which does not move when something lands behind it.
+
+Only lines matching `SPIRA_ACTIONABLE` count. A watcher's log is mostly progress, and waking
+somebody because a watcher was busy is the false alarm that makes the real one unreadable.
 
 Both commands advance the cursor by what was **read**, not by what was printed: a filtered line
 has been considered and rejected, not missed. Leaving it unread would keep every reader

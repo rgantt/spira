@@ -10,6 +10,7 @@
 #   watchd.sh drain [name] [--all]  print what nobody has read, and mark it read
 #   watchd.sh tail <name> [--all]   replay from the cursor, then stream; for a Monitor
 #   watchd.sh restart [name]        restart the unit behind a watcher
+#   watchd.sh notify                escalate events nobody has drained; for a timer
 #   watchd.sh health-ids <file>     assert a state file names at least one of our own beads
 #   watchd.sh health-view <prog> <session>
 #                                   assert the view a follower steers matches the one it wants
@@ -143,6 +144,18 @@ _wd_bump() {
     mkdir -p "$(watchd_dir)" || return 0
     printf '%s\n' "$(( $(_wd_restarts "$1") + 1 ))" > "$(_wd_restartfile "$1")"
 }
+
+# THE BACKLOG CLOCK. `<name>.pending` holds `<line-number> <epoch>`: the absolute position of
+# the OLDEST ACTIONABLE UNREAD line, and when this harness first saw it standing there. It is
+# written and read by `notify` alone, and it is a third file rather than a column in the
+# cursor because the cursor is the reader's and this is ours — a reader that rewrote its
+# cursor would otherwise destroy the timing evidence at the moment it mattered.
+#
+# WHY THE POSITION AND NOT THE UNREAD COUNT. Lines arriving BEHIND a standing event must not
+# restart the clock: the oldest unread event is still the oldest unread event, and a counter
+# that moved with the log would let a chatty watcher hold off its own escalation forever. The
+# position of the oldest actionable line changes only when a reader has actually taken it.
+_wd_pendfile() { printf '%s/%s.pending' "$(watchd_dir)" "$1"; }
 
 # _wd_age <seconds> — a whitespace-free age, coarsest unit that is not zero.
 #
@@ -874,6 +887,184 @@ cmd_health_view() {
     return 0
 }
 
+# =======================================================================================
+# cmd_notify — delivery that does not require a reader to exist.
+#
+# A SESSION HOOK CANNOT CLOSE THIS HOLE, and that is the whole reason this command exists.
+# A hook fires at a SESSION BOUNDARY, which is a property of one client: an event produced
+# while nothing is running waits for the next session to open, and for a headless agent that
+# is never. So a timer asks the question a boundary cannot — has anything actionable been
+# sitting here with nobody to take it — and escalates through the channel that needs no
+# session at all.
+#
+# IT DOES NOT ADVANCE THE CURSOR, and that is not an omission. Escalating is an extra copy of
+# the event, never a substitute for it: the lines stay unread, so the next reader to latch
+# still gets them. A notify that drained what it reported would make the ask the ONLY delivery
+# and would silently clear the condition it was reporting on.
+#
+# ONLY ACTIONABLE LINES COUNT. A watcher's log is mostly progress, and paging somebody because
+# a watcher was busy is the false alarm that teaches them to scroll past the real one
+# (law-alerts-must-be-actionable). It is the same expression `drain` and `tail` filter with,
+# for the same reason it is a key: a second opinion about what matters is how two commands
+# come to disagree.
+#
+# EXIT  0  nothing has been waiting long enough
+#       1  something has, and it has been escalated
+#       3  could not check, or could not deliver — never a silent pass
+#             (law-absence-needs-a-positive-control)
+# =======================================================================================
+
+# How many actionable lines of one watcher go into an ask. The evidence is read in a pane, so
+# a backlog of three hundred would bury the decision it is evidence for; the count is stated
+# in full and the drain command is named, so nothing is hidden, only deferred.
+WD_NOTIFY_MAX=12
+
+cmd_notify() {
+    [ $# -eq 0 ] || { echo "usage: watchd.sh notify" >&2; return 3; }
+    # A THRESHOLD THAT CANNOT BE READ IS REFUSED. Left to `[ x -ge junk ]` it would fail every
+    # comparison and turn into "never escalate", which is this command doing nothing while
+    # reporting success — the exact failure it was written to end.
+    case "${SPIRA_NOTIFY_AGE:-}" in
+        ''|*[!0-9]*)
+            echo "watchd: SPIRA_NOTIFY_AGE is '${SPIRA_NOTIFY_AGE:-}' — it must be a whole number of seconds" >&2
+            return 3 ;;
+    esac
+    local re; re="$(_wd_filter)" || return 3
+    local rows; rows="$(watchd_rows)" || return 3
+    local now; printf -v now '%(%s)T' -1
+
+    local name kind target health lf total pos chunk hit off line apos pend
+    local prev_pos prev_at age shown k report="" key="" stale=0
+    while IFS='|' read -r name kind target health; do
+        [ -n "$name" ] || continue
+        # A WATCHER THIS INSTALLATION HAS NOT GOT CANNOT HAVE A BACKLOG. Nothing writes a log
+        # for an `off` row, so there is nothing standing unread and nobody to wake about it.
+        # Refused here rather than left to fall through: an unnamed log makes `_wd_total`
+        # answer 0, so the row would reach the same verdict by accident, and a silence that
+        # depends on an unrelated helper's handling of an empty path is indistinguishable
+        # from the silence of a check that has stopped looking
+        # (law-absence-needs-a-positive-control).
+        [ "$kind" = off ] && continue
+        lf="$(_wd_logfile "$name" "$kind" "$target")"
+        total="$(_wd_total "$lf")"
+        pos="$(_wd_pos "$name" "$total")"
+        pend="$(_wd_pendfile "$name")"
+
+        apos=0; line=""; shown=""
+        if [ "$total" -gt "$pos" ]; then
+            # THE SAME EXACT RANGE `drain` READS, and for the same reason: the log is being
+            # appended to while this runs, so a bare `tail -n +N` would count lines written
+            # after `total` was taken and put a position in the clock that no reader has.
+            chunk="$(sed -n "$(( pos + 1 )),${total}p" "$lf" 2>/dev/null)"
+            # NO PIPE INTO `grep -m1`. It stops at the first match and closes the pipe, the
+            # writer dies of SIGPIPE, and `pipefail` turns a successful search into 141
+            # (law-no-grep-q-under-pipefail).
+            hit="$(grep -nE -m1 -- "$re" <<< "$chunk")" || hit=""
+            if [ -n "$hit" ]; then
+                off="${hit%%:*}"; line="${hit#*:}"
+                apos=$(( pos + off ))
+                shown="$(grep -E -- "$re" <<< "$chunk")" || shown=""
+            fi
+        fi
+
+        # NOTHING A READER MUST ACT ON IS WAITING, so the clock is over. Deleting it here is
+        # what makes draining clear the condition rather than merely pause it, and it is why
+        # the same backlog re-escalates if it comes back: the next standing event starts a new
+        # clock rather than inheriting a matured one.
+        if [ "$apos" = 0 ]; then rm -f "$pend" 2>/dev/null; continue; fi
+
+        prev_pos=""; prev_at=""
+        [ -r "$pend" ] && read -r prev_pos prev_at < "$pend" 2>/dev/null
+        case "${prev_at:-}" in ''|*[!0-9]*) prev_at="" ;; esac
+
+        # A BACKLOG THIS PASS HAS NOT SEEN BEFORE STARTS ITS CLOCK NOW, and is not stale yet.
+        # That under-reports by up to one threshold for an event written while this timer was
+        # not running — the clock dates from when the harness first SAW the event standing,
+        # not from when it was written, because a line carries no timestamp this can trust.
+        # Under-reporting is the conservative direction for something whose failure mode is
+        # waking somebody who did not need waking.
+        if [ -z "$prev_at" ] || [ "${prev_pos:-}" != "$apos" ]; then
+            mkdir -p "$(watchd_dir)" 2>/dev/null
+            printf '%s %s\n' "$apos" "$now" > "$pend"
+            continue
+        fi
+
+        age=$(( now - prev_at ))
+        # A clock in the future is a clock that moved, not an event that is unusually old.
+        [ "$age" -ge 0 ] || age=0
+        [ "$age" -ge "$SPIRA_NOTIFY_AGE" ] || continue
+
+        stale=$(( stale + 1 ))
+        k="$(printf '%s\n' "$shown" | wc -l)"
+        # THE KEY CARRIES NOTHING THAT CHANGES ON ITS OWN — not the age, not the count, not
+        # the log's length. It is the identity of the backlog, and the escalation below is
+        # suppressed while it holds, so anything volatile in here would make a standing
+        # condition ask again on every pass, which is the false-alarm generator this is
+        # required not to be.
+        key="$key$name|$apos|$line
+"
+        report="$report
+$name — $k actionable event(s) with no reader, the oldest for $(_wd_age "$age")
+  $lf
+$(printf '%s\n' "$shown" | head -"$WD_NOTIFY_MAX" | sed 's/^/    /')"
+        [ "$k" -gt "$WD_NOTIFY_MAX" ] && report="$report
+    ... and $(( k - WD_NOTIFY_MAX )) more — all of them: watchd.sh drain $name"
+        report="$report
+"
+    done <<< "$rows"
+
+    if [ "$stale" = 0 ]; then
+        # THE CONDITION IS OVER, SO THE SUPPRESSION IS TOO. Without this a backlog that was
+        # escalated, drained, and then recurred identically would be silently swallowed —
+        # the fingerprint would still match, and the second occurrence would reach nobody.
+        rm -f "$(watchd_dir)/notify.escalated" 2>/dev/null
+        return 0
+    fi
+    printf '%s\n' "$report"
+    _wd_escalate "$key" "$report" || return 3
+    return 1
+}
+
+# _wd_escalate <key> <report> — raise the ask once per distinct backlog, never once per pass.
+#
+# Keyed on a fingerprint of the backlog rather than on a clock, because the condition persists
+# until somebody acts on it and an escalation repeated every pass is the noise that teaches
+# the operator to scroll past the one that matters. A CHANGE in the backlog is new information
+# and does ask again.
+#
+# THAT KEYING ALSO MAKES THIS LOOP-SAFE, which is not incidental: raising an ask writes a bead,
+# a watcher may well emit a line about that bead, and that line lands BEHIND the standing
+# event. The key names the OLDEST actionable unread line, so it does not move, and the second
+# pass raises nothing.
+#
+# THE FINGERPRINT IS WRITTEN ONLY AFTER THE ASK WAS ACCEPTED. Stamping first would mean a
+# broken escalation path silently consumed the one notification this backlog will ever
+# produce: the finding would be marked delivered, and the retry that would have carried it
+# once the path was repaired never happens.
+_wd_escalate() {
+    local stamp fp prev=""
+    stamp="$(watchd_dir)/notify.escalated"
+    fp="$(printf '%s' "$1" | cksum | tr -d ' ')"
+    [ -f "$stamp" ] && prev="$(cat "$stamp" 2>/dev/null)"
+    [ "$fp" = "$prev" ] && return 0
+
+    if [ ! -x "${SPIRA_NOTIFY:-}" ]; then
+        echo "watchd: no escalation path at ${SPIRA_NOTIFY:-<unset>} — the events above reach nobody" >&2
+        return 1
+    fi
+    "$SPIRA_NOTIFY" add \
+        "Events a watcher produced have reached no reader" \
+        --default "read them below and act on them here — nothing has been marked read, so the next session to latch still gets them; if a line of this kind is never worth waking anyone for, narrow SPIRA_ACTIONABLE rather than lengthening SPIRA_NOTIFY_AGE" \
+        --why "delivery of a watcher's events otherwise depends on a session existing to drain them, and a session hook fires at a session boundary — so an event produced while nothing is running waits for the next session to open, which for a headless agent never comes. Nothing else will surface these." \
+        --evidence "$2" >/dev/null 2>&1 || {
+            echo "watchd: the escalation path refused the ask — the events above reach nobody" >&2
+            return 1
+        }
+    mkdir -p "$(watchd_dir)" 2>/dev/null
+    printf '%s' "$fp" > "$stamp"
+    return 0
+}
+
 case "${1:-status}" in
     manifest) cmd_manifest ;;
     units)    cmd_units ;;
@@ -883,8 +1074,9 @@ case "${1:-status}" in
     drain)    shift; cmd_drain "$@" ;;
     tail)     shift; cmd_tail "$@" ;;
     restart)  shift; cmd_restart "${1:-}" ;;
+    notify)   shift; cmd_notify "$@" ;;
     health-ids) shift; cmd_health_ids "${1:-}" ;;
     health-view) shift; cmd_health_view "${1:-}" "${2:-}" ;;
-    *) echo "usage: watchd.sh manifest|units|keys|exec <name>|status|drain [name] [--all]|tail <name> [--all]|restart [name]|health-ids <file>|health-view <program> <session>" >&2
+    *) echo "usage: watchd.sh manifest|units|keys|exec <name>|status|drain [name] [--all]|tail <name> [--all]|restart [name]|notify|health-ids <file>|health-view <program> <session>" >&2
        exit 2 ;;
 esac

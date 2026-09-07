@@ -1,0 +1,30 @@
+[Unit]
+# THE HOLE A HOOK STRUCTURALLY CANNOT CLOSE. A session hook fires at a SESSION BOUNDARY,
+# which is a property of one client: an event a watcher produced while nothing was running
+# waits for the next session to open, and for a headless agent that is never. A poll is the
+# only thing that can ask the question when there is nobody to ask it of.
+Description=Spira watch notify — escalate events no reader has taken
+Documentation=file://@SPIRA_HOME@/watchd.sh
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=@SPIRA_HOME@/watchd.sh notify
+# A STANDING BACKLOG IS NOT A UNIT FAILURE. Exit 1 means the condition was found and the
+# decision is already in front of the operator; leaving the unit red on top of that is a
+# second alert for one condition, and a unit permanently red is one whose next genuine
+# failure nobody looks at (law-alerts-must-be-actionable). Exit 3 — could not check, or
+# could not deliver — stays a failure, because that one is the mechanism being broken and
+# it reaches nobody otherwise.
+SuccessExitStatus=1
+# A pass is arithmetic over two files per watcher plus one `grep`: no database, no network,
+# no `bd`, no `git`. It is fenced anyway, before it is enabled, because this is a loop and
+# the box it runs on may also be running production (law-fence-loops-on-shared-hardware).
+TimeoutStartSec=120
+CPUQuota=10%
+Nice=10
+StandardOutput=append:@SPIRA_RUN@/watch-notify.log
+StandardError=append:@SPIRA_RUN@/watch-notify.log
+
+[Install]
+WantedBy=default.target
