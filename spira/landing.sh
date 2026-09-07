@@ -291,6 +291,21 @@ land_repo() {
 
     for br in $brs; do
         id="${br#spira/}"
+        # THE LIST IS OLDER THAN THE LOOP. `brs` was read once at the top of this function
+        # and a pass legitimately runs for tens of minutes — the 14:42 pass on 2026-09-07
+        # reached its last branch at 15:16. In that window a branch can be landed by hand,
+        # reaped, or deleted by a slaying, and `rebase_branch` against a ref that no longer
+        # exists fails exactly like a conflict does. That reopened sp-fmd5 thirteen minutes
+        # after its two commits were merged into origin/main and its branch deleted:
+        # finished work put back on the board, to be claimed and redone by the next aeon.
+        #
+        # A VANISHED BRANCH IS NEVER EVIDENCE OF UNLANDED WORK. Whatever removed it did so
+        # deliberately; this pass simply holds a stale list. Skip it and say so — silence
+        # here would make a re-read indistinguishable from a branch that was never seen.
+        if ! git -C "$repo" show-ref --verify --quiet "refs/heads/$br"; then
+            log "CHECK6 $id: $br is gone since this pass began — landed or reaped elsewhere, not reopening"
+            continue
+        fi
         read -r st bead_repo_name <<< "$(bdjson show "$id" 2>/dev/null | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
