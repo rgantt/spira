@@ -33,7 +33,7 @@
 # be shown finding something, or "no answers" and "looking in the wrong place" are the same
 # output (law-absence-needs-a-positive-control).
 #
-# covers: spira/answers.py cockpit/answered-since.sh cockpit/unanswered.sh cockpit/watch-answers.sh cockpit/reply.sh cockpit/resolve.sh
+# covers: spira/answers.py spira/verdicts.sh cockpit/answered-since.sh cockpit/unanswered.sh cockpit/watch-answers.sh cockpit/reply.sh cockpit/resolve.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 COCKPIT="$HERE/../cockpit"
@@ -411,6 +411,42 @@ if [ -f "$mrs" ]; then
 else
     printf '  note  no panel source here; the close-authorship fence did not run\n'
 fi
+
+echo "the superseded watcher stays deleted, and the check can see a reference"
+# ONE WATCHER, NOT TWO. The deleted script read the same two legs of the same question as
+# watch-answers.sh and saw only one of them, so a session that attached it was told about a
+# verdict-close and never about a comment on an FYI. Leaving a superseded watcher standing is
+# what let two sessions attach the blind one, which is why its removal is asserted here rather
+# than being a tidy somebody did once: nothing else stops it coming back, and a reference is
+# far cheaper to catch in this suite than in a session that has already attached it.
+#
+# THIS SUITE CLAIMS THAT PATH ON ITS `# covers:` LINE even though nothing is there. A deletion
+# is a change, so the path appears in the changed-file list, and a changed file no suite claims
+# widens the gate from this suite to every suite — 37 of them, for a file whose whole content
+# is gone. Claiming it is the manual's "err wide" applied to the one branch it can still cost.
+refs() {                 # refs <root> -> files under it that name the superseded watcher
+    grep -rl --exclude-dir=.git -F 'verdicts.sh' "$1" 2>/dev/null \
+        | grep -v "$(basename "$0")"
+}
+if [ -e "$HERE/verdicts.sh" ]
+then bad "the superseded watcher is gone" "it is back at $HERE/verdicts.sh"
+else ok "the superseded watcher is gone"; fi
+
+found="$(refs "$HERE/..")"
+if [ -z "$found" ]
+then ok "and nothing in the harness references it"
+else bad "and nothing in the harness references it" "named in: $(echo $found)"; fi
+
+# THE POSITIVE CONTROL, and it runs on a SCRATCH tree rather than this one: a grep that
+# matches nothing and a grep pointed at the wrong place print the same silence, and only one
+# of them is good news (law-absence-needs-a-positive-control). Planting inside the worktree
+# would make the suite write into the thing it is judging.
+mkdir -p "$TMP/plant/cockpit"
+printf '#!/usr/bin/env bash\nexec "$(dirname "$0")/../spira/verdicts.sh" loop\n' \
+    > "$TMP/plant/cockpit/watch.sh"
+if [ -n "$(refs "$TMP/plant")" ]
+then ok "and it would have said so, because it finds a planted one"
+else bad "and it would have said so, because it finds a planted one" "it found nothing"; fi
 
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
