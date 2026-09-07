@@ -39,6 +39,14 @@
 # author's model of `bd ready --claim` agrees with the author's model of `bd reopen` — and
 # the entire defect lived in the gap between what those two commands really do
 # (law-prefer-the-real-dependency).
+#
+# The call sites are covered as well as the functions, because half of these assertions are
+# about the TEXT of the dispatch path — that aeon.sh claims through READY_ARGS rather than a
+# copy, that no bare `bdq reopen` survives in aeon.sh, landing.sh or sentinel.sh, and that
+# the sweep is called before the summon. A suite asserting on a file it does not declare is
+# one the gate will not run on the change that breaks it.
+#
+# covers: spira/lib.sh spira/aeon.sh spira/landing.sh spira/sentinel.sh spira/cockpit.sh spira/drain.sh spira/strand.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
