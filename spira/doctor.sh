@@ -46,8 +46,11 @@ OK "harness at $SPIRA_HOME (in $SPIRA_REPO)"
 
 echo
 echo "programs"
-# FATAL: the loop cannot run without these.
-for b in bd git python3; do
+# FATAL: the loop cannot run without these. `flock` is one of them because the landing gate
+# serialises on the tree it extracts a branch into, and a gate that cannot take that lock
+# refuses rather than judging — so every branch would fail its gate and every finished bead
+# would be reopened.
+for b in bd git python3 flock; do
     if command -v "$b" >/dev/null 2>&1; then OK "$b — $(command -v "$b")"
     else FAIL "$b is not on PATH — $(spira_bin_purpose "$b")" \
               "PATH is $PATH. If it is installed elsewhere, set SPIRA_PATH in ${CONF:-spira.conf}."; fi

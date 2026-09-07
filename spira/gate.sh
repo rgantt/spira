@@ -131,20 +131,82 @@ CMD="$(repo_gate "$REPO_NAME")"
 # at all. A worktree shares the object store, so the full tree costs a checkout of the files
 # that actually changed, and it is reused across passes.
 TREE="$SPIRA_RUN/worktree/.gate.$(basename "$REPO")"
-if [ ! -e "$TREE/.git" ]; then
-    mkdir -p "$(dirname "$TREE")"
-    # Through the chokepoint: one prune covers every worktree of the repository, so a gate
-    # tidying up after itself must not be able to unregister the aeon whose branch it is
-    # about to try.
-    spira_prune_worktrees "$REPO" >/dev/null 2>&1
-    git -C "$REPO" worktree add -q --detach "$TREE" "$BR" 2>/dev/null || {
-        echo "gate: cannot create a gate worktree at $TREE" >&2; exit 1; }
-else
-    # `--force` because a previous gate may have left build output; `checkout --detach`
-    # refuses nothing else here, and the tree is ours alone.
-    git -C "$TREE" checkout -q --force --detach "$BR" 2>/dev/null || {
-        echo "gate: cannot check $BR out in $TREE" >&2; exit 1; }
+
+# ONE TREE PER REPOSITORY MEANS ONE TREE FOR ALL OF THAT REPOSITORY'S GATES, so the tree is
+# LOCKED for the whole trial. Gates run concurrently by construction — every aeon runs one
+# before it closes, and the landing pass runs one per branch it is about to merge — and
+# without a lock each `checkout --detach` pulls the previous run's branch out from under it
+# mid-command. The verdict is then about whatever was checked out last, and nothing says so:
+# two consecutive runs both passed, one of them on a branch deliberately broken, because a
+# concurrent gate had swapped the tree between them. That is the worst failure a gate has —
+# it passes work it never looked at, and the landing pass acts on the pass.
+#
+# THE SIMPLE FIX, SHIPPED WITH THE METER THAT SAYS WHEN IT STOPS BEING ENOUGH. Serialising
+# is correct at any scale; what it costs is wall clock, so every run records how long it
+# waited for the tree and how long it then held it, and a non-zero wait is said out loud
+# (law-take-the-simple-fix-with-a-meter). When that log shows waits approaching the runs
+# themselves, the answer is a tree per branch — not a wider timeout.
+#
+# It fails CLOSED on a wait that runs out: a gate that could not obtain the tree has checked
+# nothing, and "could not run" is not a pass.
+mkdir -p "$(dirname "$TREE")"
+spira_require flock || exit 1
+exec 9>"$TREE.lock" || { echo "gate: cannot open the gate tree's lock at $TREE.lock" >&2; exit 1; }
+# THE WAIT IS DERIVED FROM THE RUN, not picked. One holder can legitimately occupy the tree
+# for two full gate timeouts — the branch's trial, then the same command against the base to
+# establish whose fault a failure is — so a wait shorter than twice the timeout would time
+# out against a single healthy holder and report that as a refusal.
+GATE_LOCK_WAIT="${SPIRA_GATE_LOCK_WAIT:-$(( ${SPIRA_GATE_TIMEOUT:-900} * 4 ))}"
+GATE_WAIT0=$(date +%s)
+if ! flock -w "$GATE_LOCK_WAIT" 9; then
+    echo "gate: another gate has held $TREE for ${GATE_LOCK_WAIT}s — no verdict on $BR" >&2
+    echo "gate: this is a queue, not a fault in the branch; retry, or raise SPIRA_GATE_LOCK_WAIT." >&2
+    exit 1
 fi
+GATE_WAITED=$(( $(date +%s) - GATE_WAIT0 ))
+GATE_START=$(date +%s)
+[ "$GATE_WAITED" -gt 0 ] && echo "gate: waited ${GATE_WAITED}s for $TREE" >&2
+
+# THE METER IS WRITTEN FROM THE EXIT TRAP, so every way out of the trial is counted — the
+# pass, the branch's own failure, and the checkout that could not be proved. A meter only
+# the happy path writes measures the happy path.
+GATE_LOG="${SPIRA_GATE_LOG:-$SPIRA_RUN/gate.log}"
+gate_meter() {           # gate_meter <exit-status>
+    printf '%s %s %s waited=%ss ran=%ss rc=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$REPO_NAME" "$BR" \
+        "$GATE_WAITED" "$(( $(date +%s) - GATE_START ))" "${1:-?}" >> "$GATE_LOG" 2>/dev/null
+}
+
+# gate_at <ref> -> 0 with TREE PROVEN to hold that ref's commit.
+#
+# The proof is the point. A checkout that reports success is not evidence the tree holds what
+# was asked for — the lock above is what makes it true, and this is what says so out loud if
+# it ever is not again (law-absence-needs-a-positive-control). A gate that cannot identify
+# the tree it is about to judge must refuse rather than judge it.
+gate_at() {
+    local ref="$1" want have
+    want="$(git -C "$REPO" rev-parse --verify -q "$ref^{commit}" 2>/dev/null)" || want=""
+    [ -n "$want" ] || { echo "gate: cannot resolve $ref in $REPO_NAME" >&2; return 1; }
+    if [ ! -e "$TREE/.git" ]; then
+        # Through the chokepoint: one prune covers every worktree of the repository, so a
+        # gate tidying up after itself must not be able to unregister the aeon whose branch
+        # it is about to try.
+        spira_prune_worktrees "$REPO" >/dev/null 2>&1
+        git -C "$REPO" worktree add -q --detach "$TREE" "$ref" 2>/dev/null || {
+            echo "gate: cannot create a gate worktree at $TREE" >&2; return 1; }
+    else
+        # `--force` because a previous gate may have left build output; `checkout --detach`
+        # refuses nothing else here, and the lock makes the tree ours alone.
+        git -C "$TREE" checkout -q --force --detach "$ref" 2>/dev/null || {
+            echo "gate: cannot check $ref out in $TREE" >&2; return 1; }
+    fi
+    have="$(git -C "$TREE" rev-parse HEAD 2>/dev/null)"
+    [ "$have" = "$want" ] && return 0
+    echo "gate: $TREE is at ${have:-nothing}, not $ref ($want) — refusing to judge a tree it cannot identify" >&2
+    return 1
+}
+
+gate_at "$BR" || { gate_meter 1; exit 1; }
 
 # THE GATE MUST NOT INHERIT THE HARNESS'S OWN CONFIGURATION.
 # Tests run in an explicit, minimal environment. The sentinel service exports
@@ -166,7 +228,10 @@ fi
 # leaking in from the environment only ever widens what is checked, which is the safe
 # direction, and it is named here so that it is a seam rather than an ambient surprise.
 FILELIST="$(mktemp)"; printf '%s\n' "$files" > "$FILELIST"
-trap 'rm -f "$FILELIST"' EXIT
+# The status is captured FIRST: `$?` inside a trap is whatever the previous command in the
+# trap returned, so a cleanup line ahead of the meter would have every run recorded as the
+# exit status of `rm`.
+trap 'gate_rc=$?; rm -f "$FILELIST"; gate_meter "$gate_rc"' EXIT
 run_gate() {             # run_gate <ref-being-tested> -> the command's own status
     ( cd "$TREE" && env -i \
         PATH="$HOME/.cargo/bin:$PATH" HOME="$HOME" TERM=dumb \
@@ -191,9 +256,9 @@ if out="$(run_gate "$BR")"; then exit 0; fi
 # note carries to whoever reads it.
 echo "gate: $REPO_NAME's own gate failed: $CMD" >&2
 printf '%s\n' "$out" >&2
-if git -C "$TREE" checkout -q --force --detach "$BASE" 2>/dev/null && ! run_gate "$BASE" >/dev/null 2>&1; then
+if gate_at "$BASE" && ! run_gate "$BASE" >/dev/null 2>&1; then
     echo "gate: it fails against $BASE too — this branch did not cause it." >&2
     echo "gate: fix the repository, or clear that command from $SPIRA_REPO_MAP." >&2
 fi
-git -C "$TREE" checkout -q --force --detach "$BR" 2>/dev/null
+gate_at "$BR" >/dev/null 2>&1
 exit 1

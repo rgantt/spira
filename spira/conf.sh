@@ -550,7 +550,7 @@ spira_bin_purpose() {
         cargo)   echo "building the decisions panel; not needed to run the loop" ;;
         node)    echo "gating the browser page's view model; the loop itself never needs it" ;;
         jq)      echo "optional JSON convenience" ;;
-        flock)   echo "serialising the writers of the transcript archive" ;;
+        flock)   echo "serialising writers that share one path — the transcript archive, and the landing gate's per-repository tree" ;;
         zstd)    echo "compressing archived transcripts; gzip is used when it is absent" ;;
         *)       echo "required by the harness" ;;
     esac
