@@ -536,11 +536,18 @@ if [ -f "$WORK/$SPIRA_TESTDB_LIB" ]; then
     # A subshell, so the fixture library's functions never enter the supervisor: this is
     # branch code, and aeon.sh is the process that decides whether the branch's bead may be
     # reclaimed. The five values it prints are the whole interface.
-    fixture_out="$(
+    #
+    # THE REDIRECTION IS INSIDE THE SUBSTITUTION, and it has to be. A simple command that is
+    # nothing but an assignment — `v="$(...)" 2>f` — performs its redirection in an
+    # environment the substitution never sees, so the diagnosis went to this process's own
+    # stderr and the file stayed empty. The log line below then promised a reason and carried
+    # a colon and nothing else, which is worse than saying nothing: a reader takes an empty
+    # reason for a failure that had none.
+    fixture_out="$( {
         . "$WORK/$SPIRA_TESTDB_LIB" && testdb_up "aeon${BEAD_ID//[^a-zA-Z0-9]/}" >&2 &&
         printf '%s\n%s\n%s\n%s\n%s\n' \
             "$TESTDB_NAME" "$TESTDB_DIR" "$TESTDB_BASELINE" "$TESTDB_HOST" "$TESTDB_PORT"
-    )" 2>"$fixture_err"
+    } 2>"$fixture_err" )"
     fixture_ms=$(( $(date +%s%3N) - fixture_t0 ))
     if [ -n "$fixture_out" ]; then
         { read -r TESTDB_NAME; read -r TESTDB_DIR; read -r TESTDB_BASELINE
@@ -553,7 +560,11 @@ if [ -f "$WORK/$SPIRA_TESTDB_LIB" ]; then
         # building their own, which is slow and correct; what must not happen is a bead going
         # unworked because a database server was busy. The reason is logged rather than
         # swallowed, because "slower than it should be" is otherwise invisible.
-        log "$FAYTH: $BEAD_ID has no shared test fixture — its suites will each build their own: $(tail -3 "$fixture_err" | tr '\n' ' ')"
+        # THE WHOLE REASON, FLATTENED AND BOUNDED, not its last lines. The library names what
+        # it could not do on its FIRST line and quotes the tool's own output under it, so a
+        # tail keeps the detail and drops the diagnosis — and the diagnosis is the half a
+        # reader classifies on.
+        log "$FAYTH: $BEAD_ID has no shared test fixture — its suites will each build their own: $(tr '\n' ' ' < "$fixture_err" | cut -c1-500)"
     fi
     rm -f "$fixture_err"
 fi
