@@ -114,6 +114,51 @@ branch_in() {            # branch_in <repo-path> <id> <repo-label> [base]
     closed_child "$id" "$lab"
 }
 branch() { branch_in "$REPO" "$1" ""; }
+
+# recreate_landed_branch — put the ref back at the commit a previous pass merged and reaped,
+# with its bead closed again, AND move the base on top of it.
+#
+# THE AMENDMENT IS THE WHOLE FIXTURE. Without it `content_landed` recognises the branch as
+# already merged and the pass never reaches the rebase, so the case would be about a path
+# that was never in question. sp-q9i is precisely the state content_landed CANNOT read: the
+# work merged and the base then changed the same file, so the content genuinely differs, the
+# rebase genuinely conflicts, and the branch is indistinguishable from one that is stuck.
+# Only a memory of having landed that exact commit can tell them apart.
+recreate_landed_branch() {   # recreate_landed_branch [id]
+    local id="${1:-sp-bad}"
+    local sha
+    sha="$(git -C "$REPO" rev-parse -q --verify "refs/heads/spira/$id" 2>/dev/null)"
+    if [ -z "$sha" ]; then
+        # The reap took it; recover the commit from the reflog of the branch that held it.
+        sha="$(git -C "$REPO" log --all --format='%H %s' 2>/dev/null \
+               | sed -n "s/^\([0-9a-f]*\) feat: $id — work$/\1/p" | head -1)"
+    fi
+    [ -n "$sha" ] || return 0
+    git -C "$REPO" branch -f "spira/$id" "$sha" 2>/dev/null
+    B update "$id" --status closed >/dev/null 2>&1
+    # Somebody amended the landed work on the base — the case content_landed cannot read.
+    local a="$TMP/amend-$id"
+    rm -rf "$a"
+    git -C "$REPO" worktree add -q --detach "$a" origin/main 2>/dev/null || return 0
+    printf 'amended on the base\n' > "$a/$id.txt"
+    git -C "$a" add -A
+    git -C "$a" commit -q -m "fix: amend $id on the base"
+    git -C "$a" push -q origin HEAD:main 2>/dev/null
+    git -C "$REPO" fetch -q origin 2>/dev/null
+    git -C "$REPO" worktree remove --force "$a" 2>/dev/null
+}
+
+# advance_branch — an aeon moved the branch after it landed, so this is NEW work under an old
+# name and must be judged again.
+advance_branch() {           # advance_branch <id>
+    local id="$1"
+    local w="$TMP/adv-$id"
+    rm -rf "$w"
+    git -C "$REPO" worktree add -q "$w" "spira/$id" 2>/dev/null || return 0
+    echo more >> "$w/$id.txt"
+    git -C "$w" add -A; git -C "$w" commit -q -m "feat: $id — more work"
+    git -C "$REPO" worktree remove --force "$w" 2>/dev/null
+}
 mkrepo2() {              # mkrepo2 <name> [default-branch] — a second world, own bare origin
     local n="$1" b="${2:-main}"
     git init -q --bare -b "$b" "$TMP/$n.git"
@@ -257,6 +302,47 @@ GATE_RC=0 landing >/dev/null 2>&1
 seed; branch sp-bad
 out="$(GATE_RC=75 GATE_REASON=lock-timeout landing)"
 nowant "a landing clears the machinery-fault count" "escalated" "$out"
+
+# --------------------------------------------------------------------------------------
+# D2 — THE PASS RECORDS WHAT IT DID, and the record is keyed to the COMMIT.
+#
+# WHAT THIS DOES NOT CLAIM. The obvious guard — "never reopen a commit this pass already
+# landed", aimed at sp-q9i — was written here and then shown to be UNREACHABLE by this very
+# fixture, which is why the fixture's preconditions are asserted rather than assumed. A
+# landed tip that has not moved is an ancestor of the base, so `content_landed` returns true
+# and the pass never reaches the rebase; a tip that HAS moved is new work the record must not
+# vouch for. There is no state in between, so the guard could never fire, and it was removed
+# rather than shipped looking like a fix. sp-q9i still owns that question.
+#
+# WHAT IT DOES CLAIM is the part with no witness at all today: the stretch between DONE and
+# LANDED is invisible, and every fact needed to show it is computed and then dropped
+# (sp-idml). The record is one line per bead, written where the transition happens.
+#
+# THE COMMIT IS THE POINT, not the bead name. A record that said only "sp-mem landed" would
+# go stale silently the moment an aeon moved the branch, and anything built on it later would
+# inherit that. Asserted here so a future guard can be built on it honestly.
+# --------------------------------------------------------------------------------------
+seed; branch sp-mem
+mem_tip="$(git -C "$REPO" rev-parse spira/sp-mem)"
+GATE_RC=0 landing >/dev/null 2>&1
+rec="$(cat "$RUN/landstate/sp-mem" 2>/dev/null)"
+read -r rec_state rec_tip rec_at rec_why <<< "${rec:-}"
+is   "landing records the transition it made"  "LANDED" "${rec_state:-none}"
+is   "against the commit it actually landed"   "$mem_tip" "${rec_tip:-none}"
+[ "${rec_at:-0}" -gt 0 ] 2>/dev/null && ok "and when" || bad "and when" "at=${rec_at:-none}"
+git -C "$REPO" merge-base --is-ancestor "$mem_tip" origin/main 2>/dev/null \
+    && ok "and the commit really is on the base — the record is not a claim about nothing" \
+    || bad "and the commit really is on the base" "origin/main does not contain $mem_tip"
+
+# A GATE OUTCOME IS RECORDED TOO, including the ones that blame nobody — those are the passes
+# that currently leave no trace anywhere a person looks, which is how eleven consecutive
+# withheld verdicts stayed invisible for fifty minutes.
+seed; branch sp-memb
+out="$(GATE_RC=76 GATE_REASON=base-red landing)"
+rec="$(cat "$RUN/landstate/sp-memb" 2>/dev/null)"
+read -r rec_state rec_tip rec_at rec_why <<< "${rec:-}"
+is "a withheld or base-red verdict is recorded" "GATED" "${rec_state:-none}"
+is "with the outcome and the reason on it"      "BASE_FAIL:base-red" "${rec_why:-none}"
 
 # --------------------------------------------------------------------------------------
 # A BRANCH WHOSE BEAD IS NOT CLOSED IS SKIPPED — AND THE SKIP HAS TO HAVE A VOICE. This was a

@@ -190,6 +190,61 @@ find "${SPIRA_VERDICTS:-$SPIRA_RUN/verdicts}" -maxdepth 1 -type f -mtime +7 -del
 # bead again, forever. Keyed on the TIP, so a branch an aeon has moved is genuinely resent.
 # A failed submission is retried, but not sooner than an hour — a gh outage must not become
 # a request every two minutes, and it must not become silence either.
+# =======================================================================================
+# D2 — THE PASS REMEMBERS WHAT IT DID.
+#
+# This pass ran every two minutes and re-derived the entire world each time, keeping nothing.
+# So it contradicted its own work: it landed sp-n21 at 21:51:17, reaped the branch a minute
+# later, and at 22:00:55 wrote "reopened sp-n21 — does not rebase onto origin/main" about the
+# work it had merged nine minutes earlier (sp-q9i). Nine more beads were reopened in one day
+# for rebases that were mostly clean, each costing a full Opus session (sp-118). Every one of
+# those is a pass with no memory reaching a conclusion its predecessor had already refuted.
+#
+# ONE FILE PER BEAD, holding the last transition and the commit it was about:
+#
+#   DONE -> GATED -> REBASED -> LANDED -> REAPED
+#                 \-> RED      the branch's own failure; reopened ONCE
+#                 \-> BLOCKED  needs the operator; never silently retried
+#
+# THE TIP IS PART OF THE STATE, not just the name. A bead whose branch an aeon has moved is
+# genuinely new work and must be re-judged; a bead whose branch has not moved since it was
+# landed is the case above, and the state is what says so. Without the tip this would be a
+# memory that goes stale silently, which is worse than none.
+#
+# IT IS AUTHORITATIVE FOR "ALREADY LANDED" AND ADVISORY FOR EVERYTHING ELSE. A recorded
+# LANDED forbids a reopen outright, because the alternative — putting merged work back on the
+# board — costs an aeon and can revert an amendment. Every other state only lets the pass
+# skip work it has already done; if the file is missing, deleted or unreadable, the pass
+# behaves exactly as it did before, which is why $SPIRA_RUN can still be wiped at any time.
+# =======================================================================================
+LANDSTATE="$SPIRA_RUN/landstate"
+land_state() {           # land_state <id> -> "<state> <tip> <at>" or empty
+    local f="$LANDSTATE/$1"
+    [ -r "$f" ] || return 1
+    tr -d '\n' < "$f" 2>/dev/null
+}
+land_mark() {            # land_mark <id> <state> <tip> [reason]
+    mkdir -p "$LANDSTATE" 2>/dev/null || return 0
+    printf '%s %s %s %s' "$2" "${3:-none}" "$(date +%s)" "${4:-}" > "$LANDSTATE/$1.$$" 2>/dev/null \
+        && mv -f "$LANDSTATE/$1.$$" "$LANDSTATE/$1" 2>/dev/null
+}
+# NO GUARD IS BUILT ON THIS RECORD YET, DELIBERATELY. The obvious one — "do not reopen a
+# commit this pass already landed" — was written, and then proved UNREACHABLE: a landed tip
+# that has not moved is an ancestor of the base, so `content_landed` returns true and the pass
+# never reaches the rebase or the gate at all; and a tip that HAS moved is new work, which the
+# record correctly declines to vouch for. There is no state in between.
+#
+# So sp-q9i — a bead reopened as "does not rebase" nine minutes after its work was merged and
+# its branch reaped — is NOT fixed here, and shipping that guard would have looked exactly
+# like fixing it. Something recreated that ref between the reap and the next pass, and until
+# what did is established from the logs rather than guessed at, a guard against it is a guess
+# with a comment attached. sp-q9i keeps that question.
+#
+# What the record IS for, today, is the thing that has no witness at all: the stretch between
+# DONE and LANDED is invisible, and every fact needed to show it is already computed and then
+# dropped (sp-idml). One line per bead, written where the transition happens, costs nothing
+# and is the input any answer to that will need.
+
 SUBMITTED="$SPIRA_RUN/submitted"
 submitted() {            # 0 if nothing more to do for this tip right now
     local id="$1" tip="$2" f="$SUBMITTED/$1" rec_tip rec_at rec_state
@@ -428,6 +483,7 @@ print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
             fi
             bead_reopen "$id" "Reopened by sentinel: $br does not rebase onto $base in $name; conflicts in ${REBASE_CONFLICTS:-unknown}. A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it."
             progress "reopened $id — does not rebase onto $base"
+            land_mark "$id" RED "$tip" no-rebase
             continue
         fi
         tip="$(git -C "$repo" rev-parse "$br" 2>/dev/null)"
@@ -476,6 +532,7 @@ print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
             # one logged and none of them anywhere a person would see.
             log "CHECK6 $id: gate $gate_outcome on $br in $name (${gate_reason:-unspecified})"
 
+            land_mark "$id" GATED "$tip" "$gate_outcome:${gate_reason:-unspecified}"
             if ! spira_gate_blames_branch "$gate_rc"; then
                 # NOT THE BRANCH'S FAULT: no reopen, no attempt, no note that reads as a
                 # rejection. The branch keeps its turn and the next pass takes it.
@@ -503,6 +560,7 @@ print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
 
 $(printf '%s' "$gate_out" | tail -20)"
             progress "reopened $id — failed the gate"
+            land_mark "$id" RED "$tip" gate
             continue
         fi
         # A PASS CLEARS THE MACHINERY-FAULT COUNTERS FOR THIS BRANCH. Otherwise a branch that
@@ -514,6 +572,7 @@ $(printf '%s' "$gate_out" | tail -20)"
         pr)
             if land_pr "$repo" "$br" "$id" "$base"; then
                 mark_submitted "$id" "$tip" pr
+                land_mark "$id" REBASED "$tip" pr-open
                 progress "opened a pull request for $br in $name"
             else
                 mark_submitted "$id" "$tip" failed
@@ -553,6 +612,12 @@ $(printf '%s' "$gate_out" | tail -20)"
                 # `acted` was therefore never 0 and CHECK 8 could never fire, which is the
                 # CHECK 2 false-action bug arriving by a second route.
                 progress "landed $br"
+                # RECORDED BEFORE ANYTHING ELSE THIS BRANCH DOES. Everything after this line
+                # — advancing the checkout, the reap — can fail or be interrupted, and the
+                # one fact that must survive is that this commit is now on the base. Written
+                # after the push rather than before, so a push that never landed can never
+                # leave a memory saying it did (law-closed-is-not-landed, one layer in).
+                land_mark "$id" LANDED "$tip" "$name"
                 # ADVANCE THE CHECKOUT HUMANS READ. (the operator, accepting sp-wud's own
                 # stated default.) Landing pushes the base branch from the .landing worktree and nothing
                 # ever pulled the home checkout, so the shared checkout stayed at whatever the last
