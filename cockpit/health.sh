@@ -396,7 +396,7 @@ now_section() {
     while [ "$i" -lt "${SP_AEON_N}" ]; do
         eval "local nm=\${SP_AEON${i}_NAME:-?} fy=\${SP_AEON${i}_FAYTH:-?}"
         eval "local bd=\${SP_AEON${i}_BEAD:-?} mn=\${SP_AEON${i}_MIN:-?} ac=\${SP_AEON${i}_ACT:-}"
-        eval "local ti=\${SP_AEON${i}_TITLE:-}"
+        eval "local ti=\${SP_AEON${i}_TITLE:-} pr=\${SP_AEON${i}_PRI:-?}"
         # WHO, then WHAT, then the live action — one question per line. Crammed onto
         # one row the name, the bead, the elapsed time and a shell command ran past the
         # pane width and truncated mid-word.
@@ -410,8 +410,12 @@ now_section() {
         # label column, which is eight; a wider id field on top of that was spending more
         # of a third-width pane on alignment than on the title the alignment exists to line
         # up. The budget is computed rather than constant, as in `next_row`.
-        fit "${ti:-?}" $(( COLS - 9 - (${#bd} > 14 ? ${#bd} : 14) ))
-        printf '        %s%-14s%s %s%s%s\n' "$C_ACC" "$bd" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
+        # P<n> FIRST, exactly as next_row and the RECENT rows lead — the three sections
+        # describe the same beads at three stages of one lifecycle, and until this was here
+        # they could not be compared down the column.
+        fit "${ti:-?}" $(( COLS - 12 - (${#bd} > 14 ? ${#bd} : 14) ))
+        printf '        %sP%s%s %s%-14s%s %s%s%s\n' \
+            "$C_DIM" "$pr" "$C_RST" "$C_ACC" "$bd" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
         if [ -n "$ac" ]; then
             fit "$ac" $(( COLS - 10 ))
             printf '        %s↳ %s%s\n' "$C_DIM" "$FIT" "$C_RST"

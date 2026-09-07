@@ -95,13 +95,21 @@ probe() {
         act="$(trace_last "$SPIRA_RUN/$bead.log" 2>/dev/null)"
         # The title, so NOW says what is being worked and not only its id — the same help
         # NEXT gives for queued work.
-        local title
-        title="$(bdjson show "$bead" 2>/dev/null | python3 -c '
-import sys, json
+        # THE PRIORITY COMES BACK WITH THE TITLE, from the one call already being made.
+        # NEXT and RECENT both lead with P<n>; NOW did not, so the three sections describing
+        # the same beads at three stages of one lifecycle did not line up and could not be
+        # compared down the column (the operator: "parallel structure with the NEXT and
+        # RECENT ones").
+        local title pri meta
+        meta="$(bdjson show "$bead" 2>/dev/null | python3 -c '
+import sys, json, re
 try: d = json.load(sys.stdin); i = (d if isinstance(d, list) else [d])[0]
 except Exception: raise SystemExit
-import re
-print(re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80])' 2>/dev/null)"
+# Tab separated: a title may contain anything, a priority may not.
+print("%s\t%s" % (i.get("priority"), re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80]))' 2>/dev/null)"
+        pri="${meta%%$'\t'*}"; title="${meta#*$'\t'}"
+        [ "$pri" = "$meta" ] && { pri=""; title=""; }
+        echo "SP_AEON${i}_PRI=${pri:-?}"
         echo "SP_AEON${i}_TITLE=${title:-?}"
         echo "SP_AEON${i}_NAME=${name:-?}"
         echo "SP_AEON${i}_FAYTH=${fay:-?}"
@@ -137,6 +145,12 @@ print("SP_NEXT_N=%d" % len(rows))
 ' 2>/dev/null
 
     # ---- RECENT: TRANSITIONS, not just outcomes ----------------------------------------
+    # The id->title map for the rows below, fetched once through the harness chokepoint and
+    # passed as a file. An unreadable map leaves the rows bare rather than failing the pass:
+    # "what happened" is the load-bearing half and must survive a database that will not
+    # answer (law-absence-needs-a-positive-control applies to the TITLE, not to the event).
+    TITLEMAP="$(mktemp)"; trap 'rm -f "$TITLEMAP"' RETURN
+    bdjson list --all --limit 0 > "$TITLEMAP" 2>/dev/null || echo '[]' > "$TITLEMAP"
     # This listed sentinel ACTs alone — landed, reopened, poisoned, reaped — which are all
     # ENDINGS. A bead being CLAIMED was invisible, and so was a bead being DROPPED: an aeon
     # exited mid-CI believing something would resume it, the lease expired, and the pane
@@ -185,13 +199,45 @@ print("\n".join(out[-20:]))
             "$SPIRA_RUN/aeon-ledger.log" 2>/dev/null | tail -40
     # EVERY STAGE OF THIS PIPELINE IS A CAP AND THE SMALLEST ONE DECIDES. Widening only the
     # last would still emit four events, because each source is trimmed before the merge.
-    } | sort -r | head -20 | python3 -c '
-import sys, datetime
+    # -u BECAUSE THE SOURCES OVERLAP AND THE LEDGER REPEATS ITSELF. slay.sh can write two
+    # `done` lines for one aeon, and a bead that is both claimed and ended in the window
+    # arrives from two branches of the merge — so the pane showed the same event twice and
+    # spent two of twenty rows saying it once.
+    } | sort -r -u | head -20 | python3 -c '
+import sys, json, re, datetime
 now = datetime.datetime.now(datetime.timezone.utc)
-for n, line in enumerate(sys.stdin):
+
+# THE TITLE MAP IS BUILT BY THE SHELL, through bdjson, and handed here as a file. Calling bd
+# from inside this python meant reinventing how the harness invokes it — the binary, -C, the
+# PATH conf.sh exports — and every one of those is a way to get an empty map that renders as
+# "no titles" rather than as an error. bdjson is the one chokepoint that already knows.
+#
+# ONE list call for all of them, never one show per event: twenty shows is twenty round trips
+# to Dolt on a pass that runs every minute. --limit 0 because bd list truncates at 50 by
+# default, and a silently short map leaves later rows bare (law-bd-list-truncates-at-50).
+titles = {}
+try:
+    for i in json.load(open(sys.argv[1])):
+        titles[i["id"]] = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))
+except Exception:
+    titles = {}
+
+# DEDUPED ON THE EVENT, NOT THE LINE. `sort -u` above collapses byte-identical rows, which
+# is not what repeats here: slay.sh writes two `done` lines a SECOND apart, so the timestamps
+# differ, both survive, and the pane spends two of twenty rows saying one thing once. Keyed on
+# (verb, bead) and keeping the first seen — input is newest-first, so that is the newest.
+seen, rows = set(), []
+for line in sys.stdin:
     parts = line.strip().split(" ", 1)
     if len(parts) < 2:
         continue
+    key = parts[1].strip()
+    if key in seen:
+        continue
+    seen.add(key)
+    rows.append(parts)
+
+for n, parts in enumerate(rows):
     try:
         t = datetime.datetime.strptime(parts[0], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
         secs = int((now - t).total_seconds())
@@ -201,8 +247,15 @@ for n, line in enumerate(sys.stdin):
     elif secs < 5400: rel = "%dm ago" % (secs // 60)
     elif secs < 172800: rel = "%dh ago" % (secs // 3600)
     else: rel = "%dd ago" % (secs // 86400)
-    print("SP_EVENT%d=%-7s %s" % (n, rel, parts[1].strip()[:80].replace("=", "-")))
-'
+    body = parts[1].strip()
+    # The last word of an event is its bead id; look the title up and append it. A missing
+    # title is left absent rather than filled with a placeholder, so the row still says what
+    # happened when the map could not be built.
+    bead = body.split()[-1] if body.split() else ""
+    title = titles.get(bead, "")
+    row = "%s %s" % (body, title) if title else body
+    print("SP_EVENT%d=%-7s %s" % (n, rel, row[:110].replace("=", "-")))
+' "$TITLEMAP"
 
     # ---- AWAITING CI: parked on a run, and parked on nothing -----------------------------
     # A parked bead has no aeon and is not stranded — its review is open and the sweep is
