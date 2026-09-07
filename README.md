@@ -687,6 +687,7 @@ Generic mechanism. A colleague clones this and it carries none of the operator's
 | `spira/hooks/` | the pre-commit hook itself, TRACKED and armed by core.hooksPath. .git/hooks is not cloned, so a hook that lived there would reach a colleague missing and unannounced |
 | `spira/inventory.sh` | the fence that keeps one operator's infrastructure out of a repository meant to be cloned — repository names, hosts, paths, people, dates. It scans comments, which is where all of it was |
 | `spira/inventory-deny` | the tokens that fence refuses beyond the structural ones. Ships EMPTY: a list of somebody else's names is itself the inventory |
+| `spira/hermetic.sh` | the fence over the suites themselves: a static scan refusing a test that names `systemctl`, `gh` or an undirected `bd`/`git`. A suite that reads the box is green until the box changes, then refuses correct work with nothing pointing anywhere but at the branch. `# hermetic-ok: <why>` stands it down at the call |
 | `spira/actors.example` | commit author to harness, for authors the commit graph cannot vote on. Its rows are one installation's roster |
 | `spira/gate-select.sh` | which suites a changed-file list needs, read from the `# covers:` line each suite declares about itself. Every uncertain case selects everything — the only wrong answer here is too few, and too few is green |
 | `spira/gate-full.sh` | the meter under that selection: runs the whole suite set against the ref everything lands on, daily, and escalates on red. A hand-kept map decays silently, so it is checked rather than trusted |

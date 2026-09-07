@@ -22,7 +22,11 @@
 #   1. THE FENCES. Not quality checks: guards against things that cannot be undone by
 #      deleting a commit. A published beads database holds internal notes, agent memories and
 #      the operator's own judgement; a published operator inventory names one person's
-#      machine. These run first, independently, and nothing routes around them.
+#      machine. The third is undone by a revert and is here for a different reason: a suite
+#      that reads the state of the box refuses correct work with nothing in its output
+#      pointing anywhere but at the branch, and both failures the deleted 17 minutes produced
+#      on its last day were that. These run first, independently, and nothing routes around
+#      them.
 #   2. THE SOAK. Does the merge queue make progress while several gates and a landing pass
 #      run against each other? It reproduces the 2026-09-07 livelock against the old code at
 #      the production ratio, then shows it gone.
@@ -44,7 +48,7 @@ say() { printf 'gate: %s\n' "$*" >&2; }
 # ---------------------------------------------------------------------------------------
 # 1. THE FENCES — first, and independently of everything below.
 # ---------------------------------------------------------------------------------------
-for fence in spira/exclude.sh spira/inventory.sh; do
+for fence in spira/exclude.sh spira/inventory.sh spira/hermetic.sh; do
     [ -r "$fence" ] || { say "$fence is missing — refusing to land unchecked"; exit 1; }
 done
 
@@ -61,6 +65,14 @@ fi
 
 if ! inv="$(bash spira/inventory.sh 2>&1)"; then
     printf '%s\n' "$inv" >&2
+    exit 1
+fi
+
+# The suites are checked before any of them is run, and the check is static — so a suite that
+# would have decided its verdict from this machine is named here rather than discovered later
+# as a red that looks like the branch's fault (law-gates-run-in-a-clean-environment).
+if ! herm="$(bash spira/hermetic.sh 2>&1)"; then
+    printf '%s\n' "$herm" >&2
     exit 1
 fi
 
@@ -100,7 +112,14 @@ run() {                  # run <suite> — its output only when it matters
 # check the deleted 17 minutes cannot be traded for is that the detector can still read the
 # far end of the queue. Its headline field was unreadable from the day it shipped and woke
 # three Ops sessions before anyone looked at the bytes. Under a second, no database.
-for s in spira/test-soak.sh spira/test-poison.sh spira/test-aeon-verdict.sh spira/test-watchtower.sh; do
+#
+# THE FIFTH IS THE HERMETICITY FENCE'S OWN POSITIVE CONTROL, and it is the reason the fence
+# above is worth the line it costs. A static check that reports a clean tree looks identical
+# whether its matcher fires or never could, so the fence alone would be a green light nobody
+# had tested; this plants an offender of each shape and requires it to be named. Under a
+# second, no database.
+for s in spira/test-soak.sh spira/test-poison.sh spira/test-aeon-verdict.sh spira/test-watchtower.sh \
+         spira/test-hermetic.sh; do
     [ -r "$s" ] || { say "$s is missing — refusing to report a pass without it"; exit 1; }
     run "$s"
 done
