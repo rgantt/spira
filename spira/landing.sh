@@ -526,8 +526,14 @@ $(printf '%s' "$gate_out" | tail -20)"
     return 0
 }
 
+# SOURCED, THIS MUST NOT RUN A PASS. Reading a function out of this file — content_landed is
+# the one worth borrowing — otherwise executes a full landing over every repository as a side
+# effect of the `.`, which is how a diagnostic became a live pass over 29 branches while its
+# author was asking a read-only question.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 for repo_name in $(spira_repos); do
     land_repo "$repo_name"
 done
 
 log "landing: pass complete — $n_branches branch(es) seen, $n_prog movement(s)"
+fi

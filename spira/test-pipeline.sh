@@ -116,14 +116,26 @@ is   "closed before landing is asked"   closed      "$(field_of sp-p1 status)"
 out="$(landing)"
 want "the pass lands it"                "landed spira/sp-p1" "$(mailbox)"
 
-# LANDED IS AN ANCESTRY QUESTION, NEVER A TIP COMPARISON. A tip moves under you mid-pass, and
-# comparing them is how work that merged perfectly gets reported as missing
-# (law-closed-is-not-landed).
+# LANDED IS A CONTENT QUESTION, AND ANCESTRY IS ONLY ONE WAY THE ANSWER IS YES.
+#
+# The landing pass REBASES a branch before merging it, which rewrites its commits — so the sha
+# recorded before landing is not on the base ref afterwards even though every line of it is.
+# Asserting `--is-ancestor` on the pre-landing tip therefore reports perfectly landed work as
+# missing, with all the authority of a git plumbing command. That happened while shepherding
+# sp-5su7: its two commits landed as dea5dcf and 874bd3b, the branch still pointed at bd7951a
+# and f628893, and the ancestry test said "not landed" twice while landing.sh itself was
+# saying "origin/main already contains every change on spira/sp-5su7".
+#
+# So ask what landing.sh asks: would merging this change anything? That question survives a
+# rebase, a squash, and an amend. Ancestry is checked too — when it holds it is the stronger
+# statement, and a case where NEITHER holds is a real failure.
 git -C "$REPO" fetch -q origin
 if git -C "$REPO" merge-base --is-ancestor "$TIP" origin/main 2>/dev/null; then
-    ok "and the commit is an ancestor of the base ref"
+    ok "the work reached the base ref (by ancestry)"
+elif git -C "$REPO" diff --quiet origin/main "spira/sp-p1" 2>/dev/null; then
+    ok "the work reached the base ref (by content — the branch was rebased)"
 else
-    bad "and the commit is an ancestor of the base ref" "tip $TIP is not on origin/main"
+    bad "the work reached the base ref" "neither $TIP nor its content is on origin/main"
 fi
 is   "the bead stays closed"            closed      "$(field_of sp-p1 status)"
 
