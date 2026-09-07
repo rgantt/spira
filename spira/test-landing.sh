@@ -75,8 +75,15 @@ landing() {
     # before a map is written were reading the operator's own seven repositories and counting
     # THEIR branches, so a pass over an empty fixture reported two branches seen and the
     # suite looked like a counting bug in landing.sh (law-gates-run-in-a-clean-environment).
+    # SPIRA_GATE_ADVISORY PINNED, for the same reason and by the same law. Every case below
+    # asserts what an ENFORCING gate does — a red gate reopens the bead, the reopen is a
+    # movement, the assignee is cleared. The operator's spira.conf currently sets it to 1, so
+    # the suite inherited it and four of those assertions went red against code that was
+    # correct: 73/4 inherited, 77/0 pinned. A suite that reads the box it runs on is testing
+    # the box (law-gates-run-in-a-clean-environment). Advisory mode has its own case below;
+    # it sets this deliberately rather than by accident.
     SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
-    SPIRA_REPO_MAP="$SH/repo-map" \
+    SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GATE_ADVISORY="${ADVISORY:-0}" \
         bash "$SH/landing.sh" 2>&1
 }
 mailbox() { cat "$RUN/landing.progress" 2>/dev/null; }
@@ -164,6 +171,20 @@ want "a failed gate reopens the bead"   "reopened sp-bad — failed the gate" "$
 want "and the reopen is a movement"     "reopened sp-bad"                   "$(mailbox)"
 is   "the reopen actually happened"     open                                "$(status_of sp-bad)"
 is   "and the dead claimant's name is gone, so it can be claimed again" "" "$(assignee_of sp-bad)"
+
+# --------------------------------------------------------------------------------------
+# ADVISORY MODE — the gate reports and the work lands anyway. Its whole purpose is to survive
+# a period when a red gate says more about the box than about the branch, so the property to
+# hold is narrow and easy to get wrong in either direction: the bead must NOT be reopened, the
+# branch must actually reach the base ref, and the verdict must still be recorded. A switch
+# that quietly discarded the verdict would be indistinguishable from having no gate, which is
+# the thing this was chosen INSTEAD of.
+seed; branch sp-adv
+out="$(ADVISORY=1 GATE_RC=1 landing)"
+want "advisory: a red gate says so in the log"  "gate FAILED but advisory mode is on" "$out"
+nowant "advisory: and does NOT reopen the bead" "reopened sp-adv"                     "$out"
+is   "advisory: the bead stays closed"          closed  "$(status_of sp-adv)"
+want "advisory: and the branch lands"           "landed spira/sp-adv"                 "$(mailbox)"
 
 # --------------------------------------------------------------------------------------
 # A BRANCH WHOSE BEAD IS NOT CLOSED IS SKIPPED — AND THE SKIP HAS TO HAVE A VOICE. This was a
