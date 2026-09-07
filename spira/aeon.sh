@@ -455,6 +455,32 @@ if [ -n "$BASE_REMOTE" ]; then
         || log "$FAYTH: fetch of $BASE_REMOTE failed — basing on a possibly stale $BASE"
 fi
 
+# A WORKTREE THAT BELONGS TO ANOTHER REPOSITORY IS NOT OURS, and the path cannot tell.
+# $WORK is keyed on the bead id alone, so a tree left behind when a bead was scoped to a
+# different repo sits at exactly the path this summon wants — and the existence check below
+# reuses it. Measured 2026-09-07: sp-2tv is repo:spira, and worktree/sp-2tv is a detached
+# brain checkout from before it was rescoped. Eight consecutive summons were handed the brain
+# tree, each one burning an aeon and an attempt and unable to finish, while the real work sat
+# in a tree somebody had made by hand beside it. The bead reached ten attempts against a
+# poison threshold of three without one of them being a fact about the work.
+#
+# Compared on the COMMON GIT DIR, not on the remote URL: two checkouts of one repository can
+# have different remotes, and a worktree's common dir is its owning repository by definition.
+if [ -e "$WORK/.git" ]; then
+    _own="$(git -C "$WORK" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+    _want="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+    if [ -z "$_own" ] || [ "$_own" != "$_want" ]; then
+        _aside="$WORK.foreign.$(date +%s)"
+        log "$FAYTH: $BEAD_ID — $WORK belongs to ${_own:-an unreadable repository}, not repo:$REPO_NAME; moving it to $_aside"
+        # MOVED, NEVER DELETED. It may hold the only copy of somebody's work, which is the
+        # whole reason it was still there. Unregister it first so the repository that owns it
+        # stops advertising a path that has gone.
+        git -C "$REPO" worktree prune >/dev/null 2>&1
+        mv "$WORK" "$_aside" 2>/dev/null || die "could not move the foreign worktree at $WORK aside"
+    fi
+    unset _own _want _aside
+fi
+
 if [ ! -d "$WORK/.git" ] && [ ! -f "$WORK/.git" ]; then
     mkdir -p "$(dirname "$WORK")"
     # Through the chokepoint. A bare prune drops the registration of any worktree whose

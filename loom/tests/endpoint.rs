@@ -145,10 +145,35 @@ async fn the_payload_is_bounded_to_live_work_and_carries_typed_edges() {
 
     // The payload is RAW rows — the page derives its view model, so nothing here may be
     // pre-chewed, and the fields the page needs must survive.
-    let first = &v["beads"][0];
+    //
+    // NAMED, NOT beads[0]. This read the first row of an unordered response and required
+    // `labels` on it. bd omits an EMPTY labels array entirely, and three of the four fixture
+    // beads declare `"labels":[]` — so the assertion passed or failed on which bead happened
+    // to sort first, and on main it drew sp-ccc and went red. A suite whose verdict depends
+    // on row order is not testing the splice it was written to test.
+    let aaa = v["beads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["id"] == "sp-aaa")
+        .expect("sp-aaa in the payload");
     for field in ["id", "status", "labels", "updated_at", "issue_type", "priority"] {
-        assert!(!first[field].is_null(), "{field} is missing from {first}");
+        assert!(!aaa[field].is_null(), "{field} is missing from {aaa}");
     }
+    // AND THE ABSENCE IS THE OTHER HALF OF THE CONTRACT. A bead with no labels is served with
+    // no `labels` key at all, so the page must read it as absent rather than as an empty
+    // list. Asserting it here is what stops someone "fixing" the line above by normalising
+    // the payload in the server, which is exactly the pre-chewing this endpoint refuses.
+    let ccc = v["beads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["id"] == "sp-ccc")
+        .expect("sp-ccc in the payload");
+    assert!(
+        ccc["labels"].is_null(),
+        "a label-less bead must arrive without a labels key, not with an empty one: {ccc}"
+    );
 
     // The body is spliced together from text that is already JSON, so a title needing escapes
     // is what proves the splice still produces a document rather than something that merely

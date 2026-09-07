@@ -220,10 +220,42 @@ load_snapshot() {
 # looked like they measured the same kind of thing (the operator, verbatim: "i can't tell
 # at a glance what's actually happening"). Each line now answers one question and says
 # which one.
+# A STOPPED WORLD IS THE FIRST THING ON THE PANE, because every other figure below it is
+# then a description of a system that is not running — zero aeons, zero landings and a still
+# queue all render exactly as they do on a quiet, healthy afternoon. The operator, watching
+# the pane through a halt: "if spira is stopped, i want that to be clear from the pane."
+#
+# READ FROM SYSTEMD AND THE STAMP DIRECTLY, NOT THROUGH THE SNAPSHOT. Every other row here
+# comes from cockpit.env because its probes are too slow to run per repaint; these two are a
+# file test and one `systemctl is-active`, and routing them through the collector would mean
+# a DEAD collector renders a halted world as a running one — the failure this banner exists
+# to prevent, arriving by its own back door.
+#
+# EITHER CONDITION IS ENOUGH. world.sh writes the stamp, but a timer stopped by hand leaves
+# no stamp at all, and that world is just as stopped.
+halt_banner() {
+    local stamp="$SPIRA_RUN/world.halted" why="" since="" tstate
+    tstate="$(systemctl --user is-active spira-sentinel.timer 2>/dev/null)"
+    if [ -f "$stamp" ]; then
+        since="$(head -1 "$stamp" 2>/dev/null)"
+        why="$(sed -n '''2s/^why: //p''' "$stamp" 2>/dev/null)"
+    elif [ "$tstate" = active ]; then
+        return 0
+    fi
+    printf '%s%s ■ SPIRA STOPPED %s%s no aeons are summoned; nothing lands%s\n' \
+        "$C_B" "$C_BAD" "$C_RST" "$C_DIM" "$C_RST"
+    [ -n "$since" ] && printf '  %ssince%s %s\n' "$C_DIM" "$C_RST" "$since"
+    [ -n "$why" ]   && printf '  %swhy%s   %s\n' "$C_DIM" "$C_RST" "${why:0:60}"
+    [ "$tstate" != active ] && [ -z "$since" ] \
+        && printf '  %ssentinel.timer is %s and no world.sh halt was recorded%s\n' "$C_DIM" "$tstate" "$C_RST"
+    printf '  %sstart it:%s spira/world.sh start\n' "$C_DIM" "$C_RST"
+}
+
 header_line() {
     local age="?" stale=""
     [ -n "${SP_AT:-}" ] && age=$(( $(date +%s) - SP_AT ))
     [ "$age" != "?" ] && [ "$age" -gt 180 ] && stale="  ${C_BAD}STALE ${age}s${C_RST}"
+    halt_banner
     printf '%s%sSPIRA%s %s   %ssentinel%s %s %ss  %sops%s %s %ss%s\n' \
         "$C_B" "$C_ACC" "$C_RST" "$(date +%H:%M)" \
         "$C_DIM" "$C_RST" "$(dot "${SP_SENTINEL_TIMER:-0}")" "${SP_SENTINEL_AGE:-?}" \
