@@ -6,7 +6,7 @@
 # it may use, and what wakes it.
 
 FAYTH_NAME=ops
-FAYTH_DESC="Ops — claims incident beads, matches an SOP, executes it or writes one"
+FAYTH_DESC="Ops — the healer: claims incidents and sweeps, matches an SOP, executes it or writes one"
 
 # The partition. Incidents are filed by incident.sh from a systemd OnFailure, never by
 # hand and never by the plan, so this can only ever see production events. The escalation
@@ -27,6 +27,17 @@ FAYTH_MEMORY_PREFIXES="law-,sop-"
 # beads are.
 FAYTH_MODEL=claude-opus-5
 FAYTH_MAX_CONCURRENT=1
+
+# A PARTY MEMBER, NOT AN AEON. Ops is Yuna: it travels with the party and is always around.
+# A builder is Ifrit — called for one fight and dismissed after it. So Ops is NOT drawn from
+# SPIRA_MAX_AEONS and cannot be crowded out of it: it has its own summoner
+# (spira-ops.timer), and watchtower.sh gives it the pipeline's vital signs on a timer so the
+# role has something to be persistent about rather than existing only on paper.
+#
+# The first version of this gave Ops a reserved slot INSIDE the aeon pool. That was the
+# wrong shape for the same reason: a reserved slot is still a slot somebody must release,
+# and builders hold theirs for 45-90 minutes. A role that never competes cannot be starved.
+FAYTH_ROLE=party
 
 # Shorter than the builder's on both counts. An incident is a bounded diagnosis against a
 # runbook rather than an implementation, and a lease held for ninety minutes over a

@@ -705,8 +705,34 @@ for i in (d if isinstance(d, list) else [d]):
 # exercised by test-fayth.sh, which the version inlined here could not be: everything else
 # in a sentinel pass touches the real repository and the real database.
 # ======================================================================================
-for f in $FAYTHS; do
-    summon_fayth "$f" && act "summoned a $f aeon"
+# ONE POOL, DRAWN DOWN IN THE ORDER THE PERSONAS ARE NAMED. SPIRA_MAX_AEONS is that pool and
+# was, until 2026-09-07, a configuration key nothing read — so every persona had a private
+# cap and nothing coordinated them. The order is the priority: Ops is named first because an
+# on-call persona that has to wait behind feature work is not on call.
+#
+# Ops also RESERVES a slot (FAYTH_RESERVE in its .fayth), which is the half that ordering
+# alone cannot do: builders hold their beads for 45-90 minutes, so a pass that merely asked
+# Ops first would still find every slot occupied by sessions that started an hour ago. The
+# reserve is subtracted from what the others may see whether or not Ops is using it.
+#
+# A HOST THAT SETS NO POOL BEHAVES EXACTLY AS BEFORE — an empty pool is passed as empty, and
+# every cap below it is the persona's own.
+# THE POOL IS FOR AEONS, NOT FOR THE PARTY. Party members travel with you and are summoned by
+# their own units; only task personas are called for a fight and dismissed after it, and only
+# they draw on this. `live` is counted the same way, over the task roster alone, or a running
+# Ops would consume a slot it was never taking from.
+TASK_FAYTHS="$(spira_task_fayths)"
+pool="${SPIRA_MAX_AEONS:-}"
+if [ -n "$pool" ]; then
+    task_live=0; for f in $TASK_FAYTHS; do task_live=$((task_live + $(aeon_count "$f"))); done
+    pool=$(( pool > task_live ? pool - task_live : 0 ))
+    log "CHECK7 pool: ${SPIRA_MAX_AEONS} slot(s), $task_live live, $pool free — order: $TASK_FAYTHS"
+fi
+for f in $TASK_FAYTHS; do
+    if summon_fayth "$f" "$pool"; then
+        act "summoned a $f aeon"
+        [ -n "$pool" ] && pool=$(( pool > 0 ? pool - 1 : 0 ))
+    fi
 done
 
 if [ "$GOAL_REACHED" = 1 ]; then

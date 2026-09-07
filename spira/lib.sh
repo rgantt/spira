@@ -165,11 +165,40 @@ fayth_names() {          # every persona defined in the chamber, one per line
     done
 }
 
-spira_fayths() {         # the personas this harness runs, space separated
+spira_fayths() {         # the personas this harness runs, space separated, IN PRIORITY ORDER
     # SPIRA_FAYTHS still overrides, because which personas a HOST runs is deployment
-    # configuration; the default is now every fayth present rather than one name.
+    # configuration; the default is every fayth present rather than one name.
     if [ -n "${SPIRA_FAYTHS:-}" ]; then printf '%s' "$SPIRA_FAYTHS"; return 0; fi
-    fayth_names | tr '\n' ' '
+    # THE ORDER IS NOW LOAD-BEARING, so the default may not be alphabetical. The pool is
+    # drawn down in this order, and `fayth_names` returned "builder ops" — which puts the
+    # elastic persona that scales to fill the box AHEAD of the on-call one, exactly backwards.
+    # Elastic personas sort last and everything else keeps its name order, so a host that
+    # configures nothing still gets a sensible priority instead of an alphabetical accident.
+    local f fixed="" elastic=""
+    for f in $(fayth_names); do
+        if [ "$(fayth_get "$f" FAYTH_ELASTIC 0)" = 1 ]
+        then elastic="$elastic $f"
+        else fixed="$fixed $f"
+        fi
+    done
+    printf '%s' "${fixed# }${elastic:+ }${elastic# }"
+}
+
+# spira_task_fayths -> the personas the sentinel's pool summons: everything that is not a
+# persistent party member.
+#
+# EVERY OTHER USE OF THE ROSTER KEEPS THEM. A party member's beads must still be reaped when
+# its lease dies, its partition still swept for stalled work, and its closed beads still
+# checked for having landed — those were each written against one hardcoded partition once
+# and the fix was to ask every persona's own predicate. Narrowing THAT would restore the bug
+# by another door. This narrows only who the pool summons.
+spira_task_fayths() {
+    local f out=""
+    for f in $(spira_fayths); do
+        [ "$(fayth_get "$f" FAYTH_ROLE task)" = party ] && continue
+        out="$out $f"
+    done
+    printf '%s' "${out# }"
 }
 
 # A NARROWED ROSTER SAYS SO, EVERY PASS. SPIRA_FAYTHS is a legitimate host override — which
@@ -336,9 +365,67 @@ release_orphan_claims() {   # release_orphan_claims [labels] -> a RELEASED line 
     return 0
 }
 
-fayth_free() {           # fayth_free <fayth> -> free concurrency slots, never negative
-    local f="$1" max have budget
+# fayth_free <fayth> [pool-remaining] -> free concurrency slots, never negative.
+#
+# THE POOL IS A BATTLE PARTY (the operator, 2026-09-07: "i have a tank, a healer, and then as
+# much DPS as i can"). SPIRA_MAX_AEONS is the party size, and every persona is one of two
+# kinds:
+#
+# THE DISTINCTION IS YUNA AND IFRIT (the operator, 2026-09-07: "as i travel around Spira with
+# my party, i have Yuna the summoner always around, but Ifrit the Aeon is only around during
+# combat when i NEED Ifrit"). A party member travels with you; an aeon is called for the
+# fight and dismissed after it. Ops is Yuna — persistent, always present, not summoned for a
+# task. A builder is Ifrit — summoned onto one bead, and gone when it is done.
+#
+#   PARTY MEMBERS (FAYTH_ROLE=party) — the tank and the healer. They are NOT drawn from this
+#   pool, because they are not task-specific work: they are persistent roles that are always
+#   present, with their own summoner (Ops has spira-ops.timer). Ops is the healer. Keeping it
+#   out of the pool is what actually guarantees it a place — a reserved slot inside a shared
+#   pool is still a slot somebody has to release, and builders hold theirs for 45-90 minutes.
+#
+#   TASK FAYTHS (the default) — summoned for one bead and gone. This pool is theirs alone.
+#   FAYTH_ELASTIC means "no number of your own, take what is left": builders are the DPS, and
+#   "as much as I can" is exactly the right cap for them.
+#
+# WHERE THE METAPHOR DIVERGES, deliberately: in the game one fayth yields one aeon, so a
+# party of three builders would need three statues in the chamber. Here a fayth is the CLASS
+# — a persona definition — and an aeon one summoned instance of it, which is what lets
+# FAYTH_MAX_CONCURRENT exist at all. Lore-exact would buy nothing but three near-identical
+# .fayth files to keep in step.
+#
+# A PARTY MEMBER SHOULD ALWAYS BE PRESENT, which is the part that is not in this file: Ops
+# is only summoned when an incident bead is waiting, so a quiet hour means the healer is not
+# in the party at all and the role exists only on paper. watchtower.sh is what keeps it
+# seated — it hands Ops the pipeline's vital signs on a timer whether or not anything has
+# crashed, so the persistent role has something to be persistent about. Until now it was a documented, validated
+# configuration key that NOTHING READ — no default, no enforcement, unset on this host — so
+# there was no pool at all: every persona had its own private cap and nothing coordinated
+# them. Ops could take one and the builder three whether or not the box could carry four,
+# and an on-call persona had no more claim on a slot than a feature worker.
+#
+# The order in SPIRA_FAYTHS IS the priority. Each persona takes up to its own
+# FAYTH_MAX_CONCURRENT from what the ones before it left, so the first one named can never be
+# crowded out by work that is merely plentiful — which is the whole point of putting Ops
+# there. A persona declaring FAYTH_ELASTIC=1 ignores its own cap and takes the remainder,
+# which is what "builders scale to fill" means; it belongs last.
+#
+# WHY THERE IS NO RESERVATION MECHANISM. The first version of this gave Ops a reserved slot
+# inside the shared pool, because ordering alone only stops a builder taking a slot AHEAD of
+# Ops within one pass and does nothing about builders already inside 45-90 minute sessions.
+# Taking party members out of the pool entirely is the simpler answer to the same problem and
+# has no arithmetic to get wrong: a role that never competes cannot be starved.
+# THE POOL IS A CEILING, NOT A FLOOR. It only ever lowers what a persona may start, so a
+# host that sets nothing behaves exactly as before.
+fayth_free() {           # fayth_free <fayth> [pool-remaining]
+    local f="$1" pool="${2:-}" max have budget
     max="$(fayth_get "$f" FAYTH_MAX_CONCURRENT 1)"; max="${max:-1}"
+    # ELASTIC: the remainder of the pool, not this persona's own number. With no pool given
+    # there is no remainder to take, so it falls back to its declared cap rather than to
+    # unbounded — an elastic persona on a host that never enforced a pool must not become
+    # the one that discovers the box's limits.
+    if [ "$(fayth_get "$f" FAYTH_ELASTIC 0)" = 1 ] && [ -n "$pool" ]; then
+        max="$pool"
+    fi
     # THE GOVERNOR WITHHOLDS HERE, at the one chokepoint every summon path goes through.
     # FAYTH_MAX_CONCURRENT is a COUNT, which is a proxy for load rather than a measure of
     # it; governor.sh reads /proc and says what this machine can actually afford right now.
@@ -358,6 +445,9 @@ fayth_free() {           # fayth_free <fayth> -> free concurrency slots, never n
     if [ "$gmode" = enforce ] && [ -n "$budget" ] && [ "$budget" -lt "$free" ] 2>/dev/null; then
         free="$budget"
     fi
+    # AND THE POOL CLAMPS LAST, after both this persona's cap and the governor's headroom,
+    # because it is the outermost of the three and the only one the personas share.
+    [ -n "$pool" ] && [ "$pool" -lt "$free" ] 2>/dev/null && free="$pool"
     printf '%d' "$free"
 }
 
@@ -407,8 +497,8 @@ fayths_for_labels() {    # fayths_for_labels <labels> -> personas whose partitio
 # for "summoned" would swallow the log lines below with it, and the sentinel's stdout IS the
 # sentinel log — so the one pass that did something would be the one that explained itself
 # least.
-summon_fayth() {
-    local f="$1" r free
+summon_fayth() {         # summon_fayth <fayth> [pool-remaining]
+    local f="$1" pool="${2:-}" r free
     # THE ACCOUNT BEFORE THE QUEUE. A summon during a capacity outage cannot succeed, and it
     # does not fail for free: the aeon it starts claims a bead, is refused by the API, and
     # the bead pays an attempt to discover a fact the harness already knew. Asked first, and
@@ -419,7 +509,7 @@ summon_fayth() {
     fi
     r="$(fayth_ready "$f")" || { log "CHECK7 $f: no fayth in the chamber — skipped"; return 1; }
     if [ "${r:-0}" -eq 0 ]; then log "CHECK7 $f: nothing ready in its partition"; return 1; fi
-    free="$(fayth_free "$f")"
+    free="$(fayth_free "$f" "$pool")"
     if [ "${free:-0}" -eq 0 ]; then
         # Name the ACTUAL reason. "at concurrency cap" was logged even when the governor
         # was the one withholding, which is a check reporting someone else's decision as

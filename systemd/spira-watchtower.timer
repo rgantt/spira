@@ -1,0 +1,15 @@
+[Unit]
+Description=Wake Ops on a timer and hand it the pipeline's vital signs
+
+[Timer]
+# TEN MINUTES, not two. Each sweep is a model session against a five-hour account window, so
+# the interval is a real cost — and the sweep is deduped to one open at a time, so a shorter
+# one would mostly file nothing anyway. Long enough that a quiet system is cheap; short
+# enough that a stall is noticed in minutes rather than the fifty it took on 2026-09-07.
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=30s
+Unit=spira-watchtower.service
+
+[Install]
+WantedBy=timers.target

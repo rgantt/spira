@@ -23,6 +23,7 @@ DEST="$HOME/.config/systemd/user"
 
 UNITS=(spira-sentinel.service spira-sentinel.timer
        spira-ops.service spira-ops.timer
+       spira-watchtower.service spira-watchtower.timer
        spira-skew.service spira-skew.timer
        spira-archivist.service spira-archivist.timer
        spira-cockpit.service
@@ -31,14 +32,13 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
        concierge.service concierge.timer
        beads-push.service beads-push.timer
        spira-archive.service spira-archive.timer
-       spira-gate-full.service spira-gate-full.timer)
+       )
 # Only these get enabled. The .service behind a .timer is started BY the timer; enabling it
 # as well would also run it once at boot, outside the schedule.
 ENABLE=(cockpit-ensure.timer concierge.timer
-        beads-push.timer spira-sentinel.timer spira-ops.timer spira-skew.timer
+        beads-push.timer spira-sentinel.timer spira-ops.timer spira-watchtower.timer spira-skew.timer
         spira-archive.timer
         spira-archivist.timer
-        spira-gate-full.timer
         spira-cockpit.service)
 
 # dolt-beads.service supervises the Dolt server itself, which is only this harness's business

@@ -5,7 +5,7 @@
 # graph, the statutes it must read, the tools it may use, and what wakes it.
 
 FAYTH_NAME=builder
-FAYTH_DESC="Guardian — claims ready Spira plan beads and implements them"
+FAYTH_DESC="Guardian — the DPS: claims ready Spira plan beads and implements them, scaling to fill the party"
 
 # The partition. AND-labels, so this can only ever see beads deliberately marked as Spira
 # plan work — never beads imported from a predecessor alongside them, which are a replica
@@ -48,6 +48,13 @@ FAYTH_MODEL=claude-opus-5
 # SPIRA_MAX_AEONS in spira.conf is NOT this number: it is declared and documented but nothing
 # reads it, so this file is the only ceiling that exists.
 FAYTH_MAX_CONCURRENT=3
+
+# ELASTIC, AND THEREFORE LAST IN SPIRA_FAYTHS. The builder takes whatever the pool has left
+# once every persona ahead of it has been served and every reserve has been honoured, rather
+# than a number of its own — "builders scale to fill the remaining spots". Its own
+# MAX_CONCURRENT above is the fallback on a host that declares no pool at all, so a clean
+# clone does not discover this box's limits by exceeding them.
+FAYTH_ELASTIC=1
 
 # The lease TTL the claim carries, and how often the aeon refreshes it. Heartbeats write
 # no Dolt commit, so a fast cadence is free; the reaper's grace window is ~2x the TTL.

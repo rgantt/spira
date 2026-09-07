@@ -24,7 +24,7 @@ set -uo pipefail
 
 # The loop, in the order that stops cleanly: summons first so nothing new is born, then the
 # legs that act on what is already there.
-TIMERS=(spira-sentinel.timer spira-ops.timer spira-gate-full.timer
+TIMERS=(spira-sentinel.timer spira-ops.timer spira-watchtower.timer
         spira-archivist.timer spira-archive.timer spira-skew.timer)
 STAMP="$SPIRA_RUN/world.halted"
 

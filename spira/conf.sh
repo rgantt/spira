@@ -292,6 +292,12 @@ spira_conf_defaults() {
     # that can show its work. A verdict we would want to override is a verdict we have
     # mis-classified.
     : "${SPIRA_LAND_GATE_RESERVE:=1200}"
+    # HOW MANY AEONS MAY RUN AT ONCE, ACROSS EVERY PERSONA. Until 2026-09-07 this key was
+    # validated, documented and read by nothing: each persona had a private cap and no pool
+    # coordinated them, so the box's real ceiling was whatever the caps happened to sum to.
+    # Four is the sum of what the two shipped personas declared, so this default changes
+    # nothing on a host that was already running them and starts enforcing an order.
+    : "${SPIRA_MAX_AEONS:=4}"
     # ---- THE READ SURFACE OVER THE LIVE GRAPH ------------------------------------------
     # Where Loom listens. Localhost is the default because a bead carries internal working
     # notes and the operator's own judgement, so the address it is reachable at is a
