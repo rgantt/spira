@@ -37,6 +37,13 @@
 #             `cockpit/panel/src/main.rs` sit in the same directory and are not the same
 #             question.
 #
+#             INERT IS CONSULTED ONLY FOR A PATH NO SUITE CLAIMS. An explicit `# covers:`
+#             glob wins over it, always: the extension of a file is a guess about whether it
+#             can change behaviour, and a suite naming the file is a statement that it does.
+#             Tested the other way round, a persona — the brief an aeon is actually executed
+#             with — is prose by its extension and claimed by eleven suites, and it selected
+#             none of them. That is the one failure mode here that is green.
+#
 # And an ABSENT OR EMPTY file list selects everything. An empty changed-file list is
 # indistinguishable from a list that could not be read, and reading it as "nothing changed"
 # is how a gate passes every branch (law-absence-needs-a-positive-control).
@@ -131,11 +138,6 @@ while IFS= read -r f; do
         all_suites
         exit 0
     fi
-    if is_inert "$f"; then
-        reasons="${reasons}    $f — inert
-"
-        continue
-    fi
 
     claimed=0
     for t in "${SUITES[@]}"; do
@@ -149,13 +151,20 @@ while IFS= read -r f; do
             if [[ "$f" == $g ]]; then claimed=1; add "$t"; break; fi
         done
     done
-    if [ "$claimed" = 0 ]; then
-        echo "gate-select: $f is claimed by no suite — selecting all" >&2
-        all_suites
-        exit 0
-    fi
-    reasons="${reasons}    $f
+    if [ "$claimed" = 1 ]; then
+        reasons="${reasons}    $f
 "
+        continue
+    fi
+    # Unclaimed. Only now may the extension decide, and only toward doing nothing.
+    if is_inert "$f"; then
+        reasons="${reasons}    $f — inert, and claimed by no suite
+"
+        continue
+    fi
+    echo "gate-select: $f is claimed by no suite — selecting all" >&2
+    all_suites
+    exit 0
 done < "$LIST"
 
 if [ -n "$reasons" ]; then

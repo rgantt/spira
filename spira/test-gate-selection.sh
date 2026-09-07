@@ -59,7 +59,7 @@ count() { printf '%s' "$1" | grep -c . ; }
 # a literal — `spira/landing.sh` rather than "whatever the covers line said" — fails.
 # =======================================================================================
 F="$T/fixture"
-mkdir -p "$F/spira/widget" "$F/docs"
+mkdir -p "$F/spira/widget" "$F/spira/codex" "$F/docs"
 cp "$ROOT/spira/gate-select.sh" "$F/spira/gate-select.sh"
 
 mkstub() {              # mkstub <name> <covers globs>
@@ -73,7 +73,8 @@ EOF
 mkstub zither  'spira/zither.sh spira/widget/*'
 mkstub quokka  'spira/quokka.py'
 mkstub tessera 'docs/tessera.txt'
-ALL=3
+mkstub vellum  'spira/codex/*'
+ALL=4
 
 out="$(sel "$F" spira/zither.sh)"
 same "a claimed file selects only the suites claiming it" "spira/test-zither.sh" "$out"
@@ -81,8 +82,12 @@ same "a claimed file selects only the suites claiming it" "spira/test-zither.sh"
 out="$(sel "$F" spira/widget/deep/thing.conf)"
 same "a covers glob matches through directories" "spira/test-zither.sh" "$out"
 
+# Named, not counted against $ALL: a count expressed as an offset from the number of stubs
+# silently becomes an assertion about the fixture's size the moment one is added.
 out="$(sel "$F" spira/quokka.py spira/zither.sh)"
-same "two files select the union" "$ALL" "$(( $(count "$out") + 1 ))"
+has  "two files select the union — first"  "spira/test-quokka.sh" "$out"
+has  "two files select the union — second" "spira/test-zither.sh" "$out"
+same "and nothing else"                    "2" "$(count "$out")"
 
 # --- the four ways to select everything ------------------------------------------------
 for shared in spira/lib.sh spira/conf.sh spira/testdb.sh spira/gate.sh spira/gate-spira.sh; do
@@ -118,6 +123,22 @@ same "an inert-looking directory does not make its contents inert" "spira/test-t
 out="$(sel "$F" spira/test-quokka.sh)"
 same "a suite covers itself without saying so" "spira/test-quokka.sh" "$out"
 
+# PROSE A SUITE CLAIMS IS NOT INERT. An extension is a guess about whether a file can change
+# behaviour; a `# covers:` glob naming it is a statement that it does, and the statement wins.
+# Ordered the other way this is silent and GREEN, which is why it is asserted from both sides
+# here and again against the real map below: the personas an aeon is executed with are `.md`
+# files claimed by eleven suites, and they selected none of them.
+out="$(sel "$F" spira/codex/persona.md)"
+same "prose a suite CLAIMS selects that suite" "spira/test-vellum.sh" "$out"
+
+out="$(sel "$F" spira/codex/persona.md README.md)"
+same "unclaimed prose beside it adds nothing" "spira/test-vellum.sh" "$out"
+
+# The positive control for the pair above: inert still decides the files nobody claims, so
+# "claimed prose runs suites" has not simply become "prose runs suites".
+out="$(sel "$F" spira/codex.md)"
+same "prose no suite claims still selects nothing" "" "$out"
+
 # --- --lint, proved in BOTH directions -------------------------------------------------
 ( cd "$F" && env -i PATH="$PATH" HOME="$HOME" bash spira/gate-select.sh --lint >/dev/null 2>&1 )
 same "--lint is green when every suite declares its covers" "0" "$?"
@@ -152,6 +173,18 @@ same "a README edit selects no suite in this repository" "" "$out"
 
 out="$(sel "$ROOT" spira/lib.sh)"
 same "lib.sh selects every suite in this repository" "$NSUITES" "$(count "$out")"
+
+# A persona is the brief an aeon is actually executed with, and it is a `.md` file. In this
+# repository the chamber is claimed by eleven suites, so the number that must never appear
+# here is zero.
+out="$(sel "$ROOT" spira/chamber/builder.md)"
+has  "a persona selects the suites claiming the chamber" "spira/test-fayth.sh" "$out"
+[ "$(count "$out")" -gt 1 ] \
+    && ok "a persona selects more than one of them" \
+    || bad "a persona selects more than one of them" "selected [$out]"
+[ "$(count "$out")" -lt "$NSUITES" ] \
+    && ok "and not every suite in this repository" \
+    || bad "and not every suite in this repository" "selected all $NSUITES"
 
 # The positive control for the two narrow cases above: the same call against the same tree
 # CAN return everything, so "selected few" is a verdict rather than a broken matcher.
