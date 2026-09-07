@@ -491,6 +491,23 @@ recent_row() {          # recent_row "<age> <verb> <bead> <title>" <indent-cols>
         fit "$raw" $(( COLS - pad ))
         printf '%s%s%s\n' "$C_DIM" "$FIT" "$C_RST"; return
     fi
+    # THE THIRD FIELD IS NOT ALWAYS A BEAD. Some sentinel ACTs are AGGREGATES over a pass —
+    # "reaped 1 landed branch(es)", "escalated 3 stranded item(s)", "announced and ..." —
+    # where the word after the verb is a COUNT or a preposition. Dropped into the id column
+    # it wore the same accent colour every real id wears, so "reaped 1" read as a bead named
+    # `1` and the operator went looking for it. A bead reference is an `sp-` id, optionally
+    # carrying its branch prefix (`spira/sp-d0c2`); anything else is prose, and prose is
+    # printed as prose across the id and title columns rather than being cut in half by them.
+    if [[ ! "$id" =~ (^|/)sp-[A-Za-z0-9._-]+$ ]]; then
+        rest="$id${rest:+ $rest}"
+        vw=${#verb}; if [ "$vw" -lt 9 ]; then vw=9; fi
+        fit "$rest" $(( COLS - pad - 10 - vw ))
+        printf '%s%-7s%s %s%-9s%s %s%s%s\n' \
+            "$C_DIM" "$age" "$C_RST" \
+            "$(verb_colour "$verb")" "$verb" "$C_RST" \
+            "$C_DIM" "$FIT" "$C_RST"
+        return
+    fi
     # THE VERB IS PADDED, like the age and the id either side of it. Unpadded, the id and
     # title columns began wherever the verb happened to end — `ended` to `reclaimed` is five
     # columns of drift in the one section whose purpose is to be scanned straight down. Nine
