@@ -24,14 +24,22 @@ FAYTH_MEMORY_PREFIXES="law-"
 # one. A bead with no `repo:` label is the home repo, which is what Spira's own plan
 # beads are.
 FAYTH_MODEL=claude-opus-5
-# Three (per the operator, 2026-09-06). Two was set when the governor reported two affordable
-# and the queue sat at 15 ready; by the time of this change it sat at 47 ready with two
-# aeons busy, on a plan whose five-hour window, not the box, is the throughput ceiling.
+# Four (per the operator, 2026-09-07). The progression has been two, then three, then this,
+# each time against a queue that kept growing: 15 ready at two, 47 at three, 52 at four with
+# every slot busy and the sentinel logging "at concurrency cap" every pass.
+#
+# THE GOVERNOR DISAGREES AND IS READ CORRECTLY. At the time of this change it reported
+# SP_HEADROOM=0 — "no headroom: cpu 26% idle (avg), floor 25%, 25% per aeon" — on a four-core
+# box at load 4.94. It is in `measure` mode, so it reports and does not clamp. The operator's
+# reading is that the fourth aeon does not ADD load, it inherits it: three aeons plus his own
+# interactive session is what that 26% is measuring, and the fourth starts when he stops.
+# The five-hour account window, not the box, remains the real ceiling.
+#
 # Aeons work in separate worktrees and claim atomically, so the risk is contention in a
 # shared repo, not lost work; the governor will withhold in enforce mode if that proves wrong.
 # SPIRA_MAX_AEONS in spira.conf is NOT this number: it is declared and documented but nothing
 # reads it, so this file is the only ceiling that exists.
-FAYTH_MAX_CONCURRENT=3
+FAYTH_MAX_CONCURRENT=4
 
 # The lease TTL the claim carries, and how often the aeon refreshes it. Heartbeats write
 # no Dolt commit, so a fast cadence is free; the reaper's grace window is ~2x the TTL.
