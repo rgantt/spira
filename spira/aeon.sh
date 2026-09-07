@@ -118,26 +118,55 @@ export SPIRA_AEON="$AEON"
 export BEADS_ACTOR="aeon-$AEON"
 export GIT_AUTHOR_NAME="aeon-$AEON" GIT_AUTHOR_EMAIL="aeon-$AEON@spira.local"
 export GIT_COMMITTER_NAME="aeon-$AEON" GIT_COMMITTER_EMAIL="aeon-$AEON@spira.local"
-# RESUMPTION BEATS INITIATION. `bd ready --claim` takes the first row, and priority was
-# the only ordering — so a bead carrying 21 commits and an open pull request lost to a
-# bead with nothing started, twice. That is not untidy, it is expensive: an unfinished
-# branch decays, its base moves under it, and every pass it sits costs another rebase.
+# RESUMPTION BEATS INITIATION — WITHIN ONE PRIORITY, NEVER ACROSS ONE. `bd ready --claim`
+# takes the first row, and priority was the only ordering — so a bead carrying 21 commits
+# and an open pull request lost to a bead with nothing started, twice. That is not untidy,
+# it is expensive: an unfinished branch decays, its base moves under it, and every pass it
+# sits costs another rebase.
 #
 # So look for resumable work FIRST: a ready bead whose recorded branch exists and is ahead
 # of its base. Claim that one by id, atomically, with `bd update --claim`. Only when there
 # is none do we fall back to taking the head of the queue.
+#
+# THE PRIORITY FLOOR IS THE HALF THAT WAS MISSING, and without it this block was a priority
+# inversion that starved every P0 in the queue. The loop took the first RESUMABLE candidate
+# at any depth, so one P1 with a single commit on its branch beat seven P0s with nothing
+# started — measured 2026-09-07: the queue's head was sp-2tv (P0, the bead describing this
+# very starvation) and the loop reached past it to candidate twelve, sp-4vp (P1, one commit
+# ahead), on every pass. The operator watched more than five aeons walk over it.
+#
+# A resumable bead is worth preferring over an unstarted PEER. It is not worth preferring
+# over more important work: the decaying-branch cost this block exists to avoid is bounded
+# by a rebase, while the cost of never starting a P0 is unbounded. So candidates are
+# filtered to the best priority present before the branch test runs, and a lower band is
+# reached only when the whole band above it is unstarted — which is exactly when the
+# fallback `bd ready --claim` head is already the right bead.
+#
+# Filtered in python over the whole payload rather than by breaking out of the loop on the
+# first priority change, so it does not silently depend on `bd ready` returning rows in
+# priority order — an ordering nothing promises and one this file already learned not to
+# trust for the claim itself.
 resume_id=""
 for cand in $(bdjson ready --limit 0 --exclude-type epic --label "$FAYTH_LABELS" \
                   --exclude-label "$FAYTH_EXCLUDE_LABELS" 2>/dev/null | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
-for i in (d if isinstance(d, list) else [d]):
+rows = d if isinstance(d, list) else [d]
+# A row with no priority sorts last, not first: an unknown must never outrank a stated P0.
+def prio(i):
+    p = i.get("priority")
+    return p if isinstance(p, int) else 99
+if not rows: sys.exit(0)
+top = min(prio(i) for i in rows)
+for i in rows:
+    if prio(i) != top: continue
     labs = i.get("labels") or []
     br = next((l[7:] for l in labs if l.startswith("branch:")), "")
     repo = next((l[5:] for l in labs if l.startswith("repo:")), "")
-    print("%s|%s|%s" % (i["id"], br, repo))' 2>/dev/null); do
-    cid="${cand%%|*}"; rest="${cand#*|}"; cbr="${rest%%|*}"; crepo="${rest##*|}"
+    print("%s|%s|%s|%s" % (i["id"], br, repo, top))' 2>/dev/null); do
+    cid="${cand%%|*}"; rest="${cand#*|}"; cbr="${rest%%|*}"
+    rest="${rest#*|}"; crepo="${rest%%|*}"; cprio="${rest##*|}"
     [ -n "$cbr" ] || cbr="spira/$cid"
     croot="$(repo_root "${crepo:-}" 2>/dev/null)" || continue
     [ -d "$croot/.git" ] || continue
@@ -145,13 +174,13 @@ for i in (d if isinstance(d, list) else [d]):
     # Ahead of its base is the test — a branch that exists but adds nothing is not
     # resumable work, it is a leftover.
     n="$(git -C "$croot" rev-list --count "$cbase..$cbr" 2>/dev/null || echo 0)"
-    if [ "${n:-0}" -gt 0 ]; then resume_id="$cid"; break; fi
+    if [ "${n:-0}" -gt 0 ]; then resume_id="$cid"; RESUME_PRIO="$cprio"; break; fi
 done
 
 if [ -n "$resume_id" ]; then
     claimed="$(bdq update "$resume_id" --claim --json 2>/dev/null | json_only)"
     if [ -n "$claimed" ]; then
-        log "$FAYTH/$AEON: resuming $resume_id — it already has work on its branch"
+        log "$FAYTH/$AEON: resuming $resume_id (P${RESUME_PRIO:-?}, the top ready priority) — it already has work on its branch"
     else
         claimed="$(bdq "${claim_args[@]}" --json 2>/dev/null | json_only)"
     fi
