@@ -61,9 +61,9 @@ trap cleanup_all EXIT INT TERM
 # Nearly all of its wall clock is `bd init`. It drives three REAL Dolt fixtures through
 # aeon.sh by design, because the thing under test IS a fixture handoff — which makes it the
 # suite most exposed to whatever else is using the same server. The exposure is not
-# hypothetical: a build measured at 18-27s idle and ~55s loaded has also taken 5m26s and
-# 8m51s here before failing, because `bd init` holds one connection across 61 schema
-# migrations and a saturated server eventually closes it mid-run.
+# hypothetical: `bd init` holds ONE connection across 61 schema migrations, so a server
+# saturated by whatever else is building closes it mid-run — and the build that reports the
+# failure has by then sat for minutes, not for the ~20s it costs against an idle one.
 #
 # TWO OUTCOMES, AND THEY MUST NOT BE CONFUSED. A handoff that is BROKEN is a regression and
 # must be red. A box that will not produce a fixture in a plausible time has said nothing
@@ -100,8 +100,8 @@ cannot_measure() {      # cannot_measure <what could not be measured> — exit 7
 
 # STAND DOWN BEFORE A STEP THERE IS NO TIME FOR, rather than after being killed part way
 # through it. Measured on a box under ordinary weekday load — three aeons and two other gate
-# runs — a full pass is 433s of a 540s budget, and every second of that is a fixture build
-# somebody else is contending for. So the margin is real and it is routinely thin.
+# runs — a full pass is 292s of a 540s budget, and nearly every second of that is one of the
+# four fixture builds it drives. So the margin is real and it is routinely thin.
 need_budget() {         # need_budget <seconds> <what it was for>
     [ "$(left)" -ge "$1" ] || cannot_measure \
         "$(left)s of the ${SUITE_BUDGET}s budget was left and $2 needs ${1}s"
