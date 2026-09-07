@@ -134,6 +134,27 @@
 # open no pull request, so there is no run to wait for at any deadline.
 # SPIRA_CI_PARK_MAX = 5400
 
+# ---- the read surface over the live graph --------------------------------------------------
+# Where Loom listens: one route serving the live beads and the dependency edges between them,
+# and the page that draws them. LOCALHOST BY DEFAULT, deliberately — a bead carries internal
+# working notes and your own judgement, so which interfaces can reach it is a decision to make
+# rather than one a default should make for you. `0.0.0.0:8788` puts it on the LAN.
+# SPIRA_LOOM_ADDR = 127.0.0.1:8788
+
+# The deadline on ONE `bd` query behind that endpoint, in milliseconds. A query per request is
+# the simple choice and it is the right one only while it stays cheap; this is the number that
+# says when it has stopped being. Past it the request is REFUSED rather than served late, and
+# every query's wall time is reported in the response either way. The shipped value is a
+# measured p95 plus the tail a contended box adds. Raise it on slower hardware — and treat
+# having had to as the finding it is, rather than as a formality.
+# SPIRA_LOOM_BUDGET_MS = 500
+
+# How long a parsed snapshot is held, in seconds. This bounds the cost by TIME rather than by
+# viewer, so ten open tabs and a page that re-fetches cost one query instead of ten. It is a
+# cache and not a background job: nothing runs when nobody is looking. 0 disables it, which
+# makes every request pay for its own query.
+# SPIRA_LOOM_CACHE_S = 15
+
 # The timezone dates are written in. Empty means the host's own, which is right until the host
 # is a server in one zone and you read its output in another — the case where an evening's
 # work lands under tomorrow's date and a chronological log stops being chronological.

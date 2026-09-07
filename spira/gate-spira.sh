@@ -48,13 +48,17 @@ fi
 # exactly this. Two reasons to go the long way round: the tree under trial is not guaranteed
 # to be a checkout, and an index answers only for what is tracked, whereas what a gate must
 # judge is every file the tree actually holds.
+#
+# Build output is pruned by NAME rather than by path, so a second crate does not have to
+# remember to add itself here. It is gitignored, it holds absolute paths from whichever box
+# last compiled it, and the fence would therefore flag it on every gate run.
 inv=""
 while IFS= read -r f; do
     case "$f" in */inventory.sh|*/inventory-deny|*/test-inventory.sh) continue ;; esac
     hits="$(bash spira/inventory.sh --scan "$f" 2>/dev/null)"
     [ -n "$hits" ] && inv="$inv
 $f: $(printf '%s' "$hits" | tr '\n' ' ')"
-done < <(find . -path ./.git -prune -o -path './cockpit/panel/target' -prune -o -type f -print)
+done < <(find . -path ./.git -prune -o -type d -name target -prune -o -type f -print)
 if [ -n "$inv" ]; then
     printf '%s\n' "$inv" >&2
     echo "gate: the branch names one operator's infrastructure — see spira/inventory.sh" >&2
@@ -89,7 +93,7 @@ run_suite() {           # run_suite <suite> -> stdout+stderr, exit code
 badsyntax=""
 while IFS= read -r f; do
     bash -n "$f" 2>/dev/null || badsyntax="$badsyntax $f"
-done < <(find . -path ./.git -prune -o -name '*.sh' -type f -print)
+done < <(find . -path ./.git -prune -o -type d -name target -prune -o -name '*.sh' -type f -print)
 if [ -n "$badsyntax" ]; then
     for f in $badsyntax; do bash -n "$f" 2>&1 | head -2 >&2; done
     echo "gate: shell scripts do not parse:$badsyntax" >&2

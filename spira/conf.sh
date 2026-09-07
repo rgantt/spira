@@ -55,6 +55,7 @@ SPIRA_HOME_REPO SPIRA_DB SPIRA_RUN SPIRA_GOAL
 SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER
 SPIRA_COCKPIT SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
 SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
+SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_ALERT_GLOB
@@ -214,6 +215,22 @@ spira_conf_defaults() {
     # your CI is slower, and set it to 0 to disable the deadline, which reinstates the
     # permanent invisible park and should be a deliberate choice.
     : "${SPIRA_CI_PARK_MAX:=5400}"
+    # ---- THE READ SURFACE OVER THE LIVE GRAPH ------------------------------------------
+    # Where Loom listens. Localhost is the default because a bead carries internal working
+    # notes and the operator's own judgement, so the address it is reachable at is a
+    # deliberate choice rather than something a default should make on anyone's behalf.
+    : "${SPIRA_LOOM_ADDR:=127.0.0.1:8788}"
+    # The deadline on ONE `bd` query behind that endpoint, in milliseconds. A query per
+    # request is the simple choice and it is the right one only while it stays cheap; this is
+    # the number that says when it has stopped being. Over it the request is refused rather
+    # than served late, because a refusal that quietly degrades to stale data is a signal
+    # nobody ever sees. The shipped value is a measured p95 plus the tail a busy box adds —
+    # raise it on slower hardware, and treat having had to as the finding it is.
+    : "${SPIRA_LOOM_BUDGET_MS:=500}"
+    # How long a parsed snapshot is held, in seconds. This bounds the cost by TIME rather
+    # than by viewer, so ten open tabs cost one query instead of ten. It is a cache and not a
+    # background job: nothing runs when nobody is looking, and 0 disables it.
+    : "${SPIRA_LOOM_CACHE_S:=15}"
     # The name the operator's OWN comments are recorded under, so the attention panel can tell
     # a reply of theirs from a reply of the agent's. Both write into the same thread, and a
     # panel that cannot separate them announces the agent's own comment back to it as an answer.
@@ -387,6 +404,7 @@ export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin
 export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIRA_PATH SPIRA_GOAL \
        SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL \
        SPIRA_CI_LABEL SPIRA_CI_PARK_MAX \
+       SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \
        SPIRA_CONF_FILE
