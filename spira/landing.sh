@@ -81,6 +81,16 @@ finish() {
     rm -f "$STATUS.$$" 2>/dev/null
     exit "$rc"
 }
+# EXECUTABLE FROM HERE. Everything below runs a landing pass — the EXIT trap that writes the
+# status file, the pass clock, the log line, and the loop over every repository. Sourcing this
+# file to borrow one function (content_landed is the one worth borrowing) otherwise performs a
+# live pass over every branch as a side effect of the `.`, which is how a read-only diagnostic
+# became a real landing twice in one afternoon. The first guard here covered only the loop, so
+# the traps and the "starting a pass" line still fired and the file still LOOKED like it ran.
+# A partial guard on a side effect is worse than none: it makes the remaining half harder to
+# see. Guarded the way harness.sh guards itself.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0 2>/dev/null || true; fi
+
 trap finish EXIT
 trap 'exit 143' TERM INT
 
@@ -530,10 +540,8 @@ $(printf '%s' "$gate_out" | tail -20)"
 # the one worth borrowing — otherwise executes a full landing over every repository as a side
 # effect of the `.`, which is how a diagnostic became a live pass over 29 branches while its
 # author was asking a read-only question.
-if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 for repo_name in $(spira_repos); do
     land_repo "$repo_name"
 done
 
 log "landing: pass complete — $n_branches branch(es) seen, $n_prog movement(s)"
-fi
