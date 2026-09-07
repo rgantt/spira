@@ -165,7 +165,23 @@ for line in open(sys.argv[1], errors="replace"):
             out.append("%s reclaimed %s" % (ts, parts[1]))
 print("\n".join(out[-20:]))
 ' "$SPIRA_RUN/sentinel.log" 2>/dev/null
-        awk '$3 ~ /^sp-/ && $2 == "awake" { printf "%s claimed %s\n", $1, $3 }' \
+        # THE BEAD IS FIELD 4, NOT 3. A ledger line is `<ts> <verb> <fayth> <bead>`, so `$3`
+        # is "builder" and the predicate `$3 ~ /^sp-/` was never once true — claims have been
+        # silently absent from RECENT for the whole life of this section, which is exactly the
+        # blindness it was written to remove. The operator, watching an aeon finish a bead and
+        # take another: "i don't see anything from the last hour in RECENT."
+        #
+        # AND ENDINGS TOO. Only `awake` was read, so a turn that ENDED left no trace unless
+        # the sentinel also acted — and an aeon that finishes without landing (the common case
+        # while the gate is advisory) produced nothing at all. `done` carries the outcome in
+        # its status field; a turn that ended with the bead still in progress is the shape
+        # worth seeing, because it is the one that repeats.
+        awk '$2 == "awake" && $4 ~ /^sp-/ { printf "%s claimed %s\n", $1, $4 }
+             $2 == "done"  && $4 ~ /^sp-/ {
+                 st = "ended"
+                 for (i = 5; i <= NF; i++) if ($i ~ /^status=/) { sub(/^status=/, "", $i); st = $i }
+                 printf "%s %s %s\n", $1, st == "closed" ? "finished" : st, $4
+             }' \
             "$SPIRA_RUN/aeon-ledger.log" 2>/dev/null | tail -40
     # EVERY STAGE OF THIS PIPELINE IS A CAP AND THE SMALLEST ONE DECIDES. Widening only the
     # last would still emit four events, because each source is trimmed before the merge.
