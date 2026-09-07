@@ -164,10 +164,18 @@ testdb_up() {            # testdb_up <tag>
     # A TIMEOUT IS ITS OWN FAILURE, reported as itself. The gate distinguishes "the lock could
     # not be taken" from "the init genuinely failed" in the advice it prints; until this
     # existed both arrived as `bd init failed` and the advice was unfollowable.
-    if ! flock -w "${SPIRA_TESTDB_LOCK_WAIT:-900}" 9; then
-        printf 'testdb: could not take the fixture lock at %s within %ss — another build is holding it\n' \
-            "$lock" "${SPIRA_TESTDB_LOCK_WAIT:-900}" >&2
-        exec 9>&-; return 1
+    # BOUNDED SHORT, AND A TIMEOUT BUILDS ANYWAY. The wait was 900s, which made the queue
+    # worse than the collision it removes: three aeons summoned together spent their first
+    # five to fifteen minutes in `flock` before the model produced one token, and an aeon that
+    # cannot finish in its turn ends its session. Serialising is an OPTIMISATION — one build
+    # instead of several colliding — and an optimisation must never be the reason nothing
+    # runs. Past the bound, build unlocked and say so: a collision costs one slow build, a
+    # deadlock costs the whole loop (the operator, 2026-09-07: "i would rather have broken
+    # software i can fix quickly").
+    if ! flock -w "${SPIRA_TESTDB_LOCK_WAIT:-120}" 9; then
+        printf 'testdb: fixture lock at %s not free after %ss — building WITHOUT it; expect a slow build\n' \
+            "$lock" "${SPIRA_TESTDB_LOCK_WAIT:-120}" >&2
+        exec 9>&-
     fi
     waited=$(( $(date +%s) - lock_t0 ))
     [ "$waited" -gt 5 ] && printf 'testdb: waited %ss for the fixture lock\n' "$waited" >&2
@@ -175,7 +183,7 @@ testdb_up() {            # testdb_up <tag>
     testdb_sweep
     TESTDB_NAME="sptest_${tag}_$(date +%s)_$$"
     TESTDB_DIR="$(mktemp -d)"
-    testdb_sql "" "create database \`$TESTDB_NAME\`" >/dev/null 2>&1
+    testdb_sql "" "create database \`$TESTDB_NAME\`" >/dev/null 2>&1 9>&-
     # env -i is deliberate. A gate, a check or a test invoked by automation runs in an
     # explicit minimal environment, never the caller's: BEADS_ACTOR and friends leak into
     # `created_by` and `owner`, and ambient configuration silently deciding a verdict is
@@ -187,10 +195,17 @@ testdb_up() {            # testdb_up <tag>
     # discards the diagnosis makes every one of its failures cost a fresh investigation.
     # Errors go to stderr, where a gate capturing output can still see them.
     local init_out init_rc
+    # 9>&- — THE LOCK FD MUST NOT REACH A DAEMON. `exec 9>lock` leaves fd 9 without
+    # close-on-exec, so every child inherits it, and flock is held as long as ANY holder of
+    # the descriptor lives. `bd init` can leave a `dolt sql-server` running; that server then
+    # holds the lock forever and the shell that took it exits believing it released.
+    # Measured 2026-09-07, within an hour of the lock landing: a stray server on a temp config
+    # pinned fd 9 and three aeons sat in `flock -w 900` behind a shell that had been gone for
+    # minutes — the lock turned from a queue into a deadlock by inheritance.
     init_out="$( cd "$TESTDB_DIR" && env -i PATH="$PATH" HOME="$HOME" TERM=dumb BD_NON_INTERACTIVE=1 \
         "$TESTDB_BD" init --server --server-host "$TESTDB_HOST" --server-port "$TESTDB_PORT" \
             --external --database "$TESTDB_NAME" --prefix sp \
-            --non-interactive --skip-agents --skip-hooks -q 2>&1 )"
+            --non-interactive --skip-agents --skip-hooks -q 2>&1 9>&- )"
     init_rc=$?
     [ $init_rc -eq 0 ] || {
         printf 'testdb: bd init failed (rc=%s) for %s at %s:%s in %s\n' \
