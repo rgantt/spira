@@ -398,7 +398,7 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
         # reaches a verdict or fails at the work, and only the gate's own unfinished business
         # is exempted here.
         if gate_why="$(gate_unfinished)"; then
-            bdq unclaim "$BEAD_ID" --if-assignee "$BEADS_ACTOR" >/dev/null 2>&1
+            release_own_claim "$BEAD_ID"
             bdq note "$BEAD_ID" "Released by aeon.sh: the session ended while its landing gate was still running, so it never held a verdict about its own work. No attempt was charged and nothing about the work is implied — $gate_why. Run the gate through gate-run.sh, which waits in bounded slices, and do not end the session while it is unfinished." >/dev/null 2>&1
             log "$FAYTH: $BEAD_ID released with its gate still running — no attempt charged ($gate_why)"
             ledger "done $FAYTH $BEAD_ID rc=$rc status=gate-unfinished"
