@@ -250,6 +250,14 @@ FILELIST="$(mktemp)"; printf '%s\n' "$files" > "$FILELIST"
 # trap returned, so a cleanup line ahead of the meter would have every run recorded as the
 # exit status of `rm`.
 trap 'gate_rc=$?; rm -f "$FILELIST"; gate_meter "$gate_rc"' EXIT
+# 9>&- — THE TREE LOCK'S FD MUST NOT REACH THE GATE COMMAND. `exec 9>lock` leaves fd 9
+# without close-on-exec, so every child inherits it, and flock is held as long as ANY holder
+# of the descriptor lives. A repository's gate builds fixtures and can leave a server running;
+# that server would then hold this repository's gate tree forever, and every later gate would
+# wait out its whole budget and withhold its verdict — the lock turned from a queue into a
+# deadlock by inheritance, which is exactly how the fixture lock failed within an hour of
+# landing. Nothing below this line needs the descriptor: the wait is over and the parent
+# holds it for the whole trial.
 run_gate() {             # run_gate <ref-being-tested> -> the command's own status
     ( cd "$TREE" && env -i \
         PATH="$HOME/.cargo/bin:$PATH" HOME="$HOME" TERM=dumb \
@@ -257,7 +265,7 @@ run_gate() {             # run_gate <ref-being-tested> -> the command's own stat
         SPIRA_GATE_BRANCH="$1" SPIRA_GATE_BASE="$BASE" \
         SPIRA_GATE_FILES="$FILELIST" \
         SPIRA_GATE_ALL="${SPIRA_GATE_ALL:-0}" \
-        timeout "${SPIRA_GATE_TIMEOUT:-900}" bash -c "$CMD" ) 2>&1 | tail -20
+        timeout "${SPIRA_GATE_TIMEOUT:-900}" bash -c "$CMD" 9>&- ) 2>&1 | tail -20
     return "${PIPESTATUS[0]}"
 }
 

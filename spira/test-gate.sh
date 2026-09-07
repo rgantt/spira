@@ -162,6 +162,36 @@ rungate spira/bad >/dev/null 2>&1; redrc=$?
 [ "$redrc" -ne "$noverdict_rc" ] && ok "and a branch that genuinely fails does not share it" \
     || bad "and a branch that genuinely fails does not share it" "both exited $noverdict_rc"
 
+echo "the tree lock does not outlive the gate through a daemon it started"
+# `exec 9>lock` HAS NO CLOSE-ON-EXEC, so every child of the gate inherits the descriptor, and
+# flock is held for as long as ANY holder of it lives. A repository's gate builds fixtures and
+# can leave a server running; that server would go on holding this repository's tree long after
+# the gate that started it exited, and the lock would stop being a queue and become a deadlock
+# — every later gate waiting out its whole budget and withholding its verdict, with nothing
+# visibly holding anything. The fixture lock failed exactly this way within an hour of landing.
+#
+# THE CONTROL IS THE BLOCK IMMEDIATELY ABOVE: the same one-second wait, against a lock that IS
+# held, returns 75 and runs nothing. So a pass here is evidence the descriptor was closed,
+# rather than evidence that a one-second wait always succeeds.
+: > "$RAN"
+DAEMONS="$TMP/daemons.pid"; : > "$DAEMONS"
+# Its output goes to /dev/null deliberately: a lingering child holding the gate's stdout would
+# keep the `tail` at the end of that pipeline waiting for EOF, and the run would hang on the
+# daemon rather than leak a lock to it. Only the descriptor under test is left alone.
+DAEMON_CMD="sleep 20 >/dev/null 2>&1 </dev/null & echo \$! >> $DAEMONS; printf '%s %s\\n' \"\$SPIRA_GATE_BRANCH\" \"\$(cat marker)\" >> $RAN; true"
+printf 'repo | %s | push | origin/main |  | %s\n' "$REPO" "$DAEMON_CMD" > "$MAP"
+out="$(rungate spira/good)"; rc=$?
+is "a gate whose command leaves a process running still passes" 0 "$rc"
+is "and it judged its own tree" "spira/good spira/good" "$(cat "$RAN")"
+[ -s "$DAEMONS" ] && ok "and the process really is still there" \
+    || bad "and the process really is still there" "no pid was recorded"
+: > "$RAN"
+out="$(rungate spira/good SPIRA_GATE_LOCK_WAIT=1)"; rc=$?
+is "the next gate takes the tree instead of queueing behind the daemon" 0 "$rc"
+is "and judged the branch it was given" "spira/good spira/good" "$(cat "$RAN")"
+while read -r d; do kill "$d" 2>/dev/null; done < "$DAEMONS"
+printf 'repo | %s | push | origin/main |  | %s\n' "$REPO" "$CMD" > "$MAP"
+
 echo "a tree that cannot be identified is refused, not judged"
 # CONTROL FIRST: the same pre-positioned tree, with real git, is checked out and judged.
 git -C "$TREE" checkout -q --force --detach origin/main
