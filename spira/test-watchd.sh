@@ -21,6 +21,11 @@
 #   4. THE INSTALL IS DRIVEN BY THE MANIFEST. Exactly one instance per daemon row, none for
 #      a log row, an instance whose row has gone is disabled, and a manifest that does not
 #      parse installs nothing at all.
+#   5. AN OPTIONAL ROW COSTS THE OTHERS NOTHING. A `?` row naming a key this installation has
+#      not set renders as `off` and starts nothing, while every other row still installs —
+#      because a manifest that refuses installs NONE of itself, so without this one row for a
+#      program the operator has not got would take every watcher on the box down. The marker
+#      buys that one exemption and no other: a typo in a marked row still refuses the file.
 #
 # It needs no database and no beads server: everything here is a file, a renderer and a
 # stub `systemctl` that records what it was asked to do.
@@ -65,6 +70,18 @@ wd() {
     local m="$1"; shift
     env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$CONF" SPIRA_WATCHERS="$m" \
         bash "$CLONE/spira/watchd.sh" "$@"
+}
+
+# wde <VAR=value>... -- <manifest> <args...> — `wd` with these variables and no others. The
+# base helper hands in nothing on purpose, so an optional key has to be named here to be set,
+# and a test cannot pass because the box running it happened to have one.
+wde() {
+    local -a extra=()
+    while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do extra+=("$1"); shift; done
+    shift
+    local m="$1"; shift
+    env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$CONF" SPIRA_WATCHERS="$m" \
+        "${extra[@]}" bash "$CLONE/spira/watchd.sh" "$@"
 }
 
 GOOD="$TMP/good"
@@ -143,6 +160,96 @@ printf 'good|daemon|/bin/true\n' > "$TMP/bad"
 is "the fixture minus its offender parses" "0" "$(wd "$TMP/bad" manifest >/dev/null 2>&1; echo $?)"
 
 echo
+echo "an optional row — the one exemption from the empty-key refusal"
+OPT="$TMP/optional"
+cat > "$OPT" <<'EOF'
+good|daemon|@SPIRA_COCKPIT@/watch-answers.sh|/bin/true
+?maybe|daemon|@SPIRA_VIEW@ watch|@SPIRA_HOME@/watchd.sh health-view @SPIRA_VIEW@ @SPIRA_VIEW_SESSION@
+EOF
+
+# THE POSITIVE CONTROL FIRST. With the key set the row is an ORDINARY daemon row — the marker
+# must not change what a configured watcher is, or "off" would be measuring the marker rather
+# than the configuration (law-absence-needs-a-positive-control).
+out="$(wde SPIRA_VIEW=/bin/sleep -- "$OPT" manifest 2>"$TMP/e")"; rc=$?
+is "with its key set the row parses"      "0" "$rc"
+has "and it is a plain daemon row"        "$out" "maybe|daemon|/bin/sleep watch|"
+hasnt "with no marker left in its name"   "$out" "?maybe"
+is "nothing is said on stderr"            "" "$(cat "$TMP/e")"
+has "and it renders an instance"          "$(wde SPIRA_VIEW=/bin/sleep -- "$OPT" units)" "spira-watch@maybe.service"
+
+# AND THE WHOLE POINT: unset, it is `off` and the OTHER rows still come back. Before the
+# marker existed this file exited 1 and emitted nothing, so one unconfigured optional row
+# disabled every watcher on the box.
+out="$(wd "$OPT" manifest 2>"$TMP/e")"; rc=$?
+is "with its key unset the file still parses" "0" "$rc"
+has "the good row is untouched"           "$out" "good|daemon|$COCKPIT/watch-answers.sh|/bin/true"
+has "and the optional row is off"         "$out" "maybe|off|@SPIRA_VIEW@|"
+is "nothing is said on stderr about it"   "" "$(cat "$TMP/e")"
+hasnt "an off row renders no unit"        "$(wd "$OPT" units)" "maybe"
+is "so only the good row does"            "1" "$(wd "$OPT" units | grep -c '^spira-watch@' || true)"
+
+# A HEALTH COMMAND'S EMPTY KEY COUNTS TOO. The assertion names the same program, so a row
+# whose target survived and whose assertion did not would be started with no way to judge it.
+printf 'good|daemon|/bin/true\n?h|daemon|/bin/true|@SPIRA_VIEW@ check\n' > "$TMP/opt-health"
+has "an empty key in the assertion turns the row off too" "$(wd "$TMP/opt-health" manifest 2>&1)" "h|off|@SPIRA_VIEW@|"
+
+# THE MARKER BUYS ONE EXEMPTION, NOT SILENCE. Each of these is a fault whatever the operator
+# configured, so a marked row must be refused exactly as an unmarked one is — otherwise `?`
+# becomes a way to stop the parser complaining about a typo.
+refuses "a marked row with an unknown placeholder" '?x|daemon|@NOPE@/y'      'unknown placeholder @NOPE@'
+refuses "a marked row with a relative target"      '?x|daemon|relative/y'    'must be an absolute path'
+refuses "a marked row with an unknown kind"        '?x|weird|/bin/true'      'is not a kind'
+refuses "a marked name that is still unusable"     '?a/b|daemon|/bin/true'   'not a usable watcher name'
+
+# WHAT AN `off` ROW DOES TO EVERY VERB. There is no process, no unit and no log, and each
+# refusal says which key would produce one — a `tail` that merely waited would be
+# indistinguishable from a watcher that is running and quiet, because `tail -F` retries by name.
+out="$(wd "$OPT" exec maybe 2>&1)"; rc=$?
+is   "exec refuses an off row"      "2" "$rc"
+has  "and names the key"            "$out" "@SPIRA_VIEW@ is not set"
+out="$(wd "$OPT" tail maybe 2>&1)"; rc=$?
+is   "tail refuses rather than waiting for a log nothing writes" "2" "$rc"
+has  "and names the key"            "$out" "@SPIRA_VIEW@ is not set"
+out="$(wd "$OPT" restart maybe 2>&1)"; rc=$?
+is   "restart refuses an off row"   "2" "$rc"
+out="$(wd "$OPT" drain maybe 2>&1)"; rc=$?
+is   "drain has nothing to hand over" "0" "$rc"
+has  "and says so when asked by name" "$out" "@SPIRA_VIEW@ is not set"
+is   "but is silent about it in bulk"  "" "$(wd "$OPT" drain 2>&1)"
+
+# AND `status` SAYS IT OUT LOUD. An off row that were simply omitted would leave the manifest
+# claiming to be the source of truth about a watcher it had stopped mentioning.
+out="$(wd "$OPT" status 2>&1)"
+is  "status renders the row as off"  "off" "$(printf '%s\n' "$out" | awk '$1=="maybe"{print $2}')"
+is  "with no answer in any other column" "- - - - -" \
+    "$(printf '%s\n' "$out" | awk '$1=="maybe"{print $3,$4,$5,$6,$7}')"
+has "and names it under NOT INSTALLED"   "$out" "NOT INSTALLED"
+has "with the key that would start it"   "$out" "maybe: @SPIRA_VIEW@ is not set"
+
+echo
+echo "every key in the allowlist actually resolves"
+# THE TRAP THIS CLOSES. Membership is a `case` on " $WATCHD_KEYS ", so a key followed by a
+# NEWLINE rather than a space does not match and is refused as unknown — and since one bad
+# placeholder refuses the whole manifest, adding a key on a second line takes every watcher
+# down. It has been paid for once in conf.sh's own allowlist. Asking each declared key to
+# resolve is what makes the list safe to wrap.
+keys="$(wd "$GOOD" keys)"
+# The positive control for the enumeration itself: an empty list would make the loop below
+# pass having tested nothing at all.
+is "the allowlist has more keys than fit on one line" "0" \
+   "$([ "$(printf '%s\n' "$keys" | grep -c .)" -ge 10 ] && echo 0 || echo 1)"
+unusable=""
+for k in $keys; do
+    printf 'k|daemon|@%s@/x\n' "$k" > "$TMP/keyprobe"
+    # Each key is HANDED A VALUE, because most of them are optional and empty by default and
+    # an empty one refuses for a different reason. What is under test is whether the
+    # placeholder is RECOGNISED, not whether this box happens to have set it.
+    out="$(wde "$k=/probe" -- "$TMP/keyprobe" manifest 2>&1)"
+    case "$out" in *"unknown placeholder"*) unusable="$unusable $k" ;; esac
+done
+is "and every key in it is recognised" "" "$unusable"
+
+echo
 echo "an absent or empty manifest says so rather than reading as none"
 out="$(wd "$TMP/no-such-file" manifest 2>&1)"; rc=$?
 is "a missing manifest is an error"    "1" "$rc"
@@ -174,26 +281,46 @@ echo
 echo "the manifest this harness ships"
 # The shipped rows are read with no config file at all, so they resolve from the defaults a
 # clean clone derives — which is the only reason a clean clone has watchers.
-out="$(env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$TMP/none.conf" \
-       bash "$HERE/watchd.sh" manifest 2>&1)"; rc=$?
-is "it parses"  "0" "$rc"
-missing=""; nohealth=""; unrunnable=""
-while IFS='|' read -r name kind target health; do
-    if [ "$kind" = daemon ]; then
-        set -- $target
-        [ -x "$1" ] || missing="$missing $name:$1"
-    fi
-    # A SHIPPED ROW WITH NO ASSERTION IS A WATCHER JUDGED ON ITS UNIT STATE ALONE, which cannot
-    # tell a quiet watcher from a blind one — the exact hole this whole column exists to close.
-    # A row may legitimately have none; a row this harness ships may not.
-    if [ -z "$health" ]; then nohealth="$nohealth $name"; else
-        set -- $health
-        [ -x "$1" ] || unrunnable="$unrunnable $name:$1"
-    fi
-done <<< "$out"
-is "and every daemon row points at something executable" "" "$missing"
-is "every shipped row carries a health assertion"        "" "$nohealth"
-is "and every one of them can actually be run"           "" "$unrunnable"
+#
+# READ TWICE, because an optional row is a different row in each reading and both must hold.
+# With nothing configured it must be `off` and cost the other rows nothing; with its key set it
+# must be an ordinary row whose target and whose assertion are both real programs. Checking
+# only the first reading would let a shipped optional row name a target that does not exist,
+# and nothing would find out until the operator configured it.
+ship() {                 # ship <label> [VAR=value ...] -> asserts, and sets SHIP_OFF
+    local label="$1"; shift
+    local out rc name kind target health
+    out="$(env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$TMP/none.conf" "$@" \
+           bash "$HERE/watchd.sh" manifest 2>"$TMP/ship.err")"; rc=$?
+    is "$label: it parses" "0" "$rc"
+    is "$label: and says nothing on stderr" "" "$(cat "$TMP/ship.err")"
+    local missing="" nohealth="" unrunnable="" off=""
+    while IFS='|' read -r name kind target health; do
+        [ -n "$name" ] || continue
+        # A row this installation has not configured runs nothing, so there is nothing about
+        # its target to check. That it renders AT ALL is the assertion, and it is made below.
+        [ "$kind" = off ] && { off="$off $name"; continue; }
+        if [ "$kind" = daemon ]; then
+            set -- $target
+            [ -x "$1" ] || missing="$missing $name:$1"
+        fi
+        # A SHIPPED ROW WITH NO ASSERTION IS A WATCHER JUDGED ON ITS UNIT STATE ALONE, which cannot
+        # tell a quiet watcher from a blind one — the exact hole this whole column exists to close.
+        # A row may legitimately have none; a row this harness ships may not.
+        if [ -z "$health" ]; then nohealth="$nohealth $name"; else
+            set -- $health
+            [ -x "$1" ] || unrunnable="$unrunnable $name:$1"
+        fi
+    done <<< "$out"
+    is "$label: every daemon row points at something executable" "" "$missing"
+    is "$label: every row carries a health assertion"            "" "$nohealth"
+    is "$label: and every one of them can actually be run"       "" "$unrunnable"
+    SHIP_OFF="$off"
+}
+ship "with nothing configured"
+is "the optional row is the only one off" " view" "$SHIP_OFF"
+ship "with every optional key set" SPIRA_VIEW=/bin/echo
+is "and with its key set nothing is off"  "" "$SHIP_OFF"
 
 echo
 echo "install.sh — what the manifest actually causes"
@@ -272,6 +399,22 @@ install_run "$GOOD"
 log="$(cat "$TMP/systemctl.log")"
 has "an instance with no row is disabled"     "$log" "disable --now spira-watch@retired.service"
 hasnt "and one that still has a row is not"   "$log" "disable --now spira-watch@good.service"
+
+# AND A ROW THAT WENT `off` IS THE SAME FACT ARRIVING BY A DIFFERENT ROUTE. An operator who
+# clears the key has said they no longer have that program; leaving its unit running would make
+# the manifest the source of truth for what starts and not for what stops, and the watcher would
+# go on being believed. The `?maybe` row here is off, because nothing hands SPIRA_VIEW in.
+printf 'spira-watch@maybe.service enabled enabled\nspira-watch@good.service enabled enabled\n' \
+    > "$TMP/installed-units"
+install_run "$OPT"
+log="$(cat "$TMP/systemctl.log")"
+enabled="$(grep -oE 'enable --now spira-watch@[A-Za-z0-9_-]+\.service' "$TMP/systemctl.log" | sort -u | tr '\n' ' ')"
+is "an off row enables nothing" "enable --now spira-watch@good.service " "$enabled"
+has "and an instance left over from when it was on is disabled" \
+    "$log" "disable --now spira-watch@maybe.service"
+# The install must still SUCCEED. An unconfigured optional row that failed the install would be
+# the refusal this whole mechanism exists to avoid, arriving one step later.
+is "and the install still completes"          "0" "$(install_run "$OPT"; echo $?)"
 : > "$TMP/installed-units"
 
 echo

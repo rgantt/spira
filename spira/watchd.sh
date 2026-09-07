@@ -4,12 +4,15 @@
 #
 #   watchd.sh manifest              every valid row, expanded: name|kind|target|health
 #   watchd.sh units                 the unit name of every `daemon` row, one per line
+#   watchd.sh keys                  the placeholders a row may name, one per line
 #   watchd.sh exec <name>           become that watcher; this is what ExecStart calls
 #   watchd.sh status                unit state and unread count, one line per watcher
 #   watchd.sh drain [name] [--all]  print what nobody has read, and mark it read
 #   watchd.sh tail <name> [--all]   replay from the cursor, then stream; for a Monitor
 #   watchd.sh restart [name]        restart the unit behind a watcher
 #   watchd.sh health-ids <file>     assert a state file names at least one of our own beads
+#   watchd.sh health-view <prog> <session>
+#                                   assert the view a follower steers matches the one it wants
 #
 # WHAT A READER LATCHES ONTO is two files per watcher and nothing else: `<name>.log`,
 # newline-delimited and append-only, and `<name>.cursor`, an integer counting the lines
@@ -43,7 +46,16 @@ set -uo pipefail
 # The keys a target may name. An allowlist rather than "any variable", because this file is
 # read by the process systemd starts as the operator, and because an unrecognised placeholder
 # is a typo that must be reported rather than left standing in a path.
-WATCHD_KEYS="SPIRA_HOME SPIRA_REPO SPIRA_RUN SPIRA_COCKPIT SPIRA_DB SPIRA_WORKSPACES SPIRA_TOWN SPIRA_WIKI SPIRA_ANSWER_STATE"
+#
+# WRITTEN OVER SEVERAL LINES AND THEN FLATTENED, because the membership test below is a `case`
+# on " $WATCHD_KEYS ": a key followed by a NEWLINE rather than a space does not match, so
+# wrapping the list refuses valid keys — and since one bad placeholder refuses the whole
+# manifest, adding a key on a second line took every watcher on the box down. The same trap
+# was paid for once already in conf.sh's own allowlist; the collapse is what stops it costing
+# anything the next time the list outgrows a line.
+WATCHD_KEYS="SPIRA_HOME SPIRA_REPO SPIRA_RUN SPIRA_COCKPIT SPIRA_DB SPIRA_WORKSPACES
+SPIRA_TOWN SPIRA_WIKI SPIRA_ANSWER_STATE SPIRA_VIEW SPIRA_VIEW_SESSION"
+WATCHD_KEYS="$(echo $WATCHD_KEYS)"
 
 # Where the two files a reader latches onto live. Under SPIRA_RUN, which is gitignored: a
 # watcher's log carries whatever it was watching.
@@ -56,7 +68,13 @@ watchd_dir() { printf '%s/watchd' "$SPIRA_RUN"; }
 # only to say so. The CURSOR is ours either way — how much of a log a reader has consumed is
 # never a fact the log's writer knows.
 _wd_logfile() {
-    if [ "$2" = log ]; then printf '%s' "$3"; else printf '%s/%s.log' "$(watchd_dir)" "$1"; fi
+    case "$2" in
+        # An `off` row names a watcher this installation does not have, so nothing writes a
+        # log for it and there is no file to point a reader at.
+        off) return 0 ;;
+        log) printf '%s' "$3" ;;
+        *)   printf '%s/%s.log' "$(watchd_dir)" "$1" ;;
+    esac
 }
 _wd_cursorfile() { printf '%s/%s.cursor' "$(watchd_dir)" "$1"; }
 
@@ -223,7 +241,11 @@ _wd_trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s
 # from an install that is merely slow.
 _wd_expand() {
     local s="$1" key val i=0
-    _wd_out=""; _wd_err=""
+    # _wd_empty names the key that was empty, and is set for that fault ALONE. An optional row
+    # turns on this one distinction and on nothing else: "the operator does not have this" is a
+    # different fact from "this row has a typo in it", and a marker that swallowed both would
+    # make `?` a way to stop the parser complaining about anything.
+    _wd_out=""; _wd_err=""; _wd_empty=""
     while [[ "$s" =~ @([A-Z_]+)@ ]]; do
         i=$((i+1)); [ "$i" -gt 20 ] && { _wd_err="placeholders nest more than 20 deep"; return 1; }
         key="${BASH_REMATCH[1]}"
@@ -235,7 +257,8 @@ _wd_expand() {
         # AN OPTIONAL KEY NOBODY SET IS A FAULT, NOT AN EMPTY STRING. SPIRA_TOWN and its kind
         # default to empty on purpose, and `@SPIRA_TOWN@/watch.sh` would expand to
         # `/watch.sh` — a path that exists on somebody's box and is nobody's watcher.
-        [ -n "$val" ] || { _wd_err="@$key@ is empty — set it in ${SPIRA_CONF_FILE:-spira.conf} or drop the row"; return 1; }
+        [ -n "$val" ] || { _wd_empty="$key"
+            _wd_err="@$key@ is empty — set it in ${SPIRA_CONF_FILE:-spira.conf} or drop the row"; return 1; }
         s="${s//@$key@/$val}"
     done
     _wd_out="$s"; return 0
@@ -249,7 +272,7 @@ watchd_rows() {
         echo "watchd: no watcher manifest at $file" >&2
         return 1
     fi
-    local n=0 faults=0 rows="" seen=" " line trimmed nf name kind target health i
+    local n=0 faults=0 rows="" seen=" " line trimmed nf name kind target health i optional
     local -a f
     while IFS= read -r line || [ -n "$line" ]; do
         n=$((n+1))
@@ -265,6 +288,13 @@ watchd_rows() {
             faults=1; continue
         fi
         name="$(_wd_trim "${f[0]}")"; kind="$(_wd_trim "${f[1]}")"; target="$(_wd_trim "${f[2]}")"
+        # A LEADING `?` MARKS A ROW AS OPTIONAL: it watches something not every installation
+        # has, so a key it names being unset drops the row instead of refusing the file. It is
+        # what lets a manifest ship a row for a program that is the operator's own — without
+        # it, a shipped row naming an optional key takes down every OTHER watcher on a box
+        # that has not got it, because a malformed manifest installs none of itself.
+        optional=""
+        case "$name" in '?'*) optional=1; name="${name#\?}" ;; esac
         # The health command is field four ONWARDS, rejoined: it is a command line and may
         # legitimately contain a pipe, and it is last precisely so that it can.
         health=""
@@ -292,6 +322,19 @@ watchd_rows() {
             faults=1; continue
         fi
         if ! _wd_expand "$target"; then
+            # AN OPTIONAL ROW WHOSE KEY IS UNSET IS RENDERED, NOT DROPPED. It comes back as
+            # kind `off`, carrying the placeholder that is empty, so `status` prints a line
+            # saying this watcher exists and is not installed — which is a third fact, and
+            # neither "running" nor "gone". Dropping it silently would leave the manifest
+            # claiming to be the source of truth about a watcher it had stopped mentioning,
+            # and a stderr note instead would print on every parse until it was tuned out
+            # (law-absence-needs-a-positive-control, law-alerts-must-be-actionable).
+            if [ -n "$optional" ] && [ -n "$_wd_empty" ]; then
+                seen="$seen$name "
+                rows="$rows$name|off|@$_wd_empty@|
+"
+                continue
+            fi
             echo "watchd: $file:$n: '$name': $_wd_err" >&2
             faults=1; continue
         fi
@@ -304,6 +347,12 @@ watchd_rows() {
                faults=1; continue ;;
         esac
         if [ -n "$health" ] && ! _wd_expand "$health"; then
+            if [ -n "$optional" ] && [ -n "$_wd_empty" ]; then
+                seen="$seen$name "
+                rows="$rows$name|off|@$_wd_empty@|
+"
+                continue
+            fi
             echo "watchd: $file:$n: '$name' health: $_wd_err" >&2
             faults=1; continue
         fi
@@ -328,6 +377,13 @@ watchd_rows() {
 
 cmd_manifest() { watchd_rows; }
 
+# The allowlist, answered rather than read out of the source. A row writes `@KEY@` for any of
+# these; anything else is a typo and refuses the file. It is a command because the list is the
+# thing a test must be able to enumerate — a suite that scraped it out of the assignment would
+# go on passing after the assignment moved, which is the failure mode of every check that reads
+# a program instead of asking it.
+cmd_keys() { printf '%s\n' $WATCHD_KEYS; }
+
 cmd_units() {
     local rows name kind rest
     rows="$(watchd_rows)" || return 1
@@ -351,6 +407,10 @@ cmd_exec() {
         found=1; break
     done <<< "$rows"
     [ -n "$found" ] || { echo "watchd: no watcher named '$want' in $SPIRA_WATCHERS" >&2; return 2; }
+    if [ "$kind" = off ]; then
+        echo "watchd: '$want' is optional and $target is not set in ${SPIRA_CONF_FILE:-spira.conf} — there is nothing to run" >&2
+        return 2
+    fi
     if [ "$kind" != daemon ]; then
         echo "watchd: '$want' is a $kind row — $target is written by something else and there is nothing here to run" >&2
         return 2
@@ -455,8 +515,18 @@ cmd_status() {
 
     printf '%-14s %-10s %-8s %7s %10s %8s  %s\n' NAME UNIT HEALTH UNREAD LAST-EVENT RESTARTS LOG
     local i u=0 lf total pos state age restarts
-    local -a degraded=()
+    local -a degraded=() uninstalled=()
     for ((i=0; i<${#wname[@]}; i++)); do
+        # A WATCHER THIS INSTALLATION HAS NOT GOT IS SAID, NOT OMITTED. Every column is `-`,
+        # because none of them has an answer about a process that was never meant to start —
+        # and `off` is a third state, neither a watcher that is running nor a row that quietly
+        # went missing from the manifest. The key that would turn it on is named in the block
+        # below rather than in the table, so the last column stays a path.
+        if [ "${wkind[$i]}" = off ]; then
+            printf '%-14s %-10s %-8s %7s %10s %8s  %s\n' "${wname[$i]}" off - - - - -
+            uninstalled+=("${wname[$i]}: ${wtarget[$i]} is not set in ${SPIRA_CONF_FILE:-spira.conf}")
+            continue
+        fi
         lf="${wlog[$i]}"
         total="$(_wd_total "$lf")"
         pos="$(_wd_pos "${wname[$i]}" "$total")"
@@ -496,6 +566,14 @@ cmd_status() {
         printf '\nDEGRADED\n'
         for i in "${!degraded[@]}"; do printf '  %s\n' "${degraded[$i]}"; done
     fi
+    # AND THE ROWS THAT ARE DELIBERATELY NOT RUNNING, with the key that would start each. This
+    # is not a fault and is kept apart from the faults for that reason — but it is printed, so
+    # an operator who meant to configure one and did not can see that from here rather than
+    # from the absence of events they were expecting.
+    if [ "${#uninstalled[@]}" -gt 0 ]; then
+        printf '\nNOT INSTALLED\n'
+        for i in "${!uninstalled[@]}"; do printf '  %s\n' "${uninstalled[$i]}"; done
+    fi
     return 0
 }
 
@@ -522,6 +600,13 @@ cmd_drain() {
         [ -n "$name" ] || continue
         if [ -n "$_wd_name" ]; then [ "$_wd_name" = "$name" ] || continue; fi
         found=1
+        # Nothing writes a log for a watcher that is not installed, so there is nothing to
+        # hand over. Said out loud only when this row is the one that was asked for: in bulk
+        # it is a line on every pass, which is the noise that makes a real one unreadable.
+        if [ "$kind" = off ]; then
+            [ -n "$_wd_name" ] && echo "watchd: '$name' is optional and $target is not set in ${SPIRA_CONF_FILE:-spira.conf} — it has never run" >&2
+            continue
+        fi
         lf="$(_wd_logfile "$name" "$kind" "$target")"
         total="$(_wd_total "$lf")"
         pos="$(_wd_pos "$name" "$total")"
@@ -572,6 +657,13 @@ cmd_tail() {
     [ -n "$_wd_all" ] || { re="$(_wd_filter)" || return 2; }
     local rows; rows="$(watchd_rows)" || return 1
     _wd_find "$rows" "$_wd_name" || return 2
+    # REFUSED RATHER THAN WAITED ON. `tail -F` retries by name and would sit forever on a log
+    # nothing is ever going to write, which from a Monitor is indistinguishable from a watcher
+    # that is running and quiet.
+    if [ "$_wd_kind" = off ]; then
+        echo "watchd: '$_wd_name' is optional and $_wd_target is not set in ${SPIRA_CONF_FILE:-spira.conf} — there is nothing to tail" >&2
+        return 2
+    fi
 
     local lf cf pos
     lf="$(_wd_logfile "$_wd_name" "$_wd_kind" "$_wd_target")"
@@ -612,6 +704,13 @@ cmd_restart() {
         [ -n "$name" ] || continue
         if [ -n "$only" ]; then [ "$only" = "$name" ] || continue; fi
         found=1
+        if [ "$kind" = off ]; then
+            if [ -n "$only" ]; then
+                echo "watchd: '$name' is optional and $target is not set in ${SPIRA_CONF_FILE:-spira.conf} — there is no unit to restart" >&2
+                return 2
+            fi
+            continue
+        fi
         if [ "$kind" != daemon ]; then
             # There is no unit, so there is nothing to restart — and restarting whatever writes
             # that log is not this harness's business.
@@ -694,15 +793,98 @@ cmd_health_ids() {
     return 0
 }
 
+# cmd_health_view <program> <session> — the assertion that catches a correct state machine
+# with nothing enacting it.
+#
+# THE WATCHER THIS JUDGES DECIDES WHICH WINDOW THE OPERATOR IS LOOKING AT, which makes it the
+# highest-consequence one here and the one whose failure is hardest to see: it was found
+# stopped with its state exactly right — a review was active, it knew the review window was
+# wanted — and the operator went on reading the other one. Nothing in a unit state, an unread
+# count or a process listing says that, because the follower flips ON TRANSITIONS ONLY. A
+# process that is not running has no transitions to miss, so it is silent in precisely the way
+# a healthy idle one is.
+#
+# SO THE ASSERTION COMPARES INTENT AGAINST THE WORLD, not one report against itself. The
+# program answers what SHOULD be visible (`want: <session>`); the multiplexer is asked what IS
+# visible; DEGRADED is the two disagreeing. That is the whole discriminating fact, and it is
+# available to anything that can run two commands.
+#
+# WHY WINDOW IDS AND NOT THE NAME THE PROGRAM PRINTS. A window is named for the program running
+# in it, so the visible window's NAME is the same string whether the right window is showing or
+# the wrong one — the observed failure and the healthy state rendered identically. Ids do not
+# collide, and the follower's own mechanism is a window linked into two sessions, which is one
+# window object and therefore one id.
+#
+# EVERY WAY THIS CAN FAIL TO ANSWER IS DEGRADED OR REFUSED, NEVER OK. A missing multiplexer, a
+# session that is not there, a program that prints no `want:` line — none of them PROVED the
+# view is being steered, and a probe that answered OK when it could not run is the broken check
+# reported as an all-clear that this column exists to end (law-absence-needs-a-positive-control).
+cmd_health_view() {
+    local prog="${1:-}" sess="${2:-}"
+    if [ -z "$prog" ] || [ -z "$sess" ]; then
+        echo "usage: watchd.sh health-view <program> <session>" >&2; return 2
+    fi
+    # Exit 2, not 1: this is the check being unable to run, which is a different fact from the
+    # view being wrong, and only one of the two is about the watcher.
+    [ -x "$prog" ] || { echo "$prog is not executable — nothing here can say what should be visible" >&2; return 2; }
+    command -v tmux >/dev/null 2>&1 || { echo "no multiplexer on PATH — what is visible cannot be read" >&2; return 2; }
+
+    # `<prog> status` on stdout, parsed in the shell. No pipe into anything that stops early:
+    # under `pipefail` a reader closing the pipe kills the writer with SIGPIPE and the check
+    # then fails exactly when it succeeds (law-no-grep-q-under-pipefail).
+    #
+    # THE `want:` LINE IS TAKEN WHEREVER IT APPEARS, exit code or no exit code. The contract is
+    # the line, not the status of the process that printed it, and the answer is checked
+    # against the world immediately afterwards — so a follower that stumbled on its way out
+    # still gets judged on what it said rather than reported blind for an unrelated fault. The
+    # exit code is kept only to say what went wrong when the line never came.
+    local out rc line want=""
+    out="$("$prog" status 2>/dev/null)"; rc=$?
+    while IFS= read -r line; do
+        case "$line" in want:*) want="$(_wd_trim "${line#want:}")"; break ;; esac
+    done <<< "$out"
+    if [ -z "$want" ]; then
+        echo "$prog status printed no 'want:' line (exit $rc) — it cannot say which view it is steering to" >&2
+        return 1
+    fi
+    # One word, because it is a session name about to be used as a target. A `status` that
+    # printed a sentence there would otherwise be spliced into the query.
+    case "$want" in *[[:space:]]*|'') echo "$prog status said 'want: $want', which is not a session name" >&2; return 1 ;; esac
+
+    # `list-windows` and not `display-message`: asked for a session that does not exist,
+    # display-message prints nothing and exits 0, so an absent session reads as an empty id and
+    # two absent sessions would compare EQUAL and pass. list-windows exits 1 and says which.
+    local showing wanted
+    showing="$(tmux list-windows -t "=$sess" -F '#{window_id}' -f '#{window_active}' 2>/dev/null)" || showing=""
+    if [ -z "$showing" ]; then
+        echo "there is no '$sess' session — the surface this steers is not there" >&2
+        return 1
+    fi
+    # The follower links window 0 of the wanted session into the surface, so that is the window
+    # that should be showing.
+    wanted="$(tmux list-windows -t "=$want" -F '#{window_id}' -f '#{==:#{window_index},0}' 2>/dev/null)" || wanted=""
+    if [ -z "$wanted" ]; then
+        echo "want: $want, but there is no '$want' session to show" >&2
+        return 1
+    fi
+    if [ "$showing" != "$wanted" ]; then
+        echo "want: $want ($wanted) but '$sess' is showing $showing — the state is right and nothing is enacting it" >&2
+        return 1
+    fi
+    return 0
+}
+
 case "${1:-status}" in
     manifest) cmd_manifest ;;
     units)    cmd_units ;;
+    keys)     cmd_keys ;;
     exec)     shift; cmd_exec "${1:-}" ;;
     status)   cmd_status ;;
     drain)    shift; cmd_drain "$@" ;;
     tail)     shift; cmd_tail "$@" ;;
     restart)  shift; cmd_restart "${1:-}" ;;
     health-ids) shift; cmd_health_ids "${1:-}" ;;
-    *) echo "usage: watchd.sh manifest|units|exec <name>|status|drain [name] [--all]|tail <name> [--all]|restart [name]|health-ids <file>" >&2
+    health-view) shift; cmd_health_view "${1:-}" "${2:-}" ;;
+    *) echo "usage: watchd.sh manifest|units|keys|exec <name>|status|drain [name] [--all]|tail <name> [--all]|restart [name]|health-ids <file>|health-view <program> <session>" >&2
        exit 2 ;;
 esac

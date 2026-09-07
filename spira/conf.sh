@@ -60,6 +60,7 @@ SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
+SPIRA_VIEW SPIRA_VIEW_SESSION
 SPIRA_ALERT_GLOB
 SPIRA_FAYTHS SPIRA_MAX_AEONS
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
@@ -340,6 +341,21 @@ spira_conf_defaults() {
     : "${SPIRA_EXPORTER:=}"
     : "${SPIRA_DESIGN:=}"
     : "${SPIRA_WIKI_HOOK:=}"
+    # THE VIEW FOLLOWER: the program that keeps the attention surface pointed at whatever the
+    # operator should be looking at right now. Empty means this installation has none, and the
+    # optional manifest row that would watch it is dropped rather than run against a path that
+    # is not there. It is a key rather than a shipped script because the surface it steers is
+    # the operator's — a terminal multiplexer here, something else elsewhere.
+    #
+    # THE CONTRACT IT MUST MEET, so the manifest can both run it and judge it:
+    #   <prog> watch    a loop that enacts the state; this is what the unit starts
+    #   <prog> status   prints `want: <session>` — the multiplexer session that SHOULD be
+    #                   visible. That one line is what makes blindness measurable, because
+    #                   the view it is steering can be read independently.
+    : "${SPIRA_VIEW:=}"
+    # The multiplexer session whose visible window the follower steers. Only ever consulted
+    # when SPIRA_VIEW names something, so it costs an installation without one nothing.
+    : "${SPIRA_VIEW_SESSION:=cockpit}"
     # The Dolt server's own data directory, which is NOT the beads project directory: `bd -C`
     # is pointed at the latter, and the former is where the server keeps every database it
     # serves. Empty means this installation does not manage the server, and the unit that

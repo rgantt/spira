@@ -231,6 +231,28 @@
 # it renders. Absent, the harness carries on.
 # SPIRA_WIKI_HOOK = $HOME/notes/bin/synth-statutes
 
+# THE VIEW FOLLOWER: your program for keeping the attention surface pointed at whatever you
+# should be looking at right now — the review when a review is live, the session otherwise.
+# The surface is yours, so the harness ships no such program; it ships the row that watches
+# one. Empty means you have none, and the manifest's `?view` row renders as `off` instead of
+# being started.
+#
+# THE CONTRACT IT MUST MEET, so the manifest can both run it and judge it:
+#
+#   <prog> watch     a loop that enacts the state. This is what the unit starts.
+#   <prog> status    prints a line `want: <session>` naming the multiplexer session that
+#                    SHOULD be visible.
+#
+# That one line is the whole of the health assertion. A follower flips the view on
+# TRANSITIONS, so one that has died misses them in silence — a stopped follower and a healthy
+# idle one look identical in a process listing, a unit state and an unread count alike. Asking
+# it what should be visible and the multiplexer what IS makes the difference measurable.
+# SPIRA_VIEW = $HOME/.local/bin/view-follower
+
+# The multiplexer session whose visible window the follower steers. Consulted only when
+# SPIRA_VIEW names something.
+# SPIRA_VIEW_SESSION = cockpit
+
 # The alert units whose failure should be filed as an incident bead, as a find(1) name
 # pattern — `*` `?` and `[...]` work, brace expansion does not. Empty means none, and
 # install-intake.sh then says so rather than wiring whatever happens to match.

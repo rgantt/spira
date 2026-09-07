@@ -11,9 +11,17 @@
 #
 #   daemon   we own the process. The target is a program that loops forever; systemd runs
 #            it through `watchd.sh exec <name>` and appends its stdout to the watcher's log.
+#            NOTHING ELSE MAY BE RUNNING IT. A target that notices a second copy and exits
+#            CLEANLY is restarted anyway — `Restart=always` restarts on exit 0 too — so a
+#            copy somebody started by hand turns its unit into a loop that spawns and dies on
+#            every RestartSec. Retire the hand-started one when you add the row.
 #   log      something else already writes that log — a cron job, another harness — so the
 #            target is the log file itself and there is no unit. Running it here as well
 #            would double it up.
+#
+# and one you never write, only read back: `off`, what a `?` row becomes when the key it
+# names is unset. Its target is the empty placeholder, it gets no unit, and `status` renders
+# it as not installed.
 #
 # THE CONTRACT A READER LATCHES ONTO is two files per watcher and nothing else:
 #
@@ -30,6 +38,14 @@
 # an empty expansion would silently produce `/x.sh` and run whatever is there. A relative
 # target is refused for the same reason: systemd starts a unit with no working directory
 # worth the name, so a relative path resolves against `/`.
+#
+# A LEADING `?` ON THE NAME IS THE ONE EXEMPTION, and only from the empty-key half of that.
+# It marks a row as watching something not every installation has, so an unset key renders it
+# as kind `off`: `status` prints a line saying the watcher exists and is not installed, and
+# nothing tries to start it. Without the marker, one row for a program the operator has not
+# got would take every OTHER watcher on the box down with it, because a manifest that refuses
+# installs none of itself. An unknown placeholder, a bad kind or a relative target still refuse
+# the file even in a marked row — those are faults whatever the configuration says.
 #
 # A TARGET IS NOT SHELL. It is a program and its arguments, split on whitespace. Nothing is
 # expanded, globbed or substituted — a row that needs shell should point at a script that is
@@ -51,3 +67,16 @@
 # prefix. Point it at whatever file the watcher keeps its own memory in.
 
 answers|daemon|@SPIRA_COCKPIT@/watch-answers.sh|@SPIRA_HOME@/watchd.sh health-ids @SPIRA_ANSWER_STATE@
+
+# THE VIEW FOLLOWER is the highest-consequence watcher here — it decides which window the
+# operator is looking at — and it is the hardest one to catch failing, because it acts on
+# TRANSITIONS ONLY. A process that is not running misses transitions silently, so a stopped
+# follower is mute in exactly the way a healthy idle one is. It was once found stopped with
+# its state machine perfectly right, and a review ran its whole length in a window nobody was
+# looking at.
+#
+# So the assertion does not ask it whether it is well. It asks what SHOULD be visible and then
+# asks the multiplexer what IS, and calls the two disagreeing DEGRADED. Optional, because the
+# surface it steers is the operator's own: SPIRA_VIEW names the program and is empty until it
+# is set.
+?view|daemon|@SPIRA_VIEW@ watch|@SPIRA_HOME@/watchd.sh health-view @SPIRA_VIEW@ @SPIRA_VIEW_SESSION@
