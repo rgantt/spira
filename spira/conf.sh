@@ -53,6 +53,7 @@ SPIRA_CONF_LOADED=1
 SPIRA_CONF_KEYS="
 SPIRA_HOME_REPO SPIRA_DB SPIRA_RUN SPIRA_GOAL
 SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER SPIRA_WATCHERS
+SPIRA_ACTIONABLE
 SPIRA_COCKPIT SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
 SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S
@@ -196,6 +197,25 @@ spira_conf_defaults() {
     # file decides what `install.sh` enables; pointing the key elsewhere is how an operator
     # keeps their own rows out of a checkout they may push.
     : "${SPIRA_WATCHERS:=$SPIRA_HOME/watchers}"
+    # WHICH OF A WATCHER'S LINES A READER IS SHOWN BY DEFAULT — an extended regular expression
+    # matched against the whole line by `watchd.sh drain` and `watchd.sh tail`, which share it
+    # so that the command a session hook advertises and the command a session latches with
+    # cannot disagree about what matters. Everything else stays in the log, where `--all` and
+    # the file itself still reach it.
+    #
+    # ACTIONABLE means: something is stuck, something broke, something needs a human choice, or
+    # a thing being waited on finished. The default names the vocabulary this harness's own
+    # watchers emit plus the words any watcher reaches for; an operator whose watchers speak
+    # differently sets their own, which is the whole reason this is a key and not a literal —
+    # a literal in two commands is how those two commands come to disagree.
+    #
+    # `=` AND NOT `:=`, WHICH IS THE ONE PLACE IN THIS FILE THAT DIFFERS. Every other default
+    # fills an unset OR empty key, because empty means "not answered". Here empty is an answer:
+    # an operator who blanks this key has edited it on purpose, and quietly substituting the
+    # default would ignore the edit entirely. So the empty value survives to `watchd.sh`, which
+    # refuses it and names `--all` — because as a regular expression an empty pattern matches
+    # every line, and turning the filter off is a thing to ask for rather than to fall into.
+    : "${SPIRA_ACTIONABLE=ANSWERED|COMMENTED|ESCALAT|STRANDED|POISON|DEGRADED|BLOCKED|UNREACHABLE|FAIL|ERROR|LANDED|⚠}"
     : "${SPIRA_COCKPIT:=$(dirname "$SPIRA_HOME")/cockpit}"
     : "${SPIRA_NOTIFY:=$SPIRA_COCKPIT/ask.sh}"
     # THE LABEL THAT MEANS "WAITING ON THE OPERATOR". It is the one the escalation gate defers

@@ -70,6 +70,16 @@ done
 # an empty number, which tmux rejects and `up` reports as a failed split.
 is "COCKPIT_RIGHT_PCT defaults to 33"  "33" "$(probe "$NONE" COCKPIT_RIGHT_PCT)"
 is "COCKPIT_BOTTOM_PCT defaults to 28" "28" "$(probe "$NONE" COCKPIT_BOTTOM_PCT)"
+# AND THE ONE KEY WHOSE EMPTY VALUE IS AN ANSWER. Every default above fills an unset OR empty
+# key, because empty means "not answered". SPIRA_ACTIONABLE decides which of a watcher's lines
+# a session is shown, and an operator who blanks it has edited it on purpose — substituting the
+# default there would ignore the edit and leave the filter looking configured. So it is the one
+# `=` in a file of `:=`, and the empty value survives to `watchd.sh`, which refuses it by name.
+has "SPIRA_ACTIONABLE has a default" "$(probe "$NONE" SPIRA_ACTIONABLE)" "ANSWERED"
+is "and an explicitly empty one is NOT overwritten" "" \
+   "$(probe "$NONE" SPIRA_ACTIONABLE SPIRA_ACTIONABLE=)"
+is "while an operator's own expression stands" "STUCK|BROKEN" \
+   "$(probe "$NONE" SPIRA_ACTIONABLE SPIRA_ACTIONABLE='STUCK|BROKEN')"
 # AND THE MAP FALLS BACK TO THE EXAMPLE, which is the whole reason a clean clone resolves.
 is "repo-map falls back to the example" "$CLONE/spira/repo-map.example" \
    "$(probe "$NONE" SPIRA_REPO_MAP)"

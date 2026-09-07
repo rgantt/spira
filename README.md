@@ -125,6 +125,56 @@ Two mechanisms, because a convention nobody can see is not one:
 `spira/doctor.sh` reports the count as part of its preflight, and `spira/skew.sh copies` names
 every copy the map can reach.
 
+## Watchers
+
+A watcher is a process that polls something and prints a line when it finds news. The
+temptation is to start one inside a coding-agent session, and that is the mistake: the session
+owns it, so it is made by hand, restarted by nobody, killed by the next context reset, and
+nothing outside that transcript knows it should exist. One here went on reading a database that
+had been retired underneath it for three days, looking perfectly healthy in every process
+listing, while a real answer given in the meantime reached nobody.
+
+So **systemd owns every watcher process, and a session latches onto two files**:
+
+```
+$SPIRA_RUN/watchd/<name>.log      newline-delimited events, append-only
+$SPIRA_RUN/watchd/<name>.cursor   an integer: lines already delivered
+```
+
+That is the whole contract, and it is deliberately dumb enough that `tail -n +$((cursor+1)) -F
+<log>` is a conforming client. Nothing about it is specific to one agent, one client or one
+machine — the unit's `StandardOutput=append:` writes the same file a reader indexes, which is
+the hinge that lets systemd own the process without a session needing anything but a filename.
+
+`spira/watchers` is the single source of truth for what should be watching — `name|kind|target`
+rows, where `daemon` is a process we own and `log` names a file something else already writes
+and therefore gets no unit. Adding a watcher is a row plus an install run, never a new unit
+file. `spira/watchd.sh` is the face over all of it:
+
+```
+watchd.sh status                 unit state and unread count, one line per watcher
+watchd.sh drain [name] [--all]   print what nobody has read, and mark it read
+watchd.sh tail <name> [--all]    replay from the cursor, then stream; this is a Monitor command
+watchd.sh restart [name]         restart the unit behind a watcher
+watchd.sh manifest | units       what the rows say, and the units they render
+```
+
+It owns no process. `status` asks systemd what is running and `restart` asks systemd to restart
+it; there is deliberately no second supervision scheme beside systemd's, because a second one
+is how the original defect survived being looked at.
+
+**`drain` is filtered by default, and that is the point of it.** It is what you run into a
+context window that has just opened, so an unfiltered drain puts the whole backlog in the most
+expensive place it could go — one real session was offered a replay of 283 raw lines as the
+first thing in it. `SPIRA_ACTIONABLE` is the expression that decides, `tail` uses the same one
+so the two cannot disagree, and `--all` is how you ask for everything on purpose. The header
+carries both numbers — `(30 actionable of 300 new)` — because the suppressed lines are the cost
+of the filter, and a filter whose cost is invisible is one nobody can tell has gone wrong.
+
+Both commands advance the cursor by what was **read**, not by what was printed: a filtered line
+has been considered and rejected, not missed. Leaving it unread would keep every reader
+reporting a backlog that no amount of draining could clear.
+
 ## Parking on a CI run
 
 An aeon that has opened a pull request labels its bead with `SPIRA_CI_LABEL` and exits, rather

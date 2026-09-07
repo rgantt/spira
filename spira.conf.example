@@ -66,6 +66,21 @@
 # Default: `watchers` beside the harness.
 # SPIRA_WATCHERS = $HOME/.config/spira/watchers
 
+# Which of a watcher's lines a reader is shown by default: an extended regular expression that
+# `watchd.sh drain` and `watchd.sh tail` BOTH match against the whole line, so that the command
+# a session hook advertises and the command a session latches with cannot disagree about what
+# matters. Everything else stays in the log, where `--all` and the file itself still reach it.
+#
+# ACTIONABLE means something is stuck, something broke, something needs a human choice, or a
+# thing being waited on finished. Set this if your watchers speak a different vocabulary; every
+# line that matches becomes something a session reacts to, so a filter that matches everything
+# is the same as no watcher at all.
+#
+# Empty is REFUSED rather than read as "no filter" — as a regular expression it would match
+# every line, and `--all` is how you ask for that on purpose.
+# Default: ANSWERED|COMMENTED|ESCALAT|STRANDED|POISON|DEGRADED|BLOCKED|UNREACHABLE|FAIL|ERROR|LANDED|⚠
+# SPIRA_ACTIONABLE = ANSWERED|STRANDED|FAIL|ERROR
+
 # ---- where your binaries are --------------------------------------------------------------
 # Directories PREPENDED to PATH for the harness and everything it spawns. Everything here runs
 # from systemd and from tmux, where a login shell's PATH does not exist, so `bd` in ~/.local/bin
