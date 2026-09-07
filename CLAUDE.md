@@ -37,8 +37,19 @@ them back at the installed copy would make the gate test the code already in for
 
 ## Tests
 
-`spira/test-*.sh`, discovered rather than listed — add one and it is gated, with nothing to
-remember. Run them all before you push; they are seconds each and one of them will catch you.
+`spira/test-*.sh`, discovered rather than listed — add one and it is gated. Run the suites
+that cover what you changed while you work, and the whole gate once before you push.
+
+**Every suite declares what it covers**, on a `# covers:` line just above its `set -uo
+pipefail`, as space-separated path globs. The landing gate selects suites from the changed
+files through those declarations and refuses a branch where a suite declares nothing, so this
+is the one thing there is to remember when adding a suite. Err wide: a suite run needlessly
+costs seconds, while a file no suite claims to cover forces the whole set on every branch that
+touches it. Changing a shared file — `lib.sh`, `conf.sh`, `testdb.sh`, any `gate*.sh` — selects
+everything, and so does any path no suite claims. `spira/gate-select.sh` is the selector and
+`--lint` is what the gate runs; `gate-full.sh` runs the whole set against the base ref daily
+and escalates on red, which is what makes a hole in the map a fact within a day rather than
+never.
 
 Three properties the existing suites have and a new one should too:
 

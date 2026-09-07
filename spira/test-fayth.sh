@@ -26,6 +26,8 @@
 # callers look broken while they were correct. The case that matters most — a queue with
 # incident work and no plan work — is arranged in the fixture rather than in the live
 # database, where it would mean filing a real incident.
+#
+# covers: spira/chamber/* spira/sentinel.sh spira/governor.sh spira/aeon.sh spira/strand.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

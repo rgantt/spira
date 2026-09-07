@@ -15,6 +15,8 @@
 # real hook, never a hand-written model of either. A stub reproduces the surface you
 # remember and drifts in silence; git's own behaviour around core.hooksPath, staging and
 # --no-verify is precisely what is being relied on here.
+#
+# covers: spira/exclude.sh spira/hooks/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 EX="$HERE/exclude.sh"

@@ -17,6 +17,8 @@
 #   4. THE CLEAN CLONE RUNS. A fresh checkout with no config file at all resolves every path,
 #      finds the example repo-map, and names what is missing rather than dying as a shell
 #      error. That is the acceptance test for the whole exercise.
+#
+# covers: spira/conf.sh spira/doctor.sh spira/seed.sh spira/watchd.sh spira/inventory.sh spira/watchers spira/prefix-map spira/boundary spira/statutes/* spira/*.example spira.conf.example rule.sh cockpit/ask.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 

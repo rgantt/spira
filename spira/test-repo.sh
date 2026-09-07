@@ -17,6 +17,8 @@
 # resolves to NOTHING rather than to the home repo, a gate refuses a name it cannot resolve,
 # and two repositories rebasing at once do not share one scratch worktree. Everything real
 # here runs against real git repositories, because these are claims about what git does.
+#
+# covers: spira/repo-map.example spira/doctor.sh spira/sending.sh spira/skew.sh spira/exclude.sh spira/chamber/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

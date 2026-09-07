@@ -27,6 +27,8 @@
 # (law-prefer-the-real-dependency). Running against the LIVE Spira database is what the
 # fixture avoids: it would import real beads, and the case that matters most — a rig whose
 # export FAILED — cannot be arranged there at all.
+#
+# covers: spira/reimport.sh spira/reimport-payload.py spira/aeon.sh spira/chamber/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

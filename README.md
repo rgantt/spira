@@ -241,6 +241,34 @@ goes back into the report that would have found it.
 The ops pane reports the two populations separately, because "waiting on a run" is routine and
 "parked with no run to wait for" is a fault.
 
+## The gate runs the suites the change needs
+
+The landing gate is serialised and it dominates a landing pass, so what it costs is the cap on
+how fast finished work reaches the base ref — and the branches paying it most often are the
+ones least able to break anything. A prose edit used to build a database fixture and run every
+suite in the repository.
+
+So each suite declares what it covers, on a `# covers:` line naming path globs, and
+`spira/gate-select.sh` reads the changed files through those declarations. The rules are
+short and every uncertain one widens rather than narrows, because the only failure that
+matters here is running too FEW suites and that failure is green:
+
+- a shared file — `lib.sh`, `conf.sh`, `testdb.sh`, any `gate*.sh` — selects everything;
+- a changed path no suite claims selects everything, so a new file is never quietly skipped;
+- an absent, empty or unreadable changed-file list selects everything;
+- only an explicit list of inert paths — prose, the ignore file, images — may select nothing.
+
+Two mechanisms keep the map honest, because it is maintained by hand and decays the first time
+somebody moves a function between two scripts. The gate refuses a branch where any suite
+declares no `# covers:` line, since a suite claiming nothing looks exactly like a suite that is
+passing. And `spira/gate-full.sh` runs the whole set against the ref everything lands on, daily
+from `spira-gate-full.timer`, where a red result is nobody's branch and is therefore either a
+hole in the map or something already landed broken — escalated once per distinct finding. That
+is the meter: it says when the cheap selection has stopped being adequate, rather than leaving
+it to be discovered by the defect it let through.
+
+Set `SPIRA_GATE_ALL=1` to run everything regardless.
+
 ## The browser page
 
 `loom/` is a browser surface over the live bead graph: where the work is, what blocks what,
@@ -481,6 +509,8 @@ Generic mechanism. A colleague clones this and it carries none of the operator's
 | `spira/inventory.sh` | the fence that keeps one operator's infrastructure out of a repository meant to be cloned — repository names, hosts, paths, people, dates. It scans comments, which is where all of it was |
 | `spira/inventory-deny` | the tokens that fence refuses beyond the structural ones. Ships EMPTY: a list of somebody else's names is itself the inventory |
 | `spira/actors.example` | commit author to harness, for authors the commit graph cannot vote on. Its rows are one installation's roster |
+| `spira/gate-select.sh` | which suites a changed-file list needs, read from the `# covers:` line each suite declares about itself. Every uncertain case selects everything — the only wrong answer here is too few, and too few is green |
+| `spira/gate-full.sh` | the meter under that selection: runs the whole suite set against the ref everything lands on, daily, and escalates on red. A hand-kept map decays silently, so it is checked rather than trusted |
 | `spira/skew.sh` | is the harness in force the harness that landed — the hourly check that the executing copy is current, clean and the only one, and the landing gate's fence against work landing in a copy nothing executes |
 | `spira/doctor.sh` | read-only preflight — every missing program, unreadable database, unmapped repository and unbuilt panel, named in one pass |
 | `spira/statutes/` | the SEED statute book, one file per statute. Statutes live in the beads KV store, which is per-installation, so a clone gets the mechanism and none of the law unless it ships as text |

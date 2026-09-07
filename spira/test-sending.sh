@@ -14,6 +14,8 @@
 # lying around; a reaper that deletes the wrong thing destroys work that exists in exactly
 # one place. So the unlanded, held and in-progress cases are each asserted twice — the
 # branch survives AND its commit is still reachable.
+#
+# covers: spira/sending.sh spira/aeon.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

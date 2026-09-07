@@ -9,6 +9,8 @@
 # expensive failure for a dashboard is not a missed number but a confident wrong one: a
 # false-ACT counter that fires on healthy repetition trains everyone to ignore the panel,
 # which is the same defect as a pager that cries wolf.
+#
+# covers: spira/cockpit-metrics.py spira/cockpit.sh cockpit/health.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 METRICS="$HERE/cockpit-metrics.py"

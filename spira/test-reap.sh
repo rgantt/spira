@@ -17,6 +17,8 @@
 #
 # A REAL GIT REPOSITORY, real worktrees, real processes. Every claim here is a claim about
 # what git and /proc do, and a mock would assert only that the mock agrees with the author.
+#
+# covers: spira/sending.sh spira/aeon.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

@@ -18,6 +18,8 @@
 # real repositories with real remotes, because every claim it makes about landing refs is a
 # claim about git's behaviour and a mocked git would only assert that the author agrees with
 # himself.
+#
+# covers: spira/cutover.sh spira/cutover-classify.py spira/chamber/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

@@ -25,6 +25,8 @@
 #
 # And a fence, because the deleted machinery is cheap to reintroduce one line at a time: no
 # cockpit program may name a second beads database, and no row may carry a `_db` tag.
+#
+# covers: cockpit/*.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 COCKPIT="$HERE/../cockpit"

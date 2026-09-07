@@ -12,6 +12,8 @@
 #
 # Everything runs against fixtures in a temporary directory. Nothing touches the real
 # manifest or either real document.
+#
+# covers: spira/boundary.sh spira/boundary
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BOUNDARY="$HERE/boundary.sh"

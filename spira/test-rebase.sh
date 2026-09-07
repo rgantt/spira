@@ -21,6 +21,8 @@
 # asserts the old tip is still the branch tip AND that no rebase was left in progress, and
 # the scratch-worktree case asserts the branch is still deletable afterwards — a worktree
 # that keeps hold of a branch is the exact defect sending.sh exists to fix.
+#
+# covers: spira/sending.sh spira/sentinel.sh spira/aeon.sh spira/cockpit.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

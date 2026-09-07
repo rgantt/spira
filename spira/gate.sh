@@ -160,6 +160,11 @@ fi
 # and what it changed. ~/.cargo/bin is on the path because a Rust repository's cheapest
 # real gate is `cargo fmt --check` and lib.sh's PATH — written for systemd — has no toolchain
 # on it.
+#
+# SPIRA_GATE_ALL is passed THROUGH rather than set, and defaults to 0. A repository whose gate
+# selects its suites from the changed files needs a way to be told to run all of them anyway;
+# leaking in from the environment only ever widens what is checked, which is the safe
+# direction, and it is named here so that it is a seam rather than an ambient surprise.
 FILELIST="$(mktemp)"; printf '%s\n' "$files" > "$FILELIST"
 trap 'rm -f "$FILELIST"' EXIT
 run_gate() {             # run_gate <ref-being-tested> -> the command's own status
@@ -168,6 +173,7 @@ run_gate() {             # run_gate <ref-being-tested> -> the command's own stat
         SPIRA_GATE_REPO="$REPO" SPIRA_GATE_REPO_NAME="$REPO_NAME" \
         SPIRA_GATE_BRANCH="$1" SPIRA_GATE_BASE="$BASE" \
         SPIRA_GATE_FILES="$FILELIST" \
+        SPIRA_GATE_ALL="${SPIRA_GATE_ALL:-0}" \
         timeout "${SPIRA_GATE_TIMEOUT:-900}" bash -c "$CMD" ) 2>&1 | tail -20
     return "${PIPESTATUS[0]}"
 }

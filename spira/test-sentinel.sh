@@ -28,6 +28,8 @@
 # on, so what it DOES belongs to test-landing.sh and what is left here is the seam — the
 # dispatch, the mutex, the mailbox, and the positive control that keeps a worker which
 # stopped working from reading as a quiet week.
+#
+# covers: spira/sentinel.sh spira/landing.sh spira/sending.sh spira/strand.sh spira/pilgrimage.sh spira/reflect.sh spira/chamber/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

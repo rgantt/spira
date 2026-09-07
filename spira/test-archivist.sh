@@ -28,6 +28,8 @@
 # stop. It runs under `env -i` for the same reason: a suite inheriting a real spira.conf
 # asserts about one box, and one inheriting SPIRA_TOKEN_PROJECTS reads somebody's actual work
 # (law-gates-run-in-a-clean-environment).
+#
+# covers: spira/archivist.sh spira/archive.sh spira/ctx-meter.sh spira/statusline-check.py spira/aeon.sh spira/chamber/* cockpit/health.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 A="$HERE/archivist.sh"

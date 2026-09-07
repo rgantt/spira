@@ -27,6 +27,8 @@
 # THE LABEL IS PINNED TO A NON-DEFAULT VALUE THROUGHOUT. Asserting against the shipped
 # `awaiting-ci` would pass just as well if the sweep had the literal written in, which is the
 # thing SPIRA_CI_LABEL exists to stop.
+#
+# covers: spira/sentinel.sh spira/landing.sh spira/sending.sh spira/strand.sh spira/pilgrimage.sh spira/reflect.sh spira/cockpit.sh spira/chamber/* cockpit/ask.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

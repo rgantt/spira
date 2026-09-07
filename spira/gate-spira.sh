@@ -10,11 +10,22 @@
 #   SPIRA_GATE_BASE      the ref it is measured against
 #   SPIRA_GATE_FILES     a file listing every changed path, one per line
 #
-# EVERY SUITE, EVERY TIME, and discovered rather than listed. This repository IS the harness:
-# there is no change to it that is not a change to the thing deciding whether to reclaim a
-# bead from a running aeon, delete a branch, or raise a decision. A gate that ran only the
-# suites touching changed files would have to model which suite covers which file, and that
-# model is wrong the first time somebody moves a function.
+# SUITES ARE DISCOVERED, NEVER LISTED, and SELECTED from the changed files. This repository
+# IS the harness, so most changes to it are changes to the thing deciding whether to reclaim
+# a bead from a running aeon, delete a branch, or raise a decision — but not all of them are,
+# and landing is serialised and gate-dominated, so a README edit paying one Dolt fixture and
+# every suite is the cap on how fast finished work reaches the base ref.
+#
+# `gate-select.sh` answers which suites the changed files need, from a `# covers:` line each
+# suite declares about itself. Its rules are written there; the one that matters here is that
+# it errs toward EVERYTHING — a shared file, an unclaimed path, or an unreadable file list
+# all select the whole set, and only an explicit inert list may select nothing.
+#
+# THE MAP IS NOT TRUSTED TO STAY RIGHT. It is a claim maintained by hand, so it decays the
+# first time somebody moves a function — and it decays silently, because an under-selected
+# gate is green. Two things hold it: this gate refuses a branch whose suites do not all
+# declare what they cover, and `gate-full.sh` runs the WHOLE set against the base ref on a
+# timer and escalates on red, so a hole in the map surfaces within a day rather than never.
 #
 # The two fences run FIRST and independently of the suites, because they answer a different
 # question. A suite asks whether the code works; `exclude.sh` and `inventory.sh` ask whether
@@ -30,7 +41,7 @@ set -uo pipefail
 
 fail=0
 
-for fence in spira/exclude.sh spira/inventory.sh; do
+for fence in spira/exclude.sh spira/inventory.sh spira/gate-select.sh; do
     [ -f "$fence" ] || { echo "gate: $fence is missing from the branch" >&2; fail=1; continue; }
 done
 [ "$fail" = 0 ] || exit 1
@@ -100,6 +111,39 @@ if [ -n "$badsyntax" ]; then
     fail=1
 fi
 
+# EVERY SUITE DECLARES WHAT IT COVERS, and a branch where one does not is refused. This is
+# the fence under the selection: a suite with no `# covers:` line claims nothing, so it runs
+# only when something else forces a full pass — and it then looks exactly like a suite that
+# is passing. The refusal is the whole reason the map can be trusted to stay narrow
+# (law-absence-needs-a-positive-control).
+if ! out="$(bash spira/gate-select.sh --lint 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    echo "gate: add a '# covers:' line naming the files each suite covers — see spira/gate-select.sh" >&2
+    fail=1
+fi
+
+# WHICH SUITES THIS BRANCH NEEDS. SPIRA_GATE_ALL=1 overrides the selection and runs the whole
+# set: that is what the daily full run against the base ref uses, and it is the seam the
+# selection's own suite drives.
+#
+# The selector is trusted to widen, never to narrow wrongly — every uncertain case it meets
+# selects everything — so a failure to run it at all is the only thing that could quietly
+# shrink this, and that is why its absence is refused above with the two publication fences.
+suites=""
+if [ "${SPIRA_GATE_ALL:-0}" = 1 ]; then
+    echo "gate: SPIRA_GATE_ALL=1 — running every suite" >&2
+    suites="$(bash spira/gate-select.sh 2>/dev/null)"
+else
+    suites="$(bash spira/gate-select.sh "${SPIRA_GATE_FILES:-}")"
+fi
+
+# NOTHING SELECTED IS AN OUTCOME, NOT AN ERROR — but it is announced, because a gate that
+# silently ran no suites is indistinguishable in an exit code from one where they all passed.
+if [ -z "$suites" ]; then
+    echo "gate: no suite covers anything this branch changed — fences only, no suites run" >&2
+    exit "$fail"
+fi
+
 # ONE FIXTURE FOR THE WHOLE RUN. Several of these suites build a Dolt database, and `bd init`
 # is nearly all of the ~27s each one costs — the same schema built over and over was more than
 # half the gate's wall clock. testdb_up honours an inherited TESTDB_SHARED fixture by resetting
@@ -122,7 +166,7 @@ else
 fi
 
 skipped=0
-for t in spira/test-*.sh; do
+while IFS= read -r t; do
     [ -e "$t" ] || continue
     out="$(run_suite "$t")"; rc=$?
     case "$rc" in
@@ -132,15 +176,19 @@ for t in spira/test-*.sh; do
             echo "gate: $t FAILED (rc=$rc)" >&2
             fail=1 ;;
     esac
-done
+done <<< "$suites"
 
-# A gate that found nothing to run must say so rather than pass. An empty glob and a green
-# suite are indistinguishable in an exit code (law-absence-needs-a-positive-control).
+# A gate that found nothing to RUN must say so rather than pass. An empty glob and a green
+# suite are indistinguishable in an exit code (law-absence-needs-a-positive-control). This
+# asks whether the suites EXIST, not whether any were selected: selecting none is a verdict
+# the selector reached and announced above, whereas an empty `spira/` is a broken checkout.
 n="$(ls spira/test-*.sh 2>/dev/null | wc -l)"
 if [ "$n" -eq 0 ]; then
     echo "gate: no test-*.sh in spira/ — refusing to report a pass on nothing checked" >&2
     exit 1
 fi
+ran="$(printf '%s\n' "$suites" | grep -c .)"
+[ "$ran" -eq "$n" ] || echo "gate: ran $ran of $n suite(s) — selected from the changed files" >&2
 
-[ "$skipped" -gt 0 ] && echo "gate: $skipped of $n suite(s) skipped" >&2
+[ "$skipped" -gt 0 ] && echo "gate: $skipped of $ran suite(s) run were skipped" >&2
 exit "$fail"

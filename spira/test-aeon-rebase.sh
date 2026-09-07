@@ -13,6 +13,8 @@
 #   it did not, replay conflicts      -> reopened, unassigned, the paths named
 #
 #   ./test-aeon-rebase.sh
+#
+# covers: spira/aeon.sh spira/sending.sh spira/chamber/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

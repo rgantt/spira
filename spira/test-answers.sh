@@ -27,6 +27,8 @@
 # Every negative is paired with a positive control: a matcher that finds nothing must first
 # be shown finding something, or "no answers" and "looking in the wrong place" are the same
 # output (law-absence-needs-a-positive-control).
+#
+# covers: spira/answers.py spira/verdicts.sh cockpit/answered-since.sh cockpit/unanswered.sh cockpit/watch-answers.sh cockpit/reply.sh cockpit/resolve.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 COCKPIT="$HERE/../cockpit"

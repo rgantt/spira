@@ -29,6 +29,8 @@
 # account and appears on all 443 healthy events as well. A hand-written "healthy" fixture
 # would have omitted it, the negative control would have passed, and the detector would have
 # shipped pausing the harness for ever at 7% utilization.
+#
+# covers: spira/capacity.sh spira/aeon.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

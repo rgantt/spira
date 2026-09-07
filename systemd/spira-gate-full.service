@@ -1,0 +1,32 @@
+[Unit]
+# The landing gate runs only the suites the changed files select, from a map each suite keeps
+# about itself. A hand-kept map decays silently and in the safe-looking direction: an
+# under-selected gate is green, so every branch passes and the suite that would have caught
+# it was simply never run. This is what makes that observable.
+Description=Spira full gate — run every suite against the ref everything lands on
+Documentation=file://@SPIRA_HOME@/gate-full.sh
+After=default.target
+
+[Service]
+Type=oneshot
+# @SPIRA_HOME@ is the point of the unit, not an implementation detail: this renders to the
+# copy the service manager actually runs, so the check reports on the harness in force.
+ExecStart=@SPIRA_HOME@/gate-full.sh
+# A RED FULL GATE IS NOT A UNIT FAILURE. gate-full.sh exits 1 when it found something and has
+# already put the decision in front of the operator; leaving the unit red on top of that is a
+# second alert for one condition, and a unit permanently red is one whose next genuine failure
+# nobody looks at (law-alerts-must-be-actionable). Exit 3 — could not check — stays a failure,
+# because that one is the check itself being broken and reaches nobody otherwise.
+SuccessExitStatus=1
+# Every suite, plus a Dolt fixture. This is the most expensive thing on the timer by a wide
+# margin, and this box may also be running production and a CI runner
+# (law-fence-loops-on-shared-hardware). It is nice'd hard and quota'd because nothing is
+# waiting on its answer — a full pass taking three hours instead of one costs nothing.
+TimeoutStartSec=5400
+CPUQuota=50%
+Nice=15
+StandardOutput=append:@SPIRA_RUN@/gate-full.log
+StandardError=append:@SPIRA_RUN@/gate-full.log
+
+[Install]
+WantedBy=default.target

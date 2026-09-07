@@ -9,6 +9,8 @@
 # still working, or paging the operator about an epic that is merely waiting on them.
 #
 #   ./test-strand.sh          run every case
+#
+# covers: spira/strand.sh spira/strand-classify.py
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CLASSIFY="$HERE/strand-classify.py"

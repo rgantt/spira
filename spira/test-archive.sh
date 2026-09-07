@@ -22,6 +22,8 @@
 # AND IT RUNS UNDER `env -i`. A suite that inherited the operator's spira.conf would archive
 # their real transcripts into their real archive — gigabytes of somebody's actual work, on
 # fixtures expecting four files (law-gates-run-in-a-clean-environment).
+#
+# covers: spira/archive.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 ARCHIVE_SH="$HERE/archive.sh"

@@ -35,6 +35,8 @@
 # would test more and would also make this suite unrunnable on a machine that has no reason
 # to have one; the rendering was verified separately, by eye and by a headless run, against
 # the same fixture this asserts on.
+#
+# covers: loom/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LOOM="$HERE/../loom/static"

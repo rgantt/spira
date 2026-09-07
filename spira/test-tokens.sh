@@ -20,6 +20,8 @@
 # one box, and one that inherits SPIRA_TOKEN_PROJECTS would read their real transcripts —
 # thousands of turns of someone's actual work, against fixtures expecting four
 # (law-gates-run-in-a-clean-environment).
+#
+# covers: spira/ctx-meter.sh spira/tokens.sh spira/cockpit.sh spira/statusline-check.py cockpit/health.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 TOKENS="$HERE/tokens.sh"

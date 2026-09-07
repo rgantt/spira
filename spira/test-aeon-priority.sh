@@ -18,6 +18,8 @@
 # suite green, which is the one outcome that matters. So the program is EXTRACTED from
 # aeon.sh at run time and fed synthetic payloads. No database and no git — the property is
 # about ordering, and a suite that needed a Dolt server to state it would not be run.
+#
+# covers: spira/aeon.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

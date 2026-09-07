@@ -18,6 +18,8 @@
 # IT SKIPS WHEN CARGO IS ABSENT rather than failing. A gate that rejects good work because a
 # toolchain is missing from an unattended environment teaches everyone to ignore it, which is
 # worse than not gating. The skip is loud, and the gate names it.
+#
+# covers: loom/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LOOM="$(cd "$HERE/../loom" 2>/dev/null && pwd)" || {

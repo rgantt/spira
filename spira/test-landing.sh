@@ -22,6 +22,8 @@
 # means nothing in the pass can notice a worker that quietly stopped working, so the status
 # file and the mailbox are the only evidence there is — a suite that checked the branches
 # and not those two files would pass against a worker whose reports had gone silent.
+#
+# covers: spira/landing.sh spira/sending.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

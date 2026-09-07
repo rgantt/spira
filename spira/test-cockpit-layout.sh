@@ -20,6 +20,8 @@
 # that a split takes its TARGET pane's height unless `-f` is given (law-prefer-the-real-
 # dependency). TMUX_TMPDIR gives the suite a server of its own, so it can neither see nor
 # disturb the operator's cockpit.
+#
+# covers: cockpit/layout.sh cockpit/panel-run.sh cockpit/health.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LAYOUT="$HERE/../cockpit/layout.sh"

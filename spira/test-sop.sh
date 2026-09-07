@@ -22,6 +22,8 @@
 # The negatives carry the weight, as they do in the reaper. A dedupe that files a second
 # bead is a queue nobody reads; a spool that drops an event loses the only record of a
 # production failure, because an alert arrives once and cannot be asked for again.
+#
+# covers: spira/sop.sh spira/incident.sh spira/install-intake.sh spira/sending.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

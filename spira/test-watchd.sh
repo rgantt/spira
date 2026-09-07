@@ -24,6 +24,8 @@
 #
 # It needs no database and no beads server: everything here is a file, a renderer and a
 # stub `systemctl` that records what it was asked to do.
+#
+# covers: spira/watchd.sh spira/watchers spira/drain.sh systemd/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 ROOT="$(cd "$HERE/.." && pwd -P)"

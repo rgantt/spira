@@ -4,6 +4,8 @@
 # the truth afterwards, with no attempt charged.
 #
 #   ./test-slay.sh
+#
+# covers: spira/slay.sh spira/aeon.sh spira/chamber/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

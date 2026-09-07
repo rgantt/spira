@@ -6,6 +6,8 @@
 # that too. It is that the fence CAN GO RED, on each shape it claims to catch, and that it
 # refuses to report clean when it could not have found anything
 # (law-absence-needs-a-positive-control).
+#
+# covers: spira/inventory.sh spira/inventory-deny
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 INV="$HERE/inventory.sh"

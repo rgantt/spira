@@ -30,6 +30,8 @@
 # that read correctly function by function. A stub would model the label surface as remembered
 # rather than as it is (law-prefer-the-real-dependency). Only `claude` is absent here, and it
 # is not needed: this suite drives `capacity.sh` directly against logs it writes itself.
+#
+# covers: spira/capacity.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

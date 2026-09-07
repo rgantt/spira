@@ -25,6 +25,8 @@
 # THE CONFIGURED PATH IS PINNED TO A NON-DEFAULT. The fixture repository keeps its library at
 # `tests/db.sh`, never at the shipped default, so a hardcoded `spira/testdb.sh` anywhere in
 # aeon.sh fails this suite instead of passing it.
+#
+# covers: spira/aeon.sh spira/chamber/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

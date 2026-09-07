@@ -22,6 +22,8 @@
 # so the operator's real configuration cannot decide an assertion, and every fixture value
 # is pinned to a NON-DEFAULT where one exists — asserting against the shipped default passes
 # just as well if the code has the literal written into it.
+#
+# covers: spira/skew.sh spira/exclude.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0

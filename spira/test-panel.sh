@@ -14,6 +14,8 @@
 # It SKIPS when cargo is absent rather than failing. The gate must be deterministic, and a
 # gate that rejects good work because a toolchain is missing from an unattended environment
 # teaches everyone to ignore it — which is worse than not gating at all. The skip is loud.
+#
+# covers: cockpit/panel/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PANEL="$(cd "$HERE/../cockpit/panel" 2>/dev/null && pwd)" || {

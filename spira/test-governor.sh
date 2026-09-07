@@ -11,6 +11,8 @@
 #   * the answer is how many MORE aeons fit, and the running ones are not subtracted twice.
 #
 #   ./test-governor.sh
+#
+# covers: spira/governor.sh spira/governor-budget.py
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GOV="$HERE/governor-budget.py"

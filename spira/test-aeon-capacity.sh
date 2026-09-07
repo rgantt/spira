@@ -18,6 +18,8 @@
 # account cannot be made to run out of capacity for a test. Everything else — the database,
 # the claim, the lease, the worktree, the labels — is the real thing
 # (law-prefer-the-real-dependency).
+#
+# covers: spira/aeon.sh spira/capacity.sh spira/chamber/* spira/boundary spira/boundary.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
