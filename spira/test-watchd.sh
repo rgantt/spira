@@ -950,5 +950,33 @@ for c in status drain restart; do
     is "and emits nothing"    "" "$(grep -v '^watchd:' "$TMP/o")"
 done
 
+echo
+echo "and no shipped row names a placeholder the parser does not know"
+# `ship` above proves the shipped manifest RESOLVES on a box configured like this one. It
+# cannot prove the reverse: that no row leans on a key the allowlist has quietly lost. Those
+# are the same reading while the key happens to be present, and they come apart the moment it
+# is not — at which point one bad placeholder refuses the file and disables every watcher.
+#
+# ASKED OF THE PROGRAM, NOT SCRAPED FROM ITS SOURCE. A check that read the assignment would go
+# on passing after the assignment moved, which is the failure mode of every check that reads a
+# program instead of running it.
+KNOWN=" $(wd "$HERE/watchers" keys | tr '\n' ' ')"
+unknown=""
+for k in $(grep -oE '@[A-Z_]+@' "$HERE/watchers" | tr -d '@' | sort -u); do
+    case "$KNOWN" in *" $k "*) ;; *) unknown="$unknown $k" ;; esac
+done
+is "every placeholder the shipped manifest names is on the allowlist" "" "$unknown"
+# THE CONTROL FOR THAT LOOP. It reports absence, so it must first be shown capable of
+# reporting presence — otherwise an empty allowlist and a clean manifest read alike
+# (law-absence-needs-a-positive-control).
+is "and one the allowlist lacks would have been caught" " SPIRA_NOT_A_KEY" \
+   "$(case "$KNOWN" in *" SPIRA_NOT_A_KEY "*) echo "" ;; *) echo " SPIRA_NOT_A_KEY" ;; esac)"
+
+# AND THE SHIPPED OPTIONAL ROW REACHES SYSTEMD once it is configured. `ship` judges the rows;
+# this judges what they cause, which is the half an operator actually gets.
+has "a configured view row renders its instance" \
+    "$(wde SPIRA_VIEW=/bin/echo -- "$HERE/watchers" units)" "spira-watch@view.service"
+hasnt "and an unconfigured one renders none"    "$(wd "$HERE/watchers" units)" "@view.service"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
