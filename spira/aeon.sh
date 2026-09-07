@@ -524,6 +524,26 @@ PROMPT="${PROMPT/\{\{PARK\}\}/$PARK_BRIEF}"
 # memories sorted last without saying so. render_memories reads the JSON and prints each
 # one whole.
 STATUTES="$(render_memories "${FAYTH_MEMORY_PREFIXES:-law-}")"
+# THE LAST STEP BEFORE CLOSING IS A REBASE, AND IT IS THE AEON'S. The landing pass rebases
+# too, but it cannot resolve a conflict — it reopens the bead and hands the conflict to the
+# NEXT aeon, which arrives with none of the context that wrote the commits. With several
+# aeons landing, the base moves between an aeon's close and its landing by construction, and
+# 12 of the first 23 reopens this harness performed were exactly that. The session that
+# holds the context is the one that should pay for the conflict, so it is told to, and the
+# verdict step below checks that it did.
+CLOSE_BRIEF="## Before you close: rebase onto \`$BASE\`
+
+Other aeons land while you work, so \`$BASE\` has probably moved. The last thing you do
+before closing the bead — after your commits, before the close — is:
+
+    git -C $WORK fetch ${BASE_REMOTE:-origin}
+    git -C $WORK rebase $BASE
+
+Resolve any conflict yourself: you wrote these commits and you know what they mean, and the
+landing pass does not — it would reopen the bead and hand the conflict to a stranger. Then
+run the gate once more on the rebased tree, and close. A bead closed behind \`$BASE\` that
+does not rebase cleanly is reopened by the harness, which costs a whole second session."
+
 FULL="# Memories in force
 
 $STATUTES
@@ -531,6 +551,7 @@ $STATUTES
 ---
 
 $PROMPT
+$CLOSE_BRIEF
 $REBASE_BRIEF"
 
 # ---- work ----------------------------------------------------------------------------
@@ -589,4 +610,28 @@ log "$FAYTH: $BEAD_ID status=$st committed=$committed"
 if [ "$st" = "closed" ] && [ "$committed" = "no" ]; then
     bead_reopen "$BEAD_ID" "Reopened by aeon.sh: closed without a commit naming $BEAD_ID on $BRANCH. Closed is not landed."
     log "$FAYTH: $BEAD_ID REOPENED — closed with nothing committed"
+fi
+
+# CLOSED BEHIND THE BASE IS NOT FINISHED. The brief asked for a rebase as the last step; this
+# is the check that it happened, and the fallback when it did not. The session is over, the
+# claim is still this process's, so rewriting the branch here rewrites nothing beneath
+# anyone. Three outcomes, each named in the log so the brief's effect can be measured:
+#   current  — the session rebased (or nothing landed meanwhile); nothing to do
+#   rebased  — it did not, but the replay was clean; the harness did it and says so
+#   reopened — it did not, and the replay conflicts; the next aeon is handed the rebase
+#              with the paths named, exactly as the landing pass would have, only sooner
+if [ "$st" = "closed" ] && [ "$committed" = "yes" ]; then
+    if [ -n "$BASE_REMOTE" ]; then
+        git -C "$REPO" fetch -q "$BASE_REMOTE" 2>/dev/null \
+            || log "$FAYTH: fetch of $BASE_REMOTE failed — judging currency against a possibly stale $BASE"
+    fi
+    if git -C "$REPO" merge-base --is-ancestor "$BASE" "refs/heads/$BRANCH" 2>/dev/null; then
+        log "$FAYTH: $BEAD_ID closed current with $BASE"
+    elif rebase_branch "$BRANCH" "$BASE" "$REPO" "$REPO_NAME"; then
+        log "$FAYTH: $BEAD_ID closed behind $BASE — rebased by the harness after close (the session did not)"
+        bdq note "$BEAD_ID" "Rebased onto $BASE by aeon.sh after the session closed the bead without doing so. The replay was clean; the landing gate judges the rebased tree." >/dev/null 2>&1
+    else
+        bead_reopen "$BEAD_ID" "Reopened by aeon.sh: closed behind $BASE and $BRANCH does not rebase onto it — conflicts in ${REBASE_CONFLICTS:-unknown}. The brief asked for this rebase before closing. A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it."
+        log "$FAYTH: $BEAD_ID REOPENED — closed behind $BASE, conflicts in ${REBASE_CONFLICTS:-unknown}"
+    fi
 fi
