@@ -47,7 +47,7 @@ IN=""
 
 python3 - "$IN" "$SPIRA_CTX_WARN" "$SPIRA_CTX_HIGH" "$SPIRA_CTX_LIMIT" \
               "$MODE" "$SPIRA_TOKEN_PROJECTS" "$SPIRA_RUN" "${2:-}" <<'PY'
-import json, sys, os, glob, time, hashlib, re, math
+import json, sys, os, glob, time, hashlib, re
 
 raw, warn, high, limit = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
 mode, projects, run = sys.argv[5], sys.argv[6], sys.argv[7]
@@ -254,8 +254,17 @@ except Exception:
 # not per-session: every session on the account is charged against the same two windows, which
 # is what lets `env` — which has no hook at all — answer from the newest sample any session
 # wrote.
-LIM_TAU = 15.0        # minutes; the time constant the operator asked the projection to smooth over
-LIM_KEEP = 1800       # seconds of samples retained — the trailing half hour the EMA can reach
+# SIX HOURS OF SAMPLES, BECAUSE THE TWO WINDOWS DIFFER BY TWO ORDERS OF MAGNITUDE and one
+# retention has to serve both. Thirty minutes of history projecting a 7-day window carries the
+# ±1-point quantum below as ±2%/h, which puts that window's fill anywhere between twenty hours
+# away and never. Six hours costs nothing: the 5-hour window's own reset cut bounds its history
+# regardless, and collapsing runs of identical readings holds the file to a few hundred lines.
+LIM_KEEP = 21600
+# A PROJECTION NEEDS A SPAN LONG ENOUGH TO HAVE MEASURED SOMETHING. Below either floor a single
+# rounding step is the whole signal, so the ETA is noise dressed as a number; a meter that says
+# nothing there is honestly reporting that it cannot yet tell.
+LIM_MIN_SPAN = 600    # seconds of retained history before any rate is believed
+LIM_MIN_MOVE = 2.0    # points the window must have climbed across that span
 # The colour bands are percentages of a window that is 100% on every box, so unlike the context
 # thresholds they are not a fact about one operator's plan and are not a config key.
 LIM_WARN, LIM_HIGH = 70.0, 90.0
@@ -354,11 +363,23 @@ def limits_record(path, samples, sample):
     return keep
 
 def limits_rate(samples, idx):
-    """EMA of percent-per-minute for one window, or None when there is nothing to measure."""
+    """Percent-per-minute across the retained span for one window, or None when unmeasurable.
+
+    A SPAN RATE, NEVER A PER-INTERVAL DERIVATIVE, AND THAT IS THE WHOLE OF THE DESIGN.
+    `used_percentage` arrives ROUNDED TO WHOLE PERCENT and the hook fires irregularly, so a run
+    at one value collapses to its endpoints and the pair that straddles a step is typically a
+    1-point rise measured across two to five seconds — a slope of 720 to 1800 %/h. Any estimator
+    that differentiates pairwise is seeded with that and stays pinned to it: an EMA over these
+    same samples rendered a median of 250.6 %/h and a maximum of 1376.2 %/h against a true burn
+    of 13.4 %/h, and a LOWER α made it worse rather than better, because it holds the bad seed
+    longer. The quantum is the fault, not the smoothing, so the fix is to divide it by a span of
+    minutes instead of by a gap of seconds — which needs no time constant and has nothing to
+    tune.
+    """
     pts = [(s[0], s[idx][0]) for s in samples if s[idx] is not None]
     if len(pts) < 2: return None
     # A DROP OF MORE THAN A POINT IS THE WINDOW RESETTING, not usage falling, so everything
-    # before it belongs to a window that no longer exists. Averaging across the boundary would
+    # before it belongs to a window that no longer exists. Measuring across the boundary would
     # produce a large negative slope and, with it, no projection at exactly the moment a fresh
     # window starts filling. One point of slack, because a percentage is reported rounded.
     start = 0
@@ -366,18 +387,10 @@ def limits_rate(samples, idx):
         if pts[i][1] < pts[i - 1][1] - 1.0: start = i
     pts = pts[start:]
     if len(pts) < 2: return None
-    # IRREGULAR INTERVALS ARE WEIGHTED BY THEIR OWN LENGTH. The hook fires on a refresh timer,
-    # on every assistant message, and not at all while nothing is happening, so the gap between
-    # two samples is five seconds or five minutes. α = 1 − exp(−Δt/τ) is what makes both carry
-    # the weight they have earned; a fixed α would let a burst of five-second samples pin the
-    # average to the last few seconds of a session.
-    ema = None
-    for (t0, p0), (t1, p1) in zip(pts, pts[1:]):
-        dt = (t1 - t0) / 60.0
-        if dt <= 0: continue
-        slope = (p1 - p0) / dt
-        ema = slope if ema is None else ema + (1.0 - math.exp(-dt / LIM_TAU)) * (slope - ema)
-    return ema
+    span = pts[-1][0] - pts[0][0]
+    move = pts[-1][1] - pts[0][1]
+    if span < LIM_MIN_SPAN or move < LIM_MIN_MOVE: return None
+    return move / (span / 60.0)
 
 def limits_dur(m):
     """Minutes as the coarsest unit that still says something: 48m, 1h20m, 3d."""
@@ -389,7 +402,11 @@ def limits_dur(m):
     # returned the literal string and the meter rendered "resets in %dh". Every case in the
     # suite used a duration with minutes in it, which is exactly the shape that hides this.
     if h < 24: return "%dh%dm" % (h, mm) if mm else "%dh" % h
-    return "%dd" % (h // 24)
+    # DAYS KEEP THEIR HOURS. The reset time is rendered on every pass now, and a 7-day window is
+    # days out for most of its life, so collapsing to "6d" would throw away the twenty-one hours
+    # that are the difference between finishing today and not.
+    d, hh = divmod(h, 24)
+    return "%dd%dh" % (d, hh) if hh else "%dd" % d
 
 lim_samples, lim_broken = limits_load(lim_path)
 lim_hook = limits_hook(hook) if mode != "env" else None
@@ -436,32 +453,37 @@ def limits_segment():
     """The rendered segment, or "" when the client sent no window."""
     if lim_hook is None: return ""
     segs = []
-    for idx, short in ((1, "5h"), (2, "7d")):
+    # WHEN IT CLEARS, THEN HOW FULL, THE SAME SHAPE FOR BOTH WINDOWS. Those are the two facts
+    # acted on, in the order they are acted in. The window's NAME is redundant once its reset
+    # time is on screen — "2h27m" and "6d21h" already say which is which — and the labels were
+    # spending four columns to repeat it. POSITION carries the identity instead: 5-hour first,
+    # 7-day second, always, which is why this walks a fixed tuple rather than anything sorted.
+    for idx in (1, 2):
         w = lim_hook[idx]
         if w is None: continue
         pct, reset = w
         col = "\x1b[32m" if pct < LIM_WARN else ("\x1b[33m" if pct < LIM_HIGH else "\x1b[31m")
-        rate = limits_rate(lim_samples, idx)
         ttr = (reset - now) / 60.0                   # minutes until the window empties itself
         clause = ""
-        if pct >= 100:
-            # ALREADY FULL, which is the one state with nothing left to project and the one
-            # where the reset is the only number that helps. Rendering nothing here would make
-            # the meter go quiet at exactly the moment it matters most.
-            if ttr > 0: clause = " \x1b[31mresets in %s\x1b[0m" % limits_dur(ttr)
-        elif rate is not None and rate > 0:
-            eta = (100 - pct) / rate                 # minutes until the window is full
-            if ttr <= 0 or eta < ttr:
-                # THE WARNING, and the only place the rate is shown: it is what justifies the
-                # claim. Red under an hour, because that is when it changes what to do next.
-                cc = "\x1b[31m" if eta < 60 else "\x1b[2m"
-                clause = " \x1b[2m↑%.1f%%/h\x1b[0m %sfull in ~%s\x1b[0m" % (
-                    rate * 60, cc, limits_dur(eta))
-            else:
-                # The window empties before it fills, so the limit will not bite this time and
-                # the rate is not something to act on.
-                clause = " \x1b[2mresets in %s\x1b[0m" % limits_dur(ttr)
-        segs.append("%s%s %g%%\x1b[0m%s" % (col, short, pct, clause))
+        # A FULL WINDOW PROJECTS NOTHING. There is no fill left to reach and the reset beside it
+        # is the only number that helps: "0m 100%" in red is already the whole story.
+        if pct < 100:
+            rate = limits_rate(lim_samples, idx)
+            if rate is not None and rate > 0:
+                eta = (100 - pct) / rate              # minutes until the window is full
+                if ttr <= 0 or eta < ttr:
+                    # THE WARNING, AND THE ONLY PLACE THE RATE APPEARS: the rate is what
+                    # justifies the claim. Interleaved INSIDE this window's own pair rather than
+                    # appended to the line, so which window is filling is never ambiguous. Red
+                    # under an hour, because that is when it changes what to do next.
+                    cc = "\x1b[31m" if eta < 60 else "\x1b[2m"
+                    clause = " \x1b[2m↑%.1f%%/h\x1b[0m %sfull in ~%s\x1b[0m" % (
+                        rate * 60, cc, limits_dur(eta))
+            # Otherwise the window empties before it fills, or nothing measurable has happened
+            # yet. Both render no clause at all: the reset time is already there, so anything
+            # further would only restate it, and a meter that cannot yet tell should say so by
+            # being quiet rather than by naming a number it has not earned.
+        segs.append("\x1b[2m%s\x1b[0m %s%g%%\x1b[0m%s" % (limits_dur(ttr), col, pct, clause))
     return "".join(" \x1b[2m·\x1b[0m %s" % s for s in segs)
 
 if mode == "env":
