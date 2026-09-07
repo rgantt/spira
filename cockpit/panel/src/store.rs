@@ -622,6 +622,49 @@ fn alerts(s: &Snapshot, dismissed: bool, now: i64) -> Result<Vec<Item>, String> 
     Ok(out)
 }
 
+/// Does the OPERATOR have the last word on this bead's thread?
+///
+/// The FYI view lets a dismissed insight back onto the tab when a conversation is still
+/// owed an answer, and this is the question it should have been asking. It asked
+/// `comment_count > 0` instead — whether ANYONE had ever spoken — so an insight the
+/// operator dismissed came straight back the moment it carried any comment at all,
+/// including my own replies to it. Dismissal was therefore permanently ineffective on
+/// exactly the insights that had been discussed, which are the ones most likely to be
+/// finished. Measured 2026-09-07 after the operator dismissed five and watched all five
+/// return: hq-m2x9, hq-wuog, hq-mb25, hq-9b8z and sp-nm7 were each archived, each carried
+/// two to six comments, and on every one of them the last word was mine. Nothing was owed
+/// on any of them.
+///
+/// Ordered before it is read, by the same rule `oldest_first` uses and for the same reason:
+/// `bd comments` returns oldest-first today and a predicate whose meaning inverts with
+/// someone else's `ORDER BY` should not rest on that. Only sorted when every comment carries
+/// a full stamp, so one unstamped row cannot hoist itself to the end of the conversation.
+///
+/// FALSE WHEN THERE IS NO THREAD, which is the safe direction here: an insight with nothing
+/// said on it is a notice, and dismissing a notice must end it.
+fn operator_spoke_last(s: &Snapshot, id: &str) -> bool {
+    let Some(cs) = s.threads.get(id) else {
+        return false;
+    };
+    let mut t: Vec<(&str, &str)> = cs
+        .iter()
+        .map(|c| {
+            (
+                c["author"].as_str().unwrap_or(""),
+                c["created_at"]
+                    .as_str()
+                    .or_else(|| c["timestamp"].as_str())
+                    .unwrap_or(""),
+            )
+        })
+        .collect();
+    if t.iter().all(|(_, when)| when.len() >= 16) {
+        t.sort_by(|a, b| a.1.cmp(b.1));
+    }
+    let op = crate::model::operator_actor();
+    t.last().map(|(a, _)| op == *a).unwrap_or(false)
+}
+
 /// Filter the cached rows down to one view. Pure, in memory, instant.
 ///
 /// `dismissed` only means anything in the FYI view, where it swaps the live insights for the
@@ -681,13 +724,20 @@ pub fn view_items(
                             }
                             // ARCHIVING ENDS A NOTICE, NOT A CONVERSATION. Dismissal is how a
                             // read FYI leaves the pane, which is right for a notice nobody
-                            // replied to. But an insight the operator has COMMENTED on is a thread they
-                            // is owed an answer in, and archiving it hid my replies from the
-                            // only surface they read them in — they asked where the
-                            // acknowledgement was, and it was behind this filter.
-                            // Bounded by construction: only insights that already report a
-                            // comment, a handful on this box.
-                            return !arch || r["comment_count"].as_u64().unwrap_or(0) > 0;
+                            // replied to. But an insight the operator has commented on is a
+                            // thread they are owed an answer in, and archiving it hid my
+                            // replies from the only surface they read them in — they asked
+                            // where the acknowledgement was, and it was behind this filter.
+                            //
+                            // OWED, NOT MERELY DISCUSSED. This read `comment_count > 0`, so
+                            // any insight that had ever been spoken on came back however the
+                            // conversation ended — including when the last thing in it was my
+                            // own reply. Dismissal did nothing to precisely the finished ones,
+                            // and the operator dismissed five and watched all five return.
+                            // The question is whose turn it is, and `operator_spoke_last`
+                            // asks it.
+                            return !arch
+                                || operator_spoke_last(s, r["id"].as_str().unwrap_or(""));
                         }
                         if is_insight {
                             return false;
@@ -865,6 +915,106 @@ mod tests {
             "created_at": created,
             "labels": labels,
         })
+    }
+
+    /// An insight, with the comment count the FYI filter used to trust.
+    fn fyi(id: &str, comments: u64, archived: bool) -> Value {
+        let mut labels = vec!["insight", "overseer"];
+        if archived {
+            labels.push("archived");
+        }
+        serde_json::json!({
+            "id": id,
+            "title": format!("{id} noticed"),
+            "description": "what was learned",
+            "issue_type": "task",
+            "status": "closed",
+            "created_at": "2026-09-05T10:00:00Z",
+            "comment_count": comments,
+            "labels": labels,
+        })
+    }
+
+    /// The operator's author name is CONFIGURED (`SPIRA_OPERATOR_ACTOR`), not the literal
+    /// "ryan" the live database happens to hold — so the tests ask for it the same way the
+    /// filter does. Writing the name in by hand made the owed-a-reply case fail against a
+    /// correct filter, which is the test asserting about one box rather than about the rule.
+    fn op() -> String {
+        crate::model::operator_actor()
+    }
+
+    fn threaded(rows: Vec<Value>, id: &str, authors: &[(&str, &str)]) -> Snapshot {
+        let mut s = snap(rows);
+        s.threads.insert(
+            id.to_string(),
+            authors
+                .iter()
+                .map(|(who, when)| serde_json::json!({"author": who, "created_at": when, "text": "…"}))
+                .collect(),
+        );
+        s
+    }
+
+    /// THE ONE THE OPERATOR HIT. Five archived insights came back because they carried
+    /// comments — and the last word on every one of them was mine, so nothing was owed.
+    #[test]
+    fn a_dismissed_insight_i_answered_last_stays_dismissed() {
+        let s = threaded(
+            vec![fyi("sp-nm7", 2, true)],
+            "sp-nm7",
+            &[(&op(), "2026-09-06T10:00:00Z"), ("claude", "2026-09-06T11:00:00Z")],
+        );
+        assert!(ids(view_items(&s, View::Insights, false, NOW)).is_empty());
+        // And it is still reachable, which is the whole reason dismissal is reversible.
+        assert_eq!(ids(view_items(&s, View::Insights, true, NOW)), ["sp-nm7"]);
+    }
+
+    /// The half worth keeping: a thread where the OPERATOR spoke last is still owed an answer,
+    /// and archiving it must not hide the conversation from the only surface they read.
+    #[test]
+    fn a_dismissed_insight_the_operator_spoke_last_on_comes_back() {
+        let s = threaded(
+            vec![fyi("sp-owed", 3, true)],
+            "sp-owed",
+            &[
+                (&op(), "2026-09-06T10:00:00Z"),
+                ("claude", "2026-09-06T11:00:00Z"),
+                (&op(), "2026-09-06T12:00:00Z"),
+            ],
+        );
+        assert_eq!(ids(view_items(&s, View::Insights, false, NOW)), ["sp-owed"]);
+    }
+
+    /// Order is not trusted: the same thread shuffled must give the same verdict, because
+    /// `bd comments` ordering is somebody else's `ORDER BY`.
+    #[test]
+    fn whose_turn_it_is_does_not_depend_on_the_rows_arriving_in_order() {
+        let s = threaded(
+            vec![fyi("sp-shuf", 2, true)],
+            "sp-shuf",
+            &[("claude", "2026-09-06T11:00:00Z"), (&op(), "2026-09-06T10:00:00Z")],
+        );
+        assert!(ids(view_items(&s, View::Insights, false, NOW)).is_empty());
+    }
+
+    /// A dismissed notice nobody ever replied to simply leaves. The positive control for the
+    /// two above: without it, a filter that hid everything archived would pass them both.
+    #[test]
+    fn a_dismissed_insight_with_no_thread_leaves_the_tab() {
+        let s = snap(vec![fyi("sp-quiet", 0, true)]);
+        assert!(ids(view_items(&s, View::Insights, false, NOW)).is_empty());
+        assert_eq!(ids(view_items(&s, View::Insights, true, NOW)), ["sp-quiet"]);
+    }
+
+    /// An insight nobody has dismissed is on the tab whatever its thread says.
+    #[test]
+    fn an_undismissed_insight_is_on_the_tab_regardless_of_whose_turn_it_is() {
+        let s = threaded(
+            vec![fyi("sp-live", 2, false)],
+            "sp-live",
+            &[(&op(), "2026-09-06T10:00:00Z"), ("claude", "2026-09-06T11:00:00Z")],
+        );
+        assert_eq!(ids(view_items(&s, View::Insights, false, NOW)), ["sp-live"]);
     }
 
     fn firing(id: &str, created: &str) -> Value {
