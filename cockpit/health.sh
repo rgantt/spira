@@ -415,7 +415,7 @@ now_section() {
         # they could not be compared down the column.
         fit "${ti:-?}" $(( COLS - 12 - (${#bd} > 14 ? ${#bd} : 14) ))
         printf '        %sP%s%s %s%-14s%s %s%s%s\n' \
-            "$C_DIM" "$pr" "$C_RST" "$C_ACC" "$bd" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
+            "$(pri_colour "P$pr")" "$pr" "$C_RST" "$C_ACC" "$bd" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
         if [ -n "$ac" ]; then
             fit "$ac" $(( COLS - 10 ))
             printf '        %s↳ %s%s\n' "$C_DIM" "$FIT" "$C_RST"
@@ -431,12 +431,61 @@ now_section() {
 # long one, and truncating an id is not an option because half an id is not an id. So the
 # prefix width varies per row and the space left for the title varies with it. The ternary
 # is written inline rather than as a helper for the same no-forks reason as `fit`.
+# ONE VOCABULARY OF COLOUR FOR THE WHOLE COLUMN, because NOW, NEXT and RECENT show the same
+# beads at three stages and a reader scans down, not across. P0 and a reopen must look alike
+# wherever they appear, or the colour is decoration rather than information.
+pri_colour() {          # pri_colour P0 -> the escape for that priority
+    case "$1" in
+        P0) printf '%s' "$C_BAD$C_B" ;;
+        P1) printf '%s' "$C_WARN" ;;
+        *)  printf '%s' "$C_DIM" ;;
+    esac
+}
+
+# A LIFECYCLE VERB IS GREEN WHEN WORK ADVANCED, RED WHEN IT WENT BACKWARDS, AMBER WHEN IT
+# ENDED WITHOUT EITHER. The middle case is the one worth seeing: an aeon whose turn ended with
+# its bead still in progress is neither a success nor a failure, and it is what repeats.
+verb_colour() {
+    case "$1" in
+        landed|finished|announced)      printf '%s' "$C_OK" ;;
+        reopened|poisoned|slain|reaped) printf '%s' "$C_BAD" ;;
+        in_progress|ended|reclaimed)    printf '%s' "$C_WARN" ;;
+        claimed)                        printf '%s' "$C_ACC" ;;
+        *)                              printf '%s' "$C_DIM" ;;
+    esac
+}
+
 next_row() {
     local raw="$1" pri id rest
     pri="${raw%% *}"; rest="${raw#* }"; id="${rest%% *}"; rest="${rest#* }"
     fit "$rest" $(( COLS - 10 - ${#pri} - (${#id} > 14 ? ${#id} : 14) ))
     printf '        %s%s%s %s%-14s%s %s%s%s\n' \
-        "$C_DIM" "$pri" "$C_RST" "$C_ACC" "$id" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
+        "$(pri_colour "$pri")" "$pri" "$C_RST" "$C_ACC" "$id" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
+}
+
+# RECENT rows arrive as `<age> <verb> <bead> <title...>`. Split rather than print flat: the
+# id and the verb are what a reader is scanning for, and dimming the whole line hid both.
+# A row that does not split is printed as it came — a formatter must never drop content it
+# failed to parse.
+recent_row() {          # recent_row "<age> <verb> <bead> <title>" <indent-cols>
+    local raw="$1" pad="$2" age verb id rest
+    # THE AGE IS TWO WORDS. The collector emits `%-7s` of a relative time — "2m ago", "18h
+    # ago" — so splitting on the first space made the verb "ago" and the id "landed", and
+    # every row rendered its colours one field to the left. Matched as a whole rather than
+    # counted in spaces, because the padding width is the collector's to change.
+    if [[ "$raw" =~ ^([0-9]+[smhd][[:space:]]+ago)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]*(.*)$ ]]; then
+        age="${BASH_REMATCH[1]}"; verb="${BASH_REMATCH[2]}"; id="${BASH_REMATCH[3]}"; rest="${BASH_REMATCH[4]}"
+    else
+        # UNPARSED IS PRINTED AS IT CAME. A formatter must never drop content it could not
+        # split — the event is the load-bearing half and the colour is the ornament.
+        printf '%s%s%s\n' "$C_DIM" "$raw" "$C_RST"; return
+    fi
+    fit "$rest" $(( COLS - pad - 10 - ${#verb} - (${#id} > 14 ? ${#id} : 14) ))
+    printf '%s%-7s%s %s%s%s %s%-14s%s %s%s%s\n' \
+        "$C_DIM" "$age" "$C_RST" \
+        "$(verb_colour "$verb")" "$verb" "$C_RST" \
+        "$C_ACC" "$id" "$C_RST" \
+        "$C_DIM" "$FIT" "$C_RST"
 }
 
 # NEXT — the order the graph will actually be claimed in.
@@ -480,14 +529,12 @@ recent_section() {
         fi
         return
     fi
-    fit "$ev" $(( COLS - 8 ))
-    printf ' %sRECENT%s %s%s%s\n' "$C_DIM" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
+    printf ' %sRECENT%s %s' "$C_DIM" "$C_RST" "$(recent_row "$ev" 8)"
     i=1
     while [ "$i" -lt "$MAX_SECTION_ROWS" ]; do
         eval "ev=\${SP_EVENT$i:-}"
         [ -n "$ev" ] || break
-        fit "$ev" $(( COLS - 8 ))
-        printf '        %s%s%s\n' "$C_DIM" "$FIT" "$C_RST"
+        printf '        %s' "$(recent_row "$ev" 8)"
         i=$((i+1))
     done
 }
