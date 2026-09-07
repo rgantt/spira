@@ -143,15 +143,23 @@ _wd_setpos() {
 # LAST-EVENT, which is where it belongs.
 _wd_restartfile() { printf '%s/%s.restarts' "$(watchd_dir)" "$1"; }
 
+# NEITHER OF THESE MAY RUN A PROGRAM. `_wd_restarts` is called once per watcher by `status`,
+# and `_wd_bump` sits on the path a timer takes every minute, whose whole contract is a fixed
+# number of execs however large the manifest is (law-fence-loops-on-shared-hardware). Reading
+# with `read` and testing the directory before creating it keeps both to builtins — which also
+# means neither depends on anything being on PATH, and a caller may hand them a PATH holding
+# only the programs it is willing to reach for.
 _wd_restarts() {
-    local n
-    n="$(cat "$(_wd_restartfile "$1")" 2>/dev/null)" || n=""
+    local f n=""
+    f="$(_wd_restartfile "$1")"
+    [ -r "$f" ] && read -r n < "$f"
     case "$n" in ''|*[!0-9]*) n=0 ;; esac
     printf '%s' "$n"
 }
 
 _wd_bump() {
-    mkdir -p "$(watchd_dir)" || return 0
+    local d; d="$(watchd_dir)"
+    [ -d "$d" ] || mkdir -p "$d" || return 0
     printf '%s\n' "$(( $(_wd_restarts "$1") + 1 ))" > "$(_wd_restartfile "$1")"
 }
 
@@ -1116,19 +1124,27 @@ _wd_escalate() {
     return 0
 }
 
-case "${1:-status}" in
-    manifest) cmd_manifest ;;
-    units)    cmd_units ;;
-    keys)     cmd_keys ;;
-    exec)     shift; cmd_exec "${1:-}" ;;
-    status)   cmd_status ;;
-    drain)    shift; cmd_drain "$@" ;;
-    peek)     shift; cmd_drain --peek "$@" ;;
-    tail)     shift; cmd_tail "$@" ;;
-    restart)  shift; cmd_restart "${1:-}" ;;
-    notify)   shift; cmd_notify "$@" ;;
-    health-ids) shift; cmd_health_ids "${1:-}" ;;
-    health-view) shift; cmd_health_view "${1:-}" "${2:-}" ;;
-    *) echo "usage: watchd.sh manifest|units|keys|exec <name>|status|drain [name] [--all]|peek [name] [--all] [--limit N]|tail <name> [--all]|restart [name]|notify|health-ids <file>|health-view <program> <session>" >&2
-       exit 2 ;;
-esac
+# SOURCEABLE, AND SILENT WHEN IT IS. `watch-refresh.sh` reads the manifest and restarts a
+# unit through the functions above rather than by running this script, because its whole
+# contract is that a steady pass costs two execs and a fork to parse a file it could parse
+# in-process would be a third. Without this guard, sourcing runs the dispatcher against the
+# CALLER's arguments — so a library read would have executed whatever the caller's first
+# argument happened to name, and the default is `status`, which probes every watcher.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    case "${1:-status}" in
+        manifest) cmd_manifest ;;
+        units)    cmd_units ;;
+        keys)     cmd_keys ;;
+        exec)     shift; cmd_exec "${1:-}" ;;
+        status)   cmd_status ;;
+        drain)    shift; cmd_drain "$@" ;;
+        peek)     shift; cmd_drain --peek "$@" ;;
+        tail)     shift; cmd_tail "$@" ;;
+        restart)  shift; cmd_restart "${1:-}" ;;
+        notify)   shift; cmd_notify "$@" ;;
+        health-ids) shift; cmd_health_ids "${1:-}" ;;
+        health-view) shift; cmd_health_view "${1:-}" "${2:-}" ;;
+        *) echo "usage: watchd.sh manifest|units|keys|exec <name>|status|drain [name] [--all]|peek [name] [--all] [--limit N]|tail <name> [--all]|restart [name]|notify|health-ids <file>|health-view <program> <session>" >&2
+           exit 2 ;;
+    esac
+fi

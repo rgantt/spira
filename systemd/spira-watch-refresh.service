@@ -1,0 +1,28 @@
+[Unit]
+# A long-lived process pins the configuration it read at startup, and nothing about it looks
+# wrong afterwards: a watcher started before a database cutover went on addressing the
+# retired databases for days, holding not one id from the live store, while every process
+# listing showed it healthy. A watcher's silence and its blindness are indistinguishable from
+# outside, so the repair cannot wait for somebody to notice — it is mechanical and it is on a
+# timer. This is what cockpit-ensure does for panes, done for daemons.
+Description=Restart any Spira watcher whose code is newer than the process running it
+Documentation=file://@SPIRA_HOME@/watch-refresh.sh
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=@SPIRA_HOME@/watch-refresh.sh
+# A pass is two execs and no restarts in the steady state; anything past this is a fault,
+# not a slow box, and a check that hangs every minute is worse than one that fails.
+TimeoutStartSec=60
+# It polls, and this box may be running production on the same cores
+# (law-fence-loops-on-shared-hardware). Fenced far tighter than the aeon units because the
+# work is a `systemctl show` and a `stat`: if this ever approaches its quota, the pass has
+# stopped being the cheap check it was built to be, and that is the finding.
+CPUQuota=5%
+Nice=15
+StandardOutput=append:@SPIRA_RUN@/watch-refresh.log
+StandardError=append:@SPIRA_RUN@/watch-refresh.log
+
+[Install]
+WantedBy=default.target

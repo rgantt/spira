@@ -29,6 +29,7 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
        spira-cockpit.service
        spira-watch@.service
        spira-watch-notify.service spira-watch-notify.timer
+       spira-watch-refresh.service spira-watch-refresh.timer
        cockpit-ensure.service cockpit-ensure.timer
        concierge.service concierge.timer
        beads-push.service beads-push.timer
@@ -36,7 +37,7 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
        )
 # Only these get enabled. The .service behind a .timer is started BY the timer; enabling it
 # as well would also run it once at boot, outside the schedule.
-ENABLE=(cockpit-ensure.timer concierge.timer
+ENABLE=(cockpit-ensure.timer concierge.timer spira-watch-refresh.timer
         beads-push.timer spira-sentinel.timer spira-ops.timer spira-watchtower.timer spira-skew.timer
         spira-archive.timer
         spira-archivist.timer spira-watch-notify.timer
