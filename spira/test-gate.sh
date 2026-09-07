@@ -32,6 +32,8 @@
 # Each gate run is its own process in an explicit minimal environment
 # (law-gates-run-in-a-clean-environment): SPIRA_CONF points at nothing and HOME is
 # redirected, so no box's own configuration can decide a verdict here.
+#
+# covers: spira/gate.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
