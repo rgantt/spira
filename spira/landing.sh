@@ -495,8 +495,7 @@ print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_hom
         # is the expensive half and there is nothing to learn from running it on a branch
         # that is going back either way. A bead that is not a spike passes through untouched.
         if ! gate_out="$("$SPIRA_HOME/confine.sh" "$id" "$br" "$repo" "$base" "${bead_labels:-}" 2>&1)"; then
-            bdq reopen "$id" >/dev/null 2>&1
-            bdq note "$id" "Reopened by sentinel: $gate_out" >/dev/null 2>&1
+            bead_reopen "$id" "Reopened by sentinel: $gate_out"
             progress "reopened $id — spike branch is not confined to its document"
             log "CHECK6 $id: $(printf '%s' "$gate_out" | head -1)"
             continue

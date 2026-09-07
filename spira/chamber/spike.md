@@ -73,6 +73,13 @@ may not build cannot tell "this is hard" from "I could not find out", and would 
 second as the first. Build the proof of concept. Run the benchmark. Get the real number
 instead of the estimate.
 
+A measurement that needed a database is the common case, and one was built for this session
+already — so use it rather than standing up your own, and say in the document which you used.
+A number produced against a fixture that was warm is a different number from one produced
+against a cold build, and a cost estimate that does not say which is not a cost estimate.
+
+{{FIXTURE}}
+
 **But a proof of concept is evidence FOR the document, not a change to the repository.**
 
 - Commit your experiment on a branch of its own — `git checkout -b spike/{{BEAD_ID}}-poc`,

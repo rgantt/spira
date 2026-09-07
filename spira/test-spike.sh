@@ -42,27 +42,53 @@ echo "test-spike.sh"
 
 # ======================================================================================
 echo
-echo "the persona is installed, and every placeholder in its brief is one aeon.sh fills:"
+echo "the persona is installed, and every placeholder in its brief is one its filler fills:"
 # ======================================================================================
 # STRUCTURAL, AND CHEAP, AND FIRST — it needs no database, so it still runs on a box where
-# the fixture server is down. A `{{PLACEHOLDER}}` aeon.sh does not substitute is not an
-# error anywhere: the brief simply reaches the aeon with the literal braces in it, telling
-# it to write to a directory named `{{SPIKE_DIR}}`. Nothing else would notice.
-for f in "$HERE"/chamber/*.md; do
-    n="$(basename "$f" .md)"
-    missing=""
+# the fixture server is down. A `{{PLACEHOLDER}}` nothing substitutes is not an error
+# anywhere: the brief simply reaches the agent with the literal braces in it, telling it to
+# write to a directory named `{{SPIKE_DIR}}`. Nothing else would notice.
+#
+# EACH BRIEF IS CHECKED AGAINST THE PROGRAM THAT ACTUALLY RENDERS IT, not against aeon.sh.
+# The chamber holds briefs for agents that are not aeons and are filled by their own script,
+# and a check that assumed one filler failed the moment a second kind of brief was added —
+# reporting ten missing substitutions in a brief that was entirely correct. A brief with a
+# `.fayth` beside it is an aeon's; otherwise its filler is the script of the same name.
+unfilled() {                    # unfilled <brief> <filler> -> the placeholders it leaves behind
+    local f="$1" filler="$2" ph key missing=""
     for ph in $(grep -o '{{[A-Z_]*}}' "$f" | sort -u); do
         key="${ph#\{\{}"; key="${key%\}\}}"
-        # TWO FORMS, because aeon.sh substitutes in two ways: a sed script for the simple
-        # values, and bash parameter expansion for {{BEAD}} — whose replacement is a whole
-        # `bd show` and would take a sed script apart on the first slash in it. `grep -F`,
-        # because the second form is written with backslash-escaped braces and every regex
-        # dialect reads those as something else.
-        grep -qF "{{$key}}" "$HERE/aeon.sh" \
-          || grep -qF "\\{\\{$key\\}\\}" "$HERE/aeon.sh" \
+        # TWO FORMS, because a filler substitutes in two ways: a sed script for the simple
+        # values, and bash parameter expansion for the multi-line ones — whose replacement is
+        # a whole `bd show` and would take a sed script apart on the first slash in it.
+        # `grep -F`, because the second form is written with backslash-escaped braces and
+        # every regex dialect reads those as something else.
+        grep -qF "{{$key}}" "$filler" \
+          || grep -qF "\\{\\{$key\\}\\}" "$filler" \
           || missing="$missing $ph"
     done
-    is "every placeholder in $n.md is substituted by aeon.sh" "" "$missing"
+    printf '%s' "$missing"
+}
+
+# THE POSITIVE CONTROL COMES FIRST. Every assertion below is that a matcher found nothing,
+# and a matcher pointed at the wrong file finds nothing too — so it is made to name a planted
+# offender before its silence is worth anything (law-absence-needs-a-positive-control).
+PLANT="$(mktemp -d)"
+printf 'write to {{NOWHERE}}, and also {{DB}}\n' > "$PLANT/planted.md"
+want   "the placeholder check can see an unfilled one" "{{NOWHERE}}" \
+       "$(unfilled "$PLANT/planted.md" "$HERE/aeon.sh")"
+nowant "and does not accuse one that is filled"        "{{DB}}" \
+       "$(unfilled "$PLANT/planted.md" "$HERE/aeon.sh")"
+rm -rf "$PLANT"
+
+for f in "$HERE"/chamber/*.md; do
+    n="$(basename "$f" .md)"
+    if [ -f "$HERE/chamber/$n.fayth" ]; then filler="$HERE/aeon.sh"; else filler="$HERE/$n.sh"; fi
+    if [ ! -f "$filler" ]; then
+        bad "every placeholder in $n.md is substituted" "no filler: $(basename "$filler") does not exist"
+        continue
+    fi
+    is "every placeholder in $n.md is substituted by $(basename "$filler")" "" "$(unfilled "$f" "$filler")"
 done
 
 # The fayth is a shell fragment that gets SOURCED into the summoning process. A syntax error
@@ -287,6 +313,10 @@ status_of() { bd -C "$SPIRA_DB" show "$1" --json 2>/dev/null | sed -n '/^[[{]/,$
 import json, sys
 d = json.load(sys.stdin); d = d if isinstance(d, list) else [d]
 print(d[0].get("status") or "")'; }
+assignee_of() { bd -C "$SPIRA_DB" show "$1" --json 2>/dev/null | sed -n '/^[[{]/,$p' | python3 -c '
+import json, sys
+d = json.load(sys.stdin); d = d if isinstance(d, list) else [d]
+print(d[0].get("assignee") or "")'; }
 land_branch() {   # land_branch <id> <file>...
     local id="$1"; shift
     git -C "$LREPO" worktree add -q -b "spira/$id" "$RUN/worktree/$id" main
@@ -307,10 +337,18 @@ git -C "$LREPO" merge-base --is-ancestor spira/sp-land-doc origin/main \
 
 beads "$(bead sp-land-poc "spira,$SPIRA_SPIKE_LABEL,repo:home" task closed)"
 land_branch sp-land-poc notes/spikes/answer2.md src/experiment.rs
+# THE DEAD CLAIMANT'S NAME MUST COME OFF, and it is asserted on this path rather than assumed
+# from the one next to it. `bd reopen` keeps the assignee and `bd ready --claim` skips an
+# assigned bead while `bd ready` still lists it, so a reopen that forgets this puts the bead
+# back in the graph wearing a name no aeon will ever claim past — visible, at P0, and dead.
+# Every reopen site goes through bead_reopen for that reason; a refusal is a reopen like any
+# other, and a new refusal path is exactly where the clearing gets left out.
+bd -C "$SPIRA_DB" update sp-land-poc --assignee aeon-dead >/dev/null 2>&1
 out="$(land)"
 want   "an unconfined spike branch is refused" "reopened sp-land-poc" "$out"
 nowant "and is not landed"                     "landed spira/sp-land-poc" "$out"
 is     "and the bead is genuinely reopened"    open "$(status_of sp-land-poc)"
+is     "and unassigned, so the next aeon can claim it" "" "$(assignee_of sp-land-poc)"
 want   "and the note carries the offending path" "src/experiment.rs" \
        "$(bd -C "$SPIRA_DB" show sp-land-poc 2>/dev/null)"
 git -C "$LREPO" fetch -q origin
