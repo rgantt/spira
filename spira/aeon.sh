@@ -323,6 +323,15 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
             ledger "done $FAYTH $BEAD_ID rc=$rc status=capacity"
             exit $rc
         fi
+        # SLAIN IS NOT FAILED. slay.sh writes this marker before it stops the unit; an
+        # operator stopping an aeon says nothing about whether the bead is hard, so no
+        # attempt is charged toward poison, the same reading as a spent capacity window.
+        if [ -f "$SPIRA_RUN/$BEAD_ID.slain" ]; then
+            bdq unclaim "$BEAD_ID" --if-assignee "$BEADS_ACTOR" >/dev/null 2>&1
+            log "$FAYTH: $BEAD_ID slain — released, no attempt charged"
+            ledger "done $FAYTH $BEAD_ID rc=$rc status=slain"
+            exit $rc
+        fi
         n="$(bump_attempt "$BEAD_ID")"
         bdq unclaim "$BEAD_ID" --if-assignee "$BEADS_ACTOR" >/dev/null 2>&1
         log "$FAYTH: $BEAD_ID not closed (attempt $n), released"
