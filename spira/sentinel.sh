@@ -216,13 +216,25 @@ fi
 # how one bad bead burns tokens forever. This is mountain's skip-after-N-failures, and it
 # is the property most likely to be lost silently, because nothing complains when it is
 # missing.
+#
+# IT ITERATES WHAT THE SUMMONER CAN DISPATCH, never the goal epic's children. Those are two
+# different sets and the gap between them is unpoisonable work: a bead carrying a partition's
+# labels but parented outside $SPIRA_GOAL was summoned every pass, failed every time, and
+# never reached the valve. dispatchable_open carries the whole argument.
+#
+# THE POISONED BEAD KEEPS ITS CLAIM. If a live aeon holds it, unclaiming here would cut the
+# lease out from under a session that is still writing — and the aeon releases on its own
+# exit path anyway. Labelling is sufficient: every fayth's partition excludes spira-poison,
+# so the moment the holder lets go, CHECK 7 stops summoning for it.
 # ======================================================================================
-for id in $open_children; do
+dispatchable="$(dispatchable_open)"
+log "CHECK4 examining $(printf '%s' "$dispatchable" | grep -c . || true) dispatchable bead(s), threshold $POISON_AT"
+for id in $dispatchable; do
     n="$(attempts_of "$id")"; n="${n:-0}"
     if [ "$n" -ge "$POISON_AT" ]; then
         if ! bdq label list "$id" 2>/dev/null | grep -q spira-poison; then
             bdq label add "$id" spira-poison >/dev/null 2>&1
-            bdq note "$id" "Poisoned after $n attempts. Not retried until a human changes the approach." >/dev/null 2>&1
+            bdq note "$id" "Poisoned after $n attempts. Not retried until a human changes the approach. Any live holder keeps its claim and releases on its own exit path; no persona can claim it again while the label stands." >/dev/null 2>&1
             progress "poisoned $id after $n attempts"
             # The ask carries the failure itself. A path is not evidence: the operator reads this
             # in a tmux pane and cannot open a file from it.
@@ -246,7 +258,7 @@ $(trace_tail "$SPIRA_RUN/$id.log" 25)"
             "$SPIRA_NOTIFY" add \
               "Spira bead $id failed $n times — change the approach or drop it?" \
               --default "rewrite the bead's description to change the approach, then clear the spira-poison label; or close it if it is not worth doing" \
-              --why "it blocks everything downstream of it in $SPIRA_GOAL" \
+              --why "nothing downstream of it can proceed, and no aeon will take it again while it is poisoned" \
               --evidence "$ev" >/dev/null 2>&1
         fi
     fi

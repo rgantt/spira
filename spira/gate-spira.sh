@@ -87,7 +87,7 @@ run() {                  # run <suite> — its output only when it matters
     esac
 }
 
-for s in spira/test-soak.sh; do
+for s in spira/test-soak.sh spira/test-poison.sh; do
     [ -r "$s" ] || { say "$s is missing — refusing to report a pass without it"; exit 1; }
     run "$s"
 done

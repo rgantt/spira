@@ -1250,6 +1250,11 @@ if dropped:
 ' "$prefixes" "$budget" 2>/dev/null
 }
 
+# THE GOAL EPIC IS ONE PILGRIMAGE, NOT "THE WORK". This answers "is the pilgrimage under
+# $SPIRA_GOAL finished", which is what CHECK 1, CHECK 3 and CHECK 8 reason about. It is the
+# wrong question for anything that must cover what the harness DISPATCHES: a bead carrying a
+# fayth's labels but parented elsewhere — or parented nowhere — is summoned every pass and
+# does not appear here at all. Use dispatchable_open for that.
 goal_open_children() {   # beads under the goal epic that are not closed
     bdjson children "$SPIRA_GOAL" 2>/dev/null | python3 -c '
 import sys, json
@@ -1260,6 +1265,49 @@ for i in d:
     if i.get("id") != "'"$SPIRA_GOAL"'" and i.get("status") != "closed":
         print(i["id"])
 ' 2>/dev/null
+}
+
+# dispatchable_open -> every non-closed bead the summoner can reach, one id a line.
+#
+# THE SET ANY CHECK ABOUT "THE WORK" MUST ITERATE. Two predicates for "which beads are ours"
+# is the defect: summoning goes through fayth_ready, which asks each persona its own
+# FAYTH_LABELS, while the poison valve iterated the goal epic's children — so a bead labelled
+# for a partition and parented outside the goal was dispatchable and unpoisonable. It could
+# be summoned every pass, fail every time, and never trip the valve that exists to stop
+# exactly that; one measured 9 attempts against a threshold of 3, and the 8 children examined
+# stood for 66 beads dispatched. The fix is the one fayth_ready already made one check along:
+# ask each persona's own predicate.
+#
+# A PARTITION'S EXCLUSIONS ARE ITS OWN, applied here exactly as claiming applies them, so
+# this set and the claimable set cannot disagree. Epics go too — the summoner passes
+# --exclude-type epic, and a container is not work.
+#
+# EMPTY WHEN THE CHAMBER IS EMPTY, and it says so on stderr rather than returning a quiet
+# zero: nothing dispatchable and nothing watched are the same silence otherwise
+# (law-absence-needs-a-positive-control).
+dispatchable_open() {
+    local labels exclude n=0
+    {
+        while IFS=$'\t' read -r labels exclude; do
+            [ -n "$labels" ] || continue
+            n=$((n+1))
+            bdjson list --limit 0 --label "$labels" 2>/dev/null \
+            | SPIRA_EXCL="$exclude" python3 -c '
+import json, os, sys
+excl = {x for x in (os.environ.get("SPIRA_EXCL") or "").split(",") if x}
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for i in (d if isinstance(d, list) else [d]):
+    if i.get("status") == "closed" or i.get("issue_type") == "epic":
+        continue
+    if excl & set(i.get("labels") or []):
+        continue
+    print(i["id"])
+' 2>/dev/null
+        done < <(fayth_partitions)
+        [ "$n" -gt 0 ] || log "WARN no persona in the chamber declares a partition — no bead is dispatchable, and none is being examined" >&2
+    } | awk 'NF && !seen[$0]++'
+    return 0
 }
 
 # --------------------------------------------------------------------------------------
