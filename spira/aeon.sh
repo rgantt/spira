@@ -491,8 +491,26 @@ if [ ! -d "$WORK/.git" ] && [ ! -f "$WORK/.git" ]; then
     if git -C "$REPO" show-ref --verify -q "refs/heads/$BRANCH"; then
         # A retry: the branch survives from a previous attempt. Reuse it rather than
         # refusing, and bring it current below.
-        git -C "$REPO" worktree add -q "$WORK" "$BRANCH" 2>/dev/null \
-            || die "could not attach a worktree at $WORK to existing branch $BRANCH"
+        # A BRANCH CHECKED OUT SOMEWHERE ELSE IS ADOPTED, NOT FATAL. git refuses to attach a
+        # second worktree to one branch, so if anything — a hand-made tree, a slaying that
+        # left its directory, a previous name for this path — still holds $BRANCH, this
+        # `add` fails and the aeon dies three seconds after being summoned, having written
+        # only its trace mark. Measured 2026-09-07: worktree/sp-2tv.spira, made by hand while
+        # the stale brain tree occupied the real path, held spira/sp-2tv; every summon after
+        # the brain tree was cleared died here instead, and the bead reached attempt 20.
+        #
+        # The other tree IS the work, so work in it rather than refusing to work at all.
+        if ! git -C "$REPO" worktree add -q "$WORK" "$BRANCH" 2>/dev/null; then
+            _held="$(git -C "$REPO" worktree list --porcelain 2>/dev/null \
+                     | awk -v b="refs/heads/$BRANCH" '''/^worktree /{w=$2} /^branch /{if ($2==b) print w}''' | head -1)"
+            if [ -n "$_held" ] && [ -d "$_held" ]; then
+                log "$FAYTH: $BEAD_ID — $BRANCH is checked out at $_held; working there instead of $WORK"
+                WORK="$_held"
+            else
+                die "could not attach a worktree at $WORK to existing branch $BRANCH"
+            fi
+            unset _held
+        fi
     else
         git -C "$REPO" worktree add -q -b "$BRANCH" "$WORK" "$BASE" 2>/dev/null \
             || die "could not create a worktree at $WORK from $BASE"
