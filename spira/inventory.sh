@@ -43,7 +43,12 @@ DENY="${SPIRA_INVENTORY_DENY:-$HERE/inventory-deny}"
 # author. Anything else is somebody's real address.
 # `git@host` is the SSH remote form, not a person, and it is how every remote in every
 # example is written.
+# A SYSTEMD TEMPLATE INSTANCE IS NOT AN ADDRESS. `unit@instance.service` has the shape of
+# one exactly, and the harness renders a unit per watcher that way — so without this every
+# file that names an instance would be refused as though it carried somebody's mail. The
+# exemption is on the unit SUFFIX, which no mail domain has.
 EXEMPT_MAIL='^git@|@example\.(com|net|org|invalid)|@(example|test|invalid|localhost)$|@spira\.local'
+EXEMPT_MAIL="$EXEMPT_MAIL"'|@[A-Za-z0-9_.-]*\.(service|timer|socket|target|path|mount|slice|scope|swap|device)$'
 
 patterns() {
     cat <<'PAT'

@@ -45,6 +45,14 @@ ignored "an example address"     'contact: dev@example.invalid'
 ignored "the git@host SSH form"  'url = git@github.com:owner/repo.git'
 ignored "a home referred to as \$HOME" 'DB="$HOME/.local/share/spira/db"'
 ignored "an ordinary sentence"   '# The base is not always `main`; ask the repository map.'
+# A systemd template instance has the shape of an address exactly, and this harness renders
+# one unit per watcher that way — so without the exemption every file naming an instance is
+# refused as though it carried somebody's mail.
+ignored "a systemd instance unit"  'systemctl --user enable spira-watch@answers.service'
+ignored "and a template unit"      'UNITS=(spira-watch@.service)'
+# THE EXEMPTION IS ON THE UNIT SUFFIX AND NOTHING WIDER. A domain that merely looks unitish
+# is still an address, or the exemption has quietly turned the mail check off.
+caught "but not an address at a lookalike domain" 'author: person@service.co'
 
 echo
 echo "the operator's own deny-list"

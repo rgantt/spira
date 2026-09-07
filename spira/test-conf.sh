@@ -157,7 +157,7 @@ echo "what is exported, and what must not be"
 # and it read the operator's real repo-map while every log line looked ordinary.
 leaked=""
 for k in SPIRA_HOME SPIRA_REPO SPIRA_REPO_DERIVED SPIRA_HOME_REPO SPIRA_RUN \
-         SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER SPIRA_COCKPIT SPIRA_PANEL \
+         SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER SPIRA_WATCHERS SPIRA_COCKPIT SPIRA_PANEL \
          SPIRA_NOTIFY SPIRA_FAYTHS SPIRA_MAX_AEONS; do
     got="$(env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$CONF" \
            bash -c ". '$CONF_SH' 2>/dev/null; env" | grep -c "^$k=" || true)"

@@ -1,0 +1,39 @@
+[Unit]
+# ONE TEMPLATE FOR EVERY WATCHER. The instance name is the watcher's name in the manifest,
+# and nothing else about a watcher appears here — not its command, not its log — so adding
+# one is a manifest row plus an install run rather than another unit file to keep in step.
+#
+# Watchers used to be created inside a coding-agent session, which owns them: they were made
+# by hand, nothing outside the transcript knew they should exist, and clearing the session
+# killed them. The point of this unit is that the outer harness owns the process and a
+# session merely latches onto its log.
+Description=Spira watcher %i
+Documentation=file://@SPIRA_HOME@/watchd.sh
+After=default.target
+
+[Service]
+Type=simple
+# THE DISPATCHER, NOT THE COMMAND. `watchd.sh exec %i` resolves the row's target through the
+# manifest, so the manifest stays the single source of truth and no path is baked into a unit
+# — a unit with a path in it runs on exactly one box, and systemd's complaint about a wrong
+# one is a bare "No such file or directory" in a journal nobody is watching.
+ExecStart=@SPIRA_HOME@/watchd.sh exec %i
+Restart=always
+RestartSec=15
+# A watcher polls, and this box may be running production on the same cores, so it is fenced
+# before it is enabled (law-fence-loops-on-shared-hardware). A watcher's pass is one query
+# and a sleep; if one ever needs more than this, that is a finding about the watcher.
+CPUQuota=15%
+Nice=10
+# THE HINGE. The unit appends stdout to exactly the log the cursor indexes, which is how
+# systemd can own the process without changing the contract a reader latches onto: two files,
+# a log and an integer, and `tail -n +N -F` is a conforming client.
+#
+# systemd opens this file BEFORE ExecStart, so the directory must already exist — install.sh
+# creates it, and a unit started against a missing one fails instantly with a message about
+# the file rather than about the watcher.
+StandardOutput=append:@SPIRA_RUN@/watchd/%i.log
+StandardError=append:@SPIRA_RUN@/watchd/%i.log
+
+[Install]
+WantedBy=default.target

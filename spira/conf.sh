@@ -52,7 +52,7 @@ SPIRA_CONF_LOADED=1
 # drives a fixture through, and it is explicit rather than ambient.
 SPIRA_CONF_KEYS="
 SPIRA_HOME_REPO SPIRA_DB SPIRA_RUN SPIRA_GOAL
-SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER
+SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER SPIRA_WATCHERS
 SPIRA_COCKPIT SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
 SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S
@@ -192,6 +192,10 @@ spira_conf_defaults() {
     : "${SPIRA_WORKSPACES:=$(dirname "$SPIRA_REPO")}"
     : "${SPIRA_PREFIX_MAP:=$SPIRA_HOME/prefix-map}"
     : "${SPIRA_CHAMBER:=$SPIRA_HOME/chamber}"
+    # THE ONE LIST OF WHAT SHOULD BE WATCHING. One `daemon` row is one systemd unit, so this
+    # file decides what `install.sh` enables; pointing the key elsewhere is how an operator
+    # keeps their own rows out of a checkout they may push.
+    : "${SPIRA_WATCHERS:=$SPIRA_HOME/watchers}"
     : "${SPIRA_COCKPIT:=$(dirname "$SPIRA_HOME")/cockpit}"
     : "${SPIRA_NOTIFY:=$SPIRA_COCKPIT/ask.sh}"
     # THE LABEL THAT MEANS "WAITING ON THE OPERATOR". It is the one the escalation gate defers

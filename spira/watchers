@@ -1,0 +1,43 @@
+# watchers — the single source of truth for what should be watching.
+#
+#   name|kind|target[|health]
+#
+# ONE ROW IS ONE WATCHER, and one `daemon` row is one systemd unit: `install.sh` renders
+# `spira-watch@.service` and enables `spira-watch@<name>.service` for every daemon row here,
+# and disables any instance whose row has gone. Adding a watcher is a row plus an install
+# run — never a new unit file, because a unit file is a path baked onto one box.
+#
+# KINDS
+#
+#   daemon   we own the process. The target is a program that loops forever; systemd runs
+#            it through `watchd.sh exec <name>` and appends its stdout to the watcher's log.
+#   log      something else already writes that log — a cron job, another harness — so the
+#            target is the log file itself and there is no unit. Running it here as well
+#            would double it up.
+#
+# THE CONTRACT A READER LATCHES ONTO is two files per watcher and nothing else:
+#
+#   <SPIRA_RUN>/watchd/<name>.log      newline-delimited events, append-only
+#   <SPIRA_RUN>/watchd/<name>.cursor   an integer: lines already delivered
+#
+# so `tail -n +$((cursor+1)) -F <log>` is a conforming client. That is what keeps this
+# agent-agnostic: a session attaches to a file, and owns no process.
+#
+# TARGETS ARE ABSOLUTE, AND PATHS COME FROM CONFIGURATION. Write `@SPIRA_COCKPIT@/x.sh`, not
+# a path off this box: the placeholder is filled from spira.conf, so an operator who moves
+# the cockpit does not have to remember this file. A placeholder that is unknown, or that
+# resolves to empty because the key is an optional one nobody set, REFUSES the manifest —
+# an empty expansion would silently produce `/x.sh` and run whatever is there. A relative
+# target is refused for the same reason: systemd starts a unit with no working directory
+# worth the name, so a relative path resolves against `/`.
+#
+# A TARGET IS NOT SHELL. It is a program and its arguments, split on whitespace. Nothing is
+# expanded, globbed or substituted — a row that needs shell should point at a script that is
+# one. This file is read by the process systemd starts as you.
+#
+# THE FOURTH FIELD is a command that must exit 0 for the watcher to be reported healthy. It
+# may contain `|`. It is parsed here and run by `watchd.sh status`; leave it empty and the
+# watcher is reported on its unit state alone, which cannot tell a quiet watcher from a
+# blind one.
+
+answers|daemon|@SPIRA_COCKPIT@/watch-answers.sh|

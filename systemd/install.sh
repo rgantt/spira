@@ -26,6 +26,7 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
        spira-skew.service spira-skew.timer
        spira-archivist.service spira-archivist.timer
        spira-cockpit.service
+       spira-watch@.service
        cockpit-ensure.service cockpit-ensure.timer
        concierge.service concierge.timer
        beads-push.service beads-push.timer
@@ -50,6 +51,23 @@ fi
 
 # `dolt` is resolved once, absolutely, because a systemd unit has no PATH worth the name.
 DOLT="$(command -v dolt 2>/dev/null || true)"
+
+# ONE INSTANCE PER `daemon` ROW, AND THE MANIFEST DECIDES WHICH. `log` rows name a file
+# something else already writes, so they get no unit; enabling one would double up whatever
+# is already producing it.
+#
+# A MALFORMED MANIFEST STOPS THE INSTALL, and it stops it HERE — before a single unit is
+# rendered — so a refusal leaves the box as it was rather than half installed. Enabling the
+# rows that happened to parse would be worse than refusing: a watcher that was never started
+# looks exactly like a watcher with nothing to say, and this is the last moment anybody is
+# looking (law-absence-needs-a-positive-control).
+if watch_list="$("$SPIRA_HOME/watchd.sh" units)"; then
+    watch_units=" "
+    for u in $watch_list; do ENABLE+=("$u"); watch_units="$watch_units$u "; done
+else
+    echo "install: the watcher manifest is malformed — installing none of it" >&2
+    exit 1
+fi
 
 # render <template> -> the unit for this box, on stdout.
 #
@@ -105,6 +123,10 @@ mkdir -p "$DEST"
 # only conf.sh, and those fail on a path that does not exist yet. Install is the one act that
 # turns a clone into an installation, so it is where the directory is made.
 mkdir -p "$SPIRA_RUN"
+# AND THE WATCHERS' DIRECTORY. `spira-watch@.service` appends its stdout to a file in here,
+# and systemd opens that file BEFORE ExecStart — so a missing directory is not a watcher that
+# starts and complains, it is a unit that fails instantly with a message about a path.
+mkdir -p "$SPIRA_RUN/watchd"
 
 for u in "${UNITS[@]}"; do
     render "$SRC/$u" > "$DEST/$u.new" || { rm -f "$DEST/$u.new"; echo "install: $u FAILED" >&2; exit 1; }
@@ -114,9 +136,29 @@ systemctl --user daemon-reload
 
 # Without lingering, user units stop when the last session closes — which is precisely the
 # case these exist to survive.
-loginctl enable-linger "$USER" 2>/dev/null || true
+# `id -un` rather than $USER alone: this file runs under `set -u`, and a minimal environment
+# — a gate, a timer, a test harness — carries no USER, so the install died on an unbound
+# variable after having written every unit and before enabling any of them.
+loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
 
 for u in "${ENABLE[@]}"; do systemctl --user enable --now "$u" && echo "enabled   $u"; done
+
+# A ROW THAT HAS GONE MUST STOP RUNNING. Otherwise the manifest is the source of truth only
+# for what starts, and a watcher deleted from it goes on polling — and goes on being believed
+# — until somebody reads `systemctl` output they had no reason to read.
+#
+# The instance list is taken from BOTH unit-files (enabled) and units (loaded but perhaps
+# no longer enabled), and the name is picked out by pattern rather than by column, because
+# `list-units` prefixes a failed unit with a status glyph that shifts every column along.
+for u in $({ systemctl --user list-unit-files --no-legend 'spira-watch@*.service' 2>/dev/null
+             systemctl --user list-units --all --no-legend 'spira-watch@*.service' 2>/dev/null
+           } | tr -s ' \t' '\n\n' | grep -E '^spira-watch@[A-Za-z0-9_-]+\.service$' | sort -u); do
+    # SPACE-JOINED ABOVE, and that is the whole reason: matched against `units`' raw
+    # newline-separated output, every instance failed to find its own row and a second
+    # install disabled every watcher it had just enabled.
+    case "$watch_units" in *" $u "*) continue ;; esac
+    systemctl --user disable --now "$u" >/dev/null 2>&1 && echo "disabled  $u (no row in the manifest)"
+done
 systemctl --user list-timers --all 2>/dev/null | grep -E 'cockpit|concierge|beads-push|spira' || true
 # Long-running services never appear above. Everything else on this list is worthless if
 # they are down.

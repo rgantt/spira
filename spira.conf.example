@@ -59,6 +59,13 @@
 # The root epic every plan hangs from. The sentinel reports progress against it.
 # SPIRA_GOAL = sp-spira
 
+# The list of what should be watching: `name|kind|target[|health]` rows. One `daemon` row is
+# one systemd unit, so this file is what `systemd/install.sh` enables and disables against —
+# adding a watcher is a row plus an install run, never a new unit file. Point it outside the
+# checkout if your rows name paths you would rather not push.
+# Default: `watchers` beside the harness.
+# SPIRA_WATCHERS = $HOME/.config/spira/watchers
+
 # ---- where your binaries are --------------------------------------------------------------
 # Directories PREPENDED to PATH for the harness and everything it spawns. Everything here runs
 # from systemd and from tmux, where a login shell's PATH does not exist, so `bd` in ~/.local/bin
