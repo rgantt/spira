@@ -81,6 +81,28 @@
 # Default: ANSWERED|COMMENTED|ESCALAT|STRANDED|POISON|DEGRADED|BLOCKED|UNREACHABLE|FAIL|ERROR|LANDED|⚠
 # SPIRA_ACTIONABLE = ANSWERED|STRANDED|FAIL|ERROR
 
+# The id prefix of your own beads, without the hyphen. `watchd.sh health-ids` looks for it to
+# prove a watcher is still reading THIS database rather than one retired underneath it.
+#
+# It asks whether the state names ONE of your ids, and not whether it names a foreign one —
+# a database here may legitimately hold beads imported under other prefixes, so "names
+# something that is not ours" is true of a healthy watcher and would pass on a blind one.
+# Default: the prefix of SPIRA_GOAL, because the goal is a bead in this database.
+# SPIRA_ID_PREFIX = acme
+
+# How long a health command in the watcher manifest may run, in seconds. A probe is your own
+# command and `watchd.sh status` is what a session hook runs at every start, so an unbounded
+# one hangs the opening of a context window rather than merely being slow. Running out of time
+# is DEGRADED: it did not prove the watcher can see anything.
+# Default: 10
+# SPIRA_HEALTH_TIMEOUT = 30
+
+# Where the answer watcher keeps what it has already seen. One key rather than two literals,
+# because the watcher writes this file and the health assertion pointed at it reads the same
+# path — the two disagreeing renders a permanent DEGRADED against a watcher that is working.
+# Default: `.runtime/answered-seen.json` under the cockpit.
+# SPIRA_ANSWER_STATE = /var/lib/spira/answered-seen.json
+
 # ---- where your binaries are --------------------------------------------------------------
 # Directories PREPENDED to PATH for the harness and everything it spawns. Everything here runs
 # from systemd and from tmux, where a login shell's PATH does not exist, so `bd` in ~/.local/bin

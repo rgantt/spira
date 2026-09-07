@@ -24,7 +24,11 @@
 set -uo pipefail
 
 . "$(dirname "$0")/db.sh"
-STATE="${ANSWER_STATE:-$(dirname "$0")/.runtime/answered-seen.json}"
+# WHERE THIS FILE LIVES IS CONFIGURATION, NOT A LITERAL. Its path is known in two places —
+# here, and in the health assertion the watcher manifest points at it — and those two
+# disagreeing renders a permanent DEGRADED against a watcher that is working perfectly.
+# ANSWER_STATE stays ahead of it so a test can still hand this script a scratch file.
+STATE="${ANSWER_STATE:-${SPIRA_ANSWER_STATE:-$(dirname "$0")/.runtime/answered-seen.json}}"
 INTERVAL="${ANSWER_POLL:-45}"
 
 # WHICH DATABASE IS NOT THIS FILE'S TO DECIDE (db.sh). The first version read only the town.

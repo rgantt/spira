@@ -9,6 +9,7 @@
 #   watchd.sh drain [name] [--all]  print what nobody has read, and mark it read
 #   watchd.sh tail <name> [--all]   replay from the cursor, then stream; for a Monitor
 #   watchd.sh restart [name]        restart the unit behind a watcher
+#   watchd.sh health-ids <file>     assert a state file names at least one of our own beads
 #
 # WHAT A READER LATCHES ONTO is two files per watcher and nothing else: `<name>.log`,
 # newline-delimited and append-only, and `<name>.cursor`, an integer counting the lines
@@ -42,7 +43,7 @@ set -uo pipefail
 # The keys a target may name. An allowlist rather than "any variable", because this file is
 # read by the process systemd starts as the operator, and because an unrecognised placeholder
 # is a typo that must be reported rather than left standing in a path.
-WATCHD_KEYS="SPIRA_HOME SPIRA_REPO SPIRA_RUN SPIRA_COCKPIT SPIRA_DB SPIRA_WORKSPACES SPIRA_TOWN SPIRA_WIKI"
+WATCHD_KEYS="SPIRA_HOME SPIRA_REPO SPIRA_RUN SPIRA_COCKPIT SPIRA_DB SPIRA_WORKSPACES SPIRA_TOWN SPIRA_WIKI SPIRA_ANSWER_STATE"
 
 # Where the two files a reader latches onto live. Under SPIRA_RUN, which is gitignored: a
 # watcher's log carries whatever it was watching.
@@ -98,6 +99,94 @@ _wd_pos() {
 _wd_setpos() {
     mkdir -p "$(watchd_dir)" || return 1
     printf '%s\n' "$2" > "$(_wd_cursorfile "$1")"
+}
+
+# THE RESTART METER. `spira.conf` and a watcher's own script are compared by MTIME rather than
+# by content, which is the cheap choice and the right one — but mtime moves for edits that
+# changed nothing, and a `git checkout` rewrites it wholesale. So the simple mechanism ships
+# with the number that will say when it stops being adequate: if this column climbs while
+# nothing was actually edited, that is the evidence for a content hash
+# (law-take-the-simple-fix-with-a-meter).
+#
+# IT COUNTS THE RESTARTS THIS HARNESS ISSUED, and says so, because that is the quantity the
+# mtime heuristic is answerable for. systemd's own `Restart=always` recoveries are a different
+# fact and are not in this number; a watcher dying and being revived shows in UNIT and in
+# LAST-EVENT, which is where it belongs.
+_wd_restartfile() { printf '%s/%s.restarts' "$(watchd_dir)" "$1"; }
+
+_wd_restarts() {
+    local n
+    n="$(cat "$(_wd_restartfile "$1")" 2>/dev/null)" || n=""
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    printf '%s' "$n"
+}
+
+_wd_bump() {
+    mkdir -p "$(watchd_dir)" || return 0
+    printf '%s\n' "$(( $(_wd_restarts "$1") + 1 ))" > "$(_wd_restartfile "$1")"
+}
+
+# _wd_age <seconds> — a whitespace-free age, coarsest unit that is not zero.
+#
+# NO SPACE IN THE VALUE, ANYWHERE. `status` renders a whitespace-delimited table and its
+# readers — a session hook, a pane, an `awk` one-liner — address columns by index. "4m ago"
+# splits into two fields and silently shifts every column after it.
+#
+# A negative age is clamped to zero rather than rendered. It means the log's mtime is in the
+# future, which is a clock that moved, not a watcher that is unusually fresh.
+_wd_age() {
+    local s="$1"
+    [ "$s" -ge 0 ] 2>/dev/null || s=0
+    if   [ "$s" -lt 60 ];    then printf '%ds' "$s"
+    elif [ "$s" -lt 3600 ];  then printf '%dm' "$(( s / 60 ))"
+    elif [ "$s" -lt 86400 ]; then printf '%dh' "$(( s / 3600 ))"
+    else                          printf '%dd' "$(( s / 86400 ))"
+    fi
+}
+
+# _wd_probe <command> — run one health assertion, and set _wd_hstate and _wd_hwhy.
+#
+# THE VERDICT IS THE EXIT CODE, AND ANYTHING BUT ZERO IS DEGRADED. Not found, killed, timed
+# out, crashed — every one of them means the same thing, which is that nothing here PROVED the
+# watcher can still see. A probe whose own failure rendered as OK would be a broken check
+# reported as an all-clear, which displaces the suspicion that would have prompted a look
+# (law-alerts-must-be-actionable). An empty command renders `-`: no assertion was made, which
+# is a third fact and not a pass.
+#
+# A HEALTH COMMAND IS SHELL, AND A TARGET IS NOT. The asymmetry is deliberate: a target is
+# what systemd starts, so it must be a program and its arguments and nothing that needs
+# interpreting. A health assertion is a question asked once, and the useful ones are
+# pipelines — which is also why the field is last, so it may contain `|`.
+#
+# BOUNDED, BECAUSE `status` IS WHAT A SESSION HOOK RUNS. An operator's probe that hangs would
+# hang the opening of a context window, and a hook that never returns is a worse failure than
+# any watcher it was reporting on.
+#
+# The probe's stdout is discarded and its stderr is captured — never passed through. It must
+# not be able to write a line into a table whose columns something else is parsing.
+_wd_probe() {
+    _wd_hstate="-"; _wd_hwhy=""
+    [ -n "$1" ] || return 0
+    local out rc tmo
+    tmo="$(command -v timeout 2>/dev/null)" || tmo=""
+    if [ -n "$tmo" ]; then
+        out="$("$tmo" "$SPIRA_HEALTH_TIMEOUT" bash -c "$1" 2>&1 >/dev/null)"; rc=$?
+    else
+        # Said once, on stderr, and then the probe is still run: an unbounded assertion is
+        # worse than a bounded one and better than none, but it is not the same thing and a
+        # silent substitution would leave the operator believing in a fence that is not there.
+        echo "watchd: no 'timeout' on PATH — health commands run unbounded" >&2
+        out="$(bash -c "$1" 2>&1 >/dev/null)"; rc=$?
+    fi
+    [ "$rc" = 0 ] && { _wd_hstate="OK"; return 0; }
+    _wd_hstate="DEGRADED"
+    out="${out%%$'\n'*}"
+    case "$rc" in
+        124) _wd_hwhy="${out:-the probe was still running} (timed out after ${SPIRA_HEALTH_TIMEOUT}s)" ;;
+        *)   _wd_hwhy="${out:-the probe said nothing} (exit $rc)" ;;
+    esac
+    [ "${#_wd_hwhy}" -le 200 ] || _wd_hwhy="${_wd_hwhy:0:197}..."
+    return 0
 }
 
 # _wd_filter — the expression deciding which lines a reader is shown by default.
@@ -310,13 +399,32 @@ _wd_find() {
     return 2
 }
 
+# cmd_status — the one place blindness is made legible.
+#
+# WHY THERE IS A HEALTH COLUMN AT ALL. A watcher reading a database that was retired
+# underneath it and a watcher with nothing to report are both SILENT, and silence is what a
+# process listing, a unit state and an unread count all agree on. One here looked healthy in
+# every one of those for three days while seeing nothing, and the answer given in the meantime
+# reached nobody. So each row may carry an assertion the watcher must be able to satisfy, and
+# it is run HERE and nowhere else — `status` is not on any timer, so a probe costs nothing in
+# the steady state and the fence in law-fence-loops-on-shared-hardware is not engaged.
+#
+# THREE COLUMNS, THREE DIFFERENT WAYS TO BE WRONG, and none of them subsumes another:
+#
+#   HEALTH      the watcher cannot see what it is supposed to be watching
+#   LAST-EVENT  it can see, and has stopped producing — active, healthy and mute
+#   RESTARTS    it is being restarted, which is how the mtime staleness check is metered
+#
+# EVERY VALUE IS WHITESPACE-FREE and every unknown is `-`, never `0` and never blank. This is
+# a table addressed by column index, and it is read by things that will act on it.
 cmd_status() {
     local rows; rows="$(watchd_rows)" || return 1
     local name kind target health
-    local -a wname=() wkind=() wtarget=() units=()
+    local -a wname=() wkind=() wtarget=() whealth=() wlog=() units=()
     while IFS='|' read -r name kind target health; do
         [ -n "$name" ] || continue
-        wname+=("$name"); wkind+=("$kind"); wtarget+=("$target")
+        wname+=("$name"); wkind+=("$kind"); wtarget+=("$target"); whealth+=("$health")
+        wlog+=("$(_wd_logfile "$name" "$kind" "$target")")
         [ "$kind" = daemon ] && units+=("spira-watch@$name.service")
     done <<< "$rows"
 
@@ -330,10 +438,26 @@ cmd_status() {
         mapfile -t states < <(systemctl --user is-active "${units[@]}" 2>/dev/null)
     fi
 
-    printf '%-14s %-10s %7s  %s\n' NAME UNIT UNREAD LOG
-    local i u=0 lf total pos state
+    # AND ONE EXEC FOR EVERY MODIFICATION TIME, for the same reason. `stat` takes any number of
+    # files, and `%n` echoes each path back, so the answers are matched by NAME rather than by
+    # position — a file that vanished between the loop above and this call would otherwise
+    # shift every age after it onto the wrong watcher.
+    local f ts path
+    local -a present=()
+    for f in "${wlog[@]}"; do [ -r "$f" ] && present+=("$f"); done
+    local -A mtime=()
+    if [ "${#present[@]}" -gt 0 ]; then
+        while read -r ts path; do
+            [ -n "$path" ] && mtime["$path"]="$ts"
+        done < <(stat -c '%Y %n' -- "${present[@]}" 2>/dev/null)
+    fi
+    local now; printf -v now '%(%s)T' -1
+
+    printf '%-14s %-10s %-8s %7s %10s %8s  %s\n' NAME UNIT HEALTH UNREAD LAST-EVENT RESTARTS LOG
+    local i u=0 lf total pos state age restarts
+    local -a degraded=()
     for ((i=0; i<${#wname[@]}; i++)); do
-        lf="$(_wd_logfile "${wname[$i]}" "${wkind[$i]}" "${wtarget[$i]}")"
+        lf="${wlog[$i]}"
         total="$(_wd_total "$lf")"
         pos="$(_wd_pos "${wname[$i]}" "$total")"
         if [ "${wkind[$i]}" = daemon ]; then
@@ -343,13 +467,36 @@ cmd_status() {
             # (law-absence-needs-a-positive-control).
             state="${states[$u]:-?}"; [ -n "$state" ] || state="?"
             u=$((u+1))
+            restarts="$(_wd_restarts "${wname[$i]}")"
         else
-            # Nothing here owns it, so there is no unit to ask about. The unread count is
-            # still ours, and is the only thing about a `log` row that can be wrong.
+            # Nothing here owns it, so there is no unit to ask about and none to restart. The
+            # unread count and the health assertion are still ours, and a `log` row can be
+            # blind in exactly the way a `daemon` row can.
             state="external"
+            restarts="-"
         fi
-        printf '%-14s %-10s %7s  %s\n' "${wname[$i]}" "$state" "$(( total - pos ))" "$lf"
+
+        # A LOG THAT HAS NEVER BEEN WRITTEN HAS NO AGE, and `-` is what that is. Rendering it
+        # as `0s` would make a watcher that has never once emitted look like the freshest one
+        # in the table.
+        if [ -n "${mtime["$lf"]-}" ]; then age="$(_wd_age "$(( now - ${mtime["$lf"]} ))")"; else age="-"; fi
+
+        _wd_probe "${whealth[$i]}"
+        [ "$_wd_hstate" = DEGRADED ] && degraded+=("${wname[$i]}: $_wd_hwhy")
+
+        printf '%-14s %-10s %-8s %7s %10s %8s  %s\n' \
+            "${wname[$i]}" "$state" "$_wd_hstate" "$(( total - pos ))" "$age" "$restarts" "$lf"
     done
+
+    # WHY A REASON AND NOT JUST THE WORD. `DEGRADED` on its own says a check failed and not
+    # which, so the next step is to go and re-run the probe by hand — which is the work this
+    # command exists to have already done. It goes to STDOUT because it is part of the report a
+    # session hook prints, and stderr belongs to faults in `status` itself.
+    if [ "${#degraded[@]}" -gt 0 ]; then
+        printf '\nDEGRADED\n'
+        for i in "${!degraded[@]}"; do printf '  %s\n' "${degraded[$i]}"; done
+    fi
+    return 0
 }
 
 # cmd_drain [name] [--all] — hand over what nobody has read, and record that it was handed over.
@@ -460,7 +607,7 @@ cmd_restart() {
     local only="${1:-}"
     local rows; rows="$(watchd_rows)" || return 1
     local name kind target health found=""
-    local -a units=()
+    local -a units=() names=()
     while IFS='|' read -r name kind target health; do
         [ -n "$name" ] || continue
         if [ -n "$only" ]; then [ "$only" = "$name" ] || continue; fi
@@ -479,7 +626,7 @@ cmd_restart() {
             fi
             continue
         fi
-        units+=("spira-watch@$name.service")
+        units+=("spira-watch@$name.service"); names+=("$name")
     done <<< "$rows"
 
     if [ -n "$only" ] && [ -z "$found" ]; then
@@ -491,7 +638,60 @@ cmd_restart() {
         echo "watchd: systemd refused the restart — ask it why with 'systemctl --user status ${units[0]}'" >&2
         return 1
     }
+    # THE METER IS BUMPED HERE BECAUSE THIS IS THE ONE VERB, and it is bumped only once systemd
+    # has agreed — a restart that was refused did not happen, and counting it would put the
+    # blame for a broken unit on the staleness heuristic this number exists to judge. Anything
+    # that restarts a watcher goes through this command for exactly that reason: reaching past
+    # it to `systemctl` still restarts the watcher, and silently costs the meter its meaning.
+    local n
+    for n in "${names[@]}"; do _wd_bump "$n"; done
     printf 'restarted: %s\n' "${units[*]}"
+}
+
+# cmd_health_ids <file> — the assertion that catches a watcher reading the wrong database.
+#
+# It is a health command like any other: a manifest row names it, `status` runs it, a non-zero
+# exit renders DEGRADED. It is here rather than in a script of its own because every watcher
+# that keeps a state file wants the same question asked of it.
+#
+# THE TEST IS THE ABSENCE OF OUR OWN IDS, NOT THE PRESENCE OF FOREIGN ONES, and getting this
+# backwards is the whole trap. A database here legitimately holds beads imported under other
+# prefixes — measured once at 145 of 1825 rows carrying the local one — so an assertion reading
+# "this state names a prefix that is not ours" is TRUE of a perfectly healthy watcher, and was
+# therefore true of the blind one too. It would have passed. What no healthy watcher can do is
+# go a whole state file without naming a single local bead.
+#
+# A MISSING FILE IS DEGRADED, NOT AN ERROR TO BE SWALLOWED. A watcher that has never written
+# its state has never completed a pass, which is the same blindness arriving earlier; the
+# reason names the path, because the ordinary cause is that the file moved and the assertion
+# is now pointed at nothing (law-absence-needs-a-positive-control).
+cmd_health_ids() {
+    local f="${1:-}"
+    [ -n "$f" ] || { echo "usage: watchd.sh health-ids <file>" >&2; return 2; }
+    local p="${SPIRA_ID_PREFIX:-}"
+    # REFUSED RATHER THAN GUESSED. An unusable prefix cannot be turned into a verdict either
+    # way, and a health check that answers OK when it could not run is the failure this
+    # command was written to end. Exit 2 so it is distinguishable from a real DEGRADED.
+    case "$p" in
+        ''|*[!A-Za-z0-9]*)
+            echo "watchd: SPIRA_ID_PREFIX is '$p' — it must be letters and digits, with no hyphen" >&2
+            return 2 ;;
+    esac
+    if [ ! -f "$f" ]; then
+        echo "$f does not exist — this watcher has never written its state" >&2
+        return 1
+    fi
+    # A BOUNDARY BEFORE THE PREFIX, so `sp-` is not found inside `wsp-1`. No pipe into `grep`,
+    # deliberately: under `pipefail` a `grep` that stops at its first match closes the pipe, the
+    # writer dies of SIGPIPE, and the check fails exactly when it succeeds
+    # (law-no-grep-q-under-pipefail).
+    local hit
+    hit="$(grep -Eom1 "(^|[^A-Za-z0-9_-])$p-[A-Za-z0-9]" "$f" 2>/dev/null)" || hit=""
+    if [ -z "$hit" ]; then
+        echo "$f names no $p- id at all — it is tracking some other database" >&2
+        return 1
+    fi
+    return 0
 }
 
 case "${1:-status}" in
@@ -502,6 +702,7 @@ case "${1:-status}" in
     drain)    shift; cmd_drain "$@" ;;
     tail)     shift; cmd_tail "$@" ;;
     restart)  shift; cmd_restart "${1:-}" ;;
-    *) echo "usage: watchd.sh manifest|units|exec <name>|status|drain [name] [--all]|tail <name> [--all]|restart [name]" >&2
+    health-ids) shift; cmd_health_ids "${1:-}" ;;
+    *) echo "usage: watchd.sh manifest|units|exec <name>|status|drain [name] [--all]|tail <name> [--all]|restart [name]|health-ids <file>" >&2
        exit 2 ;;
 esac

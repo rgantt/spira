@@ -68,6 +68,22 @@ done
 # THE COCKPIT'S GEOMETRY HAS A DEFAULT TOO. A clean clone with no config builds a cockpit,
 # and the two percentages are what decide its shape — a missing default is a `%` split with
 # an empty number, which tmux rejects and `up` reports as a failed split.
+# THE PREFIX OF THIS INSTALLATION'S OWN BEADS IS DERIVED, NOT WRITTEN IN. It is what a health
+# assertion looks for to prove a watcher is reading THIS database rather than one retired
+# underneath it, and the goal epic is a bead here — so the goal already answers the question,
+# and a clean clone gets a working answer with nothing configured.
+is "SPIRA_ID_PREFIX comes off the goal epic" "sp" "$(probe "$NONE" SPIRA_ID_PREFIX)"
+is "and it follows the goal when that is changed" "acme" \
+   "$(probe "$NONE" SPIRA_ID_PREFIX SPIRA_GOAL=acme-everything)"
+# A HEALTH COMMAND IS OPERATOR-SUPPLIED AND `status` IS WHAT A SESSION HOOK RUNS, so it is
+# bounded. Without a default there is no ceiling at all, and a probe that hangs holds up the
+# opening of a context window.
+is "SPIRA_HEALTH_TIMEOUT has a ceiling by default" "10" "$(probe "$NONE" SPIRA_HEALTH_TIMEOUT)"
+# THE ANSWER WATCHER'S STATE FILE IS ONE KEY, because the watcher writes it and the health
+# assertion in the manifest reads it. Two literals disagreeing renders a permanent DEGRADED
+# against a watcher that is working perfectly, which is the expensive kind of false alarm.
+is "SPIRA_ANSWER_STATE sits under the cockpit" "$CLONE/cockpit/.runtime/answered-seen.json" \
+   "$(probe "$NONE" SPIRA_ANSWER_STATE)"
 is "COCKPIT_RIGHT_PCT defaults to 33"  "33" "$(probe "$NONE" COCKPIT_RIGHT_PCT)"
 is "COCKPIT_BOTTOM_PCT defaults to 28" "28" "$(probe "$NONE" COCKPIT_BOTTOM_PCT)"
 # AND THE ONE KEY WHOSE EMPTY VALUE IS AN ANSWER. Every default above fills an unset OR empty

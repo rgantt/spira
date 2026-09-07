@@ -175,13 +175,23 @@ echo "the manifest this harness ships"
 out="$(env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$TMP/none.conf" \
        bash "$HERE/watchd.sh" manifest 2>&1)"; rc=$?
 is "it parses"  "0" "$rc"
-missing=""
+missing=""; nohealth=""; unrunnable=""
 while IFS='|' read -r name kind target health; do
-    [ "$kind" = daemon ] || continue
-    set -- $target
-    [ -x "$1" ] || missing="$missing $name:$1"
+    if [ "$kind" = daemon ]; then
+        set -- $target
+        [ -x "$1" ] || missing="$missing $name:$1"
+    fi
+    # A SHIPPED ROW WITH NO ASSERTION IS A WATCHER JUDGED ON ITS UNIT STATE ALONE, which cannot
+    # tell a quiet watcher from a blind one — the exact hole this whole column exists to close.
+    # A row may legitimately have none; a row this harness ships may not.
+    if [ -z "$health" ]; then nohealth="$nohealth $name"; else
+        set -- $health
+        [ -x "$1" ] || unrunnable="$unrunnable $name:$1"
+    fi
 done <<< "$out"
 is "and every daemon row points at something executable" "" "$missing"
+is "every shipped row carries a health assertion"        "" "$nohealth"
+is "and every one of them can actually be run"           "" "$unrunnable"
 
 echo
 echo "install.sh — what the manifest actually causes"
@@ -352,7 +362,10 @@ echo
 echo "cursor arithmetic"
 events "$ALOG" 300
 : > "$TMP/somebody-elses.log"
-unread() { wds status | awk -v n="$1" '$1==n{print $3}'; }
+# COLUMN FOUR, and the table is addressed by index everywhere below:
+#   1 NAME  2 UNIT  3 HEALTH  4 UNREAD  5 LAST-EVENT  6 RESTARTS  7 LOG
+# which is only safe because every value `status` renders is whitespace-free.
+unread() { wds status | awk -v n="$1" '$1==n{print $4}'; }
 rm -f "$ACUR"
 is "a watcher with no cursor at all has read nothing" "300" "$(unread alpha)"
 printf '120\n' > "$ACUR"
@@ -390,14 +403,14 @@ is "and renders it when it is down, too"   "inactive" "$(wds status | awk '$1=="
 # A LOG ROW HAS NO UNIT, so there is nothing to ask systemd and nothing is invented.
 is "a log row says who owns it instead"    "external" "$(printf '%s\n' "$out" | awk '$1=="elsewhere"{print $2}')"
 has "and its log is the target itself"     "$out" "$TMP/somebody-elses.log"
-is "unread is reported against the log"    "300" "$(printf '%s\n' "$out" | awk '$1=="alpha"{print $3}')"
+is "unread is reported against the log"    "300" "$(printf '%s\n' "$out" | awk '$1=="alpha"{print $4}')"
 # A WATCHER ENABLED BUT NOT YET STARTED HAS NO LOG, AND THAT IS NOT AN ERROR. `beta` has never
 # written one. `wc -l < missing` fails in the SHELL rather than in `wc`, so redirecting the
 # command's stderr does not suppress it, and `status` printed one such line per unstarted
 # watcher on every pass — into the same stream a session hook reads.
 wds status >/dev/null 2>"$TMP/status.err"
 is "an unstarted watcher's absent log is silent" "" "$(cat "$TMP/status.err")"
-is "and reads as nothing read yet"         "0" "$(wds status | awk '$1=="beta"{print $3}')"
+is "and reads as nothing read yet"         "0" "$(wds status | awk '$1=="beta"{print $4}')"
 # A FAILED PROBE RENDERS `?`, NEVER A STATE. systemd may not be answering at all — a container,
 # a box with no user manager — and a broken check displayed as `inactive` is a fault in the
 # checking machinery reported as a finding about the watcher.
@@ -408,6 +421,193 @@ out="$(env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$TMP/reader-nosctl.conf"
        SPIRA_WATCHERS="$RMAN" bash "$CLONE/spira/watchd.sh" status)"
 is "an unanswerable probe is a question mark" "?" "$(printf '%s\n' "$out" | awk '$1=="alpha"{print $2}')"
 hasnt "and never a state nobody reported"     "$(printf '%s\n' "$out" | awk '$1=="alpha"{print $2}')" "active"
+
+echo
+echo "LAST EVENT — a watcher can be active, healthy and mute"
+# THE COLUMN EXISTS BECAUSE THE OTHER TWO CANNOT SEE THIS. A unit that is `active` and a health
+# assertion that passes are both true of a watcher that stopped producing days ago; the age of
+# its last line is the only thing in the table that notices.
+lastev() { wds status | awk -v n="$1" '$1==n{print $5}'; }
+touch "$ALOG"
+case "$(lastev alpha)" in
+    [0-9]*[smhd]) ok "a log that was just written renders a fresh age" ;;
+    *) bad "a log that was just written renders a fresh age" "$(lastev alpha)" ;;
+esac
+# A WATCHER THAT HAS NEVER WRITTEN A LINE RENDERS `-`, NEVER `0s`. `beta` has no log at all,
+# and rendering that as an age would make the watcher that has never once emitted look like
+# the freshest row in the table — the all-clear that displaces a look.
+is "a watcher that has never emitted has no age"  "-" "$(lastev beta)"
+touch -d '@1' "$ALOG" 2>/dev/null || touch -t 197001010000 "$ALOG"
+case "$(lastev alpha)" in
+    *d) ok "an old log renders in days" ;;
+    *)  bad "an old log renders in days" "$(lastev alpha)" ;;
+esac
+# A CLOCK THAT MOVED IS NOT A WATCHER THAT IS UNUSUALLY FRESH. An mtime in the future gives a
+# negative age, which would render as a negative number and read as nonsense in a column
+# something else parses.
+touch -d '@'"$(( $(date +%s) + 86400 ))" "$ALOG" 2>/dev/null
+is "a log dated in the future is clamped, not negative" "0s" "$(lastev alpha)"
+touch "$ALOG"
+
+echo
+echo "the restart meter — the number that says when mtime stops being enough"
+# law-take-the-simple-fix-with-a-meter: the staleness check compares MTIME, which is the cheap
+# choice and moves for edits that changed nothing. This column is what would make that visible,
+# so it has to count restarts that actually happened and nothing else.
+meter() { wds status | awk -v n="$1" '$1==n{print $6}'; }
+rm -f "$WRUN/watchd/alpha.restarts" "$WRUN/watchd/beta.restarts"
+printf '0\n' > "$TMP/sctl.rc"
+is "a watcher that has never been restarted reads zero" "0" "$(meter alpha)"
+wds restart alpha >/dev/null 2>&1
+is "and one restart is one"                            "1" "$(meter alpha)"
+wds restart alpha >/dev/null 2>&1
+is "and it accumulates"                                "2" "$(meter alpha)"
+is "while a watcher nobody restarted stays at zero"    "0" "$(meter beta)"
+# A REFUSED RESTART DID NOT HAPPEN. Counting it would charge the staleness heuristic for a
+# broken unit, which is the one thing this number exists to be trusted about.
+printf '1\n' > "$TMP/sctl.rc"
+wds restart alpha >/dev/null 2>&1
+is "a restart systemd refused is not counted"          "2" "$(meter alpha)"
+printf '0\n' > "$TMP/sctl.rc"
+# THERE IS NO UNIT BEHIND A LOG ROW, so there is nothing that could have been restarted. `-`
+# rather than `0`, which would assert something was never restarted when nothing could be.
+is "a log row has no restart count to give"            "-" "$(meter elsewhere)"
+rm -f "$WRUN/watchd/alpha.restarts" "$WRUN/watchd/beta.restarts"
+
+echo
+echo "health assertions — telling a blind watcher from a quiet one"
+# THE FAILURE THIS WHOLE COLUMN EXISTS FOR. A watcher reading a database that was retired
+# underneath it is SILENT, and so is a watcher with nothing to say. A process listing, an
+# `is-active` and an unread count agree on both. One here looked healthy in all three for three
+# days while seeing nothing at all, and an answer given in the meantime reached nobody.
+HCONF="$TMP/health.conf"
+# EVERY VALUE PINNED TO A NON-DEFAULT AGAIN, and SPIRA_HEALTH_TIMEOUT and SPIRA_ID_PREFIX most
+# of all: asserting against the shipped default passes just as well if the literal is written
+# into the code, which is the thing a config key exists to stop.
+printf 'SPIRA_RUN = %s\nSPIRA_PATH = %s\nSPIRA_ACTIONABLE = %s\nSPIRA_HEALTH_TIMEOUT = 1\nSPIRA_ID_PREFIX = zz\n' \
+    "$WRUN" "$SCTL" 'NEEDSME' > "$HCONF"
+HMAN="$TMP/health-manifest"
+cat > "$HMAN" <<EOF
+sound|daemon|/bin/true|/bin/true
+sick|daemon|/bin/true|/bin/false
+gone|daemon|/bin/true|/no/such/probe --version
+slow|daemon|/bin/true|sleep 30
+quiet|daemon|/bin/true|
+piped|daemon|/bin/true|printf 'hi\n' | grep -q hi
+noisy|daemon|/bin/true|echo LEAKED-TO-STDOUT
+EOF
+wdh() {
+    env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$HCONF" SPIRA_WATCHERS="$HMAN" \
+        bash "$CLONE/spira/watchd.sh" "$@"
+}
+health() { printf '%s\n' "$1" | awk -v n="$2" '$1==n{print $3}'; }
+started="$SECONDS"
+hout="$(wdh status 2>"$TMP/health.err")"
+elapsed=$(( SECONDS - started ))
+
+# THE POSITIVE CONTROL, AND EVERY VERDICT BELOW DEPENDS ON IT. A probe that could never exit 0
+# would render DEGRADED everywhere and this section would pass for the wrong reason
+# (law-absence-needs-a-positive-control).
+is "a probe that exits 0 renders OK"        "OK"       "$(health "$hout" sound)"
+is "a probe that exits non-zero is DEGRADED" "DEGRADED" "$(health "$hout" sick)"
+# EVERY WAY A PROBE CAN FAIL MEANS THE SAME THING: nothing here proved the watcher can see.
+is "a probe that is not there is DEGRADED"  "DEGRADED" "$(health "$hout" gone)"
+is "a probe that never returns is DEGRADED" "DEGRADED" "$(health "$hout" slow)"
+# AND NONE OF THEM MAY RENDER `OK`, OR `0`, OR NOTHING AT ALL. A broken check displayed as an
+# all-clear displaces the suspicion that would have prompted a look, which is the whole shape
+# of the incident behind this bead (law-alerts-must-be-actionable).
+for w in sick gone slow; do
+    got="$(health "$hout" "$w")"
+    case "$got" in
+        OK|0|'') bad "$w never renders an all-clear" "[$got]" ;;
+        *)       ok "$w never renders an all-clear" ;;
+    esac
+done
+# NO ASSERTION IS A THIRD FACT, not a pass. A row with an empty health field was never judged,
+# and saying `OK` would claim a check that nobody wrote.
+is "a row with no assertion renders a dash"  "-" "$(health "$hout" quiet)"
+# A HEALTH COMMAND IS SHELL AND A TARGET IS NOT, which is why the field is last and may hold a
+# pipe: the useful assertions are pipelines.
+is "a health command may be a pipeline"      "OK" "$(health "$hout" piped)"
+# THE PROBE MUST NOT BE ABLE TO WRITE INTO A TABLE SOMETHING ELSE PARSES BY COLUMN.
+hasnt "a probe's stdout never reaches the table" "$hout" "LEAKED-TO-STDOUT"
+is "and it does not reach stderr either"     "0" "$(grep -c 'LEAKED-TO-STDOUT' "$TMP/health.err" || true)"
+# BOUNDED, BECAUSE `status` IS WHAT A SESSION HOOK RUNS. `slow` sleeps 30s against a pinned
+# 1s ceiling; unbounded, this assertion is what would hang.
+if [ "$elapsed" -lt 20 ]; then ok "a hanging probe cannot hold up status"
+else bad "a hanging probe cannot hold up status" "took ${elapsed}s"; fi
+# DEGRADED ON ITS OWN SAYS A CHECK FAILED AND NOT WHICH, so the reason is carried with it —
+# otherwise the next step is to re-run the probe by hand, which is the work already done here.
+has "each degraded watcher is named with its reason" "$hout" "sick:"
+has "and the reason carries the exit code"           "$hout" "(exit 1)"
+has "and a timeout says so in words"                 "$hout" "timed out after 1s"
+hasnt "a healthy watcher is not in the reason block" "$hout" "sound:"
+
+echo
+echo "health-ids — absence of OUR ids, never presence of foreign ones"
+# THE DISCRIMINATING FACT, and the reason the obvious assertion is wrong. A database here
+# legitimately holds beads imported under other prefixes, so a check keyed on "this state names
+# something that is not ours" is TRUE of a healthy watcher and would therefore have passed on
+# the blind one. What no healthy watcher can do is go a whole state file without naming one
+# local bead.
+#
+# THE FIXTURE IS THE SHAPE OF THE REAL CAPTURE, NOT THE CAPTURE. A watcher's state file is a
+# list of the operator's own bead ids, and shipping one would teach a colleague's agent to
+# reason about work that does not exist. The two states below differ by exactly one entry, so
+# the verdict is attributable to the discriminating fact and to nothing else.
+mkstate() {          # mkstate <file> [extra id]
+    local f="$1" extra="${2:-}" i pfx sep=""
+    {   printf '{'
+        for ((i=1; i<=51; i++)); do
+            case $(( i % 3 )) in 0) pfx=aa ;; 1) pfx=bb ;; *) pfx=cc ;; esac
+            printf '%s"%s-%04x": {"status": "closed", "comments": %d, "insight": false}' \
+                   "$sep" "$pfx" "$i" "$(( i % 3 ))"
+            sep=', '
+        done
+        [ -n "$extra" ] && printf '%s"%s": {"status": "closed", "comments": 0, "insight": false}' "$sep" "$extra"
+        printf '}\n'
+    } > "$f"
+}
+BLIND="$TMP/state-blind.json"; SEEING="$TMP/state-seeing.json"
+mkstate "$BLIND"; mkstate "$SEEING" "zz-0001"
+hids() { env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$HCONF" SPIRA_WATCHERS="$HMAN" \
+             bash "$CLONE/spira/watchd.sh" health-ids "$@"; }
+
+# WHY A CHECK KEYED ON FOREIGN PREFIXES COULD NOT HAVE CAUGHT THIS: both states name exactly
+# the same foreign ids, so any assertion reading them returns the same verdict for the healthy
+# state and the blind one. Only the local prefix separates them.
+foreign() { grep -oE '"(aa|bb|cc)-[0-9a-f]+"' "$1" | wc -l; }
+is "the healthy state names foreign ids too" "$(foreign "$BLIND")" "$(foreign "$SEEING")"
+is "a state naming one of our beads passes"  "0" "$(hids "$SEEING" >/dev/null 2>&1; echo $?)"
+is "and a state naming none of them fails"   "1" "$(hids "$BLIND" >/dev/null 2>&1; echo $?)"
+has "saying which file and which prefix"     "$(hids "$BLIND" 2>&1)" "no zz- id"
+# A PREFIX MATCH MUST NOT BE FOUND INSIDE ANOTHER ID. `wzz-1` is not one of ours.
+printf '{"wzz-0001": {}}\n' > "$TMP/state-near.json"
+is "a prefix inside a longer id does not count" "1" "$(hids "$TMP/state-near.json" >/dev/null 2>&1; echo $?)"
+# A STATE FILE THAT IS NOT THERE IS THE SAME BLINDNESS ARRIVING EARLIER — the watcher has never
+# completed a pass, or the file moved and the assertion now points at nothing.
+is "a state file that does not exist fails"  "1" "$(hids "$TMP/no-state.json" >/dev/null 2>&1; echo $?)"
+has "and names the path it looked at"        "$(hids "$TMP/no-state.json" 2>&1)" "$TMP/no-state.json"
+# REFUSED RATHER THAN GUESSED. An unusable prefix cannot produce a verdict either way, and
+# answering OK when the check could not run is the failure this command was written to end.
+# Exit 2, so it is distinguishable from a real DEGRADED.
+is "an unusable prefix is refused, not answered" "2" \
+   "$(env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$HCONF" SPIRA_ID_PREFIX='sp-' \
+      bash "$CLONE/spira/watchd.sh" health-ids "$SEEING" >/dev/null 2>&1; echo $?)"
+
+echo
+echo "and end to end: a watcher pointed at the wrong database reports DEGRADED"
+# THE ACCEPTANCE CRITERION, through the whole path a real one takes: a manifest row, the health
+# command it names, `status` running it, and the column a session hook reads.
+EMAN="$TMP/e2e-manifest"
+printf 'seeing|daemon|/bin/true|%s health-ids %s\nblind|daemon|/bin/true|%s health-ids %s\n' \
+    "$CLONE/spira/watchd.sh" "$SEEING" "$CLONE/spira/watchd.sh" "$BLIND" > "$EMAN"
+eout="$(env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$HCONF" SPIRA_WATCHERS="$EMAN" \
+        bash "$CLONE/spira/watchd.sh" status 2>/dev/null)"
+is "a watcher reading this database is OK"            "OK"       "$(health "$eout" seeing)"
+is "and one reading a database with none of our beads is DEGRADED" \
+   "DEGRADED" "$(health "$eout" blind)"
+has "with the reason on the report, not in a log"     "$eout"    "blind: $BLIND names no zz- id"
 
 echo
 echo "drain filters to actionable, and --all is the escape hatch"

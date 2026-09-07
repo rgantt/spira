@@ -36,8 +36,18 @@
 # one. This file is read by the process systemd starts as you.
 #
 # THE FOURTH FIELD is a command that must exit 0 for the watcher to be reported healthy. It
-# may contain `|`. It is parsed here and run by `watchd.sh status`; leave it empty and the
-# watcher is reported on its unit state alone, which cannot tell a quiet watcher from a
-# blind one.
+# may contain `|`, and unlike a target it IS shell — a target is what systemd starts, so it
+# must be a program; an assertion is a question asked once, and the useful ones are pipelines.
+# It runs only under `watchd.sh status`, never on a timer, so it costs nothing in the steady
+# state. Leave it empty and `status` renders `-`: no assertion was made, which is a different
+# fact from one that passed, and a watcher judged on its unit state alone cannot be told from
+# a blind one — a process listing, an `is-active` and an unread count are all SILENT for a
+# watcher that is reading a database retired underneath it.
+#
+# WHAT AN ASSERTION SHOULD LOOK FOR IS ITS OWN IDS, NOT FOREIGN ONES. A database here may hold
+# beads imported under other prefixes, so "this state names something that is not ours" is
+# true of a healthy watcher and would have passed on the blind one. `watchd.sh health-ids
+# <file>` asks the question that discriminates: does this state name a single bead of OUR
+# prefix. Point it at whatever file the watcher keeps its own memory in.
 
-answers|daemon|@SPIRA_COCKPIT@/watch-answers.sh|
+answers|daemon|@SPIRA_COCKPIT@/watch-answers.sh|@SPIRA_HOME@/watchd.sh health-ids @SPIRA_ANSWER_STATE@

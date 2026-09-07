@@ -53,7 +53,7 @@ SPIRA_CONF_LOADED=1
 SPIRA_CONF_KEYS="
 SPIRA_HOME_REPO SPIRA_DB SPIRA_RUN SPIRA_GOAL
 SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER SPIRA_WATCHERS
-SPIRA_ACTIONABLE
+SPIRA_ACTIONABLE SPIRA_ID_PREFIX SPIRA_HEALTH_TIMEOUT SPIRA_ANSWER_STATE
 SPIRA_COCKPIT SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
 SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S
@@ -216,8 +216,32 @@ spira_conf_defaults() {
     # refuses it and names `--all` — because as a regular expression an empty pattern matches
     # every line, and turning the filter off is a thing to ask for rather than to fall into.
     : "${SPIRA_ACTIONABLE=ANSWERED|COMMENTED|ESCALAT|STRANDED|POISON|DEGRADED|BLOCKED|UNREACHABLE|FAIL|ERROR|LANDED|⚠}"
+    # THE ID PREFIX OF THIS INSTALLATION'S OWN BEADS, without the hyphen. It is what a health
+    # assertion looks for to prove a watcher is reading THIS database and not one that was
+    # retired underneath it.
+    #
+    # WHY ABSENCE AND NOT PRESENCE IS THE TEST, which is the whole reason this key exists.
+    # A database here legitimately holds beads imported under other prefixes, so an assertion
+    # keyed on "names a foreign prefix" passes on a watcher that is entirely blind — measured
+    # once at 145 of 1825 rows carrying the local prefix. What proves the wrong database is
+    # that NOT ONE local id appears. This generalises the guard the mirror exporter carries.
+    #
+    # Derived from the goal epic rather than written in, because the goal is a bead in this
+    # database and therefore already answers the question.
+    : "${SPIRA_ID_PREFIX:=${SPIRA_GOAL%%-*}}"
+    # HOW LONG A HEALTH COMMAND MAY RUN, in seconds. A probe is an operator-supplied command
+    # run by `watchd.sh status`, and `status` is what a session hook runs at every start — so
+    # an unbounded one hangs the opening of a context window rather than merely being slow.
+    # A probe that runs out of time is DEGRADED, which is the honest reading: it did not
+    # prove the watcher is seeing anything.
+    : "${SPIRA_HEALTH_TIMEOUT:=10}"
     : "${SPIRA_COCKPIT:=$(dirname "$SPIRA_HOME")/cockpit}"
     : "${SPIRA_NOTIFY:=$SPIRA_COCKPIT/ask.sh}"
+    # WHERE THE ANSWER WATCHER KEEPS WHAT IT HAS ALREADY SEEN. One key rather than two
+    # literals: the watcher writes this file and its health assertion reads it, and those two
+    # disagreeing is a permanent DEGRADED against a watcher that is working perfectly — a
+    # false alarm, which is the expensive kind (law-alerts-must-be-actionable).
+    : "${SPIRA_ANSWER_STATE:=$SPIRA_COCKPIT/.runtime/answered-seen.json}"
     # THE LABEL THAT MEANS "WAITING ON THE OPERATOR". It is the one the escalation gate defers
     # on, the one every persona's predicate excludes, and the one the attention panel reads,
     # so all of those must agree on it — which is why it is one key and not five literals.

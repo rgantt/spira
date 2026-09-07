@@ -152,16 +152,59 @@ and therefore gets no unit. Adding a watcher is a row plus an install run, never
 file. `spira/watchd.sh` is the face over all of it:
 
 ```
-watchd.sh status                 unit state and unread count, one line per watcher
+watchd.sh status                 one line per watcher: is it running, can it see, is it mute
 watchd.sh drain [name] [--all]   print what nobody has read, and mark it read
 watchd.sh tail <name> [--all]    replay from the cursor, then stream; this is a Monitor command
 watchd.sh restart [name]         restart the unit behind a watcher
+watchd.sh health-ids <file>      assert a state file names at least one of this database's beads
 watchd.sh manifest | units       what the rows say, and the units they render
 ```
 
 It owns no process. `status` asks systemd what is running and `restart` asks systemd to restart
 it; there is deliberately no second supervision scheme beside systemd's, because a second one
 is how the original defect survived being looked at.
+
+### Blindness is reported, not inferred from silence
+
+A watcher reading a database that was retired underneath it and a watcher with nothing to say
+are both **silent**, and a process listing, a unit state and an unread count agree on both.
+That is not hypothetical: one here looked healthy in all three for three days while seeing
+nothing, and an answer given in the meantime reached nobody.
+
+So a manifest row's fourth field is a **health assertion** — a command that must exit 0 — and
+`status` runs it. It runs only there, never on a timer, so it costs nothing in the steady
+state.
+
+```
+NAME           UNIT       HEALTH    UNREAD LAST-EVENT RESTARTS  LOG
+answers        active     OK             0         4m        0  …/watchd/answers.log
+sending        active     DEGRADED       0         6d        2  …/watchd/sending.log
+
+DEGRADED
+  sending: …/state.json names no sp- id at all — it is tracking some other database
+```
+
+Three columns, three different ways to be wrong, and none of them subsumes another. `HEALTH`
+says the watcher cannot see what it is watching. `LAST-EVENT` says it can see and has stopped
+producing — active, healthy and mute. `RESTARTS` counts the restarts this harness issued,
+which is the meter on the staleness check's use of mtime: if it climbs while nothing was
+edited, that is the evidence for moving to a content hash.
+
+**A probe that fails renders `DEGRADED` — never `OK`, never `0`, never blank.** Not found,
+killed, timed out, crashed: every one of them means nothing here *proved* the watcher can see,
+and a broken check displayed as an all-clear displaces the suspicion that would have prompted a
+look. A row with no assertion renders `-`, because "nobody checked" is a third fact and not a
+pass. Every value in the table is whitespace-free so a reader can address it by column, and the
+reason travels with the verdict — `DEGRADED` alone would send you off to re-run the probe by
+hand, which is the work this command has already done.
+
+**What an assertion should look for is its own ids, not foreign ones**, and getting that
+backwards is the trap the shipped one exists to demonstrate. A database here may legitimately
+hold beads imported under other prefixes — measured once at 145 of 1825 rows carrying the local
+one — so "this state names something that is not ours" is *true of a healthy watcher*, and
+would therefore have passed on the blind one too. What no healthy watcher can do is go a whole
+state file without naming a single local bead. `watchd.sh health-ids <file>` asks exactly that,
+against `SPIRA_ID_PREFIX`, which derives from your goal epic.
 
 **`drain` is filtered by default, and that is the point of it.** It is what you run into a
 context window that has just opened, so an unfiltered drain puts the whole backlog in the most
