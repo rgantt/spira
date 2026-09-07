@@ -27,6 +27,8 @@
 # own, so it can neither see nor disturb the operator's — and a model of tmux would reproduce
 # the surface remembered rather than the one that exists, which is the failure mode of a stub
 # (law-prefer-the-real-dependency).
+#
+# covers: spira/watchd.sh spira/watchers
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 command -v tmux >/dev/null 2>&1 || { echo "SKIP: no tmux"; exit 77; }
