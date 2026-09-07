@@ -4,14 +4,29 @@
 # pane exited and nothing brought it back, while every liveness check stayed green.
 # A repair loop that only runs while a session is alive cannot repair the case where the
 # session died.
-Description=Repair the cockpit tmux layout when a pane has died
+Description=Repair the cockpit tmux layout and the session hook's registration
 Documentation=file://@SPIRA_COCKPIT@/layout.sh
 After=default.target
 
 [Service]
 Type=oneshot
+# The session hook's registration lives in the coding agent client's own settings file, which
+# is outside every checkout — so no landing gate can see it and nothing that lands can fix it.
+# Repaired here, from systemd, for the same reason the panes are: a registration done once by
+# hand rots invisibly, and the failure it rots into is a hook still bound to a decommissioned
+# harness's path, printing that harness's banner into every session on the box.
+#
+# It is idempotent and writes nothing when the file already says what it should, and it
+# REFUSES while the hook's own file is absent — so between arming this and the branch that
+# adds the hook landing, the pass is a no-op rather than a registration pointing at nothing.
+ExecStartPre=-@SPIRA_HOME@/install-session-hook.sh install
 ExecStart=@SPIRA_COCKPIT@/layout.sh ensure
 TimeoutStartSec=60
+# This box may be running production on the same cores, and this fires every minute
+# (law-fence-loops-on-shared-hardware). Generous next to what a tmux repair and a JSON
+# comparison cost, so a real repair is never the thing the quota slows down.
+CPUQuota=40%
+Nice=10
 StandardOutput=append:@SPIRA_REPO@/.runtime/cockpit-heal.log
 StandardError=append:@SPIRA_REPO@/.runtime/cockpit-heal.log
 

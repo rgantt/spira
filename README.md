@@ -201,6 +201,8 @@ file. `spira/watchd.sh` is the face over all of it:
 ```
 watchd.sh status                 one line per watcher: is it running, can it see, is it mute
 watchd.sh drain [name] [--all]   print what nobody has read, and mark it read
+watchd.sh peek  [name] [--limit N]
+                                 the same reading, capped, marking NOTHING read
 watchd.sh tail <name> [--all]    replay from the cursor, then stream; this is a Monitor command
 watchd.sh restart [name]         restart the unit behind a watcher
 watchd.sh notify                 escalate events nobody has drained; this is what a timer runs
@@ -291,6 +293,53 @@ somebody because a watcher was busy is the false alarm that makes the real one u
 Both commands advance the cursor by what was **read**, not by what was printed: a filtered line
 has been considered and rejected, not missed. Leaving it unread would keep every reader
 reporting a backlog that no amount of draining could clear.
+
+`peek` is `drain` that consumes nothing, and `--limit` caps it, keeping each watcher's most
+recent lines and saying how many it withheld. The two are one piece of arithmetic and two
+policies, which is why a cap is available only to the reader that records nothing: a capped
+read that marked the capped lines read would destroy them, and would do it precisely when there
+are most of them.
+
+### The session hook
+
+A coding-agent session should not have to be told what is watching it. `spira/hooks/session.sh`
+is a `SessionStart` hook that prints the status table, any watcher reported `DEGRADED`, a
+preview of what nobody has read, and the command that latches onto the rest:
+
+```
+spira/install-session-hook.sh install            register it in the client's settings file
+spira/install-session-hook.sh status             what is registered on the session events
+spira/install-session-hook.sh uninstall          remove it
+spira/install-session-hook.sh prune <substring>  remove some other command registered there
+```
+
+**A hook can only print.** It communicates through stdout, stderr and an exit code and cannot
+call a tool, so it cannot attach the Monitor that would deliver the events. That is the whole
+division of labour: systemd keeps the processes alive, and the hook prints the few facts a
+fresh context needs plus the command that re-latches. Nothing is lost in the gap, because the
+cursor is a file.
+
+**It is a summary, never a replay, and the budget is enforced by measurement.** Its output is
+prepended to a context window that has just opened, so `SPIRA_HOOK_LINES` is a ceiling: the
+table and the latch commands are printed whole, and the preview is given exactly what is left.
+It **peeks** rather than drains, because under a budget a consuming read would mark as
+delivered every line it had no room for.
+
+**It is registered with no matcher, on `SessionStart` and on `PostCompact`.** A matcher is a
+regular expression tested against the event's match query, and for `SessionStart` that query is
+its `source` — one of `startup`, `resume`, `clear`, `compact` or `fork`. Naming a subset is how
+a hook comes to be missing from exactly the case it was written for; an absent matcher takes
+all five, and survives a sixth being added. `PostCompact` is there because compaction does not
+reach the hook through `SessionStart` in every client build, and an automatic compaction is
+precisely the one nobody is present for. `SessionEnd` is deliberately **not** registered: with
+systemd owning the watchers there are no processes for a departing session to guarantee, and
+its output would go into the context being discarded.
+
+**With no watchers it prints nothing at all.** It is registered in the client's own settings
+file, so it runs in every session on the box whatever repository that session is in — and a
+banner in each of them for a thing you do not use is the noise it replaced. `doctor.sh` reports
+whether it is still registered, and names any other command registered on the same events
+rather than removing it.
 
 ## Parking on a CI run
 

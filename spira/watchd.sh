@@ -6,14 +6,24 @@
 #   watchd.sh units                 the unit name of every `daemon` row, one per line
 #   watchd.sh keys                  the placeholders a row may name, one per line
 #   watchd.sh exec <name>           become that watcher; this is what ExecStart calls
-#   watchd.sh status                unit state and unread count, one line per watcher
+#   watchd.sh status                a table, one line per watcher, then a DEGRADED block
+#                                   naming each unwell watcher and why — see below
 #   watchd.sh drain [name] [--all]  print what nobody has read, and mark it read
+#   watchd.sh peek [name] [--all] [--limit N]
+#                                   the same, capped, and marking NOTHING read
 #   watchd.sh tail <name> [--all]   replay from the cursor, then stream; for a Monitor
 #   watchd.sh restart [name]        restart the unit behind a watcher
 #   watchd.sh notify                escalate events nobody has drained; for a timer
 #   watchd.sh health-ids <file>     assert a state file names at least one of our own beads
 #   watchd.sh health-view <prog> <session>
 #                                   assert the view a follower steers matches the one it wants
+#
+# `status` EMITS TWO SECTIONS AND A PARSER MUST KNOW IT: a header, one row per watcher, then
+# — only when a health probe failed — a blank line, the word DEGRADED alone, and one indented
+# `<name>: <why>` per afflicted watcher. Field one of a ROW is a watcher name; the lines below
+# the blank are not rows and field one of them is not a name. A consumer that reads "everything
+# after the header" as the table therefore generates commands naming watchers that do not
+# exist, which is what the session hook did until it was made to stop at the blank line.
 #
 # WHAT A READER LATCHES ONTO is two files per watcher and nothing else: `<name>.log`,
 # newline-delimited and append-only, and `<name>.cursor`, an integer counting the lines
@@ -440,24 +450,42 @@ cmd_exec() {
 }
 
 # _wd_args <argv...> — the one option parser the reading commands share, so that `--all`
-# cannot mean one thing to `drain` and another to `tail`. Sets _wd_name and _wd_all.
+# cannot mean one thing to `drain` and another to `tail`. Sets _wd_name, _wd_all, _wd_peek
+# and _wd_limit.
 #
 # An unrecognised option is refused rather than taken as a watcher name: `--al` would
 # otherwise be looked up as a watcher, found missing, and reported as though the manifest
 # were at fault.
+#
+# `--limit` WITHOUT `--peek` IS REFUSED, and that is the whole reason the two are one parser.
+# A capped read that also marks what it capped as read destroys the lines it did not print,
+# and it does so precisely when there are most of them — which is when losing them matters
+# most. Capping is therefore only available to the reader that consumes nothing.
 _wd_args() {
-    _wd_name=""; _wd_all=""
+    _wd_name=""; _wd_all=""; _wd_peek=""; _wd_limit=0
+    local v
     while [ $# -gt 0 ]; do
         case "$1" in
-            --all) _wd_all=1 ;;
-            -*)    echo "watchd: unknown option '$1'" >&2; return 2 ;;
-            *)     if [ -n "$_wd_name" ]; then
-                       echo "watchd: one watcher at a time, got '$_wd_name' and '$1'" >&2; return 2
-                   fi
-                   _wd_name="$1" ;;
+            --all)  _wd_all=1 ;;
+            --peek) _wd_peek=1 ;;
+            --limit|--limit=*)
+                    if [ "$1" = --limit ]; then shift; v="${1-}"; else v="${1#--limit=}"; fi
+                    case "$v" in ''|*[!0-9]*)
+                        echo "watchd: --limit needs a whole number of lines, got '${v}'" >&2; return 2 ;;
+                    esac
+                    _wd_limit="$v" ;;
+            -*)     echo "watchd: unknown option '$1'" >&2; return 2 ;;
+            *)      if [ -n "$_wd_name" ]; then
+                        echo "watchd: one watcher at a time, got '$_wd_name' and '$1'" >&2; return 2
+                    fi
+                    _wd_name="$1" ;;
         esac
         shift
     done
+    if [ "$_wd_limit" != 0 ] && [ -z "$_wd_peek" ]; then
+        echo "watchd: --limit only applies to 'peek' — a capped read that marks the capped lines read would lose them" >&2
+        return 2
+    fi
     return 0
 }
 
@@ -591,6 +619,11 @@ cmd_status() {
 }
 
 # cmd_drain [name] [--all] — hand over what nobody has read, and record that it was handed over.
+# cmd_drain --peek [--limit N] — the same reading, capped, recording nothing.
+#
+# ONE FUNCTION FOR BOTH, because they are one piece of arithmetic and two policies. Two
+# implementations of "which lines has nobody read" is how `drain` and `tail` came to disagree
+# about the filter, with the session hook advertising the wrong one.
 #
 # THE DEFAULT IS FILTERED, AND THAT IS THE POINT OF THIS COMMAND. `drain` is what a session
 # hook advertises to a context window that has just opened, so an unfiltered drain puts the
@@ -632,20 +665,38 @@ cmd_drain() {
         # by the next drain. Naming both ends binds what is shown to what is marked read.
         chunk="$(sed -n "$(( pos + 1 )),${total}p" "$lf" 2>/dev/null)"
         if [ -n "$_wd_all" ]; then
+            shown="$chunk"
+            k=0; [ -n "$shown" ] && k="$(printf '%s\n' "$shown" | wc -l)"
             printf '=== %s (%d new) ===\n' "$name" "$new"
-            printf '%s\n' "$chunk"
         else
             shown="$(printf '%s\n' "$chunk" | grep -E -- "$re")"
             k=0; [ -n "$shown" ] && k="$(printf '%s\n' "$shown" | wc -l)"
             printf '=== %s (%d actionable of %d new) ===\n' "$name" "$k" "$new"
-            [ -n "$shown" ] && printf '%s\n' "$shown"
+        fi
+
+        # THE CAP KEEPS THE MOST RECENT LINES, and says how many it dropped. A reader whose
+        # budget is a session's first screen wants the newest state, not the oldest; and a
+        # truncation that is silent is a filter whose cost is invisible, which is the defect
+        # the header's two numbers exist to avoid.
+        if [ "$_wd_limit" != 0 ] && [ "$k" -gt "$_wd_limit" ]; then
+            printf '%s\n' "$shown" | tail -n "$_wd_limit"
+            printf '    ... %d earlier actionable line(s) withheld; `watchd.sh tail %s` has all of them\n' \
+                   "$(( k - _wd_limit ))" "$name"
+        elif [ -n "$shown" ]; then
+            printf '%s\n' "$shown"
         fi
 
         # THE CURSOR ADVANCES BY WHAT WAS READ, NEVER BY WHAT WAS PRINTED. A filtered line has
         # been considered and rejected, not missed; leaving it unread would make every
         # subsequent drain re-examine it and would keep the hook reporting a backlog that no
         # amount of draining could clear.
-        _wd_setpos "$name" "$total"
+        #
+        # AND `peek` ADVANCES IT NOT AT ALL. That is the entire difference between the two
+        # verbs: `drain` is delivery and `peek` is a look. The session hook peeks, because it
+        # prints a SUMMARY under a line budget — if it consumed what it summarised, every line
+        # it had no room for would be marked delivered and the latch that follows would replay
+        # nothing.
+        [ -n "$_wd_peek" ] || _wd_setpos "$name" "$total"
     done <<< "$rows"
 
     if [ -n "$_wd_name" ] && [ -z "$found" ]; then
@@ -1072,11 +1123,12 @@ case "${1:-status}" in
     exec)     shift; cmd_exec "${1:-}" ;;
     status)   cmd_status ;;
     drain)    shift; cmd_drain "$@" ;;
+    peek)     shift; cmd_drain --peek "$@" ;;
     tail)     shift; cmd_tail "$@" ;;
     restart)  shift; cmd_restart "${1:-}" ;;
     notify)   shift; cmd_notify "$@" ;;
     health-ids) shift; cmd_health_ids "${1:-}" ;;
     health-view) shift; cmd_health_view "${1:-}" "${2:-}" ;;
-    *) echo "usage: watchd.sh manifest|units|keys|exec <name>|status|drain [name] [--all]|tail <name> [--all]|restart [name]|notify|health-ids <file>|health-view <program> <session>" >&2
+    *) echo "usage: watchd.sh manifest|units|keys|exec <name>|status|drain [name] [--all]|peek [name] [--all] [--limit N]|tail <name> [--all]|restart [name]|notify|health-ids <file>|health-view <program> <session>" >&2
        exit 2 ;;
 esac

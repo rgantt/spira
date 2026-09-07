@@ -146,6 +146,14 @@ loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
 
 for u in "${ENABLE[@]}"; do systemctl --user enable --now "$u" && echo "enabled   $u"; done
 
+# AND THE ONE PIECE OF WIRING THAT IS NOT A UNIT. The session hook is registered in the coding
+# agent client's own settings file, outside every checkout, so installing the harness is the
+# moment to put it there — a fresh clone that had to be told to run a second command would go
+# without it. `cockpit-ensure` repairs the same registration on a timer, so this is the first
+# write rather than the only one, and both are silent when there is nothing to change.
+"$SPIRA_HOME/install-session-hook.sh" install || \
+    echo "note: the session hook was not registered — run $SPIRA_HOME/install-session-hook.sh install" >&2
+
 # A ROW THAT HAS GONE MUST STOP RUNNING. Otherwise the manifest is the source of truth only
 # for what starts, and a watcher deleted from it goes on polling — and goes on being believed
 # — until somebody reads `systemctl` output they had no reason to read.

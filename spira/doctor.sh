@@ -195,7 +195,7 @@ echo "the status line"
 # changes while the session is IDLE, which is the definition of background work: with no timer
 # the pane can only show what was already true at the last assistant message, and "safe to
 # clear" would arrive one turn after it stopped being useful.
-SETTINGS="$HOME/.claude/settings.json"
+SETTINGS="$SPIRA_CLIENT_SETTINGS"
 if [ ! -f "$SETTINGS" ]; then
     WARN "no client settings at $SETTINGS — the context meter is not on the status line" \
          "Point statusLine.command at $SPIRA_HOME/ctx-meter.sh, with refreshInterval beside it."
@@ -216,6 +216,29 @@ else
         *)           WARN "could not judge the status line configuration in $SETTINGS" ;;
     esac
 fi
+
+# AND THE SESSION HOOK, in the same file and for the same reason: nothing that lands in this
+# repository can register it, so what the harness owes is to say whether it is registered.
+# The failure this catches is not "never installed" — it is a registration still pointing at a
+# harness that was decommissioned, which goes on printing its banner into every session on the
+# box and looks, from inside that session, exactly like a working one.
+hookout="$("$SPIRA_HOME/install-session-hook.sh" status 2>&1)"; hookrc=$?
+if [ "$hookrc" = 0 ]; then
+    OK "the session hook is registered on every session-start event"
+else
+    WARN "the session hook is not registered — a new session is told nothing about the watchers" \
+         "Run $SPIRA_HOME/install-session-hook.sh install."
+fi
+# A COMMAND THAT IS NOT OURS IS REPORTED, NEVER REMOVED. Two session hooks both reporting on
+# watchers is the state this replaced, and which of them the operator wants is theirs to say.
+# A HERE-STRING AND NOT A PIPE, because the loop increments the warning tally and the right
+# side of a pipe is a subshell — every warning raised in one would be printed and then
+# forgotten by the count that decides what this command reports at the end.
+while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    WARN "another command is registered on that event:${l#*other}" \
+         "If it is stale, remove it with $SPIRA_HOME/install-session-hook.sh prune <substring>."
+done <<< "$(printf '%s\n' "$hookout" | grep '^  other' || true)"
 
 echo
 echo "writable state"

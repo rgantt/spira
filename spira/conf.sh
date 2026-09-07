@@ -54,6 +54,7 @@ SPIRA_CONF_KEYS="
 SPIRA_HOME_REPO SPIRA_DB SPIRA_RUN SPIRA_GOAL
 SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER SPIRA_WATCHERS
 SPIRA_ACTIONABLE SPIRA_ID_PREFIX SPIRA_HEALTH_TIMEOUT SPIRA_ANSWER_STATE SPIRA_NOTIFY_AGE
+SPIRA_CLIENT_SETTINGS SPIRA_HOOK_LINES
 SPIRA_COCKPIT SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
 SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
 SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE
@@ -239,6 +240,22 @@ spira_conf_defaults() {
     # A probe that runs out of time is DEGRADED, which is the honest reading: it did not
     # prove the watcher is seeing anything.
     : "${SPIRA_HEALTH_TIMEOUT:=10}"
+    # THE CODING AGENT'S OWN SETTINGS FILE — the one the client reads, not one of ours. The
+    # session hook is registered in it, and it is the only file in this harness that belongs
+    # to a program the harness does not ship. It is a key rather than a literal for one
+    # reason above all: a suite that asserted against the real path would edit the operator's
+    # live client configuration on every run.
+    : "${SPIRA_CLIENT_SETTINGS:=$HOME/.claude/settings.json}"
+    # HOW MANY LINES THE SESSION HOOK MAY SPEND, as a ceiling. Its output is prepended to a
+    # context window that has just opened, which is the most expensive place any text in this
+    # harness can go, so the budget is enforced by MEASUREMENT rather than hoped for: the
+    # status table and the latch commands are printed whole, and the preview of unread events
+    # is given exactly what is left over.
+    #
+    # The default leaves roughly half the output to the preview for a handful of watchers,
+    # which is a screenful and no more — the point of a catch-up is that it costs a glance.
+    # Zero means no budget at all, which is a thing to ask for rather than to fall into.
+    : "${SPIRA_HOOK_LINES:=32}"
     : "${SPIRA_COCKPIT:=$(dirname "$SPIRA_HOME")/cockpit}"
     : "${SPIRA_NOTIFY:=$SPIRA_COCKPIT/ask.sh}"
     # HOW LONG AN ACTIONABLE EVENT MAY WAIT WITH NO READER before it is escalated through a
