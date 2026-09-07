@@ -1007,6 +1007,124 @@ sys.stdout.write(re.sub(r"\s+", " ", re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", las
 }
 
 # --------------------------------------------------------------------------------------
+# trace_stats <logfile> -> KEY=value lines describing the session that is writing it:
+#
+#   TURNS  distinct assistant message ids
+#   CTX    the LAST assistant usage: input + cache_creation + cache_read
+#   TOOLS  tool_use blocks, total
+#   FILES  distinct file_path across Edit/Write/NotebookEdit
+#   QUIET  seconds since the trace last grew
+#   ACT    the last thing it did, as trace_last reports it
+#   SAID   the last non-empty assistant TEXT block
+#
+# WHY THESE AND NOT THE PROCESS TABLE. "Is an aeon healthy" was answerable only as "it holds
+# a bead and here is the last command it ran", which says nothing about whether the session
+# is making progress, near its context ceiling, or has quietly stopped. Every figure above
+# comes from the one artifact that knows: the stream-json trace.
+#
+# THE WHOLE SEGMENT, NOT A TAIL. `attempt_trace $f 0` — a turn count taken from the last
+# hundred kilobytes is not a turn count, it is a turn count minus however much was cut, and
+# nothing on the pane would say which. The segment is bounded by the attempt, not by the
+# file, so this stays proportional to the session being described rather than to every
+# session that has ever worked the bead.
+#
+# ONE READ, ONE PASS, ONE FORK. The collector calls this once per aeon per pass and the pane
+# only reads what it wrote; anything that walked the trace per figure would multiply the one
+# genuinely unbounded read here by the number of figures.
+#
+# THREE STATES, NOT TWO. A trace that cannot be read renders `?`, a trace with no assistant
+# event yet renders `-`, and a real reading renders a number. Collapsing the first two into
+# 0 is the failure the whole panel is built against: a broken read that looks like an idle
+# session displaces the suspicion that would have prompted a look
+# (law-absence-needs-a-positive-control).
+#
+# APOSTROPHES ARE FORBIDDEN IN THE PYTHON BELOW. It lives inside python3 -c '...' — the same
+# constraint as every other analyser here, and for the same reason: one would close the quote
+# and leave the file syntactically invalid.
+# --------------------------------------------------------------------------------------
+trace_stats() {
+    local f="${1:-}" m
+    m="$(stat -c %Y "$f" 2>/dev/null)"
+    if [ ! -r "$f" ] || [ -z "$m" ]; then
+        printf 'TURNS=?\nCTX=?\nTOOLS=?\nFILES=?\nQUIET=?\nACT=?\nSAID=?\n'
+        return 0
+    fi
+    # MTIME, NOT AN EVENT TIMESTAMP. stream-json events carry no wall clock of their own, and
+    # the heartbeat in aeon.sh already treats trace growth as the liveness signal — so this is
+    # the same measure the stall detector acts on rather than a second opinion about it.
+    printf 'QUIET=%d\n' $(( $(date +%s) - m ))
+    attempt_trace "$f" 0 2>/dev/null | python3 -c '
+import sys, json, re
+
+ALLOW = re.compile(r"[^ A-Za-z0-9._/:,()#+-]")
+def clean(s, n=96):
+    # SAFE FOR A KEY=value FILE, AT THE SOURCE, by the same allowlist trace_last uses. These
+    # are arbitrary strings from an agent — a shell command, a code fragment, a sentence. A
+    # newline injects extra lines into the snapshot and an "=" makes a bogus key; the pane
+    # rendered a tools help page where the ops summary belongs before this was clamped.
+    return re.sub(r"\s+", " ", ALLOW.sub(" ", s)).strip()[:n]
+
+seen, ids, files = False, set(), set()
+tools, ctx, act, said = 0, None, "", ""
+EDITS = ("Edit", "Write", "NotebookEdit")
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    if e.get("type") != "assistant":
+        continue
+    seen = True
+    m = e.get("message") or {}
+    # DEDUPED BY message.id, because --include-partial-messages writes one row per content
+    # BLOCK and the rows of a single message share its id. Counting rows would report a turn
+    # per block, which is several per turn and climbs with how chatty the turn was. The
+    # blocks themselves are not duplicated across those rows, so tools and files are counted
+    # from every row and only the turn count is a set.
+    if m.get("id"):
+        ids.add(m["id"])
+    u = m.get("usage")
+    if isinstance(u, dict):
+        # THE CLIENTS OWN DEFINITION of total_input_tokens, so this and the status lines
+        # ctx meter are the same measurement rather than two similar ones. LAST wins: a
+        # context window is a level, not a total, and summing usages would report the sum of
+        # every prompt ever sent as the size of the current one.
+        ctx = ((u.get("input_tokens") or 0)
+               + (u.get("cache_creation_input_tokens") or 0)
+               + (u.get("cache_read_input_tokens") or 0))
+    for c in m.get("content") or []:
+        t = c.get("type")
+        if t == "tool_use":
+            tools += 1
+            inp = c.get("input") or {}
+            if c.get("name") in EDITS:
+                fp = inp.get("file_path") or inp.get("notebook_path")
+                if fp:
+                    files.add(str(fp))
+            act = "%s %s" % (c.get("name") or "?",
+                             str(inp.get("command") or inp.get("file_path") or "")[:200])
+        elif t == "text" and (c.get("text") or "").strip():
+            said = c["text"].strip().replace("\n", " ")[:200]
+            act = said
+
+if not seen:
+    for k in ("TURNS", "CTX", "TOOLS", "FILES", "ACT", "SAID"):
+        sys.stdout.write("%s=-\n" % k)
+else:
+    sys.stdout.write("TURNS=%d\n" % len(ids))
+    sys.stdout.write("CTX=%s\n" % ("-" if ctx is None else ctx))
+    sys.stdout.write("TOOLS=%d\n" % tools)
+    sys.stdout.write("FILES=%d\n" % len(files))
+    sys.stdout.write("ACT=%s\n" % (clean(act) or "-"))
+    sys.stdout.write("SAID=%s\n" % (clean(said) or "-"))
+' 2>/dev/null
+}
+
+# --------------------------------------------------------------------------------------
 # still_waiting <logfile> -> 0 if the silence is a legitimate wait, 1 if it is a stall.
 #
 # (the operator, verbatim: "before you kill an aeon for being idle ... do a quick inference

@@ -205,6 +205,17 @@ age_str() {
 # output to match — there is no point emitting rows nothing can show.
 MAX_SECTION_ROWS=20
 
+# NEXT AND RECENT ARE HELD TO FIVE, AND THEY ARE TWO CONSTANTS RATHER THAN ONE. The operator
+# asked for more about the sessions that are RUNNING and was explicit about what pays for it:
+# five queued beads and five events are enough. They are separate keys because they answer
+# different questions and will not stay the same number — a shared constant is how two
+# sections come to be resized together by someone who meant to resize one.
+#
+# The generic cap above still governs CI, which is a list of work parked since yesterday and
+# has no fixed useful length.
+MAX_NEXT_ROWS=5
+MAX_RECENT_ROWS=5
+
 # Read both snapshots into the shell. Called once per frame; every section reads what it
 # left behind.
 load_snapshot() {
@@ -386,10 +397,17 @@ unread_row() {   # unread_row <label> <what could not be read>
         "$C_DIM" "$1" "$C_RST" "$C_BAD" "$C_B" "$C_RST" "$C_DIM" "$2" "$C_RST"
 }
 
-# NOW — who is working, on what, and what they last actually did. An aeon has a name
-# so two of them are distinguishable; the action comes from its stream-json trace.
-# Three rows per aeon, so this is the section that grows fastest and the one the
-# round-robin share exists to keep in its lane.
+# NOW — who is working, on what, HOW THE SESSION IS DOING, and the last thing it said.
+#
+# FOUR ROWS PER AEON, because three of them answered "is it alive" and none answered "is it
+# well". A name and a last command cannot distinguish a session forty turns in and near its
+# context ceiling from one that started a minute ago, nor either from one that stopped
+# writing to its trace twenty minutes back — and that last case is the one worth catching,
+# since it is the state the stall detector is about to act on. The figures come from the
+# collector, which reads each trace once a pass; this section only formats them.
+#
+# It is therefore the section that grows fastest, and the one the round-robin share exists to
+# keep in its lane. It is NOT the section the generic cap trims — see `frame`.
 now_section() {
     if [ -z "${SP_AEON_N:-}" ] || [ "${SP_AEON_N:-}" = "?" ]; then
         unread_row NOW "cannot read the aeon roster"
@@ -404,12 +422,25 @@ now_section() {
         eval "local nm=\${SP_AEON${i}_NAME:-?} fy=\${SP_AEON${i}_FAYTH:-?}"
         eval "local bd=\${SP_AEON${i}_BEAD:-?} mn=\${SP_AEON${i}_MIN:-?} ac=\${SP_AEON${i}_ACT:-}"
         eval "local ti=\${SP_AEON${i}_TITLE:-} pr=\${SP_AEON${i}_PRI:-?}"
+        # EVERY ONE OF THESE DEFAULTS TO `?`, NEVER TO 0 OR TO EMPTY. An unset key here means
+        # the collector could not read the trace, and a session whose trace cannot be read
+        # rendering as "0 turns, 0 files" is an all-clear that displaces the suspicion which
+        # would have prompted a look (law-absence-needs-a-positive-control).
+        eval "local tn=\${SP_AEON${i}_TURNS:-?} cx=\${SP_AEON${i}_CTX:-?}"
+        eval "local fl=\${SP_AEON${i}_FILES:-?} qt=\${SP_AEON${i}_QUIET:-?}"
+        eval "local sd=\${SP_AEON${i}_SAID:-}"
         # WHO, then WHAT, then the live action — one question per line. Crammed onto
         # one row the name, the bead, the elapsed time and a shell command ran past the
         # pane width and truncated mid-word.
-        printf ' %s%s%s    %s%s%s %sthe %s · %sm%s\n' \
+        #
+        # THE STATS SHARE THE NAME'S ROW because they describe the same thing the name does:
+        # the session, not the bead. Only the tail is fitted — the name is the one field on
+        # this row that must never be cut, since it is how two aeons are told apart.
+        fit "the $fy · ${mn}m · $tn turns · ctx $(tok "$cx") · $fl files" \
+            $(( COLS - 9 - ${#nm} ))
+        printf ' %s%s%s    %s%s%s %s%s%s\n' \
             "$C_DIM" "$([ "$i" = 0 ] && printf 'NOW' || printf '   ')" "$C_RST" \
-            "$C_OK$C_B" "$nm" "$C_RST" "$C_DIM" "$fy" "$mn" "$C_RST"
+            "$C_OK$C_B" "$nm" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
         # Same shape as a NEXT row, deliberately: id in the accent colour, title dim,
         # so a bead being worked and a bead about to be worked read as the same kind of
         # thing in the same place on the line.
@@ -423,10 +454,39 @@ now_section() {
         fit "${ti:-?}" $(( COLS - 12 - (${#bd} > 14 ? ${#bd} : 14) ))
         printf '        %sP%s%s %s%-14s%s %s%s%s\n' \
             "$(pri_colour "P$pr")" "$pr" "$C_RST" "$C_ACC" "$bd" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
-        if [ -n "$ac" ]; then
-            fit "$ac" $(( COLS - 10 ))
-            printf '        %s↳ %s%s\n' "$C_DIM" "$FIT" "$C_RST"
+        # THE ACTION AND THE SILENCE ON ONE ROW, at opposite ends of it. They are one fact
+        # read together and useless read apart: `Bash gh run watch` quiet for eleven minutes
+        # is a session waiting correctly, and the same command quiet for twenty-five is the
+        # one the reaper is coming for. The thresholds are the stall detector's own — 300s is
+        # where a silence stops being ordinary thinking, and 1200s is ten beats of 120s,
+        # after which the heartbeat stops and the lease starts running out.
+        local qs qcol
+        if [ "$qt" = "?" ] || [ "$qt" = "-" ]; then qs="quiet $qt"; qcol="$C_BAD$C_B"
+        else
+            if [ "$qt" -lt 120 ] 2>/dev/null; then qs="quiet ${qt}s"; else qs="quiet $(( qt / 60 ))m"; fi
+            if   [ "$qt" -ge 1200 ] 2>/dev/null; then qcol="$C_BAD$C_B"
+            elif [ "$qt" -ge 300 ]  2>/dev/null; then qcol="$C_WARN"
+            else                                      qcol="$C_DIM"; fi
         fi
+        # THE PAD IS COMPUTED FROM THE FITTED TEXT, not from the raw. Right-aligning against a
+        # length the row does not have is how a pane that has cut a line then overflows it by
+        # exactly what it cut — the terminal has autowrap off and cuts silently, which is the
+        # failure the ellipsis exists to prevent, arriving from the other side.
+        local aw=$(( COLS - 12 - ${#qs} )); [ "$aw" -lt 2 ] && aw=2
+        fit "${ac:--}" "$aw"
+        local pad=$(( COLS - 10 - ${#FIT} - ${#qs} )); [ "$pad" -lt 1 ] && pad=1
+        printf '        %s↳ %s%s%*s%s%s%s\n' \
+            "$C_DIM" "$FIT" "$C_RST" "$pad" "" "$qcol" "$qs" "$C_RST"
+        # WHAT IT LAST SAID, IN ITS OWN WORDS — omitted when there is nothing. A tool call
+        # says what a session is doing; only its prose says what it thinks it is doing, which
+        # is the difference between "running a test suite" and "running the token suite before
+        # touching the meter". A row of quotation marks around a dash would be worse than the
+        # row not being there, so `-` and `?` are treated as nothing: the read already failed
+        # visibly on the three rows above.
+        case "$sd" in ''|'-'|'?') ;; *)
+            fit "$sd" $(( COLS - 12 ))
+            printf '        %s“ %s ”%s\n' "$C_DIM" "$FIT" "$C_RST" ;;
+        esac
         i=$((i+1))
     done
 }
@@ -539,7 +599,7 @@ next_section() {
     printf ' %sNEXT%s   %s%s ready%s %s— next to be claimed:%s\n' "$C_DIM" "$C_RST" \
         "$C_B" "${SP_NEXT_N}" "$C_RST" "$C_DIM" "$C_RST"
     local i=0 raw
-    while [ "$i" -lt "$MAX_SECTION_ROWS" ]; do
+    while [ "$i" -lt "$MAX_NEXT_ROWS" ]; do
         eval "raw=\${SP_NEXT$i:-}"
         [ -n "$raw" ] || break
         next_row "$raw"
@@ -570,8 +630,11 @@ recent_section() {
     # told RECENT wanted a single row and handed the rest of the column to NEXT. The section
     # rendering itself wrong and the column's arithmetic being wrong were one defect.
     printf ' %sRECENT%s %s\n' "$C_DIM" "$C_RST" "$(recent_row "$ev" 8)"
+    # FROM ONE, BECAUSE THE HEADER ALREADY SPENT EVENT ZERO. The cap counts EVENTS, not the
+    # rows beneath the label — five events is five events whether or not the newest of them
+    # shares a line with the word RECENT.
     i=1
-    while [ "$i" -lt "$MAX_SECTION_ROWS" ]; do
+    while [ "$i" -lt "$MAX_RECENT_ROWS" ]; do
         eval "ev=\${SP_EVENT$i:-}"
         [ -n "$ev" ] || break
         printf '        %s\n' "$(recent_row "$ev" 8)"
@@ -803,15 +866,22 @@ frame() {
     mapfile -t CI       < <(ci_section)
     mapfile -t STANDING < <(standing_lines)
 
-    # Each want is capped at MAX_SECTION_ROWS here as well as at the collector, because the
-    # two caps guard different failures: the collector's stops it writing rows nothing can
-    # show, and this one stops a section that grows from a variable-length source — NOW
-    # emits three rows per aeon — from taking the column when the collector was generous.
+    # THE GENERIC CAP APPLIES TO CI AND TO NOTHING ELSE NOW.
+    #
+    # NEXT and RECENT bound themselves at MAX_NEXT_ROWS and MAX_RECENT_ROWS while rendering,
+    # so a second cap over them would only ever be dead code that looked load-bearing.
+    #
+    # AND NOW IS DELIBERATELY UNCAPPED HERE. Its want is four rows per live aeon, which is
+    # already its own bound — a figure set by how many sessions are running, not by a number
+    # written down here. Holding it to twenty as well would mean the section that just got
+    # four rows deep is the first one the allocator trims, which is exactly backwards: it is
+    # the section describing work in flight, and with NEXT and RECENT at five each the
+    # round-robin has the rows to give it.
+    #
+    # CI keeps the generic cap because it is a list rather than a glance, and an unbounded one
+    # — every bead parked on a run — could otherwise take the whole column.
     local -a want=("${#NOW[@]}" "${#NEXT[@]}" "${#RECENT[@]}" "${#CI[@]}")
-    local i
-    for (( i = 0; i < ${#want[@]}; i++ )); do
-        [ "${want[i]}" -gt "$MAX_SECTION_ROWS" ] && want[i]="$MAX_SECTION_ROWS"
-    done
+    [ "${want[3]}" -gt "$MAX_SECTION_ROWS" ] && want[3]="$MAX_SECTION_ROWS"
     # TOKENS counts as FIXED, alongside the header and the standing figures: every one of its
     # rows is a number that is always worth its row, and the constraint that stops all other
     # work must not be what the allocator elides on a short pane.

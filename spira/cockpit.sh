@@ -86,18 +86,12 @@ probe() {
     for pf in "$SPIRA_RUN"/aeon-*.pid; do
         [ -e "$pf" ] || continue
         aeon_alive "$pf" || continue
-        local base name bead fay secs act
+        local base name bead fay secs
         base="$(basename "$pf" .pid)"          # aeon-<fayth>-<bead>
         fay="$(printf '%s' "$base" | cut -d- -f2)"
         bead="$(printf '%s' "$base" | cut -d- -f3-)"
         name="$(aeon_named "$pf")"
         secs="$(ps -o etimes= -p "$(cat "$pf" 2>/dev/null)" 2>/dev/null | tr -d ' ')"
-        # SANITISE HARD. This value is arbitrary text from an agent's trace — a shell
-        # command, a code fragment, whatever it last did. Newlines in it inject extra lines
-        # into the snapshot, and any that contain `=` become bogus keys; the pane then
-        # rendered rustfmt's help text where the ops summary belongs. Strip to a single
-        # line, drop the characters that make a KEY=value file ambiguous, then truncate.
-        act="$(trace_last "$SPIRA_RUN/$bead.log" 2>/dev/null)"
         # The title, so NOW says what is being worked and not only its id — the same help
         # NEXT gives for queued work.
         # THE PRIORITY COMES BACK WITH THE TITLE, from the one call already being made.
@@ -120,7 +114,22 @@ print("%s\t%s" % (i.get("priority"), re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.
         echo "SP_AEON${i}_FAYTH=${fay:-?}"
         echo "SP_AEON${i}_BEAD=${bead:-?}"
         echo "SP_AEON${i}_MIN=$(( ${secs:-0} / 60 ))"
-        echo "SP_AEON${i}_ACT=${act:-(no trace yet)}"
+        # HOW HEALTHY THE SESSION IS, not merely that it exists. TURNS CTX TOOLS FILES QUIET
+        # ACT SAID, from ONE streaming read of the aeon's stream-json trace — the only
+        # artifact that knows any of it. Held to one read per aeon per pass because the trace
+        # is the single thing here that grows without bound; the pane reads what this wrote
+        # and never opens the file itself.
+        #
+        # trace_stats SANITISES ITS OWN VALUES, and it has to: they are arbitrary text from an
+        # agent — a shell command, a code fragment, a sentence — and this file is sourced by
+        # the pane with no parser. A newline injects extra lines and an "=" makes a bogus key;
+        # the pane rendered a tools help page where the ops summary belongs before that was
+        # clamped at the source.
+        #
+        # A KEY IT DOES NOT EMIT STAYS UNSET, and the renderer shows `?` for it. That is the
+        # wanted behaviour rather than a gap: a failed read must never arrive as a zero
+        # (law-absence-needs-a-positive-control).
+        trace_stats "$SPIRA_RUN/$bead.log" 2>/dev/null | sed "s/^/SP_AEON${i}_/"
         i=$((i+1))
     done
     echo "SP_AEON_N=$i"
@@ -141,11 +150,12 @@ rows = d if isinstance(d, list) else [d]
 # APOSTROPHES ARE FORBIDDEN IN THIS BLOCK. It lives inside python3 -c '...', so one
 # would close the quote and leave the whole file syntactically invalid.
 #
-# TWENTY, NOT FOUR. The pane is a full-height column now and sizes each section to the rows
-# it is given, so the COLLECTOR is the binding constraint before the renderer is: four keys
-# render as four rows into twenty rows of space, which looks broken in a new way. The cap
-# matches health.sh MAX_SECTION_ROWS -- there is no point emitting more than can be shown.
-for n, i in enumerate(rows[:20]):
+# FIVE, AND THE RENDERER AGREES. This is the head of a queue, not the queue: five is what
+# the operator asked for, and the rows it gives back went to NOW, which now says how healthy
+# each session is rather than only that one exists. The cap matches health.sh MAX_NEXT_ROWS
+# -- there is no point emitting more than can be shown, and a collector cap LOOSER than the
+# renderer only means the renderer does the trimming instead.
+for n, i in enumerate(rows[:5]):
     print("SP_NEXT%d=P%s %s %s" % (n, i.get("priority"), i["id"], (i.get("title") or "")[:80].replace("=", "-")))
 print("SP_NEXT_N=%d" % len(rows))
 ' 2>/dev/null
@@ -243,7 +253,12 @@ for line in sys.stdin:
     seen.add(key)
     rows.append(parts)
 
-for n, parts in enumerate(rows):
+# FIVE ROWS, AND THE CAP IS APPLIED HERE RATHER THAN ON THE PIPE ABOVE. The head above is
+# the MERGE WINDOW and has to stay wider than the cap, because the dedup that follows it
+# removes rows: trimming to five before it would emit four events and call that the cap.
+# Five matches MAX_RECENT_ROWS in health.sh, the figure the operator asked for. The
+# renderer holds it too, so a wider snapshot from an older collector still renders five.
+for n, parts in enumerate(rows[:5]):
     try:
         t = datetime.datetime.strptime(parts[0], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
         secs = int((now - t).total_seconds())
