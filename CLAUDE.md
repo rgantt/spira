@@ -46,7 +46,9 @@ files through those declarations and refuses a branch where a suite declares not
 is the one thing there is to remember when adding a suite. Err wide: a suite run needlessly
 costs seconds, while a file no suite claims to cover forces the whole set on every branch that
 touches it. Changing a shared file — `lib.sh`, `conf.sh`, `testdb.sh`, any `gate*.sh` — selects
-everything, and so does any path no suite claims. `spira/gate-select.sh` is the selector and
+everything, and so does any path no suite claims. A `# covers:` glob outranks a file's
+extension, so a suite may claim prose and should where prose is executable in effect — the
+personas are `.md` files. `spira/gate-select.sh` is the selector and
 `--lint` is what the gate runs; `gate-full.sh` runs the whole set against the base ref daily
 and escalates on red, which is what makes a hole in the map a fact within a day rather than
 never.

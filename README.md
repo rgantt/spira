@@ -256,7 +256,10 @@ matters here is running too FEW suites and that failure is green:
 - a shared file — `lib.sh`, `conf.sh`, `testdb.sh`, any `gate*.sh` — selects everything;
 - a changed path no suite claims selects everything, so a new file is never quietly skipped;
 - an absent, empty or unreadable changed-file list selects everything;
-- only an explicit list of inert paths — prose, the ignore file, images — may select nothing.
+- only an explicit list of inert paths — prose, the ignore file, images — may select nothing,
+  and only where no suite claims them: a `# covers:` glob naming a file outranks its
+  extension, because the extension is a guess that it cannot change behaviour and the glob
+  is a statement that it can. The personas an aeon is executed with are `.md` files.
 
 Two mechanisms keep the map honest, because it is maintained by hand and decays the first time
 somebody moves a function between two scripts. The gate refuses a branch where any suite
