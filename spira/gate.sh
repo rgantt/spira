@@ -152,6 +152,19 @@ TREE="$SPIRA_RUN/worktree/.gate.$(basename "$REPO")"
 mkdir -p "$(dirname "$TREE")"
 spira_require flock || exit 1
 exec 9>"$TREE.lock" || { echo "gate: cannot open the gate tree's lock at $TREE.lock" >&2; exit 1; }
+
+# THE METER IS DEFINED BEFORE THE WAIT, because the wait is the thing it measures. A meter
+# that only the runs which obtained the tree can write is blind to the one reading that says
+# serialising has stopped being enough: the run that waited the whole budget and got nothing.
+# `waited=` and `ran=` start at zero so it is safe to call from any exit below this line.
+GATE_LOG="${SPIRA_GATE_LOG:-$SPIRA_RUN/gate.log}"
+GATE_WAITED=0
+GATE_START=$(date +%s)
+gate_meter() {           # gate_meter <exit-status> [<note>]
+    printf '%s %s %s waited=%ss ran=%ss rc=%s%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$REPO_NAME" "$BR" \
+        "$GATE_WAITED" "$(( $(date +%s) - GATE_START ))" "${1:-?}" "${2:+ $2}" >> "$GATE_LOG" 2>/dev/null
+}
 # THE WAIT IS DERIVED FROM THE RUN, not picked. One holder can legitimately occupy the tree
 # for two full gate timeouts — the branch's trial, then the same command against the base to
 # establish whose fault a failure is — so a wait shorter than twice the timeout would time
@@ -159,6 +172,11 @@ exec 9>"$TREE.lock" || { echo "gate: cannot open the gate tree's lock at $TREE.l
 GATE_LOCK_WAIT="${SPIRA_GATE_LOCK_WAIT:-$(( ${SPIRA_GATE_TIMEOUT:-900} * 4 ))}"
 GATE_WAIT0=$(date +%s)
 if ! flock -w "$GATE_LOCK_WAIT" 9; then
+    # METERED AS A REFUSAL, marked `lock-timeout` so it is not read as a branch that failed
+    # fast: `ran=0s` beside the full budget is what a queue too long for the lock looks like,
+    # and it is the reading that argues for a tree per branch.
+    GATE_WAITED=$(( $(date +%s) - GATE_WAIT0 )); GATE_START=$(date +%s)
+    gate_meter 1 lock-timeout
     echo "gate: another gate has held $TREE for ${GATE_LOCK_WAIT}s — no verdict on $BR" >&2
     echo "gate: this is a queue, not a fault in the branch; retry, or raise SPIRA_GATE_LOCK_WAIT." >&2
     exit 1
@@ -167,15 +185,9 @@ GATE_WAITED=$(( $(date +%s) - GATE_WAIT0 ))
 GATE_START=$(date +%s)
 [ "$GATE_WAITED" -gt 0 ] && echo "gate: waited ${GATE_WAITED}s for $TREE" >&2
 
-# THE METER IS WRITTEN FROM THE EXIT TRAP, so every way out of the trial is counted — the
-# pass, the branch's own failure, and the checkout that could not be proved. A meter only
-# the happy path writes measures the happy path.
-GATE_LOG="${SPIRA_GATE_LOG:-$SPIRA_RUN/gate.log}"
-gate_meter() {           # gate_meter <exit-status>
-    printf '%s %s %s waited=%ss ran=%ss rc=%s\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$REPO_NAME" "$BR" \
-        "$GATE_WAITED" "$(( $(date +%s) - GATE_START ))" "${1:-?}" >> "$GATE_LOG" 2>/dev/null
-}
+# EVERY OTHER WAY OUT IS COUNTED FROM THE EXIT TRAP — the pass, the branch's own failure, and
+# the checkout that could not be proved. A meter only the happy path writes measures the
+# happy path.
 
 # gate_at <ref> -> 0 with TREE PROVEN to hold that ref's commit.
 #

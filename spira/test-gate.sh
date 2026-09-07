@@ -19,7 +19,8 @@
 #     gate command, which records the branch it was told about beside what the tree actually
 #     contained. A pair that disagrees is the defect, in one line.
 #   • concurrent gates on different branches each get their own verdict.
-#   • the wait is metered, so serialisation is seen before it is felt.
+#   • the wait is metered — including the wait that runs out, which is the reading that
+#     argues the lock has stopped being enough — so serialisation is seen before it is felt.
 #   • a gate that cannot obtain the tree, or cannot prove what the tree holds, REFUSES.
 #     Both are fails-closed: "could not check" is not a pass.
 #
@@ -143,6 +144,11 @@ out="$(rungate spira/good SPIRA_GATE_LOCK_WAIT=1)"; rc=$?
 want "and says there is no verdict" "no verdict" "$out"
 want "and says it is a queue, not the branch's fault" "not a fault in the branch" "$out"
 is "and the gate command never ran" "" "$(cat "$RAN")"
+# THE REFUSAL IS THE READING THE METER EXISTS FOR — a run that waited its whole budget and
+# judged nothing is what says the lock has stopped being enough, so a meter that drops it is
+# blind exactly where it is needed.
+want "and the refusal is metered as a lock-timeout" "rc=1 lock-timeout" "$(meter)"
+want "with nothing recorded as having run" "ran=0s" "$(grep lock-timeout "$GATELOG")"
 wait $holder 2>/dev/null
 
 echo "a tree that cannot be identified is refused, not judged"
