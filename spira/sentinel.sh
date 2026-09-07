@@ -323,7 +323,16 @@ for i in (d if isinstance(d, list) else [d]):
     repo = next((l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")), home)
     # The third column is supersession, read from the dependencies this query already
     # returns rather than fetched per bead.
-    sup = 1 if any(x.get("dependency_type") == "supersedes" for x in (i.get("dependencies") or [])) else 0
+    #
+    # `bd list` AND `bd show` NAME THE SAME FIELD DIFFERENTLY. show returns
+    # {"dependency_type": "supersedes"}; list returns {"type": "supersedes"}. Reading only
+    # the show spelling off a list row yields None for every dependency, so `sup` was 0 for
+    # every bead and this exemption had never once fired: sp-dvlq was superseded by sp-35pl,
+    # carried the dependency, and was still reopened as closed-without-landing every two
+    # minutes. Accept either spelling rather than the one the neighbouring command happened
+    # to use, because nothing here can tell which shape it was handed.
+    sup = 1 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
+                   for x in (i.get("dependencies") or [])) else 0
     print("%s\t%s\t%s" % (i["id"], repo, sup))' "$home_repo" 2>/dev/null
     done <<< "$PARTITIONS" |
     # Sorted on the REPOSITORY column first, because the loop above caches one `git log`

@@ -238,6 +238,39 @@ out="$(sentinel)"
 want "closed-not-landed sweeps the incident partition too" "reopened sp-incx — closed without landing" "$out"
 is   "and the bead is open again"                          "open" "$(status_of sp-incx)"
 
+# A SUPERSEDED BEAD IS THE ONE CLOSE THAT IS RIGHT TO HAVE NO COMMIT NAMING IT. Its work
+# landed under the successor's id, so CHECK 5's question — "does any commit name this bead?"
+# — is answered "no" by a bead that is perfectly finished. The exemption reads the
+# `supersedes` dependency `bd supersede` records.
+#
+# THE DEPENDENCY IS RECORDED BY `bd supersede`, NOT SEEDED AS A LITERAL, because the defect
+# this covers was entirely in the SHAPE bd returns: `bd show` names the field
+# "dependency_type" and `bd list` names it "type", and the sentinel read the show spelling
+# off a list row. Every dependency therefore looked like None, `sup` was 0 for every bead in
+# the database, and the exemption had never fired once — sp-dvlq, superseded by sp-35pl, was
+# reopened as closed-without-landing every two minutes until someone read the log. A seeded
+# literal would encode whichever spelling the author had in mind and pass against the bug.
+seed_superseded() {
+    seed_closed_incident
+    testdb_seed <<'JSONL'
+{"id":"sp-supx","title":"the successor that actually landed","status":"closed","issue_type":"task","labels":["spira","incident"],"updated_at":"2026-09-04T00:00:00Z"}
+{"id":"sp-oldx","title":"the duplicate it replaced","status":"open","issue_type":"task","labels":["spira","incident"],"updated_at":"2026-09-04T00:00:00Z"}
+JSONL
+    : > "$RUN/sp-oldx.log"
+    B supersede sp-oldx --with sp-supx >/dev/null 2>&1
+}
+
+seed_superseded
+is   "the fixture's duplicate is closed by the supersede" "closed" "$(status_of sp-oldx)"
+# THE POSITIVE CONTROL FOR THIS BLOCK. sp-incx is seeded identically and carries no
+# supersedes edge; it MUST still be reopened in the same pass. Without it, an exemption that
+# had grown to swallow every bead — or a pass that judged nothing at all — would look exactly
+# like the fix working (law-absence-needs-a-positive-control).
+out="$(sentinel)"
+want   "a closed bead with no supersedes edge is still reopened" "reopened sp-incx — closed without landing" "$out"
+nowant "but the superseded one is not judged for landing"        "sp-oldx" "$out"
+is     "and it stays closed"                                     "closed" "$(status_of sp-oldx)"
+
 # ...and a chamber that declares no partition at all says so, rather than sweeping nothing
 # quietly. A reaper with nothing to reap over and a harness with no dead leases write the
 # same empty output.
