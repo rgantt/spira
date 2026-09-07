@@ -55,7 +55,13 @@ mkdir -p "$RUN/worktree" "$SH"
 # broken rather than the fixture being incomplete.
 cp "$HERE/landing.sh" "$HERE/lib.sh" "$HERE/conf.sh" "$SH/"
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SH/$1"; chmod +x "$SH/$1"; }
-stub gate.sh 'exit ${GATE_RC:-0}'
+# The stub speaks the gate's PROTOCOL, not just its exit status: landing.sh reads the
+# machine-readable VERDICT line for the reason it records and escalates on, so a stub that
+# only exited would test half the contract and every reason would silently read "unspecified".
+stub gate.sh 'rc=${GATE_RC:-0}
+case "$rc" in 0) v=PASS;; 75) v=NO_VERDICT;; 76) v=BASE_FAIL;; *) v=FAIL;; esac
+echo "gate: VERDICT=$v reason=${GATE_REASON:-stub} branch=$1 repo=${2:-?}" >&2
+exit $rc'
 
 B() { bd -C "$SPIRA_DB" "$@"; }
 status_of() { B show "$1" --json 2>/dev/null | python3 -c '
@@ -75,15 +81,13 @@ landing() {
     # before a map is written were reading the operator's own seven repositories and counting
     # THEIR branches, so a pass over an empty fixture reported two branches seen and the
     # suite looked like a counting bug in landing.sh (law-gates-run-in-a-clean-environment).
-    # SPIRA_GATE_ADVISORY PINNED, for the same reason and by the same law. Every case below
-    # asserts what an ENFORCING gate does — a red gate reopens the bead, the reopen is a
-    # movement, the assignee is cleared. The operator's spira.conf currently sets it to 1, so
-    # the suite inherited it and four of those assertions went red against code that was
-    # correct: 73/4 inherited, 77/0 pinned. A suite that reads the box it runs on is testing
-    # the box (law-gates-run-in-a-clean-environment). Advisory mode has its own case below;
-    # it sets this deliberately rather than by accident.
+    # THERE IS NO ADVISORY KNOB LEFT TO PIN. It was pinned here because the operator's
+    # spira.conf set it to 1, so the suite inherited it and four assertions went red against
+    # correct code (73/4 inherited, 77/0 pinned) — a suite that reads the box it runs on is
+    # testing the box. The knob is now deleted rather than defaulted: the reds that made
+    # advisory mode necessary are BASE_FAIL and NO_VERDICT, and they no longer charge anyone.
     SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
-    SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GATE_ADVISORY="${ADVISORY:-0}" \
+    SPIRA_REPO_MAP="$SH/repo-map" \
         bash "$SH/landing.sh" 2>&1
 }
 mailbox() { cat "$RUN/landing.progress" 2>/dev/null; }
@@ -184,26 +188,75 @@ is   "and the dead claimant's name is gone, so it can be claimed again" "" "$(as
 # pass just as well against a landing pass that had stopped gating at all.
 # --------------------------------------------------------------------------------------
 seed; branch sp-bad; B update sp-bad --assignee aeon-live >/dev/null 2>&1
-out="$(GATE_RC=75 landing)"
-want   "a withheld verdict says the tree was busy"  "no verdict on spira/sp-bad" "$out"
+out="$(GATE_RC=75 GATE_REASON=lock-timeout landing)"
+want   "a withheld verdict names the outcome"       "gate NO_VERDICT" "$out"
+want   "and the reason it could not judge"          "lock-timeout" "$out"
 nowant "and does not blame the branch"              "failed the gate"            "$out"
 is     "and the bead is left closed for the next pass" closed "$(status_of sp-bad)"
 is     "and its claimant is untouched"              aeon-live "$(assignee_of sp-bad)"
 is     "and nothing is reported as movement"        ""        "$(mailbox)"
 
 # --------------------------------------------------------------------------------------
-# ADVISORY MODE — the gate reports and the work lands anyway. Its whole purpose is to survive
-# a period when a red gate says more about the box than about the branch, so the property to
-# hold is narrow and easy to get wrong in either direction: the bead must NOT be reopened, the
-# branch must actually reach the base ref, and the verdict must still be recorded. A switch
-# that quietly discarded the verdict would be indistinguishable from having no gate, which is
-# the thing this was chosen INSTEAD of.
-seed; branch sp-adv
-out="$(ADVISORY=1 GATE_RC=1 landing)"
-want "advisory: a red gate says so in the log"  "gate FAILED but advisory mode is on" "$out"
-nowant "advisory: and does NOT reopen the bead" "reopened sp-adv"                     "$out"
-is   "advisory: the bead stays closed"          closed  "$(status_of sp-adv)"
-want "advisory: and the branch lands"           "landed spira/sp-adv"                 "$(mailbox)"
+# BASE_FAIL — THE REPOSITORY'S OWN BASE IS RED, so the branch is not at fault and is not
+# charged. This outcome REPLACED advisory mode: advisory existed because reds of exactly this
+# kind reopened finished work and charged it an attempt, and the escape hatch chosen was to
+# land everything anyway. Nothing lands here either — a gate fails closed — but the bead is
+# left exactly as its aeon left it.
+#
+# Asserted against GATE_RC=1 above, which is the control: one status apart, opposite
+# outcomes. Five beads were reopened as "failed the gate" on 2026-09-06 in the same breath as
+# the gate's own output saying the branch did not cause it (sp-d21).
+# --------------------------------------------------------------------------------------
+seed; branch sp-bad; B update sp-bad --assignee aeon-live >/dev/null 2>&1
+out="$(GATE_RC=76 GATE_REASON=base-red landing)"
+want   "a base-red gate names the outcome"    "gate BASE_FAIL" "$out"
+nowant "and does not blame the branch"        "failed the gate" "$out"
+is     "and the bead is left closed"          closed    "$(status_of sp-bad)"
+is     "and its claimant is untouched"        aeon-live "$(assignee_of sp-bad)"
+nowant "and nothing landed"                   "landed"  "$(mailbox)"
+
+# --------------------------------------------------------------------------------------
+# A MACHINERY FAULT THAT REPEATS IS AN ESCALATION, not a retry forever. "The next pass takes
+# it" is true every time it is said and is also the exact sound of a livelock: on 2026-09-07
+# it was said eleven times in a row while origin/main sat still for fifty minutes, and
+# nothing turned the repetition into a signal.
+#
+# THE FIRST TWO MUST BE SILENT — that is the control. Paging on one lock-timeout would be a
+# false alert, and a false alert is a real cost (law-alerts-must-be-actionable); a case that
+# only asserted "it escalates" would pass against a pass that escalated every single time.
+# --------------------------------------------------------------------------------------
+seed; branch sp-bad; rm -rf "$RUN/noverdict"
+out="$(GATE_RC=75 GATE_REASON=lock-timeout landing)"
+nowant "the first withheld verdict escalates nothing" "escalated" "$out"
+seed; branch sp-bad
+out="$(GATE_RC=75 GATE_REASON=lock-timeout landing)"
+nowant "nor does the second"                          "escalated" "$out"
+seed; branch sp-bad
+out="$(GATE_RC=75 GATE_REASON=lock-timeout landing)"
+want   "the third says the branch cannot be judged"   "escalated sp-bad" "$out"
+is     "and the bead is STILL not reopened"           closed "$(status_of sp-bad)"
+seed; branch sp-bad
+out="$(GATE_RC=75 GATE_REASON=lock-timeout landing)"
+nowant "and it asks once, not once per pass"          "escalated" "$out"
+
+# A DIFFERENT REASON IS A DIFFERENT FAULT and counts separately — otherwise one lock-timeout
+# last week plus two deadline kills today would escalate as though one thing had failed three
+# times, and the ask would name a cause that was never repeated.
+seed; branch sp-bad
+out="$(GATE_RC=75 GATE_REASON=timeout landing)"
+nowant "a different machinery fault starts its own count" "escalated" "$out"
+
+# AND A LANDING CLEARS THE COUNT. Without this a branch that queued behind a lock twice last
+# week escalates on its first hiccup this week, about nothing.
+seed; branch sp-bad; rm -rf "$RUN/noverdict"
+GATE_RC=75 GATE_REASON=lock-timeout landing >/dev/null 2>&1
+seed; branch sp-bad
+GATE_RC=75 GATE_REASON=lock-timeout landing >/dev/null 2>&1
+seed; branch sp-bad
+GATE_RC=0 landing >/dev/null 2>&1
+seed; branch sp-bad
+out="$(GATE_RC=75 GATE_REASON=lock-timeout landing)"
+nowant "a landing clears the machinery-fault count" "escalated" "$out"
 
 # --------------------------------------------------------------------------------------
 # A BRANCH WHOSE BEAD IS NOT CLOSED IS SKIPPED — AND THE SKIP HAS TO HAVE A VOICE. This was a
@@ -571,7 +624,11 @@ MAP
 # The stub leaves a footprint, so "did the gate run" is observed rather than inferred.
 # $SPIRA_RUN, not $RUN: landing.sh hands the gate an explicit environment and RUN is not in
 # it, so the footprint silently landed at /gate-ran and the case read as "the gate never ran".
-stub gate.sh 'echo ran >> "$SPIRA_RUN/gate-ran"; exit ${GATE_RC:-0}'
+stub gate.sh 'echo ran >> "$SPIRA_RUN/gate-ran"
+rc=${GATE_RC:-0}
+case "$rc" in 0) v=PASS;; 75) v=NO_VERDICT;; 76) v=BASE_FAIL;; *) v=FAIL;; esac
+echo "gate: VERDICT=$v reason=${GATE_REASON:-stub} branch=$1 repo=${2:-?}" >&2
+exit $rc'
 
 # NO BUDGET LEFT. MAXSEC is tiny, so the reserve cannot fit: the branch is deferred to the
 # next pass untouched, still closed, and the gate is never invoked.
@@ -597,7 +654,10 @@ out="$(SPIRA_LAND_MAXSEC=0 landing)"
 want   "an uncapped pass gates regardless"             "ran"     "$(cat "$RAN" 2>/dev/null)"
 nowant "and never claims to be out of time"            "not starting" "$out"
 
-stub gate.sh 'exit ${GATE_RC:-0}'
+stub gate.sh 'rc=${GATE_RC:-0}
+case "$rc" in 0) v=PASS;; 75) v=NO_VERDICT;; 76) v=BASE_FAIL;; *) v=FAIL;; esac
+echo "gate: VERDICT=$v reason=${GATE_REASON:-stub} branch=$1 repo=${2:-?}" >&2
+exit $rc'
 
 # The cap must remain a RUNTIME bound and never become a load fence: raising one to fix
 # landing must not hand the box more CPU (law-fence-loops-on-shared-hardware).

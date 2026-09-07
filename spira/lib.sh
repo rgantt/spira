@@ -77,6 +77,33 @@ print(sum(1 for i in rows if want in (i.get("title") or "")))' "$subject" 2>/dev
     [ "${hits:-0}" -gt 0 ] 2>/dev/null
 }
 
+# spira_ask_machinery — escalate a judgement that repeatedly could not be made.
+#
+# THE CASE THIS EXISTS FOR. A gate that withholds its verdict is correct to let the branch
+# keep its turn, and the pass is telling the truth every time it says "the next pass takes
+# it". Said eleven times in a row it is also the exact sound of a livelock, and on
+# 2026-09-07 nothing anywhere turned that repetition into a signal: origin/main sat still for
+# fifty minutes while every log line individually read as normal operation.
+#
+# So the escalation is on the REPETITION, not on the occurrence (law-alerts-must-be-actionable
+# — a first lock-timeout is not actionable and paging on it would teach the operator to
+# ignore the channel). It is a decision request, not a problem report: it names the machinery
+# fault, what it is costing, and what to do (law-escalate-decisions-not-problems).
+#
+# Deduped through ask_already_open on the branch name, because the strongest dedupe is "is it
+# already in front of him" rather than a clock — a rate-limited version of this same alert
+# put nine identical decisions in his pane in one day.
+spira_ask_machinery() {  # <bead> <branch> <repo> <outcome> <reason> <count> <gate output>
+    local id="$1" br="$2" repo="$3" outcome="$4" reason="$5" n="$6" out="$7"
+    [ -n "${SPIRA_NOTIFY:-}" ] && [ -x "${SPIRA_NOTIFY:-/nonexistent}" ] || return 0
+    ask_already_open "$br cannot be judged" && return 0
+    "$SPIRA_NOTIFY" add \
+        "$br cannot be judged: $outcome x$n in a row ($reason)" \
+        --default "raise the budget or clear the contention this reason names, then let the next pass take it; if it is not obvious, run \`$SPIRA_HOME/gate.sh $br $repo\` by hand and read the whole output" \
+        --why "$outcome means the machinery could not reach a verdict — the branch has NOT been judged and has NOT been charged, and $id is not at fault. It has now failed to be judged $n times, so this is no longer a queue clearing itself. Nothing on $br can land until a verdict is reached, and every other branch of $repo is behind the same fault." \
+        --evidence "$(printf '%s' "$out" | tail -20)" >/dev/null 2>&1
+}
+
 # How many rows a `bd --json` payload carries. Never `| wc -l` and never a grep: the payload
 # is one line, and a warning printed before it would be counted as a row.
 json_count() {           # stdin: JSON; stdout: an integer, 0 on anything unparseable

@@ -140,6 +140,17 @@ gate_lock_wait() {
 
 log "landing: starting a pass over [$(spira_repos | tr '\n' ' ')]"
 
+# THE VERDICT CACHE IS PRUNED HERE, once a pass, because this is the only thing that runs on
+# a clock and already touches every repository. Entries are keyed by content, so a stale one
+# is never WRONG — its key can only be hit by the identical tree, base, file list, command
+# and harness — it is only clutter, and clutter that grows by one file per gated tree forever.
+# Age alone is therefore the right rule, and seven days is generous: a branch nobody has
+# gated in a week is not about to reuse a verdict.
+#
+# `-mtime` and not `find -delete` on the directory: deleting the directory would race a gate
+# writing into it, and the entries are individually disposable.
+find "${SPIRA_VERDICTS:-$SPIRA_RUN/verdicts}" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
+
 # ======================================================================================
 # LAND FINISHED BRANCHES. A passing branch must merge without a human; a branch
 # that waits rots, because main moves underneath it and manufactures conflicts that did
@@ -439,54 +450,65 @@ print(i.get("status", "-"), repo)' "$(spira_home_repo)" 2>/dev/null)"
         # pass. Waiting it out would land nothing and be killed mid-gate for the privilege.
         gate_out="$(SPIRA_GATE_LOCK_WAIT="$(gate_lock_wait)" "$SPIRA_HOME/gate.sh" "$br" "$name" 2>&1)"
         gate_rc=$?
-        # A WITHHELD VERDICT IS NOT A FAILED ONE. The gate judged nothing, so there is nothing
-        # to charge the branch with; reopening it here would say it "failed the landing gate",
-        # and three of those poison the bead and escalate to the operator about a lock. The
-        # branch keeps its turn and the next pass, two minutes away, takes it.
+        # ------------------------------------------------------------------------------
+        # FOUR OUTCOMES, AND ONLY ONE OF THEM IS THE BRANCH'S FAULT (conf.sh).
         #
-        # This is checked BEFORE advisory mode and is not subject to it. Advisory exists so a
-        # red gate cannot un-do finished work; a withheld verdict un-does nothing, it defers by
-        # one pass. Landing on it instead would also blind the lock meter below, which is the
-        # instrument that says when serialising the tree has stopped being enough.
-        if [ "$gate_rc" -eq "$SPIRA_GATE_NOVERDICT" ]; then
-            log "CHECK6 $id: $name's gate tree was busy — no verdict on $br this pass; the next pass takes it"
-            continue
-        fi
+        # Nothing lands on any of the three non-PASS outcomes — the gate fails closed and
+        # that is not up for negotiation. What differs is who is CHARGED, and that used to be
+        # decided by "non-zero", so a lock, a deadline, a missing worktree and a repository
+        # whose suites fail on its own base all reopened the bead saying the branch failed the
+        # gate. Three of those poison it and page the operator about work that was fine; it
+        # happened five times on 2026-09-06 alone (sp-d21), and again all morning today.
+        #
+        # `spira_gate_blames_branch` is the one place that decides, so the landing pass, the
+        # sentinel and any future caller cannot drift apart on it.
+        # ------------------------------------------------------------------------------
+        gate_outcome="$(spira_gate_outcome "$gate_rc")"
+        # The gate's own machine-readable line, when it produced one. Read anchored, so a
+        # reword of the prose around it cannot quietly turn every verdict into "unknown".
+        gate_reason="$(printf '%s' "$gate_out" \
+            | sed -n 's/^gate: VERDICT=[A-Z_]* reason=\([^ ]*\).*$/\1/p' | tail -1)"
+
         if [ "$gate_rc" -ne 0 ]; then
-            # ADVISORY MODE — the gate reports, the work lands anyway.
-            #
-            # The operator's call, 2026-09-07, after two days in which nothing shipped:
-            # "get shit landing, or remove the gates entirely. i would rather have broken
-            # software i can fix quickly than 'working' software that i can't iterate on for
-            # a whole fucking day."
-            #
-            # A blocking gate is only worth its cost while its red means THIS BRANCH is
-            # broken. Across that stall every red was a fact about the box or about main —
-            # a hardcoded path failing the inventory fence, concurrent fixture builds
-            # colliding on one migration lock, an order-dependent assertion — and each one
-            # reopened a finished bead and charged it an attempt. A gate in that state is not
-            # protecting the base branch; it is a random number generator that costs an aeon.
-            #
-            # SO IT STILL RUNS AND STILL SPEAKS. Advisory is not "off": the verdict is
-            # recorded on the bead and in the log, so the failures stay visible and stay
-            # fixable. What changes is that a red no longer un-does finished work.
-            #
-            # Turn it back into a wall with SPIRA_GATE_ADVISORY=0 in spira.conf, which is
-            # where this belongs the moment its red is trustworthy again.
-            if [ "${SPIRA_GATE_ADVISORY:-0}" = 1 ]; then
-                bdq note "$id" "ADVISORY: branch $br failed $name's landing gate, and was landed anyway (SPIRA_GATE_ADVISORY=1).
+            # A VERDICT THAT BLAMES NOBODY IS RECORDED ON THE BEAD ANYWAY. The bead is where
+            # the next reader looks, and a NO_VERDICT that leaves no trace is how this morning
+            # stayed invisible for fifty minutes: eleven consecutive withheld verdicts, each
+            # one logged and none of them anywhere a person would see.
+            log "CHECK6 $id: gate $gate_outcome on $br in $name (${gate_reason:-unspecified})"
 
-$(printf '%s' "$gate_out" | tail -20)" >/dev/null 2>&1
-                log "CHECK6 $id: gate FAILED but advisory mode is on — landing anyway: $(printf '%s' "$gate_out" | tail -3 | tr '\n' ' ')"
-            else
-                bead_reopen "$id" "Reopened by sentinel: branch $br failed $name's landing gate.
-
-$(printf '%s' "$gate_out" | tail -20)"
-                progress "reopened $id — failed the gate"
-                log "CHECK6 $id: gate output — $(printf '%s' "$gate_out" | tail -3 | tr '\n' ' ')"
+            if ! spira_gate_blames_branch "$gate_rc"; then
+                # NOT THE BRANCH'S FAULT: no reopen, no attempt, no note that reads as a
+                # rejection. The branch keeps its turn and the next pass takes it.
+                #
+                # BUT A MACHINERY FAULT THAT REPEATS IS AN ESCALATION, not a retry forever.
+                # Retrying forever is exactly what made today's livelock invisible — the pass
+                # said "the next pass takes it" eleven times and was, each time, telling the
+                # truth. The counter is per branch and per reason, so a lock that clears on
+                # its own costs nothing and a lock that never clears reaches the operator.
+                nv_key="$(printf '%s' "$br-${gate_reason:-unspecified}" | tr -c 'A-Za-z0-9._-' '-')"
+                nv_file="$SPIRA_RUN/noverdict/$nv_key"
+                mkdir -p "$SPIRA_RUN/noverdict"
+                nv_n=$(( $(cat "$nv_file" 2>/dev/null || echo 0) + 1 ))
+                printf '%s\n' "$nv_n" > "$nv_file"
+                if [ "$nv_n" -ge "${SPIRA_NOVERDICT_MAX:-3}" ] && [ ! -e "$nv_file.asked" ]; then
+                    : > "$nv_file.asked"
+                    spira_ask_machinery "$id" "$br" "$name" "$gate_outcome" "$gate_reason" "$nv_n" "$gate_out"
+                    progress "escalated $id — $gate_outcome x$nv_n on $br"
+                fi
                 continue
             fi
+
+            # THE BRANCH'S OWN FAULT — the only path that reopens and charges.
+            bead_reopen "$id" "Reopened by sentinel: branch $br failed $name's landing gate.
+
+$(printf '%s' "$gate_out" | tail -20)"
+            progress "reopened $id — failed the gate"
+            continue
         fi
+        # A PASS CLEARS THE MACHINERY-FAULT COUNTERS FOR THIS BRANCH. Otherwise a branch that
+        # queued behind a lock three times last week would escalate on its first hiccup this
+        # week, and the escalation would be about nothing.
+        rm -f "$SPIRA_RUN/noverdict/$(printf '%s' "$br" | tr -c 'A-Za-z0-9._-' '-')"* 2>/dev/null
 
         case "$mode" in
         pr)

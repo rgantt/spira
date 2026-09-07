@@ -66,7 +66,7 @@ SPIRA_FAYTHS SPIRA_MAX_AEONS
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
 SPIRA_ARCHIVE
 SPIRA_ARCHIVIST_AT SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
-SPIRA_TESTDB_LIB SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT SPIRA_GATE_ADVISORY
+SPIRA_TESTDB_LIB SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT
 "
 
 # --------------------------------------------------------------------------------------
@@ -283,13 +283,14 @@ spira_conf_defaults() {
     # only, it could not be raised without editing the harness — a host tuning knob that no
     # host could turn.
     : "${SPIRA_LAND_MAXSEC:=3600}"
-    # ADVISORY GATE — 1 runs the gate, records the verdict, and lands the work anyway.
-    # For the state where the gate's red says more about the box than about the branch:
-    # across 2026-09-06/07 every red was a hardcoded path, a fixture collision or an
-    # order-dependent assertion, and each one reopened finished work and charged it an
-    # attempt. Default 0 — a wall — because that is what a gate is for once its red is
-    # trustworthy. This is the knob to turn, not a reason to delete the gate.
-    : "${SPIRA_GATE_ADVISORY:=0}"
+    # THERE IS NO ADVISORY MODE. SPIRA_GATE_ADVISORY existed because the gate's red said more
+    # about the box than about the branch — a hardcoded path, a fixture collision, an
+    # order-dependent assertion — and the escape hatch was to land anyway. That is a gate
+    # nobody believes, which is worth nothing and costs a full run. The four outcomes above
+    # are the real fix: the reds that prompted advisory mode are BASE_FAIL and NO_VERDICT,
+    # they no longer reopen anything, and what is left of FAIL is a claim about the branch
+    # that can show its work. A verdict we would want to override is a verdict we have
+    # mis-classified.
     : "${SPIRA_LAND_GATE_RESERVE:=1200}"
     # ---- THE READ SURFACE OVER THE LIVE GRAPH ------------------------------------------
     # Where Loom listens. Localhost is the default because a bead carries internal working
@@ -521,16 +522,64 @@ export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin
 # and is outside the range a gate command of its own would return.
 SPIRA_GATE_NOVERDICT=75
 
+# FOUR OUTCOMES, AND WHOSE FAULT EACH ONE IS. Every judgement in this harness returns exactly
+# one of these, and the caller's whole decision follows from which. Before this there were
+# two — 0 and "non-zero" — so a gate that timed out, a gate that could not find its own
+# worktree, and a repository whose suites fail on its own base were all delivered to the
+# landing pass as "this branch is broken". Each was then fixed by adding one more special
+# case at the caller, and the shape recurred five times in two days (sp-p4rl, sp-d21,
+# sp-io5j, sp-snyj, sp-1aex).
+#
+#   PASS       0   judged, and good                     -> land it
+#   FAIL       1   judged, and bad                      -> the BRANCH is at fault
+#   BASE_FAIL 76   the same suites fail on the base     -> the BASE is at fault
+#   NO_VERDICT 75  not judged at all                    -> the MACHINERY is at fault
+#
+# THE RULE THAT MATTERS: BASE_FAIL and NO_VERDICT may never reopen a bead and never charge an
+# attempt. Three charged attempts poison a bead and escalate to the operator, so a lock, a
+# timeout or somebody else's red main could — and repeatedly did — walk finished work to
+# poison and then report it as the branch's failure.
+#
+# A JUDGEMENT WITH NO EVIDENCE IS NO_VERDICT BY CONSTRUCTION. A gate killed at its deadline
+# printed an empty `tail -20`, which arrived as a bare "failed" with nothing in it to act on
+# (sp-p4rl); the one refusal path that printed nothing at all did the same (sp-io5j). FAIL
+# has to be able to show its work or it is not a FAIL.
+#
+# 76 is EX_UNAVAILABLE — "the service is not available" — which is precisely the claim: the
+# base this branch must merge into is not in a fit state to judge against.
+SPIRA_GATE_BASEFAIL=76
+
+# The names, for logs and for the bead notes a human reads. Keyed by status so that a caller
+# that has a number can always render the word, and one place decides the wording.
+spira_gate_outcome() {   # spira_gate_outcome <status> -> PASS|FAIL|BASE_FAIL|NO_VERDICT
+    case "${1:-}" in
+        0)  echo PASS ;;
+        75) echo NO_VERDICT ;;
+        76) echo BASE_FAIL ;;
+        *)  echo FAIL ;;
+    esac
+}
+
+# Does this outcome say the BRANCH is at fault? The one question every caller actually asks,
+# in one place, so that "may I reopen the bead and charge an attempt?" cannot drift between
+# the landing pass, the sentinel and any future caller.
+spira_gate_blames_branch() {   # spira_gate_blames_branch <status> -> 0 if the branch is at fault
+    case "${1:-}" in
+        0|75|76) return 1 ;;
+        *)       return 0 ;;
+    esac
+}
+
 # --------------------------------------------------------------------------------------
 export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIRA_PATH SPIRA_GOAL \
        SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL \
        SPIRA_CI_LABEL SPIRA_CI_PARK_MAX \
-       SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT SPIRA_GATE_ADVISORY \
+       SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT \
        SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE \
        SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \
-       SPIRA_GATE_NOVERDICT \
+       SPIRA_GATE_NOVERDICT SPIRA_GATE_BASEFAIL \
        SPIRA_CONF_FILE
 
 # --------------------------------------------------------------------------------------

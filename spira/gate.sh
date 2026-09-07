@@ -19,14 +19,71 @@
 #
 # It fails CLOSED. A gate that cannot run its own checks must not report a pass: the whole
 # point is to keep unverified work out of a branch everything else pulls from.
+#
+# FAILING CLOSED IS NOT THE SAME AS BLAMING THE BRANCH, and conflating them is what this gate
+# spent two days doing. Every exit here is one of four outcomes (conf.sh): PASS, FAIL,
+# BASE_FAIL, NO_VERDICT. The verdict is withheld identically in the last two — nothing lands
+# — but only FAIL says the branch is at fault, and only FAIL may cost it an attempt. Before
+# this, a missing worktree, a lock, a deadline and a repository whose suites fail on its own
+# base all arrived at the landing pass as "this branch is broken", and three of those poison
+# a bead and page the operator about work that was fine.
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
+# verdict <status> <reason-slug> [message ...] — the ONLY way out of this program.
+#
+# One exit point, because the classification is the whole contract and a bare `exit 1`
+# somewhere in the preflight is how the contract gets broken silently. It meters, it says the
+# outcome in a form both a human and `landing.sh` can read, and it enforces the one
+# invariant that cannot be left to the caller: a FAIL must be able to show its work.
+#
+# A FAIL THAT SAYS NOTHING AT ALL IS DOWNGRADED TO NO_VERDICT, here, as a backstop. The
+# base..branch diff failure exited 1 without a word (sp-io5j), and this makes such an exit
+# structurally impossible rather than relying on every future call site to remember. The
+# richer form of the same rule — a gate command that ran and printed nothing — is enforced
+# where `$out` is in scope, because by the time it reaches here it is wrapped in prose.
+verdict() {              # verdict <status> <reason> [message...]
+    local st="$1" reason="$2"; shift 2
+    local msg="$*"
+    if [ "$st" != 0 ] && [ "$st" != "$SPIRA_GATE_NOVERDICT" ] && [ "$st" != "$SPIRA_GATE_BASEFAIL" ] \
+       && [ -z "${msg//[[:space:]]/}" ]; then
+        reason="no-evidence:$reason"; st="$SPIRA_GATE_NOVERDICT"
+        msg="the gate returned a failure with no output at all — that is the machinery failing to run a check, not the branch failing one"
+    fi
+    [ -n "$msg" ] && printf '%s\n' "$msg" >&2
+    # The machine-readable line. Anchored and single, so a caller matches the whole shape
+    # rather than grepping prose that a reword would silently change.
+    printf 'gate: VERDICT=%s reason=%s branch=%s repo=%s\n' \
+        "$(spira_gate_outcome "$st")" "$reason" "$BR" "${REPO_NAME:-?}" >&2
+    # THE EXIT TRAP IS DISARMED FIRST. It exists to meter the ways out that do not come
+    # through here — a `set -e` death, a signal — and if it survived this call every verdict
+    # would be metered twice, the second time with the status of whatever ran last inside the
+    # trap rather than the verdict's own. Cleanup that the trap owns is done here instead.
+    trap - EXIT
+    rm -f "${FILELIST:-}" 2>/dev/null
+    # gate_meter is defined only once the tree lock has been reached; before that there is no
+    # wait and no run to record, and a preflight refusal is not a reading about contention.
+    command -v gate_meter >/dev/null 2>&1 && gate_meter "$st" "$reason"
+    exit "$st"
+}
+NV="$SPIRA_GATE_NOVERDICT"
+
 BR="${1:?usage: gate.sh <branch> [repo-name]}"
 REPO_NAME="${2:-$(spira_home_repo)}"
-REPO="$(repo_root "$REPO_NAME")" || {
-    echo "gate: repo-map has no entry for '$REPO_NAME' — refusing to guess a checkout" >&2
-    exit 1; }
+
+# AN UNREADABLE REPOSITORY MAP IS A MACHINERY FAULT, and it used to be a PASS. With no map,
+# `repo_gate` returns an empty command, an empty command means "syntax was the whole trial",
+# and the gate exited 0 — so a mistyped path, an unmounted home or a map deleted by a bad
+# install silently turned every repository into one with no gate at all, and every branch
+# passed a trial that never happened. Distinguish it from the legitimate case: a map that IS
+# readable, naming a repository with an empty gate column, is a repository whose trial really
+# is syntax alone.
+[ -r "${SPIRA_REPO_MAP:-/nonexistent}" ] || verdict "$SPIRA_GATE_NOVERDICT" no-repo-map-file \
+    "gate: the repository map at ${SPIRA_REPO_MAP:-<unset>} cannot be read — refusing to judge.
+gate: without it every repository looks like one with no gate command, and every branch
+gate: would pass a trial that never ran."
+REPO="$(repo_root "$REPO_NAME")" || verdict "$NV" no-repo-map \
+    "gate: repo-map has no entry for '$REPO_NAME' — refusing to guess a checkout"
 
 # The remote-tracking ref, never the local branch. Nothing in this harness advances the
 # shared checkout's default branch, so a diff against it is a diff against whatever the last
@@ -38,11 +95,13 @@ REPO="$(repo_root "$REPO_NAME")" || {
 # And it is resolved, not assumed to be `main`: some repositories have no such ref, so
 # every diff here was against nothing and every changed-file test read empty — a gate that
 # skips every suite because it thinks nothing changed passes everything.
-BASE="$(spira_landref "$REPO")" || {
-    echo "gate: cannot resolve the ref '$REPO_NAME' lands on — refusing to guess a base" >&2
-    echo "gate: give it a \`base\` column in $SPIRA_REPO_MAP" >&2
-    exit 1; }
-files="$(git -C "$REPO" diff --name-only "$BASE...$BR" 2>/dev/null)" || exit 1
+BASE="$(spira_landref "$REPO")" || verdict "$NV" no-base \
+    "gate: cannot resolve the ref '$REPO_NAME' lands on — refusing to guess a base
+gate: give it a \`base\` column in $SPIRA_REPO_MAP"
+# THE ONE REFUSAL THAT USED TO SAY NOTHING (sp-io5j). A failed diff means the branch or the
+# base does not resolve in this checkout — a fact about the checkout, never about the work.
+files="$(git -C "$REPO" diff --name-only "$BASE...$BR" 2>/dev/null)" || verdict "$NV" no-diff \
+    "gate: cannot diff $BASE...$BR in $REPO_NAME — one of them does not resolve in this checkout"
 
 # ---------------------------------------------------------------------------------------
 # LAYER 1 — universal. Every changed shell script must parse.
@@ -52,10 +111,10 @@ while IFS= read -r f; do
     case "$f" in
         *.sh)
             git -C "$REPO" show "$BR:$f" > /tmp/spira-gate-$$.sh 2>/dev/null || continue
-            if ! bash -n /tmp/spira-gate-$$.sh 2>/dev/null; then
+            if ! syntax="$(bash -n /tmp/spira-gate-$$.sh 2>&1)"; then
                 rm -f /tmp/spira-gate-$$.sh
-                echo "gate: $f fails bash -n" >&2
-                exit 1
+                verdict 1 syntax "gate: $f fails bash -n
+$syntax"
             fi
             rm -f /tmp/spira-gate-$$.sh
             ;;
@@ -85,15 +144,14 @@ done <<< "$files"
 # yields an empty offender list, which is indistinguishable from a clean tree — the exact
 # shape where a check that could not run reports all-clear.
 EXCLUDE="$(dirname "$0")/exclude.sh"
-[ -r "$EXCLUDE" ] || { echo "gate: $EXCLUDE is missing — refusing to land unchecked" >&2; exit 1; }
+[ -r "$EXCLUDE" ] || verdict "$NV" missing-exclude "gate: $EXCLUDE is missing — refusing to land unchecked"
 offenders="$(git -C "$REPO" ls-tree -r --name-only "$BR" 2>/dev/null \
     | bash "$EXCLUDE" filter 2>/dev/null)"
 if [ -n "$offenders" ]; then
-    echo "gate: $BR would land beads data in the harness tree:" >&2
-    printf '%s\n' "$offenders" | sed 's/^/gate:   /' >&2
-    echo "gate: a beads database is never public and belongs in no shared repository." >&2
-    echo "gate: remove them from the branch — there is no override for this one." >&2
-    exit 1
+    verdict 1 beads-data "gate: $BR would land beads data in the harness tree:
+$(printf '%s\n' "$offenders" | sed 's/^/gate:   /')
+gate: a beads database is never public and belongs in no shared repository.
+gate: remove them from the branch — there is no override for this one."
 fi
 
 # No branch may change a COPY of the harness in a repository that is not the harness's own.
@@ -109,16 +167,98 @@ fi
 #
 # It fails CLOSED on its own absence, and skew.sh fails closed on its own confusion.
 SKEW="$(dirname "$0")/skew.sh"
-[ -r "$SKEW" ] || { echo "gate: $SKEW is missing — refusing to land unchecked" >&2; exit 1; }
-bash "$SKEW" foreign "$REPO" "$BASE" "$BR" || {
-    echo "gate: $BR belongs in the harness's own repository, not $REPO_NAME." >&2
-    exit 1; }
+[ -r "$SKEW" ] || verdict "$NV" missing-skew "gate: $SKEW is missing — refusing to land unchecked"
+skewout="$(bash "$SKEW" foreign "$REPO" "$BASE" "$BR" 2>&1)" || verdict 1 foreign-harness \
+    "gate: $BR belongs in the harness's own repository, not $REPO_NAME.
+$skewout"
 
 # ---------------------------------------------------------------------------------------
 # LAYER 2 — the repository's own gate. Empty means syntax was the whole trial.
 # ---------------------------------------------------------------------------------------
 CMD="$(repo_gate "$REPO_NAME")"
-[ -n "$CMD" ] || exit 0
+# A repository with no gate command of its own has been fully judged by the universal layer
+# above, and passes. Through verdict() like everything else, so its meter line and its
+# VERDICT= line exist — a caller must never have to tell "passed" from "exited early".
+[ -n "$CMD" ] || verdict 0 syntax-only ""
+
+# =======================================================================================
+# D1 — THE VERDICT IS COMPUTED ONCE AND KEYED BY WHAT IT JUDGED.
+#
+# Every bead paid this gate at least twice: the aeon runs it before it closes, and the
+# landing pass runs it again, on the same tree, minutes later. Measured across 51 sessions,
+# 150 aeon runs; each full spira gate is 380-620s, and 1860s on one occasion. That is the
+# whole of the DONE-to-LANDED latency and most of the contention that made a shared tree
+# worth locking in the first place (sp-0v8).
+#
+# THE KEY IS THE QUESTION, NOT THE ASKER. Nothing before this identified a verdict at all,
+# so nothing could be reused; gate-run.sh keyed its result to (branch commit, base commit),
+# which every landing on the base invalidates, so under a moving base it restarted from zero
+# forever (sp-j4ed). The key here is everything a verdict actually depends on:
+#
+#   the branch's TREE      - what the suites read. Two commits with identical content share
+#                            a tree id, so an amend or a clean rebase reuses the verdict.
+#   the BASE commit        - a selective gate chooses its suites from the diff against it.
+#   the CHANGED FILE LIST  - the actual selection input, hashed, so a base that moved without
+#                            changing what this branch touches still reuses the verdict.
+#   the GATE COMMAND       - layer 2 in full.
+#   THIS HARNESS           - gate.sh, exclude.sh and skew.sh are layer 1; a change to any of
+#                            them changes what a pass means, and a cached pass from before it
+#                            would be a verdict from a gate that no longer exists.
+#
+# ONLY A PASS IS CACHED, DELIBERATELY. A FAIL is not a pure function of the tree — a flaky
+# suite fails once and passes on the next run — and caching one would pin a flake to a branch
+# permanently, which is a far worse failure than paying for a re-run. NO_VERDICT is never
+# cached because retrying is its entire meaning, and BASE_FAIL is a fact about the base rather
+# than about this key. So the cache can only ever save work, never create a wrong answer: the
+# worst it can do is skip a gate that would have passed anyway.
+#
+# IT IS A PURE CACHE and may be deleted at any time.
+# =======================================================================================
+# THE METER IS DEFINED BEFORE EVERY WAY OUT THAT IT MEASURES, which now means before the
+# verdict cache as well as before the lock. A meter only the runs which obtained the tree can
+# write is blind to the two readings that matter most: the run that waited its whole budget
+# and got nothing, and the run that skipped the tree entirely because the verdict already
+# existed. The first version defined it below the cache check, so a reused verdict wrote no
+# row at all and was indistinguishable in the log from a gate that was never called — the
+# shape every silent-skip bug takes (law-absence-needs-a-positive-control).
+# `waited=` and `ran=` start at zero so it is safe to call from any exit below this line.
+GATE_LOG="${SPIRA_GATE_LOG:-$SPIRA_RUN/gate.log}"
+GATE_WAITED=0
+GATE_START=$(date +%s)
+gate_meter() {           # gate_meter <exit-status> [<note>]
+    printf '%s %s %s waited=%ss ran=%ss rc=%s%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$REPO_NAME" "$BR" \
+        "$GATE_WAITED" "$(( $(date +%s) - GATE_START ))" "${1:-?}" "${2:+ $2}" >> "$GATE_LOG" 2>/dev/null
+}
+
+VERDICT_DIR="${SPIRA_VERDICTS:-$SPIRA_RUN/verdicts}"
+gate_key() {
+    local tree base files_h cmd_h harness_h
+    tree="$(git -C "$REPO" rev-parse --verify -q "$BR^{tree}" 2>/dev/null)" || return 1
+    base="$(git -C "$REPO" rev-parse --verify -q "$BASE^{commit}" 2>/dev/null)" || return 1
+    files_h="$(printf '%s' "$files"   | sha256sum | cut -d" " -f1)"
+    cmd_h="$(  printf '%s' "$CMD"     | sha256sum | cut -d" " -f1)"
+    # cat of the three, so a change in any one moves the key. Missing files are impossible
+    # here — both were checked above — but `cat` failing would produce a stable empty hash
+    # for every run, which is a cache that ignores the harness entirely, so it fails closed.
+    harness_h="$(cat "$0" "$EXCLUDE" "$SKEW" 2>/dev/null | sha256sum | cut -d" " -f1)"
+    [ -n "$harness_h" ] || return 1
+    printf '%s\n' "$tree $base $files_h $cmd_h $harness_h" | sha256sum | cut -d" " -f1
+}
+GATE_KEY="$(gate_key || true)"
+
+# A CACHED PASS IS RETURNED BEFORE THE TREE LOCK IS EVEN REACHED, which is the point: the
+# second caller neither runs the suites nor queues for the worktree. It still emits its own
+# VERDICT line and its own meter row, so a reused verdict is visible as one rather than
+# looking like a gate that never ran.
+if [ -n "$GATE_KEY" ] && [ -r "$VERDICT_DIR/$GATE_KEY" ]; then
+    # shellcheck disable=SC1090
+    cached_when=""; cached_by=""
+    eval "$(sed -n 's/^\(when\|by\)=\(.*\)$/cached_\1="\2"/p' "$VERDICT_DIR/$GATE_KEY" 2>/dev/null)"
+    verdict 0 cached \
+        "gate: this exact tree already passed $REPO_NAME's gate at ${cached_when:-an earlier time} (${cached_by:-unknown caller})
+gate: key $GATE_KEY — same tree, same base, same changed files, same command, same harness."
+fi
 
 # THE TREE IS THE BRANCH, never the shared checkout. `cd "$REPO"` would run the copy of
 # these suites that is already installed on main — so a branch that breaks a guard would be
@@ -150,21 +290,9 @@ TREE="$SPIRA_RUN/worktree/.gate.$(basename "$REPO")"
 # It fails CLOSED on a wait that runs out: a gate that could not obtain the tree has checked
 # nothing, and "could not run" is not a pass.
 mkdir -p "$(dirname "$TREE")"
-spira_require flock || exit 1
-exec 9>"$TREE.lock" || { echo "gate: cannot open the gate tree's lock at $TREE.lock" >&2; exit 1; }
+spira_require flock || verdict "$NV" no-flock "gate: flock is not on PATH — refusing to run unserialised"
+exec 9>"$TREE.lock" || verdict "$NV" no-lockfile "gate: cannot open the gate tree's lock at $TREE.lock"
 
-# THE METER IS DEFINED BEFORE THE WAIT, because the wait is the thing it measures. A meter
-# that only the runs which obtained the tree can write is blind to the one reading that says
-# serialising has stopped being enough: the run that waited the whole budget and got nothing.
-# `waited=` and `ran=` start at zero so it is safe to call from any exit below this line.
-GATE_LOG="${SPIRA_GATE_LOG:-$SPIRA_RUN/gate.log}"
-GATE_WAITED=0
-GATE_START=$(date +%s)
-gate_meter() {           # gate_meter <exit-status> [<note>]
-    printf '%s %s %s waited=%ss ran=%ss rc=%s%s\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$REPO_NAME" "$BR" \
-        "$GATE_WAITED" "$(( $(date +%s) - GATE_START ))" "${1:-?}" "${2:+ $2}" >> "$GATE_LOG" 2>/dev/null
-}
 # THE WAIT IS DERIVED FROM THE RUN, not picked. One holder can legitimately occupy the tree
 # for two full gate timeouts — the branch's trial, then the same command against the base to
 # establish whose fault a failure is — so a wait shorter than twice the timeout would time
@@ -182,10 +310,9 @@ if ! flock -w "$GATE_LOCK_WAIT" 9; then
     # poison a bead and escalate to the operator over a lock it never contended for. The
     # verdict is still withheld — a gate fails closed — but the blame is not the branch's.
     GATE_WAITED=$(( $(date +%s) - GATE_WAIT0 )); GATE_START=$(date +%s)
-    gate_meter "$SPIRA_GATE_NOVERDICT" lock-timeout
-    echo "gate: another gate has held $TREE for ${GATE_LOCK_WAIT}s — no verdict on $BR" >&2
-    echo "gate: this is a queue, not a fault in the branch; retry, or raise SPIRA_GATE_LOCK_WAIT." >&2
-    exit "$SPIRA_GATE_NOVERDICT"
+    verdict "$NV" lock-timeout \
+        "gate: another gate has held $TREE for ${GATE_LOCK_WAIT}s — no verdict on $BR
+gate: this is a queue, not a fault in the branch; retry, or raise SPIRA_GATE_LOCK_WAIT."
 fi
 GATE_WAITED=$(( $(date +%s) - GATE_WAIT0 ))
 GATE_START=$(date +%s)
@@ -224,7 +351,9 @@ gate_at() {
     return 1
 }
 
-gate_at "$BR" || { gate_meter 1; exit 1; }
+# A TREE THE GATE CANNOT IDENTIFY IS A MACHINERY FAULT, not a branch fault. gate_at has
+# already said on stderr which of the two ways it failed.
+gate_at "$BR" || verdict "$NV" tree-unidentified ""
 
 # THE GATE MUST NOT INHERIT THE HARNESS'S OWN CONFIGURATION.
 # Tests run in an explicit, minimal environment. The sentinel service exports
@@ -249,7 +378,11 @@ FILELIST="$(mktemp)"; printf '%s\n' "$files" > "$FILELIST"
 # The status is captured FIRST: `$?` inside a trap is whatever the previous command in the
 # trap returned, so a cleanup line ahead of the meter would have every run recorded as the
 # exit status of `rm`.
-trap 'gate_rc=$?; rm -f "$FILELIST"; gate_meter "$gate_rc"' EXIT
+# THE TRAP IS THE BACKSTOP, NOT THE PATH. Every deliberate way out goes through verdict(),
+# which disarms this first; what is left for the trap is a death nobody chose — a signal, or
+# a bug that lets control fall off the end — and those must still be metered, as NO_VERDICT,
+# because a gate that vanished judged nothing.
+trap 'gate_rc=$?; rm -f "$FILELIST"; gate_meter "${gate_rc:-$NV}" died' EXIT
 # 9>&- — THE TREE LOCK'S FD MUST NOT REACH THE GATE COMMAND. `exec 9>lock` leaves fd 9
 # without close-on-exec, so every child inherits it, and flock is held as long as ANY holder
 # of the descriptor lives. A repository's gate builds fixtures and can leave a server running;
@@ -269,7 +402,47 @@ run_gate() {             # run_gate <ref-being-tested> -> the command's own stat
     return "${PIPESTATUS[0]}"
 }
 
-if out="$(run_gate "$BR")"; then exit 0; fi
+# CAPTURED FROM THE ASSIGNMENT, NEVER FROM AN `if`. `if out="$(...)"; then ...; fi` leaves
+# `$?` holding the status of the *if statement*, which is 0 on the false branch — so every
+# red read as "exited 0" and every classification below it was made on the wrong number.
+out="$(run_gate "$BR")"; gate_rc_branch=$?
+if [ "$gate_rc_branch" -eq 0 ]; then
+    # RECORDED ONLY ON A PASS, and written through a temporary file so a caller that dies
+    # mid-write cannot leave a half-file that reads as a valid verdict.
+    if [ -n "$GATE_KEY" ]; then
+        mkdir -p "$VERDICT_DIR" 2>/dev/null
+        { printf 'when=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          printf 'by=%s\n'   "${SPIRA_GATE_CALLER:-$BR}"
+          printf 'repo=%s\nbranch=%s\n' "$REPO_NAME" "$BR"
+        } > "$VERDICT_DIR/.$GATE_KEY.$$" 2>/dev/null \
+          && mv -f "$VERDICT_DIR/.$GATE_KEY.$$" "$VERDICT_DIR/$GATE_KEY" 2>/dev/null
+    fi
+    verdict 0 pass ""
+fi
+
+# A DEADLINE IS NOT A RED. `timeout` exits 124 when it kills the command, and gate-spira.sh
+# prints nothing while suites pass — so a gate killed at its budget produced an EMPTY tail
+# and arrived at the landing pass as a bare "this branch failed", with nothing in the bead
+# note for the next aeon to act on (sp-p4rl). The budget is the machinery's, not the
+# branch's: the full spira gate measured ~1860s against a 900s default (sp-snyj), so the
+# common cause of a 124 here is a budget that is too small, which no branch can fix.
+# A SILENT RED IS STILL A RED, and this is where the first attempt at this rule was wrong.
+# Downgrading every red that printed nothing looks like the fix for sp-p4rl and is not: a
+# perfectly ordinary gate command — `test`, a grep, a script that only speaks on success —
+# fails silently and legitimately, and treating that as a machinery fault would let a
+# genuinely broken branch retry forever and then page the operator about a lock that does not
+# exist. sp-p4rl's actual case is the DEADLINE, handled by its own status immediately below.
+#
+# What the branch owes the next reader is the command and its status, so a silent red arrives
+# as a rejection that can at least be reproduced rather than as an empty note.
+[ -z "${out//[[:space:]]/}" ] && out="(the command printed nothing; it exited $gate_rc_branch)"
+
+if [ "$gate_rc_branch" -eq 124 ]; then
+    verdict "$NV" timeout \
+        "gate: $REPO_NAME's own gate was killed at ${SPIRA_GATE_TIMEOUT:-900}s — it judged nothing.
+gate: this is the harness's budget, not a fault in the branch; raise SPIRA_GATE_TIMEOUT.
+$out"
+fi
 
 # A FAILING GATE MUST SAY WHOSE FAULT IT IS. A command that already fails against the base
 # rejects every branch for a condition no branch caused — three attempts, then poison, then
@@ -277,14 +450,38 @@ if out="$(run_gate "$BR")"; then exit 0; fi
 # cause. Measured on another: `cargo fmt --all -- --check` exits 1 against its
 # own main, so declaring it as that repository's gate would have done exactly this.
 #
-# The verdict does not change — a gate fails CLOSED, and "main is broken too" is not a
-# licence to land unverified work — but the reason does, and the reason is what the bead
-# note carries to whoever reads it.
-echo "gate: $REPO_NAME's own gate failed: $CMD" >&2
-printf '%s\n' "$out" >&2
-if gate_at "$BASE" && ! run_gate "$BASE" >/dev/null 2>&1; then
-    echo "gate: it fails against $BASE too — this branch did not cause it." >&2
-    echo "gate: fix the repository, or clear that command from $SPIRA_REPO_MAP." >&2
+# NOTHING LANDS EITHER WAY — a gate fails CLOSED, and "main is broken too" is not a licence
+# to land unverified work. What changes is WHO IS CHARGED. Five times on 2026-09-06 a bead
+# was reopened as "failed the gate" in the same breath as the gate's own output saying "it
+# fails against origin/main too — this branch did not cause it" (sp-d21). BASE_FAIL is that
+# sentence as a status the caller cannot overlook.
+#
+# THE BASE TRIAL IS ITSELF A CHECK THAT CAN FAIL TO RUN. If the base cannot be checked out,
+# we do not know whose fault the red is — and guessing "the branch" is the bug being fixed.
+base_ran=0; base_out=""
+if gate_at "$BASE" >/dev/null 2>&1; then
+    base_out="$(run_gate "$BASE" 2>&1)"; base_rc=$?
+    # A base trial that TIMED OUT tells us nothing either; only a clean red on the base is
+    # evidence the base is broken.
+    [ "$base_rc" -ne 124 ] && base_ran=1
 fi
 gate_at "$BR" >/dev/null 2>&1
-exit 1
+
+if [ "$base_ran" = 1 ] && [ "$base_rc" -ne 0 ]; then
+    verdict "$SPIRA_GATE_BASEFAIL" base-red \
+        "gate: $REPO_NAME's own gate failed: $CMD
+$out
+gate: it fails against $BASE too — this branch did not cause it.
+gate: fix the repository, or clear that command from $SPIRA_REPO_MAP."
+fi
+if [ "$base_ran" = 0 ]; then
+    verdict "$NV" base-untestable \
+        "gate: $REPO_NAME's own gate failed: $CMD
+$out
+gate: and the same command could not be tried against $BASE, so whose fault this is
+gate: cannot be established — refusing to charge it to the branch on a guess."
+fi
+verdict 1 branch-red \
+    "gate: $REPO_NAME's own gate failed: $CMD
+$out
+gate: the same command passes against $BASE, so this is the branch's own."
