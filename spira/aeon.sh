@@ -337,8 +337,17 @@ gate_unfinished() {
 }
 
 cleanup() {
-    local rc=$? reset_at gate_why
-    [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null
+    local rc=$? reset_at gate_why cause
+    # `set -e` IS DISARMED FOR THE WHOLE OF TEARDOWN, first line, before anything can fail.
+    # This ran under errexit and every step of it was one failing command away from being
+    # skipped in silence — which is what happened: a compare-and-swap release exits non-zero
+    # on a mismatch, so the shell died inside its own EXIT trap between the bump and the log
+    # line. A whole window of aeons wrote no `done` ledger line and released no bead, and the
+    # ledger's own measurement went with them. A teardown must run to the end regardless: it
+    # is the last chance to record what happened. Note that `[ -n "$X" ] && cmd` is itself
+    # one of those failing commands whenever $X is empty.
+    set +e
+    if [ -n "$HB_PID" ]; then kill "$HB_PID" 2>/dev/null; fi
     fixture_drop
     rm -f "$PIDFILE" "${PIDFILE%.pid}.name"
     cd "$REPO" 2>/dev/null || true
@@ -362,18 +371,24 @@ except Exception: print(""); sys.exit()
 d=d if isinstance(d,list) else [d]
 print(d[0].get("status","") if d else "")' 2>/dev/null)"
     if [ "$st" != "closed" ]; then
-        # ASK-AGAIN-LATER IS NOT THIS-BEAD-IS-HARD. A non-zero exit code has meant "the work
-        # failed" since the first version of this script, and an attempt is charged on it —
-        # but the API refusing to serve the session at all produces the same non-zero exit
-        # as a genuine failure, so an outage was being written into the bead as evidence
-        # about its work. Attempts poison, so that is permanent state manufactured from a
-        # transient condition: a bead touched during an outage must end up exactly where it
-        # started. The whole requirement is to wait for capacity to come back without
-        # self-imploding in the meantime.
+        # CHARGING IS DEFAULT-DENY. An attempt is charged ONLY when the harness can say
+        # what the WORK did wrong, because that is what the poison threshold asserts when it
+        # fires: not "this bead has been touched three times" but "we know this work keeps
+        # failing". Anything the trace cannot positively identify as a verdict about the work
+        # is evidence about the WORKER, and goes on the reclaim counter, which stops nothing.
+        # A rate-limit rejection must never poison a bead.
         #
-        # capacity_reset_at is deliberately conservative — anything it cannot positively
-        # identify as an account refusal falls through to the ordinary path below, so a bead
-        # that genuinely fails three times still poisons.
+        # It used to be the other way round — charge unless a short list of exemptions
+        # excused it — and every failure mode that cost the most was unenumerated when it
+        # fired. law-alerts-must-be-actionable applies to poison too: a threshold reading the
+        # wrong evidence is a false page with teeth, and this one takes work out of
+        # circulation permanently for a condition that heals itself in minutes.
+        #
+        # The three cases below return EARLY rather than relying on session_outcome, and each
+        # for a reason of its own beyond charging: a spent capacity window must also shut the
+        # summoner, a slain aeon is an operator's act and belongs in the ledger as one, and an
+        # unfinished gate names the specific race so the next reader does not have to infer
+        # it. All three would land on the reclaim counter anyway; what they add is the reason.
         if reset_at="$(capacity_reset_at "$LOGF")"; then
             capacity_pause_set "$reset_at" "$BEAD_ID"
             release_own_claim "$BEAD_ID"
@@ -410,9 +425,17 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
             ledger "done $FAYTH $BEAD_ID rc=$rc status=gate-unfinished"
             exit $rc
         fi
-        n="$(bump_attempt "$BEAD_ID")"
+        cause="$(session_outcome "$LOGF")"
+        if outcome_charges "$cause"; then
+            n="$(bump_attempt "$BEAD_ID" "$cause")"
+            bdq note "$BEAD_ID" "Attempt $n ($cause): the session ran to its own end and left this bead open. That is a verdict about the work, and it counts toward the poison threshold." >/dev/null 2>&1
+            log "$FAYTH: $BEAD_ID not closed (attempt $n, $cause), released"
+        else
+            n="$(bump_reclaim "$BEAD_ID" "$cause")"
+            bdq note "$BEAD_ID" "Reclaim $n ($cause): the worker did not survive to judge this bead, so NO attempt was charged and nothing about the work is implied. See $LOGF." >/dev/null 2>&1
+            log "$FAYTH: $BEAD_ID never judged ($cause) — reclaim $n, no attempt charged"
+        fi
         release_own_claim "$BEAD_ID"
-        log "$FAYTH: $BEAD_ID not closed (attempt $n), released"
     elif gate_why="$(gate_unfinished)"; then
         # CLOSED WITH THE GATE STILL RUNNING is not reopened: the work is committed, and the
         # landing pass gates the branch again before it merges and reopens the bead itself if

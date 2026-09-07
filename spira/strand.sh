@@ -81,6 +81,12 @@ GHOST_GRACE="${SPIRA_GHOST_GRACE:-300}"
 # is NORMAL for one sentinel period — that is the gap between a bead becoming ready and the
 # next pass summoning for it. Seven passes is not.
 STRAND_GRACE="${SPIRA_STRAND_GRACE:-900}"
+# HOW MANY TIMES ONE BEAD MAY OUTLIVE ITS AEON BEFORE THAT IS ITSELF THE FINDING. This is a
+# ceiling on the WORKER, and it is deliberately not the poison threshold: a bead that cannot
+# be worked and a host that keeps killing aeons are different faults wanting different
+# answers, and neither is evidence for the other. Reaching it escalates once and never blocks
+# the bead — the work may still be perfectly good.
+RECLAIM_AT="${SPIRA_RECLAIM_AT:-5}"
 STATE="$SPIRA_RUN/strands.json"
 ASK="$SPIRA_NOTIFY"
 SENTINEL_LOG="$SPIRA_RUN/sentinel.log"
@@ -327,12 +333,17 @@ PY
 # check — the timer path
 # ======================================================================================
 escalate() {   # escalate <partition> <kind> <id> <detail> <action>
-    local part="$1" kind="$2" id="$3" detail="$4" action="$5" title ctx
+    local part="$1" kind="$2" id="$3" detail="$4" action="$5" title ctx why
     # A TITLE BUILT FROM A MISSING ID READS AS A BUG. `starved` is about a queue, not a
     # bead, so $id is "-" and the ask arrived titled "Spira stranded (starved): -". The
     # queue is then named by its partition, because "the plan is stranded" is the wrong
     # sentence about an incident queue and the operator cannot tell which one is meant.
-    if [ -n "$id" ] && [ "$id" != "-" ]; then
+    if [ "$kind" = reclaim-ceiling ]; then
+        # NOT stranded, and the title must not say so: this bead is being claimed and worked,
+        # it just keeps losing the aeon that holds it. A title that misnames the condition is
+        # answered as the wrong question.
+        title="Spira: $id keeps losing its aeon — the host, not the bead"
+    elif [ -n "$id" ] && [ "$id" != "-" ]; then
         title="Spira: $id is stranded ($kind)"
     elif [ -n "$part" ] && [ "$part" != "-" ]; then
         title="Spira: the [$part] queue is stranded ($kind)"
@@ -344,19 +355,25 @@ escalate() {   # escalate <partition> <kind> <id> <detail> <action>
     ctx="$(bead_context "$id" 2>/dev/null)"
     ctx="$ctx
 
-WHY THIS IS STRANDED
+WHY THIS IS ESCALATED
 $detail
 
 SENTINEL STATE
 $(tail -n 12 "$SENTINEL_LOG" 2>/dev/null || echo '(sentinel log unreadable)')"
+    # THE `why` MUST NOT CLAIM THE PLAN IS BLOCKED WHEN IT IS NOT. A reclaim ceiling is a
+    # report about the host and the bead is still being worked; telling the operator that
+    # nothing below it can move would buy an urgency the condition does not have, which is
+    # the same defect as a pager that cries wolf (law-alerts-must-be-actionable).
+    local why="$detail — nothing in the plan below it can move until this clears"
+    [ "$kind" = reclaim-ceiling ] && why="$detail — the bead is still claimable and nothing below it is blocked"
     "$ASK" add "$title" \
         --default "$action" \
-        --why "$detail — nothing in the plan below it can move until this clears" \
+        --why "$why" \
         --evidence "$ctx" >/dev/null 2>&1
 }
 
 cmd_check() {
-    local rows acted=0 n; local -a scope
+    local rows acted=0 n a; local -a scope
     rows="$(classify | state_apply 1)"
     [ -n "$rows" ] || return 0
 
@@ -382,20 +399,29 @@ cmd_check() {
                     # persona's bead, and it exits 0 saying nothing.
                     scope=(); [ "$part" != "-" ] && scope=(--label "$part")
                     bdq reclaim --id "$id" --older-than 1s "${scope[@]}" >/dev/null 2>&1
-                    # THE SECOND DOOR ONTO THE ATTEMPT COUNTER. aeon.sh declines to charge an
-                    # attempt when the API refused the session, but an aeon hard-killed
-                    # mid-outage never reaches that code — it arrives here as a ghost, and
-                    # charging it would restore exactly the harm by another route. Ask the
-                    # bead's own surviving session log first, and fall back to "is the
-                    # harness paused right now", which is true for the whole of an outage and
-                    # is what covers a session killed before it wrote anything.
-                    if capacity_reset_at "$SPIRA_RUN/$id.log" >/dev/null || capacity_paused; then
-                        bdq note "$id" "Reclaimed by strand.sh during a capacity outage: the account was out, so no attempt was charged and nothing about the work is implied." >/dev/null 2>&1
-                        printf 'RECLAIMED %s (no attempt — capacity outage) — %s\n' "$id" "$detail"
-                    else
-                        n="$(bump_attempt "$id")"
-                        bdq note "$id" "Reclaimed by strand.sh: in_progress with no live aeon holding it and the lease expired. Attempt $n." >/dev/null 2>&1
-                        printf 'RECLAIMED %s — %s\n' "$id" "$detail"
+                    # THIS IS NOT AN ATTEMPT AND MUST NEVER FEED POISON. A hard-killed aeon
+                    # never runs its teardown, so this is the only record that the death
+                    # happened — but it is evidence about the WORKER. It used to bump the
+                    # attempt counter, and since a dying aeon also failed to release its bead,
+                    # ONE death cost TWO of the three attempts: beads poisoned with their work
+                    # never once tried. There is now exactly one door onto the attempt counter
+                    # and it is in aeon.sh, where the session's own trace can be read.
+                    # NAMED `ghost`, not left blank. A blank cause reads back as
+                    # `unrecorded`, which means "we do not know" — and here we do: the lease
+                    # expired with no live process holding it. A counter that records what
+                    # happened is the whole reason there are two of them.
+                    n="$(bump_reclaim "$id" ghost)"
+                    bdq note "$id" "Reclaimed by strand.sh: in_progress with no live aeon holding it and the lease expired. Reclaim $n — the worker died; this is not an attempt at the work." >/dev/null 2>&1
+                    printf 'RECLAIMED %s — %s\n' "$id" "$detail"
+                    # The ceiling has its OWN escalation. The question it asks is about the
+                    # host, not about the bead, so it must not read like a poison ask. `-eq`
+                    # on a counter that only ever increases fires it exactly once — no episode
+                    # state needed, and nothing to prune when it clears.
+                    if [ "${n:-0}" -eq "$RECLAIM_AT" ]; then
+                        a="$(attempts_of "$id")"; a="${a:-0}"
+                        escalate "$part" reclaim-ceiling "$id" \
+                            "its aeon has died $n times while the work itself has failed $a time(s) — the bead keeps losing its worker, which is a fault in the host or the summoning rather than in the bead" \
+                            "read the aeon journal (journalctl --user -u 'spira-aeon-*') and check the account's rate limit. This bead is NOT poisoned and is still being worked; nothing needs to be done to it"
                     fi
                     ;;
                 stale-blocked)

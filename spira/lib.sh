@@ -793,19 +793,159 @@ capacity_withdrawn_mark() {
 }
 
 # --------------------------------------------------------------------------------------
-# Attempt counting. Kept as labels rather than metadata because a label is visible in
-# every listing and filterable by the same --exclude-label surface claiming uses, so the
-# poison threshold is enforced at SELECTION time rather than after a wasted claim.
+# TWO COUNTERS, BECAUSE THERE ARE TWO FAILURES AND THEY WANT DIFFERENT ANSWERS.
+#
+#   sp-attempt-N   the WORK was tried and did not land. Feeds the poison threshold.
+#   sp-reclaim-N   the WORKER died holding the bead. Diagnostic; feeds nothing that stops
+#                  a bead being worked.
+#
+# They were one counter, and one aeon dying cost a bead TWO of its three attempts: the
+# teardown bumped on the way out and strand.sh bumped again when it reclaimed the same bead
+# after the lease expired. Beads were poisoned without their work ever having been tried —
+# the sessions were refused by the API seconds in. Poison then fires hardest during
+# infrastructure flapping, which is exactly when the queue can least afford to lose work.
+# "This bead cannot be worked" and "this host keeps killing aeons" are different claims and
+# neither is evidence for the other.
+#
+# Kept as labels rather than metadata because a label is visible in every listing and
+# filterable by the same --exclude-label surface claiming uses, so the poison threshold is
+# enforced at SELECTION time rather than after a wasted claim.
+#
+# AND EACH RUNG CARRIES ITS CAUSE, because "three attempts" is only a reason to stop if all
+# three were the work failing. The label is `sp-attempt-2-unlanded`, not `sp-attempt-2`: a
+# bare number records that something happened without recording what, so a poison nobody can
+# audit takes a bead out of circulation for reasons that have already scrolled away. The
+# counter is still the leading `<prefix>-<n>`, so every reader of the number is unchanged.
 # --------------------------------------------------------------------------------------
-attempts_of() {          # attempts_of <id> -> integer
-    bdq label list "$1" 2>/dev/null | grep -oE 'sp-attempt-[0-9]+' | grep -oE '[0-9]+$' \
+counter_of() {           # counter_of <id> <prefix> -> integer (empty when unset)
+    bdq label list "$1" 2>/dev/null | grep -oE "$2-[0-9]+" | grep -oE '[0-9]+$' \
         | sort -n | tail -1 || true
 }
 
-bump_attempt() {         # bump_attempt <id> -> new count
-    local id="$1" n; n="$(attempts_of "$id")"; n="${n:-0}"; n=$((n+1))
-    bdq label add "$id" "sp-attempt-$n" >/dev/null 2>&1
+# counter_label <id> <prefix> <n> -> the label text carrying rung <n>, cause and all.
+# Anything REMOVING a rung must go through this rather than reconstructing `<prefix>-<n>`,
+# which no longer matches once a cause is appended.
+#
+# It and counter_causes below capture before matching rather than piping into `head -1` or
+# `grep -q`: both close the pipe early and SIGPIPE the writer, which pipefail then reports as
+# failure (law-no-grep-q-under-pipefail).
+counter_label() {
+    local all hit
+    all="$(bdq label list "$1" 2>/dev/null | sed -n 's/^ *- //p')" || all=""
+    hit="$(grep -xE "$2-$3(-.*)?" <<<"$all")" || return 1
+    printf '%s' "$(sed -n 1p <<<"$hit")"
+}
+
+# counter_causes <id> <prefix> -> one `<n> <cause>` line per rung, in order. This is what
+# makes a poison auditable: it names which outcomes charged the bead.
+counter_causes() {
+    local all rungs
+    all="$(bdq label list "$1" 2>/dev/null | sed -n 's/^ *- //p')" || all=""
+    rungs="$(grep -E "^$2-[0-9]+(-|$)" <<<"$all")" || return 0
+    sed -E "s/^$2-([0-9]+)$/\1 unrecorded/;s/^$2-([0-9]+)-(.*)$/\1 \2/" <<<"$rungs" | sort -n
+}
+
+bump_counter() {         # bump_counter <id> <prefix> [cause] -> new count
+    local id="$1" pfx="$2" cause="${3:-}" n
+    n="$(counter_of "$id" "$pfx")"; n="${n:-0}"; n=$((n+1))
+    # A cause is sanitised, never interpolated raw: it reaches here from a classifier, and a
+    # label carrying a space would split into two labels and desynchronise the ladder.
+    cause="$(printf '%s' "$cause" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-\{2,\}/-/g;s/^-//;s/-$//')"
+    if [ -n "$cause" ]; then
+        bdq label add "$id" "$pfx-$n-$cause" >/dev/null 2>&1
+    else
+        bdq label add "$id" "$pfx-$n" >/dev/null 2>&1
+    fi
     printf '%d' "$n"
+}
+
+attempts_of()    { counter_of "$1" sp-attempt; }
+bump_attempt()   { bump_counter "$1" sp-attempt "${2:-}"; }
+attempt_causes() { counter_causes "$1" sp-attempt; }
+reclaims_of()    { counter_of "$1" sp-reclaim; }
+bump_reclaim()   { bump_counter "$1" sp-reclaim "${2:-}"; }
+
+# --------------------------------------------------------------------------------------
+# WHAT ENDED THIS SESSION — AND THE DEFAULT IS "WE DO NOT KNOW".
+#
+# The poison threshold means "we know this work keeps failing", so only an outcome that
+# names what the WORK did wrong may charge against it. Everything else — an exit the harness
+# cannot classify included — is evidence about the worker or about nothing at all. It used
+# to be default-ALLOW, charging anything a small list of exemptions did not positively
+# excuse, and every failure mode that cost the most was unenumerated when it fired: one bead
+# poisoned on a lease reclaim, a red CI run and a claim, with a single rate-limit line in its
+# log, and exempting the rate-limit case alone would not have saved it.
+#
+# The two directions are not symmetric, which is why the default goes this way. Default-deny
+# fails by retrying a genuinely bad bead more often than necessary, and that costs passes.
+# Default-allow fails by the queue destroying itself during an outage, and that costs the
+# work — permanently, since poison is state a transient condition has no business writing.
+#
+#   unlanded  the session ran to its own end and the bead is not closed. A verdict about the
+#             WORK exists: an aeon looked at it and did not finish it. THIS IS THE ONLY
+#             OUTCOME THAT CHARGES AN ATTEMPT.
+#   refused   the API turned the session away; it never acted. When a rate limit is reached
+#             every summon dies in seconds with a rejection, burning lives off beads nobody
+#             has looked at.
+#   killed    it acted, then vanished without writing a terminal record — the host died, the
+#             cgroup was torn down, or its worktree was deleted under it.
+#   unknown   the trace cannot say. Charges nothing, on purpose.
+#
+# Deterministic and cheap (law-deterministic-before-inference): the presence of one tool call
+# and of a terminal `result` record answers the whole question. The test is the TRACE and not
+# the exit status — a session can exit non-zero having done real work, and a refused one exits
+# the same way. `--output-format stream-json` emits an event per message and per tool call,
+# so a segment carrying none of them is itself an answer: the session never got to speak.
+#
+# A MISSING FILE IS `unknown`, NOT `refused`. Zero has to be distinguishable from "we looked
+# in the wrong place" or the check reads as all-clear when it is broken
+# (law-absence-needs-a-positive-control). Both decline to charge, so the recorded cause is the
+# only thing that differs — which is exactly the point, because it is what a human reads when
+# the counts stop making sense.
+#
+# Every branch is an `if`, never a bare `cmd && return`: an AND-list that fails is a failed
+# command, and this is called from an EXIT trap, where one of those can end the shell
+# mid-teardown.
+# --------------------------------------------------------------------------------------
+session_outcome() {      # session_outcome <trace-file> -> unlanded|refused|killed|unknown
+    local f="${1:-}" seg last acted=1
+    if [ -z "$f" ] || [ ! -e "$f" ]; then printf 'unknown'; return 0; fi
+    # THE LAST ATTEMPT'S SEGMENT, NEVER THE WHOLE FILE. The trace is appended to across
+    # attempts, so a session the account refused before it wrote a single event would inherit
+    # the PREVIOUS attempt's terminal `result` record — and a previous attempt that ran to its
+    # own end reads as `unlanded`. That charges the refusal as a verdict about the work, which
+    # is default-allow restored through the back door, in the one case the rule exists for.
+    # attempt_trace is the boundary every reader of this file has to go through.
+    seg="$(attempt_trace "$f" 2>/dev/null)" || seg=""
+    # `grep -c`, never `grep -q`, and counted rather than tested: -q exits at the first match
+    # and closes its input, which under pipefail is reported as failure — so the test would
+    # read FALSE exactly when it succeeded (law-no-grep-q-under-pipefail).
+    #
+    # The segment carries its own attempt mark, so "is the file non-empty" is not the
+    # question; "did this session emit any event at all" is. A segment of nothing but the mark
+    # is a session that never got to speak.
+    if [ "$(grep -c '^{' <<<"$seg")" = 0 ]; then printf 'refused'; return 0; fi
+    if [ "$(grep -cF '"type":"tool_use"' <<<"$seg")" != 0 ]; then acted=0; fi
+    last="$(grep -F '"type":"result"' <<<"$seg" | tail -1)" || last=""
+    if [ -z "$last" ]; then
+        # No terminal record. It either never started or was killed part-way; the tool calls
+        # are what tell those apart.
+        if [ "$acted" = 0 ]; then printf 'killed'; else printf 'refused'; fi
+        return 0
+    fi
+    case "$last" in
+        *'"api_error_status"'*|*'"error":"rate_limit"'*) printf 'refused'; return 0 ;;
+    esac
+    # It ran to its own end. If it never called a tool it decided nothing about the work
+    # either, so that is still not a verdict.
+    if [ "$acted" = 0 ]; then printf 'unlanded'; else printf 'refused'; fi
+}
+
+# Does this outcome say something about the WORK? Exactly one does. Kept as a function rather
+# than an inline test so that adding an outcome forces a decision here instead of silently
+# inheriting whichever default the call site happens to have.
+outcome_charges() {      # outcome_charges <outcome> -> rc 0 when it may charge an attempt
+    case "${1:-}" in unlanded) return 0 ;; *) return 1 ;; esac
 }
 
 # --------------------------------------------------------------------------------------
