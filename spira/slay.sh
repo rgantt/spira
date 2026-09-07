@@ -25,10 +25,14 @@
 #      bead while `bd ready` still lists it, which left seven reopened beads unclaimable for
 #      hours. Open by default; closed with a reason on request; the `branch:` label comes
 #      off with the branch.
-#   5. THE WORK. Salvage first — a patch of anything uncommitted lands in $SPIRA_RUN/reaped,
-#      the same insurance the reaper carries — then the rebase in progress is aborted, the
-#      worktree removed, the branch deleted with its tip sha written into the bead's note.
-#      Deleted is recoverable from the reflog for a month; a note without the sha is not.
+#   5. THE WORK, THROUGH lib.sh AND NOWHERE ELSE. Salvage first — a patch of anything
+#      uncommitted lands in $SPIRA_RUN/reaped, the same insurance the reaper carries — then
+#      the rebase in progress is aborted and spira_destroy_worktree / spira_destroy_branch
+#      do the removing, with the tip sha written into the bead's note. Deleted is recoverable
+#      from the reflog for a month; a note without the sha is not. Those two primitives are
+#      the only permitted callers of `git worktree remove` and `git branch -D` in the
+#      harness, and they refuse while anybody is home — which is why step 4's release runs
+#      ahead of this rather than after it.
 #   6. SAY WHAT WAS DONE, with the evidence, and exit non-zero on anything it could not do.
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -93,10 +97,35 @@ else
 fi
 rm -f "$SPIRA_RUN/$ID.slain"
 
-# ---- 5. the work (before the bead, so the note can carry the sha) ---------------------
+# ---- 4a. release the claim, BEFORE anything is destroyed --------------------------------
+# A LIVE CLAIM IS ANOTHER ACTOR'S, and bd refuses to overwrite one without being told the
+# claim is abandoned — which is exactly what this script has just made true. unclaim is the
+# release the aeon itself would have performed; --force on update is the fallback for a bead
+# whose claim survived its own exit path.
+#
+# IT HAPPENS HERE, AHEAD OF THE WORK, because the destruction below goes through lib.sh and
+# lib.sh asks `spira_holder_witnesses` whether anybody is home. That predicate reads
+# `in_progress` as "the lease has not been released" and refuses — correctly, for every other
+# caller. Slaying is the one path that has just MADE the answer no: the aeon is stopped and
+# its exit path has run. So the release is the last step of stopping the aeon, not the first
+# step of tidying up after it, and doing it in the other order is what left this script
+# reaching around the chokepoint with a raw `git worktree remove` and `git branch -D`.
+status_of() { bdjson show "$ID" | python3 -c 'import sys,json
+d=json.load(sys.stdin); d=d if isinstance(d,list) else [d]; print(d[0].get("status","") if d else "")' 2>/dev/null; }
+st="$(status_of)"
+if [ "$st" = in_progress ]; then
+    bdq unclaim "$ID" --force >/dev/null 2>&1 || bdq unclaim "$ID" >/dev/null 2>&1 || true
+fi
+bdq update "$ID" --assignee "" --force >/dev/null 2>&1 || bdq update "$ID" --assignee "" >/dev/null 2>&1
+
+# ---- 5. the work (the sha is read before the branch goes, so the note can carry it) ------
+# EVERY DELETION GOES THROUGH lib.sh. The two primitives re-check the witnesses, salvage,
+# and write both sides of the act to the reap log — which is the whole point of the
+# chokepoint, and which slay.sh most needs: it deletes a live aeon's worktree, with
+# uncommitted work in it, at the moment that aeon has just been killed.
 repo_name="$(bead_repo "$ID" 2>/dev/null)"; repo=""
 [ -n "$repo_name" ] && repo="$(repo_root "$repo_name" 2>/dev/null)"
-br="spira/$ID"; wt="$SPIRA_RUN/worktree/$ID"; tip=""; nuked=""
+br="spira/$ID"; wt="$SPIRA_RUN/worktree/$ID"; tip=""; nuked=""; saved=""
 if [ -n "$repo" ] && git -C "$repo" show-ref --verify -q "refs/heads/$br"; then
     tip="$(git -C "$repo" rev-parse --short "$br")"
 fi
@@ -106,42 +135,38 @@ elif [ -n "$repo" ]; then
     if [ -d "$wt" ]; then
         git -C "$wt" rebase --abort >/dev/null 2>&1 || true
         git -C "$wt" merge --abort  >/dev/null 2>&1 || true
+        # Salvaged here rather than left to the primitive so the PATH can be reported and
+        # carried into the bead's note. `salvage` resets SALVAGED on entry and the primitive
+        # calls it again — finding nothing left to save, which is a success — so the name is
+        # taken now or it is lost.
         if salvage "$ID" "$wt"; then
-            [ -n "${SALVAGED:-}" ] && say "work: uncommitted changes salvaged to $SALVAGED"
+            saved="${SALVAGED:-}"
+            [ -n "$saved" ] && say "work: uncommitted changes salvaged to $saved"
         else
             say "work: could not salvage $wt — leaving it in place"; fail=1
         fi
         if [ "$fail" = 0 ]; then
-            git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
-            spira_prune_worktrees "$repo" >/dev/null 2>&1
-            say "work: worktree $wt removed"
+            if spira_destroy_worktree "$ID" "$wt" "$repo" "slain: $WHY"; then
+                say "work: worktree $wt removed"
+            else
+                say "work: could not remove $wt — see $SPIRA_RUN/reap.log"; fail=1
+            fi
         fi
     fi
     if [ -n "$tip" ] && [ "$fail" = 0 ]; then
-        if git -C "$repo" branch -D "$br" >/dev/null 2>&1; then
+        if spira_destroy_branch "$ID" "$br" "$repo" "slain: $WHY"; then
             nuked="branch $br deleted at $tip (reflog keeps it ~30 days)"; say "work: $nuked"
         else
-            say "work: could not delete $br"; fail=1
+            say "work: could not delete $br${SPIRA_DESTROY_ERR:+ — $SPIRA_DESTROY_ERR}"; fail=1
         fi
     fi
 else
     say "work: bead names no resolvable repository — nothing to remove"
 fi
 
-# ---- 4. the bead -----------------------------------------------------------------------
-# A LIVE CLAIM IS ANOTHER ACTOR'S, and bd refuses to overwrite one without being told the
-# claim is abandoned — which is exactly what this script has just made true. unclaim is the
-# release the aeon itself would have performed; --force on update is the fallback for a bead
-# whose claim survived its own exit path.
-status_of() { bdjson show "$ID" | python3 -c 'import sys,json
-d=json.load(sys.stdin); d=d if isinstance(d,list) else [d]; print(d[0].get("status","") if d else "")' 2>/dev/null; }
-st="$(status_of)"
-if [ "$st" = in_progress ]; then
-    bdq unclaim "$ID" --force >/dev/null 2>&1 || bdq unclaim "$ID" >/dev/null 2>&1 || true
-fi
-bdq update "$ID" --assignee "" --force >/dev/null 2>&1 || bdq update "$ID" --assignee "" >/dev/null 2>&1
+# ---- 4b. the rest of the bead ------------------------------------------------------------
 if [ -n "$nuked" ]; then bdq label remove "$ID" "branch:$br" >/dev/null 2>&1 || true; fi
-note="Slain by the operator: $WHY. Aeon ${name:-?}${pid:+ (pid $pid)} stopped${unit:+ via $unit}. ${nuked:-work kept}${SALVAGED:+; uncommitted changes salvaged to $SALVAGED}. No attempt charged."
+note="Slain by the operator: $WHY. Aeon ${name:-?}${pid:+ (pid $pid)} stopped${unit:+ via $unit}. ${nuked:-work kept}${saved:+; uncommitted changes salvaged to $saved}. No attempt charged."
 st="$(status_of)"
 case "$MODE" in
     close)  if [ "$st" = closed ]; then
