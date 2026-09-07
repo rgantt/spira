@@ -440,6 +440,7 @@ spira_bin_purpose() {
         tmux)    echo "the cockpit panes" ;;
         python3) echo "every JSON payload this harness parses" ;;
         cargo)   echo "building the decisions panel; not needed to run the loop" ;;
+        node)    echo "gating the browser page's view model; the loop itself never needs it" ;;
         jq)      echo "optional JSON convenience" ;;
         flock)   echo "serialising the writers of the transcript archive" ;;
         zstd)    echo "compressing archived transcripts; gzip is used when it is absent" ;;

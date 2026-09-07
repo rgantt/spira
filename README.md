@@ -23,6 +23,7 @@ CI; the sweep does that, and brings the bead back when there is something to dec
 | `claude` | the agent an aeon is a session of | no work is done, only reported |
 | `tmux` | the cockpit panes | no attention surface |
 | `cargo` | building the attention panel, once | no panel; the loop is unaffected |
+| `node` | gating the browser page's view model | that one suite skips; the loop is unaffected |
 
 **Run `spira/doctor.sh` first.** It is read-only, it names every one of these that is missing
 and what that costs you, and it goes on to check the database, the repository map and the
@@ -146,6 +147,48 @@ goes back into the report that would have found it.
 
 The ops pane reports the two populations separately, because "waiting on a run" is routine and
 "parked with no run to wait for" is a fault.
+
+## The browser page
+
+`loom/` is a browser surface over the live bead graph: where the work is, what blocks what,
+and how it has proceeded. `loom/src/` is the server and its one route; `loom/static/` is the
+page. Open `loom.html` beside that route, or point it at a saved payload with `?api=<path>`
+and no server at all.
+
+**The server returns beads; the page computes everything else.** No coordinates, no connected
+components, no execution layers, no histograms, no counts. That was the other way round in the
+prototype this grew from, and a measurement reversed it: the whole pass — treemap, packing,
+edge routing, components, layering and every bucket — is single-digit milliseconds at a few
+hundred beads and tens of milliseconds at twenty thousand, in the browser. Server-side layout
+buys nothing at that price and costs a rendering stack.
+
+| file | what it is |
+|---|---|
+| `static/model.js` | the derivation. No document, no network — which is what lets a suite load the shipped file under a bare JS runtime |
+| `static/app.js` | the painting, and the only thing that fetches |
+| `static/loom.html` | markup and style |
+| `static/fixture.py` / `fixture.json` | a synthetic corpus reproducing the shapes a real graph makes; the generator states the shapes, so a reader need not count records |
+| `static/render-check.sh` | drives the page in a headless browser and asserts it painted |
+
+The dependency records reach the page one of two ways and both give the same graph: on each
+bead, as the tracker writes them, or lifted into one flat `edges` array by a server that does
+not want to write each one twice. One parser reads both, because a second reader for the
+second arrangement is how the two come to disagree about which relations count.
+
+Two things it deliberately does not do. It has **no attention list** — whatever surface you
+already answer questions on keeps that job, because two surfaces answering "is anything wrong"
+differently is how one becomes wallpaper. And it shows **arrivals, never completions**: the
+read path is bounded to work in flight, which is what makes reading it on every request
+affordable, so completions per day and created-to-closed cycle time have no source in it. They
+are absent and labelled absent rather than approximated from the open population, where the
+number would be wrong and would still read as the number it is named after.
+
+`test-loom.sh` gates the server, `test-loom-page.sh` gates the model and the page's structure,
+and they are separate because they fail for different reasons and skip on different machines —
+one wants a Rust toolchain, the other a JS runtime. `render-check.sh` is run by hand, because a
+browser is not something a clone has any reason to have. Every assertion in it is
+one the static markup cannot satisfy — an earlier version looked for a tag the legend supplies
+either way, and reported greens over a page whose render call the port had dropped.
 
 ## Clearing a session without losing it
 
