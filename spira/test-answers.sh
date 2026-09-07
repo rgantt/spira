@@ -228,28 +228,39 @@ echo "the fence — the panel must CLOSE as the operator, not merely comment as 
 # Authorship on the close is what the verdict leg filters on, so a panel that closes
 # unstamped makes every verdict it writes indistinguishable from an agent's -- and the leg
 # above would then drop the operator's real answers. This is the one line that cannot regress.
+# IT ANCHORS ON THE FUNCTION, NOT ON A MATCH ARM. The first version searched the
+# `View::Decisions => { ... }` arm for `close` and `operator_actor()` together, which held
+# only while the close was open-coded inside the arm. Extracting it to `close_decision` left
+# the property TRUE and the fence RED — the arms that still say `View::Decisions` now yield
+# the tab's title and the key's verb, neither of which closes anything. A fence keyed to a
+# shape rather than to the behaviour fails the moment the shape is tidied, and it then reads
+# exactly like the regression it exists to catch.
 mrs="$COCKPIT/panel/src/model.rs"
-if [ -f "$mrs" ]; then
-    if python3 - "$mrs" <<'PY'
+fence_py='
 import re, sys
 src = open(sys.argv[1]).read()
-m = re.search(r"View::Decisions\s*=>\s*\{(.*?)\n        \}", src, re.S)
-sys.exit(0 if m and "close" in m.group(1) and "operator_actor()" in m.group(1) else 1)
-PY
+m = re.search(r"fn close_decision\(.*?\n\}", src, re.S)
+sys.exit(0 if m and "\"close\"" in m.group(0) and "operator_actor()" in m.group(0) else 1)
+'
+if [ -f "$mrs" ]; then
+    if python3 -c "$fence_py" "$mrs"
     then ok "the panel closes as the operator's actor"
     else bad "the panel closes as the operator's actor" \
-             "View::Decisions closes without operator_actor()"; fi
-    # The positive control: the check must be able to refuse.
+             "close_decision does not pass operator_actor() to bd close"; fi
+    # The positive control: the check must be able to refuse. The probe is the same function
+    # with the actor dropped, which is the regression in its most plausible form — somebody
+    # simplifying run_as back to run.
     probe="$TMP/model.rs"
-    printf 'match v {\n        View::Decisions => {\n            run("bd", &["close", &i.id]);\n        }\n}\n' > "$probe"
-    if python3 - "$probe" <<'PY'
-import re, sys
-src = open(sys.argv[1]).read()
-m = re.search(r"View::Decisions\s*=>\s*\{(.*?)\n        \}", src, re.S)
-sys.exit(0 if m and "close" in m.group(1) and "operator_actor()" in m.group(1) else 1)
-PY
+    printf 'fn close_decision(db: &str, id: &str, reason: &str) -> Result<(), String> {\n    run("bd", &["-C", db, "close", id, "--reason", reason])\n}\n' > "$probe"
+    if python3 -c "$fence_py" "$probe"
     then bad "the fence refuses an unstamped close" "it accepted one"
     else ok "the fence refuses an unstamped close"; fi
+    # AND IT MUST STILL FIND THE FUNCTION AT ALL. A rename would make the search miss, which
+    # `bad` would report as an unstamped close — the same wrong story the shape-keyed version
+    # told. Absence and violation are different findings (law-absence-needs-a-positive-control).
+    grep -q 'fn close_decision(' "$mrs" \
+        && ok "and close_decision is the function it judges" \
+        || bad "and close_decision is the function it judges" "no fn close_decision in $mrs"
 else
     printf '  note  no panel source here; the close-authorship fence did not run\n'
 fi
