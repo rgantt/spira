@@ -185,6 +185,32 @@ fayth ops spira,incident 'FAYTH_MAX_CONCURRENT=1' 'FAYTH_TIMEOUT_SECONDS=1800'
 
 # ======================================================================================
 echo
+echo "the governor clamps by headroom, and only when enforcing:"
+# ======================================================================================
+# budget.env is what governor.sh leaves behind. SP_HEADROOM is how many MORE may start;
+# it is not a total, and the running count is not subtracted from it a second time.
+fayth ops spira,incident 'FAYTH_MAX_CONCURRENT=3' 'FAYTH_TIMEOUT_SECONDS=1800'
+rm -f "$SPIRA_RUN"/aeon-ops-*.pid
+live_aeon ops sp-inc-0
+printf "SP_HEADROOM='1'\nSP_BUDGET='2'\nSP_GOVERNOR_MODE='measure'\n" > "$SPIRA_RUN/budget.env"
+is "measure mode changes nothing: two of three slots free"  2 "$(fayth_free ops)"
+printf "SP_HEADROOM='1'\nSP_BUDGET='2'\nSP_GOVERNOR_MODE='enforce'\n" > "$SPIRA_RUN/budget.env"
+is "enforce: headroom 1 leaves one of the two"              1 "$(fayth_free ops)"
+printf "SP_HEADROOM='5'\nSP_BUDGET='6'\nSP_GOVERNOR_MODE='enforce'\n" > "$SPIRA_RUN/budget.env"
+is "headroom past the cap: the fayth's own cap still binds" 2 "$(fayth_free ops)"
+printf "SP_HEADROOM='0'\nSP_BUDGET='1'\nSP_BUDGET_REASON='cpu 20%% idle (avg), floor 25%%'\nSP_GOVERNOR_MODE='enforce'\n" > "$SPIRA_RUN/budget.env"
+is "headroom 0 withholds"                                   0 "$(fayth_free ops)"
+is "and ops is not summoned"                                1 "$(summon ops)"
+want "the log blames the governor, not the cap" "withheld by the governor — cpu 20% idle" "$(summon_log)"
+# The old contract, for the record: a TOTAL of 1 with one running would also have read 0,
+# but a total of 2 with one running and headroom 1 must not read 1 by accident of arithmetic.
+printf "SP_BUDGET='2'\nSP_GOVERNOR_MODE='enforce'\n" > "$SPIRA_RUN/budget.env"
+is "a snapshot without SP_HEADROOM is no opinion"          2 "$(fayth_free ops)"
+rm -f "$SPIRA_RUN/budget.env" "$SPIRA_RUN"/aeon-ops-*.pid
+fayth ops spira,incident 'FAYTH_MAX_CONCURRENT=1' 'FAYTH_TIMEOUT_SECONDS=1800'
+
+# ======================================================================================
+echo
 echo "no field leaks from one fayth to the next:"
 # ======================================================================================
 # Sourcing a fayth sets FAYTH_* in the caller. The whole defect was one persona wearing

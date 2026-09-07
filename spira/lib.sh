@@ -171,14 +171,19 @@ fayth_free() {           # fayth_free <fayth> -> free concurrency slots, never n
     # absence means no opinion, so a suite with no budget.env behaves exactly as before.
     # Only `enforce` clamps. In `measure` the budget is recorded and reported and changes
     # nothing, so the history accumulates under real conditions before it decides anything.
-    local gmode
-    budget="$(. "$SPIRA_RUN/budget.env" 2>/dev/null; printf '%s' "${SP_BUDGET:-}")"
-    gmode="$(. "$SPIRA_RUN/budget.env" 2>/dev/null; printf '%s' "${SP_GOVERNOR_MODE:-measure}")"
-    if [ "$gmode" = enforce ] && [ -n "$budget" ] && [ "$budget" -lt "$max" ] 2>/dev/null; then
-        max="$budget"
-    fi
+    # IT CLAMPS BY HEADROOM — how many MORE the governor says may start — not by a total.
+    # The governor's number was always "how many fit in the idle CPU", which is additional
+    # aeons since the running ones are already in the load; reading it as a cap and then
+    # subtracting the running count again withheld more the more was running.
+    local gmode free
     have="$(aeon_count "$f")"
-    if [ "$have" -lt "$max" ]; then printf '%d' $(( max - have )); else printf '0'; fi
+    free=$(( max > have ? max - have : 0 ))
+    budget="$(. "$SPIRA_RUN/budget.env" 2>/dev/null; printf '%s' "${SP_HEADROOM:-}")"
+    gmode="$(. "$SPIRA_RUN/budget.env" 2>/dev/null; printf '%s' "${SP_GOVERNOR_MODE:-measure}")"
+    if [ "$gmode" = enforce ] && [ -n "$budget" ] && [ "$budget" -lt "$free" ] 2>/dev/null; then
+        free="$budget"
+    fi
+    printf '%d' "$free"
 }
 
 fayths_for_labels() {    # fayths_for_labels <labels> -> personas whose partition IS <labels>
@@ -215,7 +220,7 @@ summon_fayth() {
         # Name the ACTUAL reason. "at concurrency cap" was logged even when the governor
         # was the one withholding, which is a check reporting someone else's decision as
         # its own — the reader then tunes the wrong knob.
-        local b gm; b="$(. "$SPIRA_RUN/budget.env" 2>/dev/null; printf '%s' "${SP_BUDGET:-}")"
+        local b gm; b="$(. "$SPIRA_RUN/budget.env" 2>/dev/null; printf '%s' "${SP_HEADROOM:-}")"
         gm="$(. "$SPIRA_RUN/budget.env" 2>/dev/null; printf '%s' "${SP_GOVERNOR_MODE:-measure}")"
         if [ "$gm" = enforce ] && [ -n "$b" ] && [ "$b" -eq 0 ] 2>/dev/null; then
             local why; why="$(. "$SPIRA_RUN/budget.env" 2>/dev/null; printf '%s' "${SP_BUDGET_REASON:-no headroom}")"

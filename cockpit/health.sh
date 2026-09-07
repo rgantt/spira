@@ -608,11 +608,14 @@ standing_lines() {
             "$C_DIM" "$(( ${SP_CAPACITY_LEFT:-0} / 60 ))" "$C_RST" \
             "$C_DIM" "$C_RST"
     else
-        printf ' %sGOV%s    %s%s mode%s  %s\n' \
+        # HEADROOM, not the total: "3 affordable" beside three running said nothing. A
+        # snapshot from before the governor reported headroom falls back to its budget.
+        printf ' %sGOV%s    %s%s mode%s  %s %s(idle avg %s%%)%s\n' \
             "$C_DIM" "$C_RST" "$C_B" "${SP_GOVERNOR_MODE:-?}" "$C_RST" \
-            "$( [ "${SP_BUDGET:-0}" = 0 ] \
+            "$( [ "${SP_HEADROOM:-${SP_BUDGET:-0}}" = 0 ] \
                  && printf '%swould withhold — %s%s' "$C_WARN" "${SP_BUDGET_REASON:-no headroom}" "$C_RST" \
-                 || printf '%s%s aeon(s) affordable%s' "$C_OK" "${SP_BUDGET:-?}" "$C_RST")"
+                 || printf '%s%s more aeon(s) affordable%s' "$C_OK" "${SP_HEADROOM:-${SP_BUDGET:-?}}" "$C_RST")" \
+            "$C_DIM" "${SP_CPU_IDLE_AVG:-?}" "$C_RST"
     fi
 }
 
