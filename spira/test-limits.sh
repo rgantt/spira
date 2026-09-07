@@ -296,6 +296,97 @@ is "env ignores a blob on stdin and answers from the samples" \
 
 # ==========================================================================================
 echo
+echo "the colours — each window banded by its own value"
+# ==========================================================================================
+# ASSERTED AGAINST THE ESCAPES, NOT A STRIPPED LINE. Colour is the whole of the signal here: a
+# window at 95% and one at 5% read identically once the escapes are gone, so a suite that only
+# ever strips them cannot tell a banded line from an unbanded one. Every case below therefore
+# uses the raw line, and the green case is the positive control for the two that follow — it
+# proves the band moves with the value rather than being one constant colour.
+ESC=$'\033'
+rm -f "$SAMPLES"
+L="$(feed "$EPOCH" 36 $((EPOCH + 86400)) 13 $((EPOCH + 600000)))"
+has "under the warn band the window is green" "$L" "${ESC}[32m5h 36%"
+rm -f "$SAMPLES"
+L="$(feed "$EPOCH" 75 $((EPOCH + 86400)) 13 $((EPOCH + 600000)))"
+has "at three quarters it is yellow"          "$L" "${ESC}[33m5h 75%"
+rm -f "$SAMPLES"
+L="$(feed "$EPOCH" 95 $((EPOCH + 86400)) 13 $((EPOCH + 600000)))"
+has "past the high band it is red"            "$L" "${ESC}[31m5h 95%"
+has "and the other window keeps its own band" "$L" "${ESC}[32m7d 13%"
+
+# THE WARNING INHERITS RED ONLY WHEN IT IS SOON. An hour is the threshold because that is when
+# it changes what to do next; a fill four hours away is information, not an alarm, and rendering
+# both the same spends the colour that makes the urgent one legible.
+rm -f "$SAMPLES"
+feed "$EPOCH"           10 $((EPOCH + 86400)) 13 $((EPOCH + 600000)) >/dev/null
+L="$(feed "$((EPOCH + 300))" 30 $((EPOCH + 86400)) 13 $((EPOCH + 600000)))"
+has "a fill within the hour is red" "$L" "${ESC}[31mfull in ~"
+rm -f "$SAMPLES"
+feed "$EPOCH"           60 $((EPOCH + 86400)) 13 $((EPOCH + 600000)) >/dev/null
+feed "$((EPOCH + 300))" 62 $((EPOCH + 86400)) 13 $((EPOCH + 600000)) >/dev/null
+L="$(feed "$((EPOCH + 600))" 64 $((EPOCH + 86400)) 13 $((EPOCH + 600000)))"
+has "a fill further off is not"     "$L" "${ESC}[2mfull in ~1h3"
+
+# ==========================================================================================
+echo
+echo "the EMA weights each interval by its own length"
+# ==========================================================================================
+# WHY THIS IS NOT THE SAME TEST AS "A CLIMBING WINDOW". Every other projection case here uses
+# evenly spaced samples, and on those a fixed weight and a time-weighted one agree — so all of
+# them pass with the time constant thrown away. The hook fires every five seconds while a turn
+# is running and not at all between turns, so uneven intervals are the normal case, not the
+# edge one, and a fixed weight lets the last few seconds of a session pin the average.
+#
+# Twenty points over five minutes is 4.0 a minute; one point over the next single minute is
+# 1.0. With α = 1 − exp(−Δt/τ) and τ=15, that one short minute is worth α=0.064, so it barely
+# moves the average: 4.0 − 0.064×3.0 = 3.81 a minute, or 228.4%/h. A fixed α=0.5 would land on
+# 2.5 a minute, or 150.0%/h — so the rendered rate names which one is in force.
+rm -f "$SAMPLES"
+feed "$EPOCH"           10 $((EPOCH + 86400)) 13 $((EPOCH + 600000)) >/dev/null
+feed "$((EPOCH + 300))" 30 $((EPOCH + 86400)) 13 $((EPOCH + 600000)) >/dev/null
+L="$(feed "$((EPOCH + 360))" 31 $((EPOCH + 86400)) 13 $((EPOCH + 600000)) | strip)"
+has   "a brief interval barely moves the average" "$L" "↑228.4%/h"
+hasnt "it is not weighted as an equal to the long one" "$L" "↑150.0%/h"
+
+# ==========================================================================================
+echo
+echo "a malformed window is an absent one, not a zero"
+# ==========================================================================================
+# rate_limits ITSELF PRESENT, ITS WINDOWS UNREADABLE. The absence case earlier omits the key
+# entirely, which the shape check refuses before either window is looked at; this is the other
+# door into the same rendering, and it is the one a client reaches by changing a field's type.
+# A percentage that is a string, out of range, or a bool must not become a number here.
+rawblob() {
+    python3 - "$1" "$TP" <<'PY2'
+import json, sys
+print(json.dumps({"session_id": "s-1", "transcript_path": sys.argv[2], "cwd": "/tmp",
+                  "context_window": {"total_input_tokens": 1200, "used_percentage": 1,
+                                     "context_window_size": 1000000},
+                  "rate_limits": json.loads(sys.argv[1])}))
+PY2
+}
+# The positive control: the same helper, with the windows well formed, does render.
+rm -f "$SAMPLES"
+L="$(rawblob '{"five_hour":{"used_percentage":44,"resets_at":9999999999},
+               "seven_day":{"used_percentage":12,"resets_at":9999999999}}' \
+     | meter line "$EPOCH" | strip)"
+has "positive control: a well-formed pair renders" "$L" "5h 44%"
+
+for BAD in '{"five_hour":{"used_percentage":"lots","resets_at":9999999999},"seven_day":{}}' \
+           '{"five_hour":{"used_percentage":140,"resets_at":9999999999},"seven_day":null}' \
+           '{"five_hour":{"used_percentage":true,"resets_at":9999999999},"seven_day":[]}' \
+           '{}'; do
+    rm -f "$SAMPLES"
+    L="$(rawblob "$BAD" | meter line "$EPOCH" | strip)"
+    hasnt "no segment for $BAD" "$L" "5h"
+    hasnt "and no reassuring zero for it" "$L" "0%"
+done
+is "and nothing unreadable was ever recorded as a sample" "absent" \
+   "$([ -e "$SAMPLES" ] && echo present || echo absent)"
+
+# ==========================================================================================
+echo
 echo "the line stays readable"
 # ==========================================================================================
 rm -f "$SAMPLES"
