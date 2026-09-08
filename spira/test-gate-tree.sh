@@ -129,5 +129,37 @@ want "and says it is a queue, not a fault"  "not a fault"  "$out"
 
 exec 8>&-
 
+# --------------------------------------------------------------------------------------
+# CASE 3 — WORKTREE CLEANUP. The gate removes its worktree AND its registration on every
+# exit path — success, failure, timeout, kill. A registration that outlives the run pins
+# the checked-out branch and prevents its deletion; across passes it fills the list with
+# stale entries that slow every `git worktree list` and `prune` call.
+# --------------------------------------------------------------------------------------
+TREE_PATH="$RUN/worktree/.gate.$(basename "$REPO")"
+
+# Pass case: a gate that exits 0 must have removed its tree.
+rungate "spira/sp-t1" > "$TMP/g3.out" 2>&1; g3_rc=$?
+is "gate exits 0 on a passing branch" 0 "$g3_rc"
+registered="$(git -C "$REPO" worktree list --porcelain 2>/dev/null \
+    | awk -v p="$TREE_PATH" '/^worktree /{if($2==p)c++} END{print c+0}')"
+is "worktree is deregistered after a passing gate" 0 "$registered"
+[ ! -d "$TREE_PATH" ] \
+    && ok "worktree directory is removed after a passing gate" \
+    || bad "worktree directory is removed after a passing gate" "directory still exists at $TREE_PATH"
+
+# Fail case: a gate that exits non-zero must also have removed its tree. Fail on the branch
+# only (SPIRA_GATE_BRANCH != base) so the gate exits FAIL=1 rather than BASE_FAIL=76.
+CMD_FAIL='[ "$SPIRA_GATE_BRANCH" = "$SPIRA_GATE_BASE" ] || { echo "gate: test-gate-tree.sh FAILED deliberately"; exit 1; }'
+printf 'repo | %s | push | origin/main |  | %s\n' "$REPO" "$CMD_FAIL" > "$MAP"
+rungate "spira/sp-t1" > "$TMP/g4.out" 2>&1; g4_rc=$?
+is "gate exits 1 on a failing branch" 1 "$g4_rc"
+registered="$(git -C "$REPO" worktree list --porcelain 2>/dev/null \
+    | awk -v p="$TREE_PATH" '/^worktree /{if($2==p)c++} END{print c+0}')"
+is "worktree is deregistered after a failing gate" 0 "$registered"
+[ ! -d "$TREE_PATH" ] \
+    && ok "worktree directory is removed after a failing gate" \
+    || bad "worktree directory is removed after a failing gate" "directory still exists at $TREE_PATH"
+printf 'repo | %s | push | origin/main |  | %s\n' "$REPO" "$CMD" > "$MAP"  # restore for any future cases
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

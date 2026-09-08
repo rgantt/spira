@@ -67,6 +67,13 @@ verdict() {              # verdict <status> <reason> [message...]
     # trap rather than the verdict's own. Cleanup that the trap owns is done here instead.
     trap - EXIT
     rm -f "${FILELIST:-}" 2>/dev/null
+    # REMOVE THE GATE WORKTREE ON EVERY EXIT PATH — success, failure, timeout, kill — so the
+    # registration does not outlive the run. TREE may be unset when verdict() is called before
+    # the tree was created (early preflight failures); guard before testing for it. The flock
+    # is still held at this point, so no concurrent gate can be using the tree.
+    if [ -n "${TREE:-}" ] && [ -e "${TREE}/.git" ]; then
+        git -C "${REPO:-/nonexistent}" worktree remove --force "$TREE" 2>/dev/null || true
+    fi
     # gate_meter is defined only once the tree lock has been reached; before that there is no
     # wait and no run to record, and a preflight refusal is not a reading about contention.
     command -v gate_meter >/dev/null 2>&1 && gate_meter "$st" "$reason"
@@ -346,6 +353,11 @@ fi
 # that actually changed, and it is reused across passes.
 TREE="$SPIRA_RUN/worktree/.gate.$(basename "$REPO")"
 
+# SWEEP STALE GATE WORKTREES BEFORE OBTAINING THE LOCK. Old runs that were killed before
+# cleanup (SIGKILL, power loss) leave registrations the lock check in the sweep skips safely.
+SWEEP="$(dirname "$0")/gate-sweep.sh"
+[ -r "$SWEEP" ] && bash "$SWEEP" "$REPO" >/dev/null 2>&1 || true
+
 # ONE TREE PER REPOSITORY MEANS ONE TREE FOR ALL OF THAT REPOSITORY'S GATES, so the tree is
 # LOCKED for the whole trial. Gates run concurrently by construction — every aeon runs one
 # before it closes, and the landing pass runs one per branch it is about to merge — and
@@ -456,7 +468,11 @@ FILELIST="$(mktemp)"; printf '%s\n' "$files" > "$FILELIST"
 # which disarms this first; what is left for the trap is a death nobody chose — a signal, or
 # a bug that lets control fall off the end — and those must still be metered, as NO_VERDICT,
 # because a gate that vanished judged nothing.
-trap 'gate_rc=$?; rm -f "$FILELIST"; gate_meter "${gate_rc:-$NV}" died' EXIT
+trap 'gate_rc=$?
+     rm -f "${FILELIST:-}" 2>/dev/null
+     [ -n "${TREE:-}" ] && [ -e "${TREE}/.git" ] && \
+         git -C "${REPO:-/nonexistent}" worktree remove --force "$TREE" 2>/dev/null
+     gate_meter "${gate_rc:-$NV}" died' EXIT
 # 9>&- — THE TREE LOCK'S FD MUST NOT REACH THE GATE COMMAND. `exec 9>lock` leaves fd 9
 # without close-on-exec, so every child inherits it, and flock is held as long as ANY holder
 # of the descriptor lives. A repository's gate builds fixtures and can leave a server running;
