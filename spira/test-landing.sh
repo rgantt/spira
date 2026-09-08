@@ -720,5 +720,64 @@ git -C "$REPO" branch -q -D detour 2>/dev/null
     || bad "a checkout not on the base branch is not clobbered" "checkout moved anyway"
 want "and the decline names the branch" "not main" "$out"
 
+# --------------------------------------------------------------------------------------
+# A PARALLEL DUPLICATE: same feature, different text, one landed.
+#
+# sp-35pl and sp-dvlq in miniature. Two branches edit the same file with different words;
+# one lands and the other's rebase conflicts BECAUSE the base already holds the fix. The
+# reopen note must name the landed bead rather than saying "resolve the conflict", because
+# the correct resolution is to drop the duplicate's commits.
+# --------------------------------------------------------------------------------------
+echo
+cp "$TMP/gate-full.sh" "$SH/gate.sh"
+reset_repo 2>/dev/null || true
+
+# Both branches are created from the SAME base before either lands. sp-dupa sorts before
+# sp-dupb, so the pass lands sp-dupa first and sp-dupb's rebase conflicts — the exact
+# shape the bead is written for. Both add shared.txt from scratch with different content,
+# so the rebase after the first landing produces an ADD/ADD conflict.
+seed; branch sp-dupa shared.txt "the fix, as sp-dupa wrote it"
+branch sp-dupb shared.txt "the fix, as sp-dupb wrote it"
+out="$(landing)"
+want "the first branch lands"          "landed spira/sp-dupa" "$out"
+want "and the duplicate conflicts"     "reopened sp-dupb" "$out"
+notes="$(notes_of sp-dupb)"
+want "and the note names the other bead"   "sp-dupa" "$notes"
+want "and says to check before resolving"  "check whether this work is already landed" "$notes"
+nowant "and does NOT say 'not an escalation'" "not an escalation" "$notes"
+drop_branch sp-dupa; drop_branch sp-dupb
+
+# A REAL CONFLICT WITH NO OTHER BEAD PRODUCES THE ORIGINAL NOTE.
+seed; branch sp-mine shared.txt "my version"
+printf '%s\n' "an unrelated edit by nobody" > "$REPO/shared.txt"
+git -C "$REPO" add -A; git -C "$REPO" commit -q -m "base edits shared.txt (no bead id)"
+git -C "$REPO" push -q origin main; git -C "$REPO" fetch -q origin
+out="$(landing)"
+want "a conflict with no bead on the base reopens normally" "reopened sp-mine" "$out"
+notes="$(notes_of sp-mine)"
+want "the note says it is not an escalation" "not an escalation" "$notes"
+nowant "and does NOT mention other beads"    "check whether" "$notes"
+drop_branch sp-mine
+
+# REPEATED REBASE FAILURES ESCALATE INSTEAD OF REOPENING AGAIN.
+seed; branch sp-loop shared.txt "from the branch"
+printf '%s\n' "from sp-other on the base" > "$REPO/shared.txt"
+git -C "$REPO" add -A; git -C "$REPO" commit -q -m "sp-other — change shared.txt"
+git -C "$REPO" push -q origin main; git -C "$REPO" fetch -q origin
+# Reopen it twice below the threshold (default 3), then hit the threshold on the third.
+out="$(SPIRA_REBASE_ESCALATE_AT=3 landing)"
+want "first rebase failure reopens"   "reopened sp-loop" "$out"
+is   "bead is open after first"       open "$(status_of sp-loop)"
+# Close the bead again so landing will see it.
+B close sp-loop --reason "try again" >/dev/null 2>&1
+out="$(SPIRA_REBASE_ESCALATE_AT=3 landing)"
+want "second rebase failure reopens"  "reopened sp-loop" "$out"
+B close sp-loop --reason "try again" >/dev/null 2>&1
+out="$(SPIRA_REBASE_ESCALATE_AT=3 landing)"
+want "third rebase failure escalates" "escalated sp-loop" "$out"
+nowant "and does not reopen"          "reopened sp-loop" "$out"
+is     "bead stays closed on escalation" closed "$(status_of sp-loop)"
+drop_branch sp-loop
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

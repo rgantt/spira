@@ -104,6 +104,25 @@ spira_ask_machinery() {  # <bead> <branch> <repo> <outcome> <reason> <count> <ga
         --evidence "$(printf '%s' "$out" | tail -20)" >/dev/null 2>&1
 }
 
+# spira_ask_rebase_loop — escalate a bead whose rebase keeps failing.
+#
+# Seven reopens on sp-dvlq, each one handing the next aeon "resolve the conflict" against a
+# branch whose correct resolution was "drop it". The repetition is the signal: a bead that
+# cannot rebase N times in a row is not learning from the reopen, and repeating it is
+# machinery cycling on itself (law-alerts-must-be-actionable at the machinery level).
+spira_ask_rebase_loop() {  # <bead> <branch> <repo-name> <requeue-count> <conflicts> <other-beads>
+    local id="$1" br="$2" name="$3" n="$4" conflicts="$5" others="$6"
+    [ -n "${SPIRA_NOTIFY:-}" ] && [ -x "${SPIRA_NOTIFY:-/nonexistent}" ] || return 0
+    ask_already_open "$br rebase loop" && return 0
+    local ctx=""
+    [ -n "$others" ] && ctx=" The conflicted files were also changed on the base by $others."
+    "$SPIRA_NOTIFY" add \
+        "$br rebase loop: $n rebase failures on $id in $name" \
+        --default "check whether $br is a duplicate of $others and close it if so; if the work is genuinely new, rebase by hand and push" \
+        --why "$id has been reopened for a rebase conflict $n times and the loop is not converging. Conflicts in: ${conflicts:-unknown}.$ctx" \
+        >/dev/null 2>&1
+}
+
 # How many rows a `bd --json` payload carries. Never `| wc -l` and never a grep: the payload
 # is one line, and a warning printed before it would be counted as a row.
 json_count() {           # stdin: JSON; stdout: an integer, 0 on anything unparseable
@@ -1739,6 +1758,32 @@ pr_merged() {
     local repo="$1" br="$2" state
     state="$( cd "$repo" 2>/dev/null && ghq pr view "$br" --json state -q .state 2>/dev/null )" || return 1
     [ "$state" = "MERGED" ]
+}
+
+# other_beads_on_conflicts <repo> <branch> <base> <conflicted-files> -> space-separated
+# bead ids whose commits touched the conflicted files on the base since this branch
+# diverged, excluding the branch's own bead id.
+#
+# A rebase conflict whose files were changed on the base by a commit naming a DIFFERENT
+# bead is the shape a parallel duplicate always takes: two agents implement the same fix
+# in different words, one lands, and the other's rebase stops on exactly the files the
+# first one changed. The note "resolve the conflict" is misleading in that case — the
+# correct resolution may be to drop the branch rather than replay it. This function does
+# not decide; it names the evidence so the next aeon can judge.
+#
+# NO PIPE INTO GREP. `git log | grep` under pipefail returns 141 on a match when grep
+# closes the pipe first (law-no-grep-q-under-pipefail). Capture whole, then scan.
+other_beads_on_conflicts() {
+    local repo="$1" br="$2" base="$3" files="$4" own_id mb subjects ids
+    [ -n "$files" ] || return 0
+    own_id="${br#spira/}"
+    mb="$(git -C "$repo" merge-base "$base" "refs/heads/$br" 2>/dev/null)" || return 0
+    # shellcheck disable=SC2086
+    subjects="$(git -C "$repo" log --format='%s' "$mb..$base" -- $files 2>/dev/null)" || return 0
+    [ -n "$subjects" ] || return 0
+    ids="$(grep -oE 'sp-[a-z0-9]+' <<< "$subjects" | sort -u)" || return 0
+    ids="$(grep -vxF "$own_id" <<< "$ids")" || return 0
+    printf '%s' "$ids" | tr '\n' ' ' | sed 's/ $//'
 }
 
 # --------------------------------------------------------------------------------------

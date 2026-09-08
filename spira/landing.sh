@@ -511,9 +511,22 @@ rebase_survivors() {     # rebase_survivors <repo> <name> <base> <landed-branch>
                 continue
             fi
             n_swept_conflict=$(( n_swept_conflict + 1 ))
-            bead_reopen "$id" "Reopened by sentinel: $br does not rebase onto $base in $name after $landed landed; conflicts in ${REBASE_CONFLICTS:-unknown}. A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it."
-            bump_requeue "$id" rebase-conflict >/dev/null
-            progress "reopened $id — does not rebase onto $base"
+            local _other_beads _reopen_note _rq_n
+            _other_beads="$(other_beads_on_conflicts "$repo" "$br" "$base" "${REBASE_CONFLICTS:-}")"
+            _reopen_note="Reopened by sentinel: $br does not rebase onto $base in $name after $landed landed; conflicts in ${REBASE_CONFLICTS:-unknown}."
+            if [ -n "$_other_beads" ]; then
+                _reopen_note="$_reopen_note Those files were changed on $base by $_other_beads — check whether this work is already landed before resolving."
+            else
+                _reopen_note="$_reopen_note A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it."
+            fi
+            _rq_n="$(bump_requeue "$id" rebase-conflict)"
+            if [ "${_rq_n:-0}" -ge "${SPIRA_REBASE_ESCALATE_AT:-3}" ]; then
+                spira_ask_rebase_loop "$id" "$br" "$name" "$_rq_n" "${REBASE_CONFLICTS:-unknown}" "$_other_beads"
+                progress "escalated $id — rebase conflict x$_rq_n on $br"
+            else
+                bead_reopen "$id" "$_reopen_note"
+                progress "reopened $id — does not rebase onto $base"
+            fi
             land_mark "$id" RED "$(git -C "$repo" rev-parse "$br" 2>/dev/null)" no-rebase
             continue
         fi
@@ -756,13 +769,26 @@ for i in d:
                 log "CHECK6 $id: $br does not rebase onto $base, but its pull request is merged — landed, not stuck"
                 continue
             fi
-            bead_reopen "$id" "Reopened by sentinel: $br does not rebase onto $base in $name; conflicts in ${REBASE_CONFLICTS:-unknown}. A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it."
+            local _other_beads _reopen_note _rq_n
+            _other_beads="$(other_beads_on_conflicts "$repo" "$br" "$base" "${REBASE_CONFLICTS:-}")"
+            _reopen_note="Reopened by sentinel: $br does not rebase onto $base in $name; conflicts in ${REBASE_CONFLICTS:-unknown}."
+            if [ -n "$_other_beads" ]; then
+                _reopen_note="$_reopen_note Those files were changed on $base by $_other_beads — check whether this work is already landed before resolving."
+            else
+                _reopen_note="$_reopen_note A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it."
+            fi
             # COUNTED AS A REQUEUE, WHICH CHARGES NOTHING. The bead was closed and its work
             # committed; the base moved. The aeon summoned onto it next inherits a bead that
             # already looks like one that keeps failing, and without this the only number
             # anybody sees is the attempt count it is not (lib.sh, three counters).
-            bump_requeue "$id" rebase-conflict >/dev/null
-            progress "reopened $id — does not rebase onto $base"
+            _rq_n="$(bump_requeue "$id" rebase-conflict)"
+            if [ "${_rq_n:-0}" -ge "${SPIRA_REBASE_ESCALATE_AT:-3}" ]; then
+                spira_ask_rebase_loop "$id" "$br" "$name" "$_rq_n" "${REBASE_CONFLICTS:-unknown}" "$_other_beads"
+                progress "escalated $id — rebase conflict x$_rq_n on $br"
+            else
+                bead_reopen "$id" "$_reopen_note"
+                progress "reopened $id — does not rebase onto $base"
+            fi
             land_mark "$id" RED "$tip" no-rebase
             continue
         fi
