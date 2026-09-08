@@ -953,6 +953,16 @@ standing_lines() {
     printf ' %sBEADS%s  %s24h%s  closed %s · %sopened%s %s\n' \
         "$C_DIM" "$C_RST" "$C_DIM" "$C_RST" "${SP_CLOSED_24H:-?}" \
         "$C_DIM" "$C_RST" "${SP_OPENED_24H:-?}"
+    # Sparklines: opened and closed share a row (they are a flow balance); landed is its
+    # own row (bursty, different scale). Each series is scaled to itself — the question is
+    # "rising or falling" for that series, not a cross-series comparison. A `?` from the
+    # probe means the source could not be read (law-absence-needs-a-positive-control).
+    printf '        %sopened%s %s  %sclosed%s %s\n' \
+        "$C_DIM" "$C_RST" "${SP_BEADS_SPARK_OPENED:-?}" \
+        "$C_DIM" "$C_RST" "${SP_BEADS_SPARK_CLOSED:-?}"
+    printf '        %slanded%s %s  %s%s%s in 24h\n' \
+        "$C_DIM" "$C_RST" "${SP_BEADS_SPARK_LANDED:-?}" \
+        "$C_DIM" "${SP_BEADS_LANDED_24H:-?}" "$C_RST"
     # The kinds are a breakdown of the number above, so they read as one when they sit under
     # it — and on their own row they can be four kinds rather than however many fit.
     fit "${SP_CLOSED_KINDS:--}" $(( COLS - 8 ))
