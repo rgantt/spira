@@ -32,6 +32,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
+// The static page and its two scripts, embedded at compile time. This makes the binary
+// self-contained: one thing to install, one thing to start, no separate asset directory to
+// keep in sync. The tradeoff is a recompile on any page change; at these file sizes that is
+// under a second.
+const PAGE_HTML: &str = include_str!("../static/loom.html");
+const MODEL_JS: &str = include_str!("../static/model.js");
+const APP_JS: &str = include_str!("../static/app.js");
+
 /// The defaults the CODE carries. Each one is also a key in the harness's configuration file
 /// with the same default, and a suite asserts the two agree — a constant that drifts from the
 /// key meant to control it is worse than no key, because the operator believes they set it.
@@ -266,8 +274,31 @@ async fn beads_route(State(loom): State<Arc<Loom>>) -> Response {
         .expect("a response with a valid status and headers")
 }
 
+fn static_response(content_type: &'static str, body: &'static str) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(body.into())
+        .expect("a static response with a valid type")
+}
+
+async fn page_route() -> Response {
+    static_response("text/html; charset=utf-8", PAGE_HTML)
+}
+
+async fn model_js_route() -> Response {
+    static_response("text/javascript; charset=utf-8", MODEL_JS)
+}
+
+async fn app_js_route() -> Response {
+    static_response("text/javascript; charset=utf-8", APP_JS)
+}
+
 pub fn router(loom: Arc<Loom>) -> Router {
     Router::new()
         .route("/api/beads", get(beads_route))
+        .route("/", get(page_route))
+        .route("/model.js", get(model_js_route))
+        .route("/app.js", get(app_js_route))
         .with_state(loom)
 }

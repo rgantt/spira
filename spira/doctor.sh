@@ -338,6 +338,27 @@ fi
 unset _wd_orphans _d _cmd _arg1
 
 echo
+echo "loom"
+# THE BINARY IS NOT BUILT BY INSTALL. It is a Rust binary that must be compiled separately:
+# `cd loom && cargo build --release`. Doctor says so rather than guessing the binary is fine.
+if [ -x "${SPIRA_LOOM_BIN:-}" ]; then
+    OK "loom binary built at $SPIRA_LOOM_BIN"
+    # A SERVICE THAT IS NOT ACTIVE IS NOT SERVING. `is-active` returns a non-zero exit code
+    # and prints `inactive` (or `unknown`) when the unit is not running. Checking it here
+    # rather than in the loop above puts it beside the binary check that is its prerequisite.
+    if systemctl --user is-active --quiet spira-loom.service 2>/dev/null; then
+        OK "spira-loom.service is active — Loom is reachable at $SPIRA_LOOM_ADDR"
+    else
+        WARN "spira-loom.service is not active — Loom is not reachable" \
+             "Run: systemctl --user start spira-loom.service
+        Or run install.sh to enable and start it on every boot."
+    fi
+else
+    WARN "loom binary not built at ${SPIRA_LOOM_BIN:-<unset>}" \
+         "Build it: cd $SPIRA_REPO/loom && cargo build --release"
+fi
+
+echo
 echo "writable state"
 if mkdir -p "$SPIRA_RUN" 2>/dev/null && [ -w "$SPIRA_RUN" ]; then OK "runtime directory $SPIRA_RUN"
 else FAIL "cannot write $SPIRA_RUN" "Leases, logs and worktrees live here. Set SPIRA_RUN in ${CONF:-spira.conf}."; fi

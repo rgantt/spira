@@ -27,6 +27,7 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
        spira-skew.service spira-skew.timer
        spira-archivist.service spira-archivist.timer
        spira-cockpit.service
+       spira-loom.service
        spira-watch@.service
        spira-watch-notify.service spira-watch-notify.timer
        spira-watch-refresh.service spira-watch-refresh.timer
@@ -43,7 +44,7 @@ ENABLE=(cockpit-ensure.timer concierge.timer spira-watch-refresh.timer
         spira-archive.timer
         spira-archivist.timer spira-watch-notify.timer
         spira-suites.timer
-        spira-cockpit.service)
+        spira-cockpit.service spira-loom.service)
 
 # UNITS THIS BOX DELIBERATELY DECLINED. A conditional unit is absent from UNITS on purpose,
 # so unlisted must be told the difference between "not installed here" and "nobody ever
@@ -225,6 +226,6 @@ done
 systemctl --user list-timers --all 2>/dev/null | grep -E 'cockpit|concierge|beads-push|spira' || true
 # Long-running services never appear above. Everything else on this list is worthless if
 # they are down.
-for u in spira-cockpit.service ${SPIRA_DOLT_DATA:+dolt-beads.service}; do
+for u in spira-cockpit.service spira-loom.service ${SPIRA_DOLT_DATA:+dolt-beads.service}; do
     printf '%-28s %s\n' "$u" "$(systemctl --user is-active "$u")"
 done

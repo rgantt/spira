@@ -292,6 +292,11 @@
 # makes every request pay for its own query.
 # SPIRA_LOOM_CACHE_S = 15
 
+# The compiled Loom binary. The default is `loom/target/release/loom` inside the harness
+# checkout; set this if you install it elsewhere or manage the build separately.
+# Default: <harness checkout>/loom/target/release/loom
+# SPIRA_LOOM_BIN = $HOME/.local/bin/loom
+
 # THE SPIKE PARTITION. A spike is a persona that researches one question to a costed document
 # and carries no conversation; these three keys are what the harness reads to find its beads,
 # to tell it where to write, and to refuse to merge anything else it leaves behind.

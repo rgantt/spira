@@ -58,7 +58,7 @@ SPIRA_CLIENT_SETTINGS SPIRA_HOOK_LINES
 SPIRA_COCKPIT SPIRA_COCKPIT_TRACE_LINES SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
 SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
 SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE SPIRA_VERDICT_TTL SPIRA_REBASE_ESCALATE_AT SPIRA_VERDICT_WINDOW
-SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S
+SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S SPIRA_LOOM_BIN
 SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
@@ -401,6 +401,10 @@ spira_conf_defaults() {
     # than by viewer, so ten open tabs cost one query instead of ten. It is a cache and not a
     # background job: nothing runs when nobody is looking, and 0 disables it.
     : "${SPIRA_LOOM_CACHE_S:=15}"
+    # The compiled Loom binary. The default is under the harness checkout so a fresh clone
+    # runs after a `cargo build --release` in the loom/ directory. An operator who installs
+    # the binary elsewhere — or who runs it from a path-visible location — sets this key.
+    : "${SPIRA_LOOM_BIN:=$SPIRA_REPO/loom/target/release/loom}"
     # THE SPIKE PARTITION, in one place because it is read in four: the spike fayth's
     # predicate, the brief handed to a spike aeon, the confinement check the landing worker
     # runs, and whatever files the bead. A literal in four files is how four programs come to
@@ -761,7 +765,7 @@ export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIR
        SPIRA_CI_LABEL SPIRA_CI_PARK_MAX \
        SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT \
        SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE \
-       SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S \
+       SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S SPIRA_LOOM_BIN \
        SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \

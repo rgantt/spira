@@ -1,0 +1,26 @@
+[Unit]
+# The Loom server — a read endpoint over the live beads graph, with the page that draws it.
+# One binary, two routes: GET /api/beads returns the graph; GET / returns the page.
+Description=Loom — a read endpoint over the live beads graph
+Documentation=file://@SPIRA_HOME@/loom.sh
+After=default.target
+
+[Service]
+Type=simple
+# loom.sh sources conf.sh before exec'ing the binary, so every variable the server reads
+# — SPIRA_DB, SPIRA_LOOM_ADDR, SPIRA_PATH — comes from the configuration file rather than
+# from a literal baked into this unit.
+ExecStart=@SPIRA_PROD@/loom.sh
+Restart=always
+# The MINIMUM time between restarts. A crash loop is visible in the log; a 5-second floor
+# keeps it from chewing CPU while remaining fast to recover from a transient.
+RestartSec=5
+# Loom answers queries, not sends them. A quota exists because it shares hardware with the
+# loop and CI (law-fence-loops-on-shared-hardware); 20% is enough for a query every 15s.
+CPUQuota=20%
+Nice=10
+StandardOutput=append:@SPIRA_RUN@/loom.log
+StandardError=append:@SPIRA_RUN@/loom.log
+
+[Install]
+WantedBy=default.target

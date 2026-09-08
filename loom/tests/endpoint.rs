@@ -290,3 +290,34 @@ async fn a_query_that_fails_is_reported_as_such_and_not_as_an_empty_graph() {
         "a failure must carry its reason: {v}"
     );
 }
+
+#[tokio::test]
+async fn the_static_page_and_its_scripts_are_served() {
+    let (db, bd) = fixture();
+    let (shim, _) = counting_bd(&bd);
+    let addr = spawn(cfg(&db, &shim, 20_000, 30)).await;
+
+    // PRESENCE FIRST. The page must be there before its absence means anything.
+    let (code, body) = get(addr, "/").await;
+    assert_eq!(code, 200, "the page must be at /");
+    assert!(body.contains("</html>"), "/ must serve an HTML document: {body:.200}");
+
+    let (code, js) = get(addr, "/model.js").await;
+    assert_eq!(code, 200, "the model script must be at /model.js");
+    assert!(!js.is_empty(), "/model.js must not be empty");
+
+    let (code, app) = get(addr, "/app.js").await;
+    assert_eq!(code, 200, "the painter script must be at /app.js");
+    assert!(!app.is_empty(), "/app.js must not be empty");
+
+    // POSITIVE CONTROL for the absence assertions that follow. /api/beads is known to answer;
+    // a route that 404s on every path would pass the absent-route checks above.
+    let (code, _) = json(addr).await;
+    assert_eq!(code, 200, "/api/beads must still answer");
+
+    // AN ABSENT PATH MUST 404, not serve the page as a catch-all. A router that delivers the
+    // page for every unknown URL hides broken links — a typo in the scripts' own relative path
+    // would be served the page, not a 404 that names the problem.
+    let (code, _) = get(addr, "/nonexistent.css").await;
+    assert_eq!(code, 404, "/nonexistent.css must 404, not catch-all to the page");
+}
