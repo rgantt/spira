@@ -274,9 +274,14 @@ rebuild_panel_if_stale() {
     # panel fix therefore changed the repo and not the pane the operator reads, which is the
     # merged-is-not-deployed trap with a one-minute self-healing loop sitting right next
     # to it doing nothing about it.
-    local dir="$COCK/panel" bin="$SPIRA_PANEL" newest
+    local dir="$COCK/panel" bin="$SPIRA_PANEL" newest cargo_bin
     [ -d "$dir/src" ] || return 0
-    command -v cargo >/dev/null 2>&1 || return 0
+    cargo_bin="$(command -v cargo 2>/dev/null || true)"
+    [ -n "$cargo_bin" ] || cargo_bin="$([ -x "$HOME/.cargo/bin/cargo" ] && echo "$HOME/.cargo/bin/cargo" || true)"
+    if [ -z "$cargo_bin" ]; then
+        heal_log "panel: cargo not found on PATH or at ~/.cargo/bin — rebuild skipped; add ~/.cargo/bin to SPIRA_PATH"
+        return 0
+    fi
     newest=$(find "$dir/src" "$dir/Cargo.toml" -newer "$bin" -print -quit 2>/dev/null)
     # No binary at all also means build. -newer against a missing file finds nothing.
     [ -n "$newest" ] || [ ! -x "$bin" ] || return 0
@@ -284,7 +289,7 @@ rebuild_panel_if_stale() {
     exec 9>"$COCK/panel/.build.lock" 2>/dev/null || return 0
     flock -n 9 || return 0
     heal_log "panel: source newer than binary — rebuilding"
-    if (cd "$dir" && timeout 600 nice -n 10 cargo build --release >/dev/null 2>&1); then
+    if (cd "$dir" && timeout 600 nice -n 10 "$cargo_bin" build --release >/dev/null 2>&1); then
         heal_log "panel: rebuilt; restart_if_stale will swap the pane"
     else
         # A broken build must not silently leave the old binary looking current.
@@ -341,10 +346,15 @@ restart_spira_collector_if_stale() {
 # on disk is still whatever was last hand-built. This pair catches that: rebuild when source
 # is newer than binary, then restart the service if the binary is now newer than the process.
 rebuild_loom_if_stale() {
-    local dir="${SPIRA_REPO:-}/loom" bin="${SPIRA_LOOM_BIN:-}" newest
+    local dir="${SPIRA_REPO:-}/loom" bin="${SPIRA_LOOM_BIN:-}" newest cargo_bin
     [ -n "$bin" ] || return 0
     [ -d "$dir/src" ] || return 0
-    command -v cargo >/dev/null 2>&1 || return 0
+    cargo_bin="$(command -v cargo 2>/dev/null || true)"
+    [ -n "$cargo_bin" ] || cargo_bin="$([ -x "$HOME/.cargo/bin/cargo" ] && echo "$HOME/.cargo/bin/cargo" || true)"
+    if [ -z "$cargo_bin" ]; then
+        heal_log "loom: cargo not found on PATH or at ~/.cargo/bin — rebuild skipped; add ~/.cargo/bin to SPIRA_PATH"
+        return 0
+    fi
     newest=$(find "$dir/src" "$dir/Cargo.toml" -newer "$bin" -print -quit 2>/dev/null)
     # No binary at all also means build. -newer against a missing file finds nothing.
     [ -n "$newest" ] || [ ! -x "$bin" ] || return 0
@@ -352,7 +362,7 @@ rebuild_loom_if_stale() {
     exec 9>"$dir/.build.lock" 2>/dev/null || return 0
     flock -n 9 || return 0
     heal_log "loom: source newer than binary — rebuilding"
-    if (cd "$dir" && timeout 600 nice -n 10 cargo build --release >/dev/null 2>&1); then
+    if (cd "$dir" && timeout 600 nice -n 10 "$cargo_bin" build --release >/dev/null 2>&1); then
         heal_log "loom: rebuilt; restart_loom_if_stale will restart the service"
     else
         # A broken build must not silently leave the old binary looking current.

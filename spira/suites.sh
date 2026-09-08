@@ -396,7 +396,7 @@ cmd_list() {
 # EVERY FIELD RENDERS `?` WHEN IT COULD NOT BE READ, never 0.
 # --------------------------------------------------------------------------------------
 cmd_status() {
-    local s rec st at total=0 gate_n=0 timed_n=0 never=0 stale=0 red=0 oldest="" oldest_s="" now
+    local s rec st at total=0 gate_n=0 timed_n=0 never=0 stale=0 red=0 skip=0 oldest="" oldest_s="" now
     now="$(date +%s)"
     if ! GATED="$(gated_suites)"; then
         printf 'suites          ?   %s is unreadable — the gated set is unknown\n' "$GATE_LIST"
@@ -410,7 +410,7 @@ cmd_status() {
         rec="$(record_read "$s" || true)"
         if [ -z "$rec" ]; then never=$(( never + 1 )); continue; fi
         read -r st at _ _ <<< "$rec"
-        case "$st" in red|timeout) red=$(( red + 1 )) ;; esac
+        case "$st" in red|timeout) red=$(( red + 1 )) ;; skip) skip=$(( skip + 1 )) ;; esac
         if [ "$(( now - at ))" -gt "$STALE" ]; then stale=$(( stale + 1 )); fi
         if [ -z "$oldest" ] || [ "$at" -lt "$oldest" ]; then oldest="$at"; oldest_s="$s"; fi
     done
@@ -418,6 +418,7 @@ cmd_status() {
     printf '  %-36s%s\n' "timed suites with no result yet" "$never"
     printf '  %-36s%s\n' "timed results older than $(( STALE / 3600 ))h" "$stale"
     printf '  %-36s%s\n' "timed suites red at last run" "$red"
+    printf '  %-36s%s\n' "timed suites skipped at last run" "$skip"
     if [ -n "$oldest" ]; then
         printf '  %-36s%sm   %s\n' "oldest timed result" "$(( (now - oldest) / 60 ))" "$oldest_s"
     else

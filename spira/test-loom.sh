@@ -35,17 +35,22 @@ bad() { printf '  FAIL  %s\n        %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
 # tool directories, which do not include ~/.cargo/bin. Capture the absolute path now so the
 # cargo test invocation below does not need PATH to contain it.
 CARGO_BIN="$(command -v cargo 2>/dev/null || true)"
+# The harness PATH often omits ~/.cargo/bin; try the standard install location before
+# concluding cargo is absent from this machine entirely.
+if [ -z "$CARGO_BIN" ] && [ -x "$HOME/.cargo/bin/cargo" ]; then
+    CARGO_BIN="$HOME/.cargo/bin/cargo"
+fi
 if [ -z "$CARGO_BIN" ]; then
-    echo "SKIP test-loom: cargo not on PATH — the Rust tests cannot run" >&2
-    echo "     install Rust, or accept that loom/tests/endpoint.rs is ungated on this box" >&2
-    exit 0
+    echo "SKIP test-loom: cargo not found on PATH or at ~/.cargo/bin — the Rust tests cannot run" >&2
+    echo "     install Rust: https://rustup.rs/" >&2
+    exit 77
 fi
 
 # shellcheck source=/dev/null
 . "$HERE/testdb.sh"
 if ! testdb_available; then
     echo "SKIP test-loom: no fixture database reachable — endpoint tests did not run" >&2
-    exit 0
+    exit 77
 fi
 
 TMP="$(mktemp -d)"; trap 'testdb_drop >/dev/null 2>&1; rm -rf "$TMP"' EXIT INT TERM
@@ -61,7 +66,7 @@ bdq create "open bead"      -t task -p 1 -l repo:alpha      --id sp-aaa >/dev/nu
 bdq create 'beta "quoted" and a \ backslash' \
            -t epic -p 1 -l repo:alpha      --id sp-bbb >/dev/null 2>&1
 bdq create "in-progress bead" -t task -p 2                  --id sp-ccc >/dev/null 2>&1
-bdq create "closed bead"    -t task -p 3 -l repo:alpha      --id sp-zzz >/dev/null 2>&1
+bdq create "closed bead"    -t epic -p 3 -l repo:alpha      --id sp-zzz >/dev/null 2>&1
 bdq update sp-ccc --status in_progress >/dev/null 2>&1
 bdq update sp-zzz --status closed >/dev/null 2>&1
 bdq update sp-ccc --parent sp-bbb >/dev/null 2>&1          # parent-child edge

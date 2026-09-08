@@ -428,6 +428,13 @@ want   "and the gated set is counted separately"      "gated" "$st"
 # under its own label, and the count is READ.
 field() { printf '%s\n' "$2" | sed -n "s/^  $1  *//p" | head -1; }
 is "with the bound long, no result is stale" "0" "$(field "timed results older than 1h" "$st")"
+# THE POSITIVE CONTROL for the skip count: test-fx-skip.sh exits 77 and its status must be
+# reported distinctly from the green suites in cmd_status.
+skip_n="$(field "timed suites skipped at last run" "$st")"
+case "$skip_n" in
+    ''|0) bad "skip count is distinct from green in status" "the field reads [$skip_n]" ;;
+    *)    ok  "skip count is distinct from green in status ($skip_n)" ;;
+esac
 STALE=1
 sleep 2
 st="$(sut status)"
