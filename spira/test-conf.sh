@@ -101,9 +101,9 @@ is "env wins over config file" "$override" "$got"
 echo
 echo "no hardcoded path — promote.sh does not contain a literal SPIRA_PROD value:"
 # ==========================================================================
-# Inventory.sh already checks for /home/, /Users/, /workspaces/ in tracked files, so this
-# is a belt-and-braces check: verify that promote.sh itself has no hardcoded production
-# path. The positive control: verify promote.sh IS readable before calling it clean.
+# Inventory.sh already checks for operator-specific path prefixes in tracked files, so
+# this is a belt-and-braces check: verify that promote.sh itself has no hardcoded
+# production path. The positive control: verify promote.sh IS readable before asserting.
 [ -f "$HERE/promote.sh" ] && ok "promote.sh is present" || {
     bad "promote.sh is present" "file not found at $HERE/promote.sh"; }
 
