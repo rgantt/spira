@@ -136,7 +136,7 @@ halted_log="$(cat "$MOCK_LOG")"
 want   "halted: output carries HALTED banner"         "HALTED"  "$halted_out"
 want   "halted: output carries reason"                "why:"    "$halted_out"
 want   "halted: enable appears in systemctl calls"    "enable"  "$halted_log"
-nowant "halted: enable --now does NOT appear"         "--now"   "$halted_log"
+nowant "halted: enable --now does NOT appear"         "enable --now"   "$halted_log"
 rm -f "$SPIRA_RUN/world.halted"
 
 # ==========================================================================

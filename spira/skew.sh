@@ -267,9 +267,23 @@ $drop_files"
         stale_out="$(bash "$installer" --diff 2>&1)"; stale_rc=$?
         if [ "$stale_rc" != 0 ]; then
             hard=1; cond_stale=1
+            # Detect un-suffixed legacy units from before per-instance naming. When they
+            # are present, --diff reports the new per-instance names as MISSING. install.sh
+            # migrates these on the next run (disables the old ones first, then enables the
+            # new ones). Name them explicitly so the operator knows what is happening.
+            local _legacy_survivors _legacy_note=""
+            _legacy_survivors="$(systemctl --user list-unit-files --no-legend \
+                'spira-*.service' 'spira-*.timer' 2>/dev/null \
+              | tr -s ' \t' '\n\n' \
+              | grep -E '^spira-[a-z][^@]*\.(service|timer)$' \
+              | grep -v -- "-${SPIRA_INSTANCE:-prod}\." | sort -u || true)"
+            if [ -n "$_legacy_survivors" ]; then
+                _legacy_note="    NOTE: un-suffixed legacy units present — install.sh will migrate them:
+$(printf '%s\n' "$_legacy_survivors" | head -10 | sed 's/^/        /')"$'\n'
+            fi
             findings="${findings}STALE installed systemd units differ from what this checkout renders
 $(printf '%s\n' "$stale_out" | head -40 | sed 's/^/    /')
-    Re-run $installer to bring the installed units into line with the templates.
+${_legacy_note}    Re-run $installer to bring the installed units into line with the templates.
 "
         fi
     fi

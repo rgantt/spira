@@ -417,6 +417,45 @@ systemctl --user daemon-reload
 # variable after having written every unit and before enabling any of them.
 loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
 
+# MIGRATE LEGACY UN-SUFFIXED UNITS. Before per-instance naming, spira-* units were
+# installed without an instance suffix (e.g., spira-sentinel.service). If any of those
+# old names survive, disable and stop them NOW — before the per-instance units are
+# enabled — so the two sets never run simultaneously against the same database and
+# worktrees. Enumerate from the template list rather than from a glob of what happens
+# to be installed, so a unit added to UNITS is automatically covered without a second
+# edit here. On a fresh box where no legacy units exist, every disable call returns
+# non-zero and is silently ignored; no spurious output is produced.
+_migrate_legacy() {
+    local u old _wn disabled=0
+    for u in "${UNITS[@]}"; do
+        # The watcher template is never installed directly; its per-watcher instances
+        # are handled by the loop below.
+        [ "$u" = "spira-watch@.service" ] && continue
+        case "$u" in
+            spira-*.service|spira-*.timer) ;;
+            *) continue ;;
+        esac
+        old="$u"
+        # inst_name returns the same string for shared units (cockpit-ensure, concierge,
+        # beads-push): those plain names ARE their installed names and must not be treated
+        # as legacy names here.
+        [ "$(inst_name "$u")" = "$u" ] && continue
+        systemctl --user disable --now "$old" 2>/dev/null \
+            && { printf 'migrated  %s (disabled; superseded by %s)\n' \
+                     "$old" "$(inst_name "$old")"; disabled=$((disabled+1)); }
+    done
+    # Old per-watcher units also lacked the instance suffix.
+    for _wn in "${_watch_names[@]}"; do
+        old="spira-watch-${_wn}.service"
+        systemctl --user disable --now "$old" 2>/dev/null \
+            && { printf 'migrated  %s (disabled; superseded by %s)\n' \
+                     "$old" "$(inst_watch_name "$_wn")"; disabled=$((disabled+1)); }
+    done
+    [ "$disabled" -gt 0 ] && \
+        printf 'install: migrated %d legacy unit(s) to per-instance naming\n' "$disabled"
+}
+_migrate_legacy
+
 # Wait for a running oneshot service to finish before restarting it.
 # A long-running service is not drained — we restart it directly.
 # SPIRA_DRAIN_INTERVAL overrides the 2-second poll interval (set to 0 in tests).
