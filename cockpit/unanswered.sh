@@ -50,14 +50,31 @@ for i in (d if isinstance(d, list) else [d]):
 ' 2>/dev/null) || ids=""
 for id in $ids; do
     line=$(bd -C "$db" comments "$id" --json 2>/dev/null | sed -n '/^[[{]/,$p' | python3 -c '
-import sys, json, datetime
+import sys, json, datetime, os
 try: d = json.load(sys.stdin)
 except Exception: raise SystemExit
 rows = d if isinstance(d, list) else d.get("comments", [])
 if not rows: raise SystemExit
-last = rows[-1]
-import os
-if (last.get("author") or "") != os.environ.get("HUMAN", "operator"): raise SystemExit
+human = os.environ.get("HUMAN", "operator")
+
+# WHOSE TURN IT IS, from an order this program establishes rather than inherits.
+# Sorted, not taken positionally: bd comments returns oldest-first today, but a display
+# whose meaning flips with an ORDER BY nobody here controls should not rest on that.
+# Conditionally — an unstamped comment sorts before every stamped one, so an incomplete
+# thread keeps the arrival order rather than being reshuffled around a blank.
+if all(len(c.get("created_at") or "") >= 16 for c in rows):
+    rows.sort(key=lambda c: c["created_at"])
+    # created_at is second-resolution: two comments in the same second are a tie nothing
+    # orders. The tie resolves toward "he is owed a reply" — a thread wrongly listed costs
+    # a glance; a thread wrongly dropped is the silence this file exists to end.
+    newest = rows[-1]["created_at"]
+    tail = [c for c in rows if c["created_at"] == newest]
+else:
+    tail = rows[-1:]
+
+his = [c for c in tail if (c.get("author") or "") == human]
+if not his: raise SystemExit
+last = his[-1]
 ts = (last.get("created_at") or "")
 try:
     t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
