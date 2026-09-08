@@ -174,6 +174,22 @@ mkdir -p "$SPIRA_RUN"
 # starts and complains, it is a unit that fails instantly with a message about a path.
 mkdir -p "$SPIRA_RUN/watchd"
 
+# REFUSE IF AEONS ARE LIVE. daemon-reload terminates transient units: a transient unit's
+# on-disk file is gone once the session that started it ends, so reload finds no file and
+# stops the unit. Name the running aeons so the operator knows what to wait for; name the
+# override so they know how to proceed when they must act before every aeon has finished.
+if [ -z "${SPIRA_INSTALL_FORCE:-}" ]; then
+    live_aeons="$(systemctl --user list-units --state=active --no-legend \
+        'spira-aeon-*.service' 2>/dev/null \
+        | tr -s ' \t' '\n\n' | grep -E '^spira-aeon-[^[:space:]]+\.service$' | sort -u || true)"
+    if [ -n "$live_aeons" ]; then
+        printf 'install: refusing — daemon-reload would stop these live aeons:\n' >&2
+        printf '%s\n' "$live_aeons" | sed 's/^/    /' >&2
+        printf 'install: wait for them to finish, or set SPIRA_INSTALL_FORCE=1 to override.\n' >&2
+        exit 1
+    fi
+fi
+
 for u in "${UNITS[@]}"; do
     render "$SRC/$u" > "$DEST/$u.new" || { rm -f "$DEST/$u.new"; echo "install: $u FAILED" >&2; exit 1; }
     mv "$DEST/$u.new" "$DEST/$u" && chmod 0644 "$DEST/$u" && echo "installed $u"
@@ -231,3 +247,22 @@ systemctl --user list-timers --all 2>/dev/null | grep -E 'cockpit|concierge|bead
 for u in spira-cockpit.service spira-loom.service ${SPIRA_DOLT_DATA:+dolt-beads.service}; do
     printf '%-28s %s\n' "$u" "$(systemctl --user is-active "$u")"
 done
+
+# REPORT THE END STATE. A silent partial install is the defect: a unit enabled but not
+# running is indistinguishable from one that was never started, and daemon-reload is the
+# specific mechanism that produces this state for any unit whose file has gone (aeons aside,
+# a template change can cause a reload to leave a previously-active unit in failed state).
+# Skip this check when the world is halted — units are intentionally not running.
+if [ ! -f "$SPIRA_RUN/world.halted" ]; then
+    not_active=""
+    for u in "${ENABLE[@]}"; do
+        state="$(systemctl --user is-active "$u" 2>/dev/null || true)"
+        [ "$state" = "active" ] || not_active="${not_active}    $u ($state)"$'\n'
+    done
+    if [ -n "$not_active" ]; then
+        printf '\ninstall: ERROR — these units are enabled but not active:\n' >&2
+        printf '%s' "$not_active" >&2
+        printf 'install: check journalctl --user -xe for details.\n' >&2
+        exit 1
+    fi
+fi
