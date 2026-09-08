@@ -434,6 +434,57 @@ charged**: the same reading as a spent capacity window or an aeon the operator s
 session that closed its bead with a gate still running keeps the close — the landing pass
 gates that branch again before merging — but the bead says the close carried no verdict.
 
+### And its yield is measured, so a worthless gate is knowable before it costs a day
+
+A check may sit between work and its landings only while it is catching real defects. The gate
+that ran before this one was seventeen minutes a branch; on the morning the pipeline spent
+unable to land anything it found zero real defects and produced two failures that were its own
+suites reading the state of the box. Every one of those facts was derivable from data the
+harness was already writing, and none of them was known until the queue stopped and somebody
+went looking. That gate was not deleted because it was measured — it was deleted because it
+caused an outage.
+
+`spira/yield.sh` is the count that makes the rule actionable. Every gate red is recorded with
+its branch, its bead, the suite that refused it and one of three verdicts:
+
+| verdict | what it says |
+|---|---|
+| `DEFECT` | the branch was genuinely wrong and the gate was right to refuse it |
+| `GATE_FAULT` | a suite read the box, the base was already broken, a fixture collided, a deadline fired — the branch did not cause it |
+| `UNKNOWN` | nobody ever said |
+
+**`UNKNOWN` is rendered and never folded into either.** A measurement that resolved its own
+unknowns towards "the gate was right" would be a gate grading its own homework, and a rising
+unknown count is how this measurement says it has itself stopped working.
+
+Two of the three sources cost nobody anything, which is the only kind of measurement that
+survives. `BASE_FAIL` and `NO_VERDICT` already *mean* the branch is not at fault, so they are
+`GATE_FAULT` on arrival. A red followed by a pass classifies itself: an identical tree passing
+later is the gate contradicting itself, and a changed tree passing is a defect somebody fixed.
+The third is `yield.sh classify <branch> GATE_FAULT "<why>"`, which the aeon whose branch was
+refused runs when it knows better — one command, at the moment the knowledge exists — and a
+stated verdict always overrides an inferred one. `by=` records which of the three said it, and
+the report carries the inferred count separately, because a reader who cannot tell a stated
+verdict from a deduced one will eventually believe a deduction that was wrong.
+
+**The cost is reported as a distribution against concurrency, never as a number.** A landing
+gate never runs solo — every aeon runs one before it closes and the landing pass runs one per
+branch — so concurrency is its operating condition and a solo figure describes a state it is
+never in. Concurrency is derived from the meter log rather than recorded: each row carries the
+finish time, the seconds waited for the tree and the seconds run, so two runs of one repository
+were concurrent exactly when their intervals overlap. Reused verdicts are excluded, because a
+skipped gate is not a gate's cost.
+
+The numbers reach the Ops sweep and the operator's pane, not a file somebody has to open.
+`yield.sh show` is the same thing for a person, and `yield.sh list` is one line per red.
+
+**A field it cannot read renders `?`, never 0.** The way this measurement fails is that it
+silently stops being called and then reports a tidy zero forever, which is the reassuring one
+of the two readings. Its positive control is the gate meter, which writes a row on every exit
+whether or not anything is measuring: a window in which the meter saw reds and the record holds
+none is proof the recorder is not running, and the counts are withheld and the recorder named
+rather than a clean sheet published.
+
 ### Three counters, because poison must measure the work and nothing else
 
 Three attempts poison a bead. A poisoned bead stays **open** while no persona may claim it,

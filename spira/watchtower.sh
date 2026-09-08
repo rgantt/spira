@@ -120,8 +120,13 @@ since_land="?"
 # RUN recently" are opposite facts and a zero states the reassuring one (law-absence-needs-a-
 # positive-control); the second is what a stalled pipeline looks like from here.
 GATE_WINDOW="${SPIRA_WATCH_GATE_WINDOW:-21600}"
+# THROUGH THE SAME KEY THE METER WRITES. This read `$SPIRA_RUN/gate.log` directly, so an
+# operator who moved the log left this field reading `?` forever while the gate went on
+# writing somewhere else — a probe pointed at the wrong place, which is the failure the whole
+# `?` convention exists to make visible rather than one it is allowed to have.
+WT_GATE_LOG="${SPIRA_GATE_LOG:-$SPIRA_RUN/gate.log}"
 oldest_wait="?"; oldest_br=""
-if [ -r "$SPIRA_RUN/gate.log" ]; then
+if [ -r "$WT_GATE_LOG" ]; then
     gate_since="$(date -u -d "@$(( now - GATE_WINDOW ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
     if [ -n "$gate_since" ]; then
         read -r oldest_wait oldest_br < <(awk -v since="$gate_since" '
@@ -129,7 +134,7 @@ if [ -r "$SPIRA_RUN/gate.log" ]; then
             match($0, /waited=[0-9]+s/) {
                 w = substr($0, RSTART+7, RLENGTH-8) + 0
                 if (!n++ || w > m) { m = w; b = $3 }
-            } END { if (n) print m, b; else print "?", "" }' "$SPIRA_RUN/gate.log" 2>/dev/null)
+            } END { if (n) print m, b; else print "?", "" }' "$WT_GATE_LOG" 2>/dev/null)
     fi
 fi
 # What the field PRINTS, decided here rather than in the heredoc, so that a `?` is not
@@ -140,6 +145,49 @@ gate_wait_disp="?"
 # reader who can see the bound can tell a quiet six hours from a broken probe.
 if [ "$GATE_WINDOW" -ge 3600 ] 2>/dev/null; then gate_win_label="last $(( GATE_WINDOW / 3600 ))h"
 else gate_win_label="last $(( GATE_WINDOW / 60 ))m"; fi
+
+# ---------------------------------------------------------------------------------------
+# IS THE GATE WORTH WHAT IT COSTS? The wait above says what the gate costs the queue; these
+# say whether it is buying anything. A gate whose reds are mostly its own fault has negative
+# value and can be deleted in a sentence on this evidence, instead of after twelve hours of
+# fallout — which is how the last one went (law-gate-earns-its-place).
+#
+# READ BY OPS, NOT ONLY BY A HUMAN AT A PANE. Ops is the actor that reads this sweep and cuts
+# beads from it; a yield that could only be seen by somebody who went looking would be the
+# same failure one layer up, since going to look is exactly what nobody did.
+#
+# yield.sh renders `?` for anything it could not read and this passes that through unchanged.
+# SPIRA_RUN is passed explicitly because conf.sh does not export it, and a child re-deriving
+# it would read a different directory and report a confident zero.
+YIELD_REDS="?"; YIELD_DEFECT="?"; YIELD_FAULT="?"; YIELD_UNKNOWN="?"; YIELD_RECORDER="?"
+YIELD_DEFECT_INFERRED="?"; YIELD_TOP_FAULT="?"
+YIELD_SOLO_N="?"; YIELD_SOLO_MED="?"; YIELD_SOLO_MAX="?"
+YIELD_CONC_N="?"; YIELD_CONC_MED="?"; YIELD_CONC_MAX="?"
+YIELD_SH="$(dirname "$0")/yield.sh"
+YIELD_WINDOW_S="${SPIRA_YIELD_WINDOW:-86400}"
+if [ -r "$YIELD_SH" ]; then
+    # shellcheck disable=SC1090
+    eval "$(SPIRA_RUN="$SPIRA_RUN" SPIRA_YIELD_WINDOW="$YIELD_WINDOW_S" \
+            bash "$YIELD_SH" report 2>/dev/null \
+            | sed -n 's/^\(YIELD_[A-Z_]*\)=\(.*\)$/\1="\2"/p')" 2>/dev/null || true
+fi
+if [ "$YIELD_WINDOW_S" -ge 86400 ] 2>/dev/null; then yield_win_label="last $(( YIELD_WINDOW_S / 86400 ))d"
+elif [ "$YIELD_WINDOW_S" -ge 3600 ] 2>/dev/null; then yield_win_label="last $(( YIELD_WINDOW_S / 3600 ))h"
+else yield_win_label="last $(( YIELD_WINDOW_S / 60 ))m"; fi
+# A UNIT ON AN UNREADABLE FIELD INVITES READING IT AS A MEASUREMENT — `?s` looks like a
+# duration somebody forgot to fill in, and this whole file exists because a reassuring
+# reading displaced a look.
+secs() { [ "${1:-?}" = "?" ] && printf '?' || printf '%ss' "$1"; }
+# A `?` WITH NO EXPLANATION SENDS OPS TO THE CODE. The yield's own positive control is the
+# gate meter, which writes a row on every red whether or not anything is measuring; when the
+# two disagree the count is withheld, and this is the sentence that says which of them was
+# silent so the sweep names the fault rather than the symptom.
+yield_note_txt=""
+case "$YIELD_RECORDER" in
+    silent) yield_note_txt="   <- the gate meter saw ${YIELD_LOG_REDS:-?} red(s) and none reached the record: THE RECORDER IS NOT RUNNING" ;;
+    absent) yield_note_txt="   <- nothing recorded here yet, and the meter has logged no reds either" ;;
+    '?')    yield_note_txt="   <- no positive control: the gate meter could not be read" ;;
+esac
 
 # Branches whose gate could not reach a verdict, and how many times in a row. Written by the
 # landing pass; three of one reason on one branch is what it escalates on.
@@ -207,6 +255,18 @@ reading \`?\` is one this pass COULD NOT READ — never treat it as a zero.
   branches done and waiting           $(g SP_BRANCH_DONE)
   $(printf '%-36s' "longest gate wait, $gate_win_label")${gate_wait_disp}   ${oldest_br:-}
   worst no-verdict streak             ${nv_worst}       ${nv_worst_key:-none}
+
+### The gate — is it buying anything?
+
+  UNKNOWN is never folded into either column. A run of them means this measurement has
+  itself stopped working, which is the one thing a yield figure must not hide.
+
+  $(printf '%-36s' "gate reds, $yield_win_label")${YIELD_REDS}${yield_note_txt}
+  $(printf '%-36s' "  the branch really was wrong")${YIELD_DEFECT}      (${YIELD_DEFECT_INFERRED} inferred from a later pass, not stated)
+  $(printf '%-36s' "  the gate's own fault")${YIELD_FAULT}      worst: ${YIELD_TOP_FAULT}
+  $(printf '%-36s' "  never classified")${YIELD_UNKNOWN}
+  $(printf '%-36s' "gate cost, solo")$(secs "$YIELD_SOLO_MED") median, $(secs "$YIELD_SOLO_MAX") worst (n=${YIELD_SOLO_N})
+  $(printf '%-36s' "gate cost, another gate overlapping")$(secs "$YIELD_CONC_MED") median, $(secs "$YIELD_CONC_MAX") worst (n=${YIELD_CONC_N})
 
 ### The workers
 

@@ -439,6 +439,43 @@ except Exception: print("")' 2>/dev/null)"
         fi
     fi
 
+    # ---- what the landing gate is worth ------------------------------------------------
+    # THE PANE ALREADY SAYS WHAT THE HARNESS COSTS; this is the one number that says whether
+    # the check between work and its landings is buying anything. The metric selection rule
+    # is the operator's — instrument the numbers that surprised us — and a gate that ran for
+    # weeks, cost seventeen minutes a branch and caught nothing is the largest such surprise
+    # this system has produced (law-gate-earns-its-place).
+    #
+    # yield.sh does the reading and renders `?` for anything it could not read; this passes
+    # that through untouched, because a yield meter that reported a broken check as "no
+    # faults" is the same failure as reporting a stalled queue as idle. SPIRA_RUN is passed
+    # explicitly — conf.sh does not export it, and a child re-deriving it from a config file
+    # would read a different directory and report a confident zero.
+    # EVERY KEY IS WRITTEN OUT IN FULL rather than renamed by a pattern. The pane reads these
+    # by name, and the way a pair like this drifts is that one side is edited and the other
+    # is not — which is findable by grep only if both sides spell the key.
+    _y_reds="?"; _y_def="?"; _y_fault="?"; _y_unk="?"; _y_solo="?"; _y_conc="?"; _y_worst="?"
+    if [ -r "$HERE/yield.sh" ]; then
+        while IFS='=' read -r _k _v; do
+            case "$_k" in
+                YIELD_REDS)     _y_reds="$_v" ;;
+                YIELD_DEFECT)   _y_def="$_v" ;;
+                YIELD_FAULT)    _y_fault="$_v" ;;
+                YIELD_UNKNOWN)  _y_unk="$_v" ;;
+                YIELD_SOLO_MED) _y_solo="$_v" ;;
+                YIELD_CONC_MED) _y_conc="$_v" ;;
+                YIELD_TOP_FAULT) _y_worst="$_v" ;;
+            esac
+        done < <(SPIRA_RUN="$SPIRA_RUN" bash "$HERE/yield.sh" report 2>/dev/null)
+    fi
+    echo "SP_YIELD_REDS=$_y_reds"
+    echo "SP_YIELD_DEFECT=$_y_def"
+    echo "SP_YIELD_FAULT=$_y_fault"
+    echo "SP_YIELD_UNKNOWN=$_y_unk"
+    echo "SP_YIELD_SOLO_MED=$_y_solo"
+    echo "SP_YIELD_CONC_MED=$_y_conc"
+    echo "SP_YIELD_TOP_FAULT=$_y_worst"
+
     # ---- the harness itself -----------------------------------------------------------
     # strand.sh names this as its own blind spot: a check cannot observe the failure of the
     # thing running it. The collector is not the sentinel, so it can — and this is what

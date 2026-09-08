@@ -821,7 +821,22 @@ command again; it picks the same run back up rather than starting another.
 
 **Never end your turn while it is unfinished.** The exit path checks: a session that ends
 with its gate still running has the bead released with a note saying so, and records no
-verdict it did not have."
+verdict it did not have.
+
+**If the gate goes red, say which kind of red it was — in one command, at the moment you
+know:**
+
+    bash $SPIRA_HOME/yield.sh classify $BRANCH GATE_FAULT \"<what actually broke>\"
+
+\`GATE_FAULT\` when the branch did not cause it — a suite read the state of the box, a fixture
+collided, the base was already broken. \`DEFECT\` when the gate was right and you fixed
+something. You do not have to: a red you fix and re-gate green is classified for you from the
+fact that the tree changed, and a red the gate itself attributes to the base or to its own
+machinery is classified on arrival. Say it when you know better than that inference does.
+
+This is the only measurement of whether the gate is worth the minutes it takes from every
+branch. A gate whose reds are mostly its own fault gets deleted on this evidence, in a
+sentence, instead of after an outage — which is how the last one went."
 
 BEAD_BODY="$(bdq show "$BEAD_ID" 2>/dev/null | grep -vE '^💡|^warning|^  Fix|^  Or')"
 PROMPT="$(sed -e "s|{{BEAD_ID}}|$BEAD_ID|g" -e "s|{{BRANCH}}|$BRANCH|g" \

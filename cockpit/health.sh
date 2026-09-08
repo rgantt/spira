@@ -760,6 +760,42 @@ standing_lines() {
         "$C_DIM" "$C_RST" "$( [ "${SP_POISON:-0}" = 0 ] && printf '%s' "$C_OK" || printf '%s' "$C_BAD$C_B")" "${SP_POISON:-?}" "$C_RST" \
         "$C_DIM" "$C_RST" "${SP_STRANDS:-?}"
 
+    # GATE — is the check between work and its landings buying anything? The pane already
+    # instruments what the harness COSTS; this is the only line that says whether one of its
+    # costs is earning its place (law-gate-earns-its-place). It is here because the previous
+    # gate was deleted after twelve hours of fallout rather than on evidence, and every fact
+    # needed to delete it a fortnight earlier was already being written down.
+    #
+    # UNKNOWN GETS ITS OWN FIGURE AND IS NEVER FOLDED INTO EITHER. A yield of "3 defect, 8
+    # fault" reads as a complete accounting; if half the reds were never classified, the
+    # ratio is a fiction and only a visible unknown count says so.
+    #
+    # SOLO AND CONTENDED, BOTH, because a landing gate never runs solo — every aeon runs one
+    # before it closes and the landing pass runs one per branch — so a solo figure describes
+    # a condition the gate is never in. The gap between the two is what decides whether it is
+    # affordable, and quoting only the first is how one was adopted at 101s and turned out to
+    # cost 329s.
+    local fault_col
+    case "${SP_YIELD_FAULT:-?}" in
+        0)  fault_col="$C_OK" ;;
+        '?') fault_col="$C_BAD$C_B" ;;   # unreadable is a fault of its own, not all-clear
+        *)  fault_col="$C_WARN" ;;
+    esac
+    # A UNIT ON AN UNREADABLE FIELD INVITES READING IT AS A MEASUREMENT: `?s` looks like a
+    # duration somebody forgot to fill in, and a `?` here means this probe could not read the
+    # gate log at all.
+    local solo="${SP_YIELD_SOLO_MED:-?}" conc="${SP_YIELD_CONC_MED:-?}"
+    [ "$solo" = "?" ] || solo="${solo}s"
+    [ "$conc" = "?" ] || conc="${conc}s"
+    printf ' %sGATE%s   %sreds%s %s · %sdefect%s %s · %sgate fault%s %s%s%s · %sunknown%s %s\n' \
+        "$C_DIM" "$C_RST" \
+        "$C_DIM" "$C_RST" "${SP_YIELD_REDS:-?}" \
+        "$C_DIM" "$C_RST" "${SP_YIELD_DEFECT:-?}" \
+        "$C_DIM" "$C_RST" "$fault_col" "${SP_YIELD_FAULT:-?}" "$C_RST" \
+        "$C_DIM" "$C_RST" "${SP_YIELD_UNKNOWN:-?}"
+    printf '        %scost%s %s solo · %s with another gate overlapping %s(median)%s\n' \
+        "$C_DIM" "$C_RST" "$solo" "$conc" "$C_DIM" "$C_RST"
+
     # HEALTH — the harness watching itself, plus the machine it runs on.
     local judge="${SP_SINCE_JUDGEMENT:-?}" judge_str
     case "$judge" in

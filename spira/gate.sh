@@ -64,6 +64,12 @@ verdict() {              # verdict <status> <reason> [message...]
     # gate_meter is defined only once the tree lock has been reached; before that there is no
     # wait and no run to record, and a preflight refusal is not a reading about contention.
     command -v gate_meter >/dev/null 2>&1 && gate_meter "$st" "$reason"
+    # AND IT RECORDS WHAT THE GATE WAS WORTH, not only what it cost. Same placement and same
+    # reasoning as the meter: this is the one way out, so a red that is never recorded is a
+    # red that never happened as far as anybody measuring this gate is concerned. It can fail
+    # and is not allowed to matter — a gate whose verdict changed because its bookkeeping
+    # broke would be worse than not measuring at all.
+    command -v yield_note >/dev/null 2>&1 && yield_note "$st" "$reason"
     exit "$st"
 }
 NV="$SPIRA_GATE_NOVERDICT"
@@ -84,6 +90,38 @@ gate: without it every repository looks like one with no gate command, and every
 gate: would pass a trial that never ran."
 REPO="$(repo_root "$REPO_NAME")" || verdict "$NV" no-repo-map \
     "gate: repo-map has no entry for '$REPO_NAME' — refusing to guess a checkout"
+
+# ---------------------------------------------------------------------------------------
+# WHAT THIS GATE IS WORTH. The meter below records what a run COST; this records whether the
+# run was right. A gate may sit between work and its landings only while it is catching real
+# defects (law-gate-earns-its-place), and the previous one was deleted after twelve hours of
+# fallout rather than on the evidence, because the evidence did not exist. yield.sh carries
+# the whole argument; what belongs here is the three facts only the gate holds.
+#
+# THE TREE, because it is what distinguishes a branch that was fixed from a branch that was
+# refused and then passed unchanged — the first is a defect the gate caught, the second is
+# the gate contradicting itself, and nothing else can tell them apart afterwards.
+GATE_TREE="$(git -C "$REPO" rev-parse --verify -q "$BR^{tree}" 2>/dev/null)" || GATE_TREE=""
+[ -n "$GATE_TREE" ] || GATE_TREE=-
+# THE SUITE, filled in below from the gate command's own output when it names one. `-` until
+# then, and `-` forever if the repository's gate says nothing identifiable — a suite named on
+# a guess is worse than a red attributed to the gate's reason, because the wrong suite is the
+# one somebody deletes.
+GATE_SUITE=-
+YIELD="$(dirname "$0")/yield.sh"
+yield_note() {           # yield_note <status> <reason>
+    [ -r "$YIELD" ] || return 0
+    # SPIRA_RUN IS PASSED EXPLICITLY. conf.sh does not export it, so a child re-deriving it
+    # from a config file would write its record somewhere this process is not reading — which
+    # is the silent half of a measurement that reports zero for the wrong reason.
+    if [ "$1" = 0 ]; then
+        SPIRA_RUN="$SPIRA_RUN" bash "$YIELD" pass "$REPO_NAME" "$BR" "$GATE_TREE" >/dev/null 2>&1
+    else
+        SPIRA_RUN="$SPIRA_RUN" bash "$YIELD" record \
+            "$REPO_NAME" "$BR" "$1" "$2" "$GATE_TREE" "$GATE_SUITE" >/dev/null 2>&1
+    fi
+    return 0
+}
 
 # The remote-tracking ref, never the local branch. Nothing in this harness advances the
 # shared checkout's default branch, so a diff against it is a diff against whatever the last
@@ -436,6 +474,17 @@ fi
 # What the branch owes the next reader is the command and its status, so a silent red arrives
 # as a rejection that can at least be reproduced rather than as an empty note.
 [ -z "${out//[[:space:]]/}" ] && out="(the command printed nothing; it exited $gate_rc_branch)"
+
+# WHICH CHECK REFUSED IT, for the yield record. A gate whose reds are mostly its own fault is
+# deleted wholesale only if nobody can say WHICH part is at fault; named, one suite can be
+# removed and the rest kept. The convention it reads is the one a repository gate already
+# follows when it reports a failing suite by filename — a filename immediately followed by
+# FAILED or by having been killed. Anything else leaves `-`: the reason slug is a true
+# attribution and a guessed suite name is not.
+GATE_SUITE="$(printf '%s\n' "$out" \
+    | sed -n 's/.*[[:space:]]\([A-Za-z0-9._-]*\.sh\)[[:space:]]\(FAILED\|was killed\).*/\1/p' \
+    | head -1)"
+[ -n "$GATE_SUITE" ] || GATE_SUITE=-
 
 if [ "$gate_rc_branch" -eq 124 ]; then
     verdict "$NV" timeout \

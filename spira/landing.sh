@@ -528,7 +528,13 @@ print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_hom
         # busy, and a pass on a clock must not sit in that queue: the wait is capped at what
         # this pass can spare rather than the gate's own default, which is longer than a whole
         # pass. Waiting it out would land nothing and be killed mid-gate for the privilege.
-        gate_out="$(SPIRA_GATE_LOCK_WAIT="$(gate_lock_wait)" "$SPIRA_HOME/gate.sh" "$br" "$name" 2>&1)"
+        # THE BEAD IS NAMED TO THE GATE, because this pass is the only caller that knows it
+        # for certain. The gate's yield record otherwise derives the bead from the branch
+        # name, which is right only while a branch is named after the bead it was cut for —
+        # and a branch's affinity is recorded precisely because that is not always true
+        # (law-branch-affinity-is-recorded).
+        gate_out="$(SPIRA_GATE_LOCK_WAIT="$(gate_lock_wait)" SPIRA_GATE_BEAD="$id" \
+            "$SPIRA_HOME/gate.sh" "$br" "$name" 2>&1)"
         gate_rc=$?
         # ------------------------------------------------------------------------------
         # FOUR OUTCOMES, AND ONLY ONE OF THEM IS THE BRANCH'S FAULT (conf.sh).
