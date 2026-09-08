@@ -93,6 +93,36 @@ if [ -s "$r" ]; then
     done < "$r"
     : > "$r"
 fi
+# THE TIP AS THE LOOP SAW IT. The gate is the last thing the loop does to a branch, so the
+# tip recorded here is the branch as the loop left it — and anything that moves it afterwards
+# moved it after the loop had walked past. That is the whole discriminator for the sweep
+# below: without it "the branch is on the base" is true whether the loop rebased it or the
+# sweep did, and the case would pass against a landing.sh with no sweep in it at all.
+mkdir -p "$SPIRA_RUN/tip-at-gate"
+git -C "'"$REPO"'" rev-parse "$1" > "$SPIRA_RUN/tip-at-gate/${1//\//-}" 2>/dev/null
+# A WITHHELD VERDICT, which is what leaves a branch judged, rebased and standing. The
+# repository gate tree being busy is far and away the commonest way a real pass walks past a
+# branch it will not reach again, and it is the state every sweep case starts from. The
+# status is the protocol constant, not a literal: a fixture asserting against 75 would go on
+# passing if landing.sh stopped meaning 75 by it.
+w="$SPIRA_RUN/withhold-gate"
+if [ -s "$w" ] && grep -qx "$1" "$w"; then
+    echo "gate: VERDICT=NO_VERDICT reason=stub-busy branch=$1 repo=${2:-?}" >&2
+    exit "${SPIRA_GATE_NOVERDICT:?the gate protocol constant is not in the environment}"
+fi
+# AN AEON ARRIVING MID-PASS, on the PASS path only — so it lands in the window between the
+# loop walking past an earlier branch and the landing that sweeps it, which is the window the
+# sweep repeats its own liveness check for. Each line is "<bead> <pid>"; the pid belongs to a
+# process the suite started, because aeon_alive reads /proc and will not be fooled by a
+# pidfile naming something that is not a runner.
+c="$SPIRA_RUN/claim-during-gate"
+if [ -s "$c" ]; then
+    while read -r id pid; do
+        [ -n "$id" ] || continue
+        printf "%s\\n" "$pid" > "$SPIRA_RUN/aeon-builder-$id.pid"
+    done < "$c"
+    : > "$c"
+fi
 echo "gate: VERDICT=PASS reason=${GATE_REASON:-stub} branch=$1 repo=${2:-?}" >&2; exit 0'
 
 # gh IS NEVER REACHED FROM A SUITE. pr_merged sits on the path to a reopen, and left to the
@@ -132,10 +162,16 @@ notes_of() { B show "$1" 2>/dev/null; }
 
 seed() {
     testdb_reset
+    rm -rf "$RUN/tip-at-gate"; rm -f "$RUN/withhold-gate" "$RUN/claim-during-gate"
     testdb_seed <<'JSONL'
 {"id":"sp-goal","title":"goal","status":"open","issue_type":"epic","labels":[],"updated_at":"2026-09-04T00:00:00Z"}
 JSONL
 }
+withhold_gate() { printf 'spira/%s\n' "$@" > "$RUN/withhold-gate"; }
+claim_during_gate() { printf '%s %s\n' "$1" "$2" > "$RUN/claim-during-gate"; }
+tip_at_gate()   { cat "$RUN/tip-at-gate/spira-$1" 2>/dev/null; }
+tip_of()        { git -C "$REPO" rev-parse "spira/$1" 2>/dev/null; }
+on_base()       { git -C "$REPO" merge-base --is-ancestor origin/main "spira/$1" 2>/dev/null && echo yes || echo no; }
 branch() {               # branch <id> [file] [content] — a closed bead with a branch of its own
     local id="$1" f="${2:-$1.txt}" c="${3:-$1}"
     git -C "$REPO" worktree add -q -b "spira/$id" "$RUN/worktree/$id" main
@@ -413,6 +449,86 @@ is "every rebase failure arm in landing.sh reads the kind" "" "$(arms "$HERE/lan
 # never could, and the value of this fence is entirely in its silence.
 printf '%s\n' 'if ! rebase_branch "$br" "$base"; then' '    bead_reopen "$id" "conflicts"' 'fi' > "$TMP/plant.sh"
 want "and the fence can see an arm that does not" "line 1" "$(arms "$TMP/plant.sh")"
+
+# --------------------------------------------------------------------------------------
+# THE SURVIVORS ARE REBASED WHEN THE BASE MOVES, not when some later pass reaches them.
+#
+# The loop rebases a branch immediately before gating it, so a branch is never gated stale.
+# What it does not do is go back: a branch it has already walked past — because the gate tree
+# was busy and no verdict was reached — keeps the base it was rebased onto while the pass
+# lands other branches on top of it. It is then behind until a later pass reaches it, which
+# has been as long as eighty-five minutes and several landings, ending in "reopened <bead> —
+# does not rebase onto the base" for a branch nobody had touched. Eleven of those in one day
+# and twelve the next, each a finished bead back on the board and an agent session spent.
+#
+# THE DISCRIMINATOR IS THE TIP AT GATE TIME. "The branch is on the base afterwards" is true
+# whether the loop rebased it or the sweep did, so on its own it passes against a landing.sh
+# with no sweep at all. The gate stub records the tip as the loop left it; the assertion is
+# that the tip MOVED after that, which only the sweep can do.
+# --------------------------------------------------------------------------------------
+seed; branch sp-held held.txt; branch sp-lands lands.txt
+withhold_gate sp-held                    # sorts first, so the loop walks past it, then lands sp-lands
+out="$(landing)"
+want "the branch whose gate was withheld is not landed" "gate NO_VERDICT on spira/sp-held" "$out"
+want "and the branch behind it lands"                   "landed spira/sp-lands" "$out"
+want "the survivor is rebased onto the new base at once" \
+     "rebased spira/sp-held onto origin/main after landing spira/sp-lands" "$out"
+is   "and its tip moved after the loop had walked past it" \
+     moved "$([ "$(tip_at_gate sp-held)" != "$(tip_of sp-held)" ] && echo moved || echo "same as at gate time")"
+is   "so it now carries the commit that landed"         yes "$(on_base sp-held)"
+nowant "and a clean rebase never reopens the bead"      "reopened sp-held" "$out"
+is   "which stays closed"                               closed "$(status_of sp-held)"
+want "and the pass counts what the sweep did"           "1 survivor(s) rebased after a landing, 0 conflicted" "$out"
+drop_branch sp-held; drop_branch sp-lands
+
+# THE SWEEP MUST STILL REOPEN A REAL DISAGREEMENT, or the silence above is worth nothing: a
+# sweep that swallowed conflicts would pass every assertion in the case above and quietly
+# leave unlandable work sitting closed forever. Both branches create the same file with
+# different content, so once one of them is on the base the other genuinely cannot replay.
+seed; branch sp-cheld shared.txt "from the held branch"
+branch sp-clands shared.txt "from the branch that lands"
+withhold_gate sp-cheld
+out="$(landing)"
+want "the branch behind it still lands"            "landed spira/sp-clands" "$out"
+want "and the survivor that truly conflicts is reopened" "reopened sp-cheld" "$out"
+is   "its bead goes back to open"                  open "$(status_of sp-cheld)"
+want "the note names the file that collided"       "shared.txt" "$(notes_of sp-cheld)"
+want "and names the landing that moved the base"   "after spira/sp-clands landed" "$(notes_of sp-cheld)"
+want "and the pass counts the conflict separately" "0 survivor(s) rebased after a landing, 1 conflicted" "$out"
+drop_branch sp-cheld; drop_branch sp-clands
+
+# A BRANCH AN AEON TOOK WHILE THE PASS RAN IS NEVER REWRITTEN. Minutes pass between the loop
+# judging a branch and a landing that triggers the sweep — a whole gate run — and in that
+# window a bead can be reopened elsewhere and claimed. Rebasing rewrites commits beneath a
+# live worktree and destroys work that exists in exactly one place, which is the one failure
+# here that nothing can undo, so the liveness check is repeated at sweep time rather than
+# inherited from the loop.
+seed; branch sp-taken taken.txt; branch sp-tlands tlands.txt
+withhold_gate sp-taken
+# A REAL PROCESS RUNNING A FILE ACTUALLY CALLED aeon.sh: aeon_alive reads /proc/<pid>/cmdline
+# and requires the runner's own name in it, so a fixture that invented a pid would assert the
+# guard fires where the guard would in fact have seen nobody home. `bash -c '<cmd>' aeon.sh`
+# is not enough — bash execs a lone simple command in place, and the cmdline that survives is
+# the command's, with no aeon.sh anywhere in it.
+#
+# IT HOLDS NO INHERITED FILE DESCRIPTOR and it sleeps in one-second slices. A backgrounded
+# process keeps the suite's stdout open, so `./test-landing.sh | tail` hangs until it exits
+# however long ago the suite finished; and killing it does not kill the `sleep` it is blocked
+# in, which inherits the same descriptor. Redirected and sliced, the stray outlives the suite
+# by at most a second and is holding nothing while it does.
+printf '#!/usr/bin/env bash\nwhile :; do sleep 1; done\n' > "$TMP/aeon.sh"; chmod +x "$TMP/aeon.sh"
+"$TMP/aeon.sh" >/dev/null 2>&1 & aeon_pid=$!
+claim_during_gate sp-taken "$aeon_pid"
+out="$(landing)"
+claimed="$(cat "$RUN/aeon-builder-sp-taken.pid" 2>/dev/null)"
+kill "$aeon_pid" 2>/dev/null; wait "$aeon_pid" 2>/dev/null
+rm -f "$RUN/aeon-builder-sp-taken.pid"
+is     "the fixture did claim it mid-pass"      "$aeon_pid" "$claimed"
+want   "the pass says an aeon took it"          "an aeon took spira/sp-taken while this pass ran" "$out"
+is     "and its tip is exactly as the loop left it" \
+       "$(tip_at_gate sp-taken)" "$(tip_of sp-taken)"
+nowant "and nothing rebased it"                 "rebased spira/sp-taken" "$out"
+drop_branch sp-taken; drop_branch sp-tlands
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

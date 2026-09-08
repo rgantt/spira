@@ -56,6 +56,14 @@ MAILBOX="$SPIRA_RUN/landing.progress"
 n_branches=0
 n_prog=0
 
+# THE SWEEP'S OWN METER, and it is a pair on purpose. A post-landing rebase is worth its
+# seconds only if branches actually come through it clean; one that only ever conflicts has
+# moved a reopen earlier and saved nobody a session. Both halves are printed on the
+# pass-complete line, so the question is settled from landing.log with no new machinery
+# (law-take-the-simple-fix-with-a-meter).
+n_swept=0
+n_swept_conflict=0
+
 # The mailbox line is the message and nothing else — no ACT prefix, no timestamp. The
 # sentinel adds both when it counts it, and a line that arrived pre-formatted would read as
 # though the sentinel had done the work.
@@ -410,11 +418,128 @@ PRBODY
     return 0
 }
 
+# ======================================================================================
+# THE SURVIVORS ARE REBASED THE MOMENT THE BASE MOVES, not when the pass next reaches them.
+#
+# A landing pass rebases a branch immediately before gating it, so within one turn round the
+# loop a branch is always measured against a current base. What it does NOT do is go back:
+# a branch this pass has already passed over — most often because the repository's gate tree
+# was busy and no verdict was reached — keeps the base it was rebased onto, while the pass
+# goes on to land other branches on top of it. It is then stale for as long as it takes the
+# next pass to reach it, and every landing in between widens the gap it will have to close:
+#
+#   20:33  no verdict on <branch> this pass; the next pass takes it      <- rebased, then left
+#   ...    five more passes, same answer
+#   22:30  reopened <bead> — does not rebase onto the base
+#
+# Eleven of those in one day and twelve the next, each a finished bead put back on the board
+# and a whole agent session spent rebasing. The base had moved under a branch nobody was
+# working and nothing brought it forward.
+#
+# So after a landing, every branch this pass has already judged closed-and-unlanded is
+# replayed onto the new base at once. A clean rebase costs a fraction of a second, leaves the
+# branch landable on this same pass or the next, and is logged. THIS DOES NOT MAKE A GENUINE
+# CONFLICT GO AWAY — a branch and a base that disagree about a file still disagree, and that
+# still reopens the bead with the colliding paths named, exactly as before. What it removes is
+# the drift a branch accumulates while nothing is looking at it, and it brings the reopen the
+# conflict does deserve forward to the landing that caused it, where the note is about one
+# commit rather than an hour of them.
+#
+# THE SET COMES FROM THE LOOP, NOT FROM A FRESH ENUMERATION. Re-deriving it would mean a bead
+# query per spira/* ref per landing — after a landing no branch contains the base, so no cheap
+# ancestry test filters any of them out — and the loop has already paid for exactly that
+# answer. Branches the loop has NOT yet reached need nothing: it rebases each one as it
+# arrives at it.
+#
+# IT IS BOUNDED BY THE LOOP, not by a budget of its own. At worst this replays every survivor
+# once per landing, and a survivor is only ever a branch the loop has already gated — so the
+# rebases a pass can do this way are bounded by the gates it can do, which the pass budget
+# already caps. A clean replay is a fraction of a second; the expensive half of a landing pass
+# is the gate, and nothing here runs one.
+#
+# NEVER UNDER A LIVE AEON, and the check is repeated here rather than inherited from the
+# loop. Minutes pass between a branch being judged and a landing that triggers this — a whole
+# gate run — and in that window a bead can be reopened elsewhere and claimed. Rewriting
+# commits beneath a running aeon destroys work that exists in exactly one place, which is the
+# one failure here that nothing can undo.
+# ======================================================================================
+rebase_survivors() {     # rebase_survivors <repo> <name> <base> <landed-branch> [branch...]
+    local repo="$1" name="$2" base="$3" landed="$4" br id tip
+    shift 4
+    for br in "$@"; do
+        [ -n "$br" ] || continue
+        [ "$br" = "$landed" ] && continue
+        id="${br#spira/}"
+        # Already carries the new base: the ordinary answer for every branch after the FIRST
+        # landing of a pass has swept them, and it must stay silent or a pass that lands three
+        # branches logs the same untouched branch three times.
+        git -C "$repo" merge-base --is-ancestor "$base" "refs/heads/$br" 2>/dev/null && continue
+        # A ref that has gone since the loop judged it was reaped, landed by hand or slain.
+        # Whatever removed it did so deliberately; this holds a list, not a fact
+        # (law-absence-needs-a-positive-control — say so rather than fall silent).
+        if ! git -C "$repo" show-ref --verify --quiet "refs/heads/$br"; then
+            log "CHECK6 $id: $br is gone since this pass judged it — not rebasing it onto $base"
+            continue
+        fi
+        if holder_alive "$id"; then
+            log "CHECK6 $id: an aeon took $br while this pass ran — leaving its rebase to it"
+            continue
+        fi
+        # Whoever landed carried this work with them. Rebasing would replay commits whose
+        # content is already on the base; the Sending reaps the ref.
+        if content_landed "$repo" "$br" "$base"; then
+            log "CHECK6 $id: $base now contains every change on $br — nothing left to rebase"
+            continue
+        fi
+        if ! rebase_branch "$br" "$base" "$repo" "$name"; then
+            # ONLY A CONFLICT MAY REOPEN, the same rule and the same reason as the loop's own
+            # arm: rebase_branch returns 1 four ways and three of them are this pass failing to
+            # ask the question rather than an answer to it. Charging those to the work reopens
+            # a finished bead as "conflicts in unknown" and costs it an attempt toward poison.
+            if [ "${REBASE_FAILURE:-}" != conflict ]; then
+                log "CHECK6 $id: could not attempt a rebase of $br onto $base after landing $landed (${REBASE_FAILURE:-unknown}) — not a conflict, leaving the bead closed"
+                continue
+            fi
+            # The squash-and-amend case the content test above cannot see. Only a repository
+            # that lands by push reaches this function at all, so today this is always false
+            # and always a wasted round trip — kept because it is the loop's arm verbatim, and
+            # two routes into a reopen that differ by one check are two routes that will
+            # eventually differ by more. It is paid once per conflicting survivor, which is a
+            # branch already about to cost a whole session.
+            if pr_merged "$repo" "$br"; then
+                log "CHECK6 $id: $br does not rebase onto $base, but its pull request is merged — landed, not stuck"
+                continue
+            fi
+            n_swept_conflict=$(( n_swept_conflict + 1 ))
+            bead_reopen "$id" "Reopened by sentinel: $br does not rebase onto $base in $name after $landed landed; conflicts in ${REBASE_CONFLICTS:-unknown}. A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it."
+            bump_requeue "$id" rebase-conflict >/dev/null
+            progress "reopened $id — does not rebase onto $base"
+            land_mark "$id" RED "$(git -C "$repo" rev-parse "$br" 2>/dev/null)" no-rebase
+            continue
+        fi
+        n_swept=$(( n_swept + 1 ))
+        tip="$(git -C "$repo" rev-parse "$br" 2>/dev/null)"
+        # RECORDED, because the pair of counters in the pass-complete line is the only
+        # evidence of whether this is worth doing: a sweep that only ever conflicts is a
+        # sweep that has moved the reopen earlier and saved nobody anything, and that is a
+        # fact the log should be able to settle without new machinery
+        # (law-take-the-simple-fix-with-a-meter).
+        land_mark "$id" REBASED "$tip" swept
+        log "CHECK6 $id: rebased $br onto $base after landing $landed — still landable"
+    done
+}
+
 land_repo() {
     local name="$1" repo br id st mode base land tip merged pushed nothing wedged attempt brs
     local bead_repo_name bead_repo_path gate_out base_branch base_remote bead_labels
     local norebase was _ref _obj gate_suite basefail_filed=
     local -A enum_tip=()
+    # WHAT THIS PASS HAS ALREADY JUDGED CLOSED, REBASED AND STILL UNLANDED. A branch enters
+    # when its rebase onto the base succeeds and leaves the moment it stops being that — it
+    # landed, or it went back on the board. rebase_survivors replays whatever is left after
+    # each landing, so a branch the pass has walked past does not sit behind a base that
+    # moved under it until some later pass happens to reach it.
+    local -A judged=()
     repo="$(repo_root "$name")" || { log "CHECK6 $name: no repo-map entry — skipped"; return 0; }
     [ -e "$repo/.git" ] || { log "CHECK6 $name: $repo is not a git checkout — skipped"; return 0; }
 
@@ -604,6 +729,7 @@ print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_hom
             continue
         fi
         tip="$(git -C "$repo" rev-parse "$br" 2>/dev/null)"
+        judged["$br"]=1
 
         # CONFINEMENT COMES BEFORE THE GATE. A spike's branch may pass every test in the
         # repository and still be the wrong thing to merge — its experiment compiles, which
@@ -621,6 +747,7 @@ print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_hom
             # DONE and LANDED is the one with no witness, and a branch that stops for good in
             # the middle of it is exactly the case that record exists to make visible.
             land_mark "$id" RED "$tip" confine
+            unset 'judged[$br]'
             continue
         fi
 
@@ -740,6 +867,7 @@ print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_hom
 $(printf '%s' "$gate_out" | tail -20)"
             progress "reopened $id — failed the gate"
             land_mark "$id" RED "$tip" gate
+            unset 'judged[$br]'
             continue
         fi
         # A REUSED VERDICT IS SAID OUT LOUD, in the log an operator reads about the pass
@@ -885,6 +1013,13 @@ $(printf '%s' "$gate_out" | tail -20)"
                     git -C "$repo" merge --ff-only -q "$base" 2>/dev/null \
                         && log "fast-forwarded $name's checkout to $base"
                 fi
+                # THE BASE HAS MOVED, SO EVERY SURVIVOR IS NOW BEHIND IT. Last, because
+                # everything above is about the branch that just landed and must not be
+                # delayed by other branches' rebases; and unset first, so this branch is not
+                # replayed onto a base that already contains it.
+                unset 'judged[$br]'
+                [ "${#judged[@]}" -gt 0 ] \
+                    && rebase_survivors "$repo" "$name" "$base" "$br" "${!judged[@]}"
             elif [ "$merged" = 1 ]; then
                 # Merged fine, could not push after three rebases. Nothing is wrong with the
                 # work; leave the bead closed and let the next pass land it.
@@ -895,6 +1030,7 @@ $(printf '%s' "$gate_out" | tail -20)"
                 bead_reopen "$id" "Reopened by sentinel: branch $br conflicts with $base. A merge conflict is not an escalation — rebase and finish."
                 bump_requeue "$id" merge-conflict >/dev/null
                 progress "reopened $id — branch conflicts with $base"
+                unset 'judged[$br]'
             fi
             ;;
         esac
@@ -910,4 +1046,10 @@ for repo_name in $(spira_repos); do
     land_repo "$repo_name"
 done
 
-log "landing: pass complete — $n_branches branch(es) seen, $n_prog movement(s)"
+# The sweep's counters are appended only when it did something. A clause that reads
+# "0 rebased, 0 conflicted" on every quiet pass is noise, and this line is the one a reader
+# greps to see whether a pass moved anything at all.
+sweep_note=""
+[ $(( n_swept + n_swept_conflict )) -gt 0 ] \
+    && sweep_note=", $n_swept survivor(s) rebased after a landing, $n_swept_conflict conflicted"
+log "landing: pass complete — $n_branches branch(es) seen, $n_prog movement(s)$sweep_note"
