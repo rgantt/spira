@@ -1237,14 +1237,14 @@ standing_lines() {
 # day it would take the whole column and CI — the section that reports a run parked since
 # yesterday, and the only place that fact appears — would be the one to vanish.
 #
-# TWO TIERS, BECAUSE ONE ROUND-ROBIN CANNOT SAY BOTH THINGS. Every section names a BASE it
-# needs and a MAX it could use, and the base of every section is satisfied before any section
-# is taken past it. Without the split, giving NEXT and RECENT a high ceiling so they could
-# absorb the pane's slack also let them out-vote NOW in the ordinary case: a fair one-row-each
-# share handed NOW 8 of the 12 rows its three live aeons wanted on a 45-row pane, while NEXT
-# and RECENT grew past the five they need — the section describing work in flight trimmed to
-# feed the two sections that exist to fill space around it. Tier one is the rationing that
-# protects CI on a short pane; tier two is the slack, and only the elastic sections bid for it.
+# THREE TIERS, BECAUSE TWO ROUND-ROBINS CANNOT SAY ALL THREE THINGS. Every section names a
+# BASE it needs and a MAX it could use. Non-elastic sections (base == max) — NOW, UNLANDED,
+# CI — are served in tier 0 before any round-robin starts: this is the guarantee that NOW
+# fills before NEXT and RECENT compete for budget. Without tier 0, a fair round-robin over
+# all sections handed NOW only 9 of its 12 rows on a 45-row pane while NEXT and RECENT each
+# held five — the section describing work in flight trimmed to feed the two that fill space.
+# Tier one then fills every section to its base; tier two is the slack, where only the
+# elastic sections (NEXT, RECENT) bid.
 #
 # EVERY SECTION KEEPS ITS FIRST ROW even when there is no budget for it. The overflow then
 # falls off the BOTTOM of the frame in `render`, which marks the count on the header; a
@@ -1265,13 +1265,19 @@ share() {
     [ "$rows" -le 0 ] && { printf '%s\n' "${max[@]}"; return; }
     budget=$(( rows - fixed ))
     for (( i = 0; i < n; i++ )); do budget=$(( budget - give[i] )); done
-    for tier in 1 2; do
+    for tier in 0 1 2; do
         moved=1
         while [ "$budget" -gt 0 ] && [ "$moved" = 1 ]; do
             moved=0
             for (( i = 0; i < n; i++ )); do
                 [ "$budget" -gt 0 ] || break
-                if [ "$tier" = 1 ]; then lim="${base[i]}"; else lim="${max[i]}"; fi
+                if [ "$tier" = 0 ]; then
+                    # TIER 0: non-elastic sections (base == max) fill to their max first,
+                    # so NOW cannot be out-voted by NEXT and RECENT in the same round-robin.
+                    [ "${base[i]}" != "${max[i]}" ] && continue
+                    lim="${max[i]}"
+                elif [ "$tier" = 1 ]; then lim="${base[i]}"
+                else lim="${max[i]}"; fi
                 if [ "${give[i]}" -lt "$lim" ]; then
                     give[i]=$(( give[i] + 1 )); budget=$(( budget - 1 )); moved=1
                 fi
