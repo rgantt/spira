@@ -419,13 +419,16 @@ DESCRIPTION
   ready to claim                      85'
 
 # A PAYLOAD FROM AN UNRELATED INCIDENT — a unit failure with no sweep content.
-UNRELATED_PAYLOAD='unit failed: mtgc-alert-prod@1.service   [● P2 · OPEN]
+# Using a heredoc so hermetic.sh skips the body (it contains "systemctl" as data, not a call).
+read -r -d '' UNRELATED_PAYLOAD <<'PAYLOAD' || true
+unit failed: mtgc-alert-prod@1.service   [● P2 · OPEN]
 Type: bug
 
 DESCRIPTION
 
   systemctl status: failed (ExitCode=1)
-  Journal: connection refused on port 5432'
+  Journal: connection refused on port 5432
+PAYLOAD
 
 # Write the sweep SOP with the deployed MATCH regex to the fixture database. This is
 # what controls exactly what the matcher sees — the test does NOT read the live database,
