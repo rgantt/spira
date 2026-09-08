@@ -425,6 +425,21 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
             ledger "done $FAYTH $BEAD_ID rc=$rc status=gate-unfinished"
             exit $rc
         fi
+        # THE BEAD IS OPEN BECAUSE THIS SCRIPT REOPENED IT, thirty lines ago and for a reason
+        # it recorded. session_outcome cannot see that: it reads the session's trace, and the
+        # trace of a session that committed, closed the bead and ran to its own end is
+        # `unlanded` — the one outcome that charges. So the harness's own requeue was charged
+        # against the work, every time round, and the count poisoned beads that were finished.
+        # Checked BEFORE session_outcome, because the trace is not wrong, it is answering a
+        # different question.
+        if [ -n "$REQUEUE_CAUSE" ]; then
+            n="$(bump_requeue "$BEAD_ID" "$REQUEUE_CAUSE")"
+            bdq note "$BEAD_ID" "Requeue $n ($REQUEUE_CAUSE): $REQUEUE_WHY The session did the work and closed the bead; the harness put it back. NO attempt was charged and nothing about the work is implied." >/dev/null 2>&1
+            log "$FAYTH: $BEAD_ID requeued by the harness ($REQUEUE_CAUSE) — requeue $n, no attempt charged"
+            release_own_claim "$BEAD_ID"
+            ledger "done $FAYTH $BEAD_ID rc=$rc status=requeue-$REQUEUE_CAUSE"
+            exit $rc
+        fi
         cause="$(session_outcome "$LOGF")"
         if outcome_charges "$cause"; then
             n="$(bump_attempt "$BEAD_ID" "$cause")"
@@ -448,6 +463,15 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
     ledger "done $FAYTH $BEAD_ID rc=$rc status=${st:-?}"
     exit $rc
 }
+# WHY THE HARNESS ITSELF PUT THIS BEAD BACK, if it did. Set by the verdict block at the foot
+# of this script, read by the teardown above. Empty is the state every session starts in and
+# the only state a session that closes cleanly ever reaches.
+#
+# A VARIABLE AND NOT A RE-READ OF THE BEAD, because from outside there is nothing to read: a
+# bead the harness reopened a second ago and a bead the session never closed are the same row
+# — open, unclaimed, no verdict. Only the process that performed the reopen knows, and it
+# knows for the few seconds between doing it and exiting.
+REQUEUE_CAUSE=""; REQUEUE_WHY=""
 trap cleanup EXIT INT TERM
 
 # ---- heartbeat: PROVE WORK, NOT MERE EXISTENCE ---------------------------------------
@@ -956,6 +980,12 @@ if [ "$st" = "closed" ] && [ "$committed" = "yes" ]; then
         bdq note "$BEAD_ID" "Rebased onto $BASE by aeon.sh after the session closed the bead without doing so. The replay was clean; the landing gate judges the rebased tree." >/dev/null 2>&1
     else
         bead_reopen "$BEAD_ID" "Reopened by aeon.sh: closed behind $BASE and $BRANCH does not rebase onto it — conflicts in ${REBASE_CONFLICTS:-unknown}. The brief asked for this rebase before closing. A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it."
+        # THE TEARDOWN MUST NOT READ THIS BACK AS A FAILURE OF THE WORK. The work is committed
+        # and the session closed on it; what is missing is a rebase over commits that landed
+        # while it ran, which is a fact about the queue. Charging it made the busiest branches
+        # the likeliest to poison.
+        REQUEUE_CAUSE="rebase-conflict"
+        REQUEUE_WHY="$BRANCH would not rebase onto $BASE (conflicts in ${REBASE_CONFLICTS:-unknown}); the next aeon is handed the rebase."
         log "$FAYTH: $BEAD_ID REOPENED — closed behind $BASE, conflicts in ${REBASE_CONFLICTS:-unknown}"
     fi
 fi

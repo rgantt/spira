@@ -231,43 +231,76 @@ dispatchable="$(dispatchable_open)"
 log "CHECK4 examining $(printf '%s' "$dispatchable" | grep -c . || true) dispatchable bead(s), threshold $POISON_AT"
 for id in $dispatchable; do
     n="$(attempts_of "$id")"; n="${n:-0}"
-    if [ "$n" -ge "$POISON_AT" ]; then
-        if ! bdq label list "$id" 2>/dev/null | grep -q spira-poison; then
-            # THE POISON NAMES THE OUTCOMES THAT CHARGED IT, never just their count. A poison
-            # nobody can audit takes a bead out of circulation for reasons that have already
-            # scrolled away, and "three attempts" is only a reason to stop if all three were
-            # the work failing. Rungs predating the cause label read `unrecorded`, which is
-            # honest rather than an assumption about what they were.
-            charges="$(attempt_causes "$id" | awk '{printf "%s#%s ", $1, $2}')"
-            bdq label add "$id" spira-poison >/dev/null 2>&1
+    [ "$n" -ge "$POISON_AT" ] || continue
+
+    # A CLOSED BEAD NEVER POISONS AND NEVER ASKS. dispatchable_open excludes closed beads,
+    # but it is a SNAPSHOT and this loop makes several bd calls per bead — so a bead the
+    # landing pass finished a few seconds ago is still in the list, and the operator was
+    # asked whether to change the approach on work that had already landed. Re-read the one
+    # field that decides it, immediately before acting on it.
+    if [ "$(spira_bead_status "$id")" = closed ]; then
+        log "CHECK4 $id: $n attempts, but it closed while this pass ran — not poisoned, not asked"
+        continue
+    fi
+
+    # THE POISON NAMES THE OUTCOMES THAT CHARGED IT, never just their count. A poison nobody
+    # can audit takes a bead out of circulation for reasons that have already scrolled away,
+    # and "three attempts" is only a reason to stop if all three were the work failing. Rungs
+    # predating the cause label read `unrecorded`, which is honest rather than an assumption
+    # about what they were.
+    charges="$(attempt_causes "$id" | awk '{printf "%s#%s ", $1, $2}')"
+
+    # Read the labels ONCE into a variable and match with a case. `... | grep -q` under
+    # `set -o pipefail` hands back 141 when it MATCHES — grep exits at the first hit and the
+    # writer dies of SIGPIPE — so `if ! ... | grep -q spira-poison` read as "not poisoned"
+    # precisely when the bead was, and re-labelled and re-asked on a pass that should have
+    # done nothing (law-no-grep-q-under-pipefail).
+    labels="$(bdq label list "$id" 2>/dev/null)" || labels=""
+    case "$labels" in
+        *spira-poison*) ;;
+        *)  bdq label add "$id" spira-poison >/dev/null 2>&1
             bdq note "$id" "Poisoned after $n attempts, charged by: ${charges:-unrecorded}. Not retried until a human changes the approach. Any live holder keeps its claim and releases on its own exit path; no persona can claim it again while the label stands." >/dev/null 2>&1
             progress "poisoned $id after $n attempts (${charges:-unrecorded})"
-            # The ask carries the failure itself. A path is not evidence: the operator reads this
-            # in a tmux pane and cannot open a file from it.
-            # THE BEAD FIRST, THEN THE FAILURE. A log tail says what broke; it cannot say
-            # what the work was for, and that is the question that has to be answered
-            # before "change the approach or drop it" means anything.
-            ev="$(bead_context "$id" 2>/dev/null)"
-            # THE BRANCH IS LOOKED FOR IN THE BEAD'S OWN REPOSITORY. Asking the home repo
-            # about another repository's bead answers "none — nothing was committed" for work that
-            # is sitting on a branch in another checkout, and the operator would be deciding whether
-            # to drop a bead on the strength of a fact from the wrong disk.
-            r_name="$(bead_repo "$id")"; r_path="$(repo_root "$r_name")" || r_path=""
-            ev="$ev
+            ;;
+    esac
+
+    # AT MOST ONE ASK PER (BEAD, ATTEMPT COUNT), EVER — and never "once per bead while it is
+    # unpoisoned", which is what the label test above used to be doing double duty as. The
+    # ask's own remedy is to clear the poison label, so keying on the label made every
+    # application of the remedy re-arm the ask (poison_asked, lib.sh).
+    poison_asked "$id" "$n" && continue
+
+    # The ask carries the failure itself. A path is not evidence: the operator reads this
+    # in a tmux pane and cannot open a file from it.
+    # THE BEAD FIRST, THEN THE FAILURE. A log tail says what broke; it cannot say
+    # what the work was for, and that is the question that has to be answered
+    # before "change the approach or drop it" means anything.
+    ev="$(bead_context "$id" 2>/dev/null)"
+    # THE BRANCH IS LOOKED FOR IN THE BEAD'S OWN REPOSITORY. Asking the home repo
+    # about another repository's bead answers "none — nothing was committed" for work that
+    # is sitting on a branch in another checkout, and the operator would be deciding whether
+    # to drop a bead on the strength of a fact from the wrong disk.
+    r_name="$(bead_repo "$id")"; r_path="$(repo_root "$r_name")" || r_path=""
+    ev="$ev
 
 REPO      $r_name${r_path:+ ($r_path)}
 ATTEMPTS  $n (poison threshold $POISON_AT) — charged by: ${charges:-unrecorded}
 RECLAIMS  $(reclaims_of "$id" || true) — times the aeon died holding it; these do NOT count toward poison
+REQUEUES  $(requeues_of "$id" || true) — times the harness reopened finished work over a rebase; these do NOT count toward poison
 BRANCH    $( [ -n "$r_path" ] && git -C "$r_path" show-ref --verify -q "refs/heads/spira/$id" && echo "spira/$id exists, with work on it" || echo 'none — nothing was committed')
 
 --- last session log (tail) ---
 $(trace_tail "$SPIRA_RUN/$id.log" 25)"
-            "$SPIRA_NOTIFY" add \
-              "Spira bead $id failed $n times — change the approach or drop it?" \
-              --default "rewrite the bead's description to change the approach, then clear the spira-poison label; or close it if it is not worth doing" \
-              --why "nothing downstream of it can proceed, and no aeon will take it again while it is poisoned" \
-              --evidence "$ev" >/dev/null 2>&1
-        fi
+    # MARKED ONLY IF THE ASK WAS ACCEPTED. Stamping first would let an escalation path that
+    # is down silently swallow the one notification this count will ever produce.
+    if "$SPIRA_NOTIFY" add \
+          "Spira bead $id failed $n times — change the approach or drop it?" \
+          --default "read the charges above first — an attempt is only a reason to stop if it names an outcome about the WORK. If they are genuine, rewrite the bead's description to change the approach and clear the spira-poison label; or close it if it is not worth doing" \
+          --why "nothing downstream of it can proceed, and no aeon will take it again while it is poisoned" \
+          --evidence "$ev" >/dev/null 2>&1; then
+        poison_asked_mark "$id" "$n"
+    else
+        log "CHECK4 $id: the escalation path refused the ask — it stands, and the next pass retries it"
     fi
 done
 

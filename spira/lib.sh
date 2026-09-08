@@ -793,11 +793,28 @@ capacity_withdrawn_mark() {
 }
 
 # --------------------------------------------------------------------------------------
-# TWO COUNTERS, BECAUSE THERE ARE TWO FAILURES AND THEY WANT DIFFERENT ANSWERS.
+# THREE COUNTERS, BECAUSE THERE ARE THREE FAILURES AND THEY WANT DIFFERENT ANSWERS.
 #
 #   sp-attempt-N   the WORK was tried and did not land. Feeds the poison threshold.
 #   sp-reclaim-N   the WORKER died holding the bead. Diagnostic; feeds nothing that stops
 #                  a bead being worked.
+#   sp-requeue-N   the HARNESS put finished work back. The session committed and closed the
+#                  bead, and a rebase onto a base that had moved underneath it no longer
+#                  replayed — so the bead was reopened and the next aeon inherits the
+#                  conflict. Diagnostic; feeds nothing.
+#
+# The third exists because the first two cannot express it and the first one was taking it.
+# A session that finishes, closes, and is reopened over a rebase looks from the counter's
+# side exactly like a session that ran to its own end leaving the bead open — `unlanded`,
+# which charges. One bead was charged all eight of its attempts that way over work that
+# later landed unchanged, and another was poisoned nineteen hours after the session that
+# finished it, with a branch that merged cleanly the whole time. Poisoning is permanent and
+# a poisoned bead stays OPEN while the landing pass lands only CLOSED beads, so that is a
+# deadlock arrived at by counting, with nothing wrong with the work.
+#
+# It is a COUNTER and not merely an exemption because a bead that has cycled eight times is
+# a fact worth seeing: the queue is manufacturing conflicts faster than the work can absorb
+# them, and without a number nobody would know (law-take-the-simple-fix-with-a-meter).
 #
 # They were one counter, and one aeon dying cost a bead TWO of its three attempts: the
 # teardown bumped on the way out and strand.sh bumped again when it reclaimed the same bead
@@ -864,6 +881,9 @@ bump_attempt()   { bump_counter "$1" sp-attempt "${2:-}"; }
 attempt_causes() { counter_causes "$1" sp-attempt; }
 reclaims_of()    { counter_of "$1" sp-reclaim; }
 bump_reclaim()   { bump_counter "$1" sp-reclaim "${2:-}"; }
+requeues_of()    { counter_of "$1" sp-requeue; }
+bump_requeue()   { bump_counter "$1" sp-requeue "${2:-}"; }
+requeue_causes() { counter_causes "$1" sp-requeue; }
 
 # --------------------------------------------------------------------------------------
 # WHAT ENDED THIS SESSION — AND THE DEFAULT IS "WE DO NOT KNOW".
@@ -946,6 +966,39 @@ session_outcome() {      # session_outcome <trace-file> -> unlanded|refused|kill
 # inheriting whichever default the call site happens to have.
 outcome_charges() {      # outcome_charges <outcome> -> rc 0 when it may charge an attempt
     case "${1:-}" in unlanded) return 0 ;; *) return 1 ;; esac
+}
+
+# --------------------------------------------------------------------------------------
+# THE POISON ASK'S SUPPRESSION, AND WHY IT IS NOT THE POISON LABEL.
+#
+# The valve filed its escalation whenever a bead was over the threshold and did not CURRENTLY
+# carry `spira-poison`, so the label was both the dispatch valve and the ask's only
+# suppression — and the ask's own recommended remedy is "change the approach, then clear the
+# label". Doing what it asks therefore deleted the one thing stopping it being asked again,
+# and the next pass asked again. One bead reached the operator three times in forty minutes
+# about work that had already landed, and he had to say so twice.
+#
+# So suppression keys on something the remedy does NOT move: the attempt count that produced
+# the ask. At most one ask per (bead, count), ever. Clearing the poison still allows the retry
+# it exists to allow — and only a genuinely new failure at count+1 may ask again. Same shape
+# as watchd's backlog fingerprint, and for the same reason.
+#
+# THE MARK IS WRITTEN ONLY AFTER THE ASK WAS ACCEPTED, so an escalation path that is down does
+# not silently consume the one notification this count will ever produce.
+# --------------------------------------------------------------------------------------
+SPIRA_POISON_ASKED="${SPIRA_POISON_ASKED:-$SPIRA_RUN/poison-asked}"
+
+poison_asked() {         # poison_asked <id> <n> -> 0 if this exact (bead, count) already asked
+    local f="$SPIRA_POISON_ASKED/$1"
+    # grep reads the file itself. There is no pipe here on purpose: `... | grep -q` under
+    # `set -o pipefail` returns 141 when it MATCHES, which in this position would read as
+    # "not yet asked" exactly when it had been (law-no-grep-q-under-pipefail).
+    [ -r "$f" ] && grep -qxF -- "$2" "$f" 2>/dev/null
+}
+
+poison_asked_mark() {    # poison_asked_mark <id> <n>
+    mkdir -p "$SPIRA_POISON_ASKED" 2>/dev/null || return 1
+    printf '%s\n' "$2" >> "$SPIRA_POISON_ASKED/$1"
 }
 
 # --------------------------------------------------------------------------------------

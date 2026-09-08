@@ -4,6 +4,7 @@
 #
 #   attempts.sh audit                  what every claimable bead is carrying, and why
 #   attempts.sh reclassify [--apply]   move rungs that name no cause onto the reclaim counter
+#   attempts.sh deadlocked [--apply]   poisoned beads whose work is finished and would merge
 #
 # WHY THIS EXISTS. The attempt counter feeds the poison threshold, and poison takes a bead
 # out of circulation permanently. It was default-ALLOW — anything a short list of exemptions
@@ -17,10 +18,17 @@
 # evidence. That is not an amnesty, it is the same statute read in the only direction it can
 # be read — UNKNOWN does not charge.
 #
-# WHAT IT WILL NOT DO IS LIFT A POISON. Clearing a false COUNT is arithmetic and needs
-# nobody's permission; re-queueing a bead the operator has an open decision about is a
-# different act, and a repair tool must not take it silently. The label is left exactly where
-# it is and the audit says so, which is what lets an operator lift it deliberately.
+# `reclassify` WILL NOT LIFT A POISON. Clearing a false COUNT is arithmetic and needs nobody's
+# permission; re-queueing a bead the operator has an open decision about is a different act on
+# the strength of "these rungs named no cause", which says nothing about whether the work is
+# any good. The label is left exactly where it is and the audit says so.
+#
+# `deadlocked` is the one command that does lift it, and it does so on much stronger evidence:
+# not that the count was wrong, but that the WORK IS FINISHED. A poisoned bead stays open, no
+# persona may claim an open bead carrying the label, and the landing pass lands only a closed
+# bead — so a poisoned bead whose branch names it and merges cleanly into the base is finished,
+# landable work that nothing will ever pick up again. That is a deadlock reached by counting,
+# and it is not a judgement about the approach: there is nothing left to judge.
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -64,12 +72,14 @@ audit)
         total=$((total+1))
         a="$(attempts_of "$id")"; a="${a:-0}"
         r="$(reclaims_of "$id")"; r="${r:-0}"
-        [ "$a" != 0 ] || [ "$r" != 0 ] || continue
+        q="$(requeues_of "$id")"; q="${q:-0}"
+        [ "$a" != 0 ] || [ "$r" != 0 ] || [ "$q" != 0 ] || continue
         n=$((n+1))
-        printf '%-20s attempts=%-3s reclaims=%-3s %s\n' "$id" "$a" "$r" \
+        printf '%-20s attempts=%-3s reclaims=%-3s requeues=%-3s %s\n' "$id" "$a" "$r" "$q" \
             "$(poisoned "$id" && echo POISONED || echo '')"
         counter_causes "$id" sp-attempt | sed 's/^/    attempt /'
         counter_causes "$id" sp-reclaim | sed 's/^/    reclaim /'
+        counter_causes "$id" sp-requeue | sed 's/^/    requeue /'
     done
     # ZERO IS A CLAIM AND IT NEEDS A CONTROL. "No bead carries a counter" and "the query
     # returned nothing" print the same nothing, and the second reads as all-clear
@@ -116,5 +126,68 @@ reclassify)
     [ "$APPLY" = 1 ] || printf -- '--- dry run; pass --apply to make these changes\n'
     ;;
 
-*) die "usage: attempts.sh audit | reclassify [--apply]" ;;
+deadlocked)
+    # THE PREDICATE IS THE COMMIT GRAPH, NOT THE COUNTER. Beads damaged before a rung carried
+    # its cause have nothing in their counts saying why they were charged, so a sweep reasoning
+    # from the counts would un-poison work that is poisoned for good reason. This asks the only
+    # question the deadlock itself poses, and both halves are required: a branch that merges
+    # cleanly but carries nothing naming the bead is an empty branch, and one that names the
+    # bead but conflicts is work a person still has to finish.
+    n_seen=0; n_hit=0; n_done=0
+    for id in $(uniq_candidates); do
+        poisoned "$id" || continue
+        n_seen=$((n_seen+1))
+        why=""
+        r_name="$(bead_repo "$id")"; r_path="$(repo_root "$r_name")" || r_path=""
+        br="spira/$id"
+        if [ -z "$r_path" ]; then
+            why="repo:$r_name is not in the repo map — cannot look at its branch"
+        elif ! git -C "$r_path" show-ref --verify -q "refs/heads/$br"; then
+            why="no branch $br in $r_name — nothing was committed"
+        else
+            refs="$(spira_landrefs "$r_path")" || refs=""
+            base="${refs%% *}"
+            if [ -z "$base" ]; then
+                why="$r_name cannot say what it lands on — not judging its branch"
+            else
+                # Captured whole and matched with a herestring: `git log | grep -q` under
+                # pipefail returns 141 on a MATCH (law-no-grep-q-under-pipefail).
+                subjects="$(git -C "$r_path" log --format='%s%n%b' -n 200 "$br" 2>/dev/null)"
+                if ! grep -qF "$id" <<<"$subjects"; then
+                    why="$br exists but no commit on it names $id"
+                elif ! git -C "$r_path" merge-tree --write-tree "$base" "$br" >/dev/null 2>&1; then
+                    why="$br does not merge into $base — a person has to resolve it"
+                fi
+            fi
+        fi
+        if [ -n "$why" ]; then
+            printf 'KEEP     %-20s %s\n' "$id" "$why"
+            continue
+        fi
+        n_hit=$((n_hit+1))
+        if [ "$APPLY" != 1 ]; then
+            printf 'WOULD    %-20s finished on %s and it merges into %s — would lift the poison\n' \
+                "$id" "$br" "$base"
+            continue
+        fi
+        # THE POISON ONLY. The rungs stay exactly where they are: they are the record of what
+        # happened to this bead and the reason its escalation was raised, and the next pass
+        # cannot re-poison it into the same deadlock because a bead whose branch is finished
+        # is landed by the landing pass rather than summoned for.
+        if bdq label remove "$id" spira-poison >/dev/null 2>&1; then
+            bdq note "$id" "Poison lifted by attempts.sh deadlocked: $br carries a commit naming $id and merges cleanly into $base, so this is finished, landable work. A poisoned bead stays open, an open bead carrying the label is claimed by nobody, and the landing pass lands only closed beads — so the label was holding completed work out of the queue permanently. The counters are left standing as the record of how it got here." >/dev/null 2>&1
+            n_done=$((n_done+1))
+            printf 'RESTORED %-20s poison lifted; %s is finished and merges into %s\n' "$id" "$br" "$base"
+        else
+            printf 'REFUSED  %-20s the poison label would not come off\n' "$id"
+        fi
+    done
+    # ZERO IS A CLAIM AND IT NEEDS A CONTROL: an empty sweep and a sweep against a database it
+    # could not read print the same nothing (law-absence-needs-a-positive-control).
+    printf -- '--- %s poisoned bead(s) examined, %s finished and landable, %s restored\n' \
+        "$n_seen" "$n_hit" "$n_done"
+    [ "$APPLY" = 1 ] || printf -- '--- dry run; pass --apply to lift these\n'
+    ;;
+
+*) die "usage: attempts.sh audit | reclassify [--apply] | deadlocked [--apply]" ;;
 esac

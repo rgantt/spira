@@ -422,6 +422,43 @@ charged**: the same reading as a spent capacity window or an aeon the operator s
 session that closed its bead with a gate still running keeps the close — the landing pass
 gates that branch again before merging — but the bead says the close carried no verdict.
 
+### Three counters, because poison must measure the work and nothing else
+
+Three attempts poison a bead. A poisoned bead stays **open** while no persona may claim it,
+and the landing pass lands only a **closed** bead — so poisoning finished work is a permanent
+deadlock, reached by counting, on a branch that would have merged. That makes the counter's
+accuracy load-bearing rather than cosmetic, and one number cannot carry three facts:
+
+| rung | what it says | feeds poison |
+|---|---|---|
+| `sp-attempt-N-<cause>` | the work was tried and did not land | yes |
+| `sp-reclaim-N-<cause>` | the worker died holding the bead | no |
+| `sp-requeue-N-<cause>` | the harness put finished work back | no |
+
+Charging is default-**deny**: `session_outcome` reads the session's own trace and only
+`unlanded` may charge, so an outcome the harness cannot classify is evidence about the worker
+rather than about the work. The third counter exists because the trace cannot see it — a
+session that committed, closed the bead and ran to its own end reads as `unlanded` whether or
+not the harness then reopened it over a rebase onto a base that had moved. That reopen was
+charged against the work every time round, and it is the aeon, not the trace, that knows.
+
+It is a counter and not merely an exemption because a bead that has cycled eight times is a
+fact worth seeing: the queue is manufacturing conflicts faster than the work absorbs them,
+and without a number nobody would know.
+
+`spira/attempts.sh audit` prints what every claimable bead is carrying and why. `reclassify`
+moves rungs that name no cause onto the reclaim counter and deliberately will not lift a
+poison. `deadlocked` is the one command that does, on much stronger evidence: a poisoned bead
+whose branch names it and merges cleanly into the base is finished, landable work that
+nothing will ever pick up again, and there is nothing left to judge about the approach.
+
+The escalation poisoning raises is filed **once per (bead, attempt count), ever**. Not once
+per bead while unpoisoned: the ask's own remedy is to clear the poison label, so keying on the
+label made every application of the remedy re-arm the ask, once per pass, forever. Clearing
+the poison still allows the retry it is for; only a genuinely new failure asks again. And a
+bead that closed while the pass was running is neither poisoned nor asked about — that set is
+a snapshot, and a landing can finish inside it.
+
 
 ## The browser page
 

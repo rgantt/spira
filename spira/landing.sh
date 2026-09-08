@@ -482,6 +482,11 @@ print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_hom
                 continue
             fi
             bead_reopen "$id" "Reopened by sentinel: $br does not rebase onto $base in $name; conflicts in ${REBASE_CONFLICTS:-unknown}. A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it."
+            # COUNTED AS A REQUEUE, WHICH CHARGES NOTHING. The bead was closed and its work
+            # committed; the base moved. The aeon summoned onto it next inherits a bead that
+            # already looks like one that keeps failing, and without this the only number
+            # anybody sees is the attempt count it is not (lib.sh, three counters).
+            bump_requeue "$id" rebase-conflict >/dev/null
             progress "reopened $id — does not rebase onto $base"
             land_mark "$id" RED "$tip" no-rebase
             continue
@@ -666,6 +671,7 @@ $(printf '%s' "$gate_out" | tail -20)"
             else
                 git -C "$land" merge --abort 2>/dev/null
                 bead_reopen "$id" "Reopened by sentinel: branch $br conflicts with $base. A merge conflict is not an escalation — rebase and finish."
+                bump_requeue "$id" merge-conflict >/dev/null
                 progress "reopened $id — branch conflicts with $base"
             fi
             ;;

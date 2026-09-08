@@ -64,7 +64,14 @@ stub gate.sh       'exit ${GATE_RC:-0}'
 stub reflect.sh    'touch "$SPIRA_RUN/reflect.fired"'
 # The ask is RECORDED, not merely swallowed: half of what poisoning must do is reach the
 # operator, and an ask.sh that exits 0 without a trace would pass whether or not it ran.
-stub ask.sh        'printf "%s\n" "$*" >> "$ASK_LOG"'
+# ASK_CLOSES is the seam that stages a race no fixture can otherwise produce: a bead that is
+# dispatchable when the pass snapshots the set and CLOSED by the time the loop reaches it. The
+# stub closes the named bead the first time it is asked about any OTHER bead, which is exactly
+# a landing finishing mid-pass.
+stub ask.sh        'printf "%s\n" "$*" >> "$ASK_LOG"
+if [ -n "${ASK_CLOSES:-}" ]; then case "$*" in *"$ASK_CLOSES"*) ;;
+    *) bd -C "$SPIRA_DB" close "$ASK_CLOSES" --reason landed >/dev/null 2>&1 ;; esac; fi
+true'
 
 # TWO PERSONAS, EACH WITH A PARTITION OF ITS OWN, because a single-persona chamber cannot
 # tell a valve that sweeps THE CHAMBER apart from one that sweeps a hardcoded partition —
@@ -130,6 +137,9 @@ notpoisoned() { poisoned "$2" && bad "$1" "$2 was poisoned" || ok "$1"; }
 # row creates no edge at all.
 seed() {   # seed — the goal, one unclaimable child of it, and that child's blocker
     testdb_reset
+    # The ask's suppression is a mark in the run directory and testdb_reset does not reach it,
+    # so a case that did not clear it would inherit the previous case's silence.
+    rm -rf "$RUN/poison-asked"
     testdb_seed <<'JSONL'
 {"id":"sp-goal","title":"goal","status":"open","issue_type":"epic","labels":[],"updated_at":"2026-09-04T00:00:00Z"}
 {"id":"sp-block","title":"the blocker","status":"open","issue_type":"task","labels":[],"updated_at":"2026-09-04T00:00:00Z"}
@@ -242,6 +252,65 @@ B label remove sp-orphan spira-poison >/dev/null 2>&1
 release; out="$(SPIRA_POISON_AT=99 sentinel)"
 nowant "and would have summoned for it unpoisoned" "t: nothing ready in its partition" "$out"
 want   "the same bead unpoisoned is ready for its fayth" "t: 1 ready" "$out"
+
+# --------------------------------------------------------------------------------------
+# THE ASK IS FILED ONCE PER (BEAD, ATTEMPT COUNT), EVER — AND ITS SUPPRESSION IS NOT THE
+# POISON LABEL.
+#
+# THE DEFECT. The valve asked whenever a bead was over the threshold and did not currently
+# carry `spira-poison`, so the label was both the dispatch valve and the ask's only
+# suppression — and the ask's own recommended remedy is "change the approach, then clear the
+# label". Doing what it asks therefore deleted the only thing stopping it being asked again.
+# One bead reached the operator three times in forty minutes about work that had already
+# landed, and he had to say so twice.
+#
+# The pair is the whole point: clearing the label must ALLOW THE RETRY — which is what the
+# remedy is for, and the only way back onto the board, since every partition excludes
+# spira-poison — and must NOT re-arm the ask.
+# --------------------------------------------------------------------------------------
+seed_poison; : > "$ASK_LOG"; out="$(sentinel)"
+is "the first pass over the threshold asks exactly once" "1" \
+   "$(grep -c 'sp-orphan failed 3 times' "$ASK_LOG")"
+out="$(sentinel)"
+is "a second pass over the same count asks nothing more" "1" \
+   "$(grep -c 'sp-orphan failed 3 times' "$ASK_LOG")"
+
+# THE REMEDY IS APPLIED, exactly as the ask instructs. Nothing else changes: the count still
+# stands, which is the state the old code re-asked from on every pass.
+B label remove sp-orphan spira-poison >/dev/null 2>&1
+out="$(sentinel)"
+ispoisoned "the bead is poisoned again, because it is still over the threshold" sp-orphan
+is "but clearing the label did NOT re-arm the ask" "1" \
+   "$(grep -c 'sp-orphan failed 3 times' "$ASK_LOG")"
+
+# ...and a genuinely NEW failure does ask again, which is the positive control on all of the
+# above: a suppression that never lifts is indistinguishable from an ask that never fires.
+B label remove sp-orphan spira-poison >/dev/null 2>&1
+B label add sp-orphan sp-attempt-4-unlanded >/dev/null 2>&1
+out="$(sentinel)"
+is "a fourth attempt is a new fact and asks again" "1" \
+   "$(grep -c 'sp-orphan failed 4 times' "$ASK_LOG")"
+
+# --------------------------------------------------------------------------------------
+# A CLOSED BEAD NEVER POISONS AND NEVER ASKS. dispatchable_open excludes closed beads, but it
+# is a SNAPSHOT and this loop makes several bd calls per bead — so a bead the landing pass
+# finished mid-pass was still in the list, and the operator was asked whether to change the
+# approach on work that had already landed.
+#
+# The late bead sits in the OTHER partition, which is what makes the ordering deterministic:
+# dispatchable_open iterates the roster in order, so the builder's bead is asked about first
+# and the incident bead is still ahead of the loop when the stub closes it.
+# --------------------------------------------------------------------------------------
+seed_poison; : > "$ASK_LOG"
+testdb_seed <<'JSONL'
+{"id":"sp-late","title":"closed while the pass ran","status":"open","issue_type":"task","labels":["spira","incident","sp-attempt-3-unlanded"],"updated_at":"2026-09-04T00:00:00Z"}
+JSONL
+out="$(ASK_CLOSES=sp-late sentinel)"
+is          "the fixture really did close it mid-pass" "closed" "$(status_of sp-late)"
+ispoisoned  "the bead that was still open is poisoned" sp-orphan
+notpoisoned "the one that closed mid-pass is not"      sp-late
+nowant "and the operator is not asked to drop landed work" "sp-late failed" "$(cat "$ASK_LOG")"
+want   "the pass says why it declined" "sp-late: 3 attempts, but it closed while this pass ran" "$out"
 
 # A chamber that declares no partition dispatches nothing and examines nothing, and SAYS so.
 # Nothing over the threshold and nothing looked at are the same silence otherwise.

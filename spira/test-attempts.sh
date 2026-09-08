@@ -175,6 +175,19 @@ is "only aeon.sh charges an attempt" "aeon.sh" "$sites"
 # outcome_charges decides, not beside it.
 guarded="$(sed -n '/if outcome_charges/,/^        else$/p' "$HERE/aeon.sh" | grep -c 'bump_attempt' || true)"
 is "and only inside the charging branch" 1 "$guarded"
+# THE THIRD COUNTER IS ALSO NOT A DOOR ONTO THE FIRST. A session that committed, closed the
+# bead and was reopened over a rebase leaves a trace that reads `unlanded` — the one outcome
+# that charges — so the exemption has to be decided BEFORE session_outcome is consulted, not
+# after. Both halves are structural because a later edit could move the branch below the
+# classifier and nothing would fail; the count would simply be larger.
+requeue="$(sed -n '/if \[ -n "\$REQUEUE_CAUSE" \]; then/,/^        fi$/p' "$HERE/aeon.sh")"
+is "the requeue path records a requeue"   1 "$(grep -c 'bump_requeue' <<<"$requeue")"
+is "and charges no attempt for it"        0 "$(grep -c 'bump_attempt' <<<"$requeue")"
+before="$(grep -n 'REQUEUE_CAUSE" \]; then' "$HERE/aeon.sh" | sed -n 1p | cut -d: -f1)"
+after="$(grep -n 'cause="\$(session_outcome' "$HERE/aeon.sh" | sed -n 1p | cut -d: -f1)"
+is "and it is decided before the trace is classified" yes \
+   "$( [ -n "$before" ] && [ -n "$after" ] && [ "$before" -lt "$after" ] && echo yes || echo no)"
+
 # strand.sh's reclaim path is the door that was closed. It must record the death and must not
 # charge for it.
 ghost="$(sed -n '/^                ghost)/,/^                    ;;/p' "$HERE/strand.sh")"
@@ -248,10 +261,22 @@ is "two reclaims cost the work no attempts" 0 "$(num "$(attempts_of sp-c2)")"
 is "and each names how its worker died"     "1 refused
 2 killed" "$(counter_causes sp-c2 sp-reclaim)"
 
+# THE HARNESS PUTTING FINISHED WORK BACK IS THE THIRD KIND, and it must cost the work
+# nothing. A bead cycling eight times over a moving base was charged eight attempts and
+# poisoned with a branch that merged cleanly the whole time.
+seed sp-c2b
+bump_requeue sp-c2b rebase-conflict >/dev/null; bump_requeue sp-c2b merge-conflict >/dev/null
+is "two requeues are two requeues"          2 "$(num "$(requeues_of sp-c2b)")"
+is "two requeues cost the work no attempts" 0 "$(num "$(attempts_of sp-c2b)")"
+is "and neither is a reclaim either"        0 "$(num "$(reclaims_of sp-c2b)")"
+is "each names why the harness put it back" "1 rebase-conflict
+2 merge-conflict" "$(requeue_causes sp-c2b)"
+
 # AND THE OTHER HALF: genuine failure still poisons. This is the sentinel's own predicate,
 # `attempts_of >= POISON_AT`, run against the same labels the sentinel would read.
 poisons() { local n; n="$(num "$(attempts_of "$1")")"; [ "$n" -ge 3 ] && echo yes || echo no; }
 is "two reclaims and nothing else do not poison"  no  "$(poisons sp-c2)"
+is "and neither do requeues"                     no  "$(poisons sp-c2b)"
 seed sp-c3
 bump_attempt sp-c3 unlanded >/dev/null; bump_attempt sp-c3 unlanded >/dev/null
 is "two real failures do not poison yet"          no  "$(poisons sp-c3)"
