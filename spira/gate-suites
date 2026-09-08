@@ -19,6 +19,13 @@
 #
 # Blank lines and `#` comments are ignored. One repository-relative path per line.
 
+# THE VERDICT CACHE'S OWN, and it earns its place by being the one check between a branch and
+# a landing that decides whether any of the others run. A cache that answers a question it was
+# never asked lands work on a trial nobody performed, and it does it silently: a reused verdict
+# and a real pass are the same exit status, in the same words, at the same cost as success. Five
+# seconds, and it plants an offender for every side of the key.
+spira/test-gate-verdict.sh
+
 # THE SOAK. Does the merge queue make progress while several gates and a landing pass run
 # against each other? It reproduces the livelock that cost a whole morning against the old
 # code and shows it gone. Every failure this pipeline has ever had is a property of the

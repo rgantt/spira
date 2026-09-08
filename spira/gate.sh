@@ -233,15 +233,25 @@ CMD="$(repo_gate "$REPO_NAME")"
 # which every landing on the base invalidates, so under a moving base it restarted from zero
 # forever (sp-j4ed). The key here is everything a verdict actually depends on:
 #
+#   the REPOSITORY         - whose gate it was, named rather than inferred from the rest.
 #   the branch's TREE      - what the suites read. Two commits with identical content share
 #                            a tree id, so an amend or a clean rebase reuses the verdict.
-#   the BASE commit        - a selective gate chooses its suites from the diff against it.
-#   the CHANGED FILE LIST  - the actual selection input, hashed, so a base that moved without
-#                            changing what this branch touches still reuses the verdict.
+#   the CHANGED FILE LIST  - what a selective gate chooses its suites from.
 #   the GATE COMMAND       - layer 2 in full.
 #   THIS HARNESS           - gate.sh, exclude.sh and skew.sh are layer 1; a change to any of
 #                            them changes what a pass means, and a cached pass from before it
 #                            would be a verdict from a gate that no longer exists.
+#
+# THE BASE COMMIT IS DELIBERATELY NOT IN IT. This gate judges the BRANCH'S TREE, checked out
+# detached and on its own, so the base's whole part in the trial is producing the changed-file
+# list — and that list is in the key on its own account. Keying on the base commit as well
+# would retire a verdict for a reason the trial never read: every landing in the repository
+# moves it, so a branch gated twice without being touched — a retry, a second pass, a caller
+# that already rebased — would pay in full for the identical trial.
+#
+# WHAT DOES RETIRE IT IS THE REBASE. A branch brought onto a base that has moved gets the
+# base's content in its own tree, so the tree hash moves and the key moves with it. The two
+# facts together are the rule: the verdict follows the tree that was judged, and nothing else.
 #
 # ONLY A PASS IS CACHED, DELIBERATELY. A FAIL is not a pure function of the tree — a flaky
 # suite fails once and passes on the next run — and caching one would pin a flake to a branch
@@ -271,9 +281,8 @@ gate_meter() {           # gate_meter <exit-status> [<note>]
 
 VERDICT_DIR="${SPIRA_VERDICTS:-$SPIRA_RUN/verdicts}"
 gate_key() {
-    local tree base files_h cmd_h harness_h
+    local tree files_h cmd_h harness_h
     tree="$(git -C "$REPO" rev-parse --verify -q "$BR^{tree}" 2>/dev/null)" || return 1
-    base="$(git -C "$REPO" rev-parse --verify -q "$BASE^{commit}" 2>/dev/null)" || return 1
     files_h="$(printf '%s' "$files"   | sha256sum | cut -d" " -f1)"
     cmd_h="$(  printf '%s' "$CMD"     | sha256sum | cut -d" " -f1)"
     # cat of the three, so a change in any one moves the key. Missing files are impossible
@@ -281,7 +290,7 @@ gate_key() {
     # for every run, which is a cache that ignores the harness entirely, so it fails closed.
     harness_h="$(cat "$0" "$EXCLUDE" "$SKEW" 2>/dev/null | sha256sum | cut -d" " -f1)"
     [ -n "$harness_h" ] || return 1
-    printf '%s\n' "$tree $base $files_h $cmd_h $harness_h" | sha256sum | cut -d" " -f1
+    printf '%s\n' "$REPO_NAME $tree $files_h $cmd_h $harness_h" | sha256sum | cut -d" " -f1
 }
 GATE_KEY="$(gate_key || true)"
 
@@ -289,13 +298,32 @@ GATE_KEY="$(gate_key || true)"
 # second caller neither runs the suites nor queues for the worktree. It still emits its own
 # VERDICT line and its own meter row, so a reused verdict is visible as one rather than
 # looking like a gate that never ran.
+#
+# AND A VERDICT EXPIRES, because the key names everything the verdict depended on EXCEPT the
+# box. The toolchain the command ran under, what was installed beside it, what the network
+# answered: none of those are in the key, and all of them drift while it stands still. So a
+# verdict is a claim about a moment as well as about a tree, and SPIRA_VERDICT_TTL is how
+# long that moment lasts. The age is taken from the entry's own `at=`, not from its mtime,
+# because a mtime is what any copy, restore or stray `touch` happens to leave behind.
+#
+# EXPIRY FAILS IN THE CHEAP DIRECTION, which for a cache is towards running the suites: an
+# entry with no readable timestamp, or a TTL that is not a number, reads as expired. The
+# worst that costs is one gate that would have been skipped, against a wrong pass that would
+# be a branch landing on a trial nobody ran.
+verdict_ttl="${SPIRA_VERDICT_TTL:-0}"
+case "$verdict_ttl" in ''|*[!0-9]*) verdict_ttl=0 ;; esac
+
 if [ -n "$GATE_KEY" ] && [ -r "$VERDICT_DIR/$GATE_KEY" ]; then
     # shellcheck disable=SC1090
-    cached_when=""; cached_by=""
-    eval "$(sed -n 's/^\(when\|by\)=\(.*\)$/cached_\1="\2"/p' "$VERDICT_DIR/$GATE_KEY" 2>/dev/null)"
-    verdict 0 cached \
-        "gate: this exact tree already passed $REPO_NAME's gate at ${cached_when:-an earlier time} (${cached_by:-unknown caller})
-gate: key $GATE_KEY — same tree, same base, same changed files, same command, same harness."
+    cached_when=""; cached_by=""; cached_at=""
+    eval "$(sed -n 's/^\(when\|by\|at\)=\(.*\)$/cached_\1="\2"/p' "$VERDICT_DIR/$GATE_KEY" 2>/dev/null)"
+    cached_age=-1
+    case "$cached_at" in ''|*[!0-9]*) : ;; *) cached_age=$(( $(date +%s) - cached_at )) ;; esac
+    if [ "$cached_age" -ge 0 ] && [ "$cached_age" -lt "$verdict_ttl" ]; then
+        verdict 0 cached \
+            "gate: this exact tree already passed $REPO_NAME's gate at ${cached_when:-an earlier time} (${cached_by:-unknown caller})
+gate: key $GATE_KEY — same tree, same changed files, same command, same harness."
+    fi
 fi
 
 # THE TREE IS THE BRANCH, never the shared checkout. `cd "$REPO"` would run the copy of
@@ -450,6 +478,10 @@ if [ "$gate_rc_branch" -eq 0 ]; then
     if [ -n "$GATE_KEY" ]; then
         mkdir -p "$VERDICT_DIR" 2>/dev/null
         { printf 'when=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # `at=` IS THE ONE THE GATE READS BACK — an epoch, because the age of a verdict is
+          # arithmetic and `when=` is for whoever reads the file. Both are written from the
+          # same moment; only this one decides whether the entry is still good.
+          printf 'at=%s\n'   "$(date +%s)"
           printf 'by=%s\n'   "${SPIRA_GATE_CALLER:-$BR}"
           printf 'repo=%s\nbranch=%s\n' "$REPO_NAME" "$BR"
         } > "$VERDICT_DIR/.$GATE_KEY.$$" 2>/dev/null \

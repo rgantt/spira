@@ -86,7 +86,7 @@ if [ -s "$r" ]; then
     done < "$r"
     : > "$r"
 fi
-echo "gate: VERDICT=PASS reason=stub branch=$1 repo=${2:-?}" >&2; exit 0'
+echo "gate: VERDICT=PASS reason=${GATE_REASON:-stub} branch=$1 repo=${2:-?}" >&2; exit 0'
 
 # gh IS NEVER REACHED FROM A SUITE. pr_merged sits on the path to a reopen, and left to the
 # real binary it would decide a verdict here from whether this box happens to be logged in
@@ -144,6 +144,39 @@ echo "test-landing.sh"
 seed; branch sp-plain; out="$(landing)"
 want "an uncontested land is reported" "landed spira/sp-plain" "$out"
 drop_branch sp-plain
+
+# THE VERDICT CACHE IS PRUNED BY THE PASS, at the age the gate refuses to read at. The gate
+# computes each verdict once and reuses it, so what accumulates here is one file per gated
+# tree, forever; the pass is the only thing that runs on a clock and already touches every
+# repository, which is why the janitor lives in it.
+#
+# THE AGE IS THE CONFIGURED ONE and that is the whole point of the case: two numbers here —
+# a reader's and a janitor's — would be two answers to how long a verdict lives, and the
+# operator would have tuned one of them. Pinned to a non-default, because asserting against
+# the shipped default passes just as well against a literal written into the code.
+# AND A REUSED VERDICT IS VISIBLE IN THE PASS. The gate returns the same status either way,
+# so without this line a pass that skipped every gate and one that ran every gate read
+# identically — and "nothing is being reused any more" is the first symptom of a key that has
+# stopped matching anything, which otherwise looks exactly like a busy queue.
+seed; branch sp-reused
+out="$(GATE_REASON=cached landing)"
+want "a pass says when a gate was skipped" "this tree had already passed, so no suite ran" "$out"
+want "and still lands the branch"          "landed spira/sp-reused" "$out"
+drop_branch sp-reused
+# bash keeps a temporary assignment to a FUNCTION set after the call returns, so every later
+# pass in this suite would go on claiming a reused verdict.
+unset GATE_REASON
+
+export SPIRA_VERDICT_TTL=600
+mkdir -p "$RUN/verdicts"
+: > "$RUN/verdicts/stale"; touch -d '3 hours ago' "$RUN/verdicts/stale"
+: > "$RUN/verdicts/fresh"
+seed; landing >/dev/null 2>&1
+[ -e "$RUN/verdicts/stale" ] && bad "a verdict past the TTL is deleted by a pass" "stale entry survived" \
+    || ok "a verdict past the TTL is deleted by a pass"
+[ -e "$RUN/verdicts/fresh" ] && ok "and one inside it is kept" \
+    || bad "and one inside it is kept" "the pass deleted a live verdict"
+unset SPIRA_VERDICT_TTL
 
 # A REAL DISAGREEMENT STILL REOPENS. The branch and the base both write the same file with
 # different content after they diverged, so the rebase genuinely conflicts and the bead

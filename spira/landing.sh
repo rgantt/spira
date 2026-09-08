@@ -141,15 +141,21 @@ gate_lock_wait() {
 log "landing: starting a pass over [$(spira_repos | tr '\n' ' ')]"
 
 # THE VERDICT CACHE IS PRUNED HERE, once a pass, because this is the only thing that runs on
-# a clock and already touches every repository. Entries are keyed by content, so a stale one
-# is never WRONG — its key can only be hit by the identical tree, base, file list, command
-# and harness — it is only clutter, and clutter that grows by one file per gated tree forever.
-# Age alone is therefore the right rule, and seven days is generous: a branch nobody has
-# gated in a week is not about to reuse a verdict.
+# a clock and already touches every repository. Entries are keyed by content — an entry can
+# only be hit by the identical tree, file list, command and harness — so what is left behind
+# is clutter, and clutter that grows by one file per gated tree forever.
 #
-# `-mtime` and not `find -delete` on the directory: deleting the directory would race a gate
+# IT PRUNES AT THE SAME AGE THE GATE REFUSES TO READ AT, and that is the whole reason this
+# line takes the key rather than a number of its own. The gate expires an entry on its `at=`
+# stamp; this deletes it from the disk. Two numbers here would be two answers to "how long
+# does a verdict live", and the operator would have tuned one of them.
+#
+# ONE FILE AT A TIME and never the directory: deleting the directory would race a gate
 # writing into it, and the entries are individually disposable.
-find "${SPIRA_VERDICTS:-$SPIRA_RUN/verdicts}" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
+verdict_ttl="${SPIRA_VERDICT_TTL:-0}"
+case "$verdict_ttl" in ''|*[!0-9]*) verdict_ttl=0 ;; esac
+find "${SPIRA_VERDICTS:-$SPIRA_RUN/verdicts}" -maxdepth 1 -type f \
+    -mmin "+$(( verdict_ttl / 60 ))" -delete 2>/dev/null || true
 
 # ======================================================================================
 # LAND FINISHED BRANCHES. A passing branch must merge without a human; a branch
@@ -630,6 +636,15 @@ $(printf '%s' "$gate_out" | tail -20)"
             land_mark "$id" RED "$tip" gate
             continue
         fi
+        # A REUSED VERDICT IS SAID OUT LOUD, in the log an operator reads about the pass
+        # rather than only in the gate's own meter. This leg is where the second full gate on
+        # every bead used to be spent, so a pass that skipped one has done the thing this
+        # cache was built for and should be legible as that — and a pass in which nothing is
+        # ever reused is the first symptom of a key that has stopped matching anything, which
+        # otherwise looks exactly like a busy queue.
+        [ "${gate_reason:-}" = cached ] \
+            && log "CHECK6 $id: gate PASS on $br in $name — this tree had already passed, so no suite ran"
+
         # A PASS CLEARS THE MACHINERY-FAULT COUNTERS FOR THIS BRANCH. Otherwise a branch that
         # queued behind a lock three times last week would escalate on its first hiccup this
         # week, and the escalation would be about nothing.

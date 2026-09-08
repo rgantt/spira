@@ -205,6 +205,26 @@
 # open no pull request, so there is no run to wait for at any deadline.
 # SPIRA_CI_PARK_MAX = 5400
 
+# How long a gate verdict may be reused, in seconds.
+#
+# The gate computes each verdict once and keys it by everything the verdict depends on that it
+# can name: the branch's tree, the base commit, the changed file list, the repository's own gate
+# command and the harness itself. A second caller with the same key — an aeon's own gate and
+# then the landing pass, minutes later, on the same tree — is asking a question that has already
+# been answered, and reuses the answer instead of paying for the suites and for the queue in
+# front of the gate's worktree.
+#
+# WHAT THE KEY CANNOT NAME IS THE BOX: the toolchain the command ran under, what was installed
+# beside it, what the network answered. Those drift while the key stands still, which makes a
+# verdict a claim about a moment as well as about a tree, and this is how long that moment
+# lasts. A day spans a branch's whole life from an aeon's gate to its landing, which is the
+# reuse worth having, and bounds the drift to something a re-run resolves.
+#
+# The landing pass deletes entries at this same age, so there is one answer to how long a
+# verdict lives rather than a reader's and a janitor's. 0 disables reuse: every entry reads as
+# expired and every gate runs its suites.
+# SPIRA_VERDICT_TTL = 86400
+
 # ---- the suites, and where each of them runs -----------------------------------------------
 # Which suites the LANDING GATE runs, as a file of repository-relative paths with the reason
 # each earns the wait beside it. `spira/suites.sh` reads the same file and runs everything the

@@ -57,7 +57,7 @@ SPIRA_ACTIONABLE SPIRA_ID_PREFIX SPIRA_HEALTH_TIMEOUT SPIRA_ANSWER_STATE SPIRA_N
 SPIRA_CLIENT_SETTINGS SPIRA_HOOK_LINES
 SPIRA_COCKPIT SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
 SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
-SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE
+SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE SPIRA_VERDICT_TTL
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S
 SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
@@ -327,6 +327,17 @@ spira_conf_defaults() {
     # that can show its work. A verdict we would want to override is a verdict we have
     # mis-classified.
     : "${SPIRA_LAND_GATE_RESERVE:=1200}"
+    # HOW LONG A GATE VERDICT MAY BE REUSED, in seconds. The gate computes each verdict once
+    # and keys it by everything the verdict depends on that it can name — the tree, the base,
+    # the changed file list, the repository's gate command and this harness — so a reused
+    # verdict is never about a different question. What the key CANNOT name is the box: the
+    # toolchain the command ran under, what was installed beside it, what the network
+    # answered. Those drift while the key stands still, which makes a verdict a claim about a
+    # moment as well as about a tree. A day bounds that drift and still spans the whole of a
+    # branch's life from an aeon's own gate to its landing, which is the reuse worth having.
+    #
+    # 0 disables reuse entirely: every entry reads as expired and every gate runs its suites.
+    : "${SPIRA_VERDICT_TTL:=86400}"
     # HOW MANY AEONS MAY RUN AT ONCE, ACROSS EVERY PERSONA. Until 2026-09-07 this key was
     # validated, documented and read by nothing: each persona had a private cap and no pool
     # coordinated them, so the box's real ceiling was whatever the caps happened to sum to.
