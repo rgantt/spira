@@ -69,6 +69,7 @@ SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CT
 SPIRA_ARCHIVE
 SPIRA_ARCHIVIST_AT SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
 SPIRA_TESTDB_LIB SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT
+SPIRA_GATE_TIMEOUT
 SPIRA_GATE_SUITES SPIRA_SUITES_STATE SPIRA_SUITES_BUDGET SPIRA_SUITE_TIMEOUT
 SPIRA_SUITES_PRIORITY SPIRA_SUITES_STALE
 "
@@ -311,22 +312,25 @@ spira_conf_defaults() {
     # that would have removed it (sp-2p7o, landed 14:15, blocked everything until 15:0x).
     : "${SPIRA_TESTDB_DATA:=$SPIRA_WORKSPACES/beads-test}"
     : "${SPIRA_TESTDB_PORT:=3308}"
+    # HOW LONG A REPOSITORY'S OWN GATE COMMAND MAY RUN, in seconds. gate.sh wraps the command
+    # under `timeout` at this budget. A gate killed at the deadline exits 124 and is reported
+    # as a timeout (NO_VERDICT), not a branch fault — but the bead note is empty and the next
+    # aeon hunts a test failure that never happened. The default was 900 until the spira gate
+    # suite sweep measured ~1860s on a cold worktree with a shared Dolt server (sp-p4rl); 2700
+    # covers that with margin and is the value observed to pass unchanged branches that 900
+    # killed mid-sweep (sp-gys, sp-snyj).
+    : "${SPIRA_GATE_TIMEOUT:=2700}"
     # HOW LONG A LANDING PASS MAY RUN, and how much of that it keeps in reserve so it never
     # begins a gate it cannot finish. Settable because the right number is a fact about this
-    # host's gate: 1800 was correct until the spira gate reached 776s, after which four
-    # consecutive passes were killed mid-gate having landed nothing. Read from the environment
-    # only, it could not be raised without editing the harness — a host tuning knob that no
-    # host could turn.
-    : "${SPIRA_LAND_MAXSEC:=3600}"
-    # THERE IS NO ADVISORY MODE. SPIRA_GATE_ADVISORY existed because the gate's red said more
-    # about the box than about the branch — a hardcoded path, a fixture collision, an
-    # order-dependent assertion — and the escape hatch was to land anyway. That is a gate
-    # nobody believes, which is worth nothing and costs a full run. The four outcomes above
-    # are the real fix: the reds that prompted advisory mode are BASE_FAIL and NO_VERDICT,
-    # they no longer reopen anything, and what is left of FAIL is a claim about the branch
-    # that can show its work. A verdict we would want to override is a verdict we have
-    # mis-classified.
-    : "${SPIRA_LAND_GATE_RESERVE:=1200}"
+    # host's gate: 3600 was correct until the gate budget was raised to 2700 to cover the
+    # suite sweep, after which a 1200s reserve would let the pass start a gate it could not
+    # finish — the same shape as the four consecutive kills at 1800.
+    : "${SPIRA_LAND_MAXSEC:=5400}"
+    # THE RESERVE MATCHES THE GATE BUDGET. A pass that starts a gate with fewer seconds left
+    # than the gate is allowed to run will be killed mid-gate by RuntimeMaxSec, which is the
+    # "four consecutive passes killed mid-gate" scar. The reserve is at least SPIRA_GATE_TIMEOUT
+    # so a gate that is started can finish.
+    : "${SPIRA_LAND_GATE_RESERVE:=2700}"
     # HOW LONG A GATE VERDICT MAY BE REUSED, in seconds. The gate computes each verdict once
     # and keys it by everything the verdict depends on that it can name — the tree, the base,
     # the changed file list, the repository's gate command and this harness — so a reused

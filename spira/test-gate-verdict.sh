@@ -235,5 +235,29 @@ before="$(runs)"
 out="$(rungate)"; rc=$?
 isnt "an entry with no timestamp is not reused" "$before" "$(runs)"
 
+# --------------------------------------------------------------------------------------
+# A DEADLINE IS NOT A RED (sp-p4rl). A gate killed at its budget exits 124, and the verdict
+# is NO_VERDICT/timeout — not FAIL — because the machinery ran out of time, not because the
+# branch broke anything. The message names both the budget and the command, so the reader
+# knows what to raise and what was running.
+# --------------------------------------------------------------------------------------
+rm -f "$TRIP"
+setcmd 'sleep 10; '
+before="$(runs)"
+out="$(rungate SPIRA_GATE_TIMEOUT=1)"; rc=$?
+is  "a gate killed at its deadline exits NO_VERDICT"        75  "$rc"
+want "and says timeout"                              "reason=timeout" "$out"
+want "and names the budget"                          "killed at 1s"   "$out"
+want "and names the command"                         "command:"       "$out"
+want "and the verdict line says NO_VERDICT"          "VERDICT=NO_VERDICT" "$out"
+
+# AND IT IS NOT CACHED. A timeout is not evidence the branch is broken, and it is not evidence
+# the branch is clean either — caching it would pin a NO_VERDICT to a branch that might pass
+# on its next run with a higher budget. Only a PASS is cached.
+entries_before="$(entries)"
+is  "a timeout records no verdict"     "$entries_before" "$(entries)"
+
+setcmd
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

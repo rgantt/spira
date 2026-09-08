@@ -373,7 +373,7 @@ exec 9>"$TREE.lock" || verdict "$NV" no-lockfile "gate: cannot open the gate tre
 # A CALLER THAT IS ITSELF ON A CLOCK MUST SET THIS DOWN to what it can afford. The default is
 # longer than a landing pass's whole budget, and a gate cannot know its caller's deadline, so
 # the caller passes one (`SPIRA_GATE_LOCK_WAIT`) rather than the gate guessing.
-GATE_LOCK_WAIT="${SPIRA_GATE_LOCK_WAIT:-$(( ${SPIRA_GATE_TIMEOUT:-900} * 4 ))}"
+GATE_LOCK_WAIT="${SPIRA_GATE_LOCK_WAIT:-$(( ${SPIRA_GATE_TIMEOUT:-2700} * 4 ))}"
 GATE_WAIT0=$(date +%s)
 if ! flock -w "$GATE_LOCK_WAIT" 9; then
     # "NO VERDICT" IS ITS OWN EXIT STATUS, not a failure. A queued gate has judged nothing, so
@@ -470,7 +470,7 @@ run_gate() {             # run_gate <ref-being-tested> -> the command's own stat
         SPIRA_GATE_BRANCH="$1" SPIRA_GATE_BASE="$BASE" \
         SPIRA_GATE_FILES="$FILELIST" \
         SPIRA_GATE_ALL="${SPIRA_GATE_ALL:-0}" \
-        timeout "${SPIRA_GATE_TIMEOUT:-900}" bash -c "$CMD" 9>&- ) 2>&1 | tail -20
+        timeout "${SPIRA_GATE_TIMEOUT:-2700}" bash -c "$CMD" 9>&- ) 2>&1 | tail -20
     return "${PIPESTATUS[0]}"
 }
 
@@ -526,7 +526,8 @@ GATE_SUITE="$(printf '%s\n' "$out" \
 
 if [ "$gate_rc_branch" -eq 124 ]; then
     verdict "$NV" timeout \
-        "gate: $REPO_NAME's own gate was killed at ${SPIRA_GATE_TIMEOUT:-900}s — it judged nothing.
+        "gate: $REPO_NAME's own gate was killed at ${SPIRA_GATE_TIMEOUT:-2700}s — it judged nothing.
+gate: command: $CMD
 gate: this is the harness's budget, not a fault in the branch; raise SPIRA_GATE_TIMEOUT.
 $out"
 fi
