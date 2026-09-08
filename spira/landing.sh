@@ -336,7 +336,7 @@ PRBODY
 }
 
 land_repo() {
-    local name="$1" repo br id st mode base land tip merged pushed attempt brs
+    local name="$1" repo br id st mode base land tip merged pushed nothing wedged attempt brs
     local bead_repo_name bead_repo_path gate_out base_branch base_remote bead_labels
     repo="$(repo_root "$name")" || { log "CHECK6 $name: no repo-map entry — skipped"; return 0; }
     [ -e "$repo/.git" ] || { log "CHECK6 $name: $repo is not a git checkout — skipped"; return 0; }
@@ -621,18 +621,67 @@ $(printf '%s' "$gate_out" | tail -20)"
             # the statute synthesis every four hours and export-beads the mirror every six,
             # so this raced roughly six times a day and each race cost a bead an attempt
             # toward poison.
-            merged=0; pushed=0
-            if git -C "$land" merge --no-edit -q -m "spira: land $id" "$br" 2>/dev/null; then
-                merged=1
-                for attempt in 1 2 3; do
-                    if git -C "$land" push -q "$base_remote" "landing:$base_branch" 2>/dev/null; then pushed=1; break; fi
-                    # Rejected: someone else advanced the base. Rebase onto it and try again.
-                    git -C "$land" fetch -q "$base_remote" 2>/dev/null
-                    git -C "$land" rebase -q "$base" >/dev/null 2>&1 || { git -C "$land" rebase --abort 2>/dev/null; break; }
-                    log "landing: push rejected, $base moved — retry $attempt"
-                done
+            #
+            # AND WHAT LANDS IS THE BRANCH'S OWN COMMITS, NEVER COPIES OF THEM. The retry
+            # used to recover by rebasing the LANDING branch onto the moved base, which
+            # replays the branch's commits as new objects and leaves the branch ref pointing
+            # at the originals. The work landed; the branch was then, correctly, an ancestor
+            # of nothing, so the reap kept it — `KEEP <id> unlanded — 2 commit(s) not in
+            # origin/main` in the same pass that had just landed it — and the next pass
+            # merged it again for a second `landed` line two minutes later. A no-op merge
+            # still pushes: `git push` answers "Everything up-to-date" and exits 0, so the
+            # duplicate reads as a movement and inflates the action count the judgement tier
+            # reads. Rebasing the BRANCH moves its ref with its commits, so ancestry stays
+            # the true test of "already landed" for everything downstream.
+            #
+            # The landing branch is therefore rebuilt from the base at the top of every
+            # attempt rather than carried between them: once $br has been replayed, the
+            # previous attempt's merge commit describes a base that no longer exists.
+            #
+            # A MISSING LANDING WORKTREE IS NOT A CONFLICT. Falling through to the merge with
+            # no tree to merge in fails, and the failure arm reopens finished work with a
+            # reason that is about the branch — a lie about a bead, and one that costs it an
+            # attempt toward poison.
+            if [ ! -e "$land/.git" ]; then
+                log "CHECK6 $id: no landing worktree at $land — leaving $br to the next pass"
+                continue
             fi
-            if [ "$merged" = 1 ] && [ "$pushed" = 1 ]; then
+            merged=0; pushed=0; nothing=0; wedged=0
+            for attempt in 1 2 3; do
+                # A landing worktree that will not check the base out is a broken worktree,
+                # not a branch that conflicts — same reason as the guard above, and the same
+                # cost if it is allowed to fall through to the merge.
+                git -C "$land" checkout -q -B landing "$base" 2>/dev/null || { wedged=1; break; }
+                if ! git -C "$land" merge --no-edit -q -m "spira: land $id" "$br" 2>/dev/null; then
+                    git -C "$land" merge --abort 2>/dev/null
+                    merged=0; break
+                fi
+                merged=1
+                if git -C "$land" push -q "$base_remote" "landing:$base_branch" 2>/dev/null; then pushed=1; break; fi
+                # Rejected: someone else advanced the base between our fetch and our push.
+                # Fetch it, replay the BRANCH onto it, and build the landing again from there.
+                git -C "$repo" fetch -q "$base_remote" 2>/dev/null
+                log "landing: push rejected, $base moved — retry $attempt"
+                if ! rebase_branch "$br" "$base" "$repo" "$name"; then merged=0; break; fi
+                # THE TIP IS RE-READ BECAUSE THE REBASE MOVED IT. `land_mark ... LANDED
+                # "$tip"` is the memory every later reader trusts for "this commit is on the
+                # base"; a tip from before the replay names a commit that is not, which is
+                # the same false record by a shorter route.
+                tip="$(git -C "$repo" rev-parse "$br" 2>/dev/null)"
+                if content_landed "$repo" "$br" "$base"; then
+                    # Whoever won the race carried this work with them. It is not a land and
+                    # it is not a movement — but it is not silence either: an unlanded branch
+                    # that stops here for a good reason has to say so, or it is
+                    # indistinguishable from one nothing looked at
+                    # (law-absence-needs-a-positive-control). The Sending reaps the ref.
+                    merged=0; nothing=1; break
+                fi
+            done
+            if [ "$wedged" = 1 ]; then
+                log "CHECK6 $id: landing worktree at $land will not check out $base — leaving $br to the next pass"
+            elif [ "$nothing" = 1 ]; then
+                log "CHECK6 $id: $br adds nothing to $base once rebased — its work is already there, nothing to land"
+            elif [ "$merged" = 1 ] && [ "$pushed" = 1 ]; then
                 # The reap belongs to CHECK 6b, not here. This line used to be
                 # `git branch -q -D "$br" 2>/dev/null`, which git REFUSES while the aeon's
                 # worktree still holds the branch — so it never once succeeded, the branch
