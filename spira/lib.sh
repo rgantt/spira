@@ -387,6 +387,117 @@ ready_count() {
         --json 2>/dev/null | json_only | json_count
 }
 
+# check2_protect_waiting — protect IN_PROGRESS beads blocked solely on operator-ask deps
+# from the time-based dead-worker reaper (CHECK 2 in sentinel.sh).
+#
+# An aeon that exits because its bead's only open dep carries the ask label is not a dead
+# worker — it followed its contract: "record state and exit". Its lease goes stale and the
+# time-based reaper fires, finds an IN_PROGRESS bead with a stale lease, and reclaims it.
+# The next aeon re-derives the same diagnosis and exits, and the 180m loop repeats. The
+# reclaim is wrong: sp-mfa4 hit it six times before this fix existed.
+#
+# The fix: mark qualifying beads with SPIRA_RECLAIM_SKIP_LABEL so the reaper's
+# --exclude-label flag skips them. Remove the label when the dep closes, which lets the
+# reaper reclaim the stale lease on that same pass — no latency, no polling.
+#
+# TWO STEPS, ONE PASS, BATCHED:
+# (a) Beads already carrying the skip label: re-check. If no open dep still carries the
+#     ask label, remove the skip label so the reaper can fire normally.
+# (b) IN_PROGRESS beads with deps but no skip label: if ALL open deps carry the ask label
+#     (and there is at least one), apply the skip label.
+#
+# CONSERVATIVE: only marks when EVERY open dep carries the ask label. One open dep without
+# it means other blockers exist; the bead is handled by normal reclaim or claim paths, and
+# protecting it would mask a genuine dead-worker case.
+#
+# BATCHED: one `bd list` + one `bd show` regardless of how many IN_PROGRESS beads exist.
+# In practice there are only a few at a time, so this is cheap.
+check2_protect_waiting() {
+    local ask_label="${SPIRA_ASK_LABEL:-needs-operator}"
+    local skip_label="${SPIRA_RECLAIM_SKIP_LABEL:-spira-waiting-operator}"
+
+    # Collect IN_PROGRESS beads that need dep inspection.
+    # Output: one line per bead: "<id> <has_skip:0|1> <dep_count>"
+    local bead_lines
+    bead_lines="$(bdjson list --all --status in_progress --limit 0 2>/dev/null \
+        | python3 -c '
+import sys, json
+skip = sys.argv[1]
+try: d = json.load(sys.stdin)
+except: sys.exit(0)
+for item in (d if isinstance(d, list) else [d]):
+    labels = item.get("labels") or []
+    dep_count = item.get("dependency_count", 0)
+    has_skip = 1 if skip in labels else 0
+    if has_skip or dep_count > 0:
+        print(item["id"], has_skip, dep_count)
+' "$skip_label" 2>/dev/null)"
+
+    [ -n "$bead_lines" ] || return 0
+
+    # Collect IDs for re-check and for candidate protection.
+    local remove_ids=() add_ids=()
+    local id has_skip dep_count
+    while IFS=' ' read -r id has_skip dep_count; do
+        [ -n "$id" ] || continue
+        if [ "${has_skip:-0}" = 1 ]; then
+            remove_ids+=("$id")
+        elif [ "${dep_count:-0}" -gt 0 ]; then
+            add_ids+=("$id")
+        fi
+    done <<< "$bead_lines"
+
+    [ "${#remove_ids[@]}" -eq 0 ] && [ "${#add_ids[@]}" -eq 0 ] && return 0
+
+    # One batch show call for all IDs that need dep inspection.
+    local all_ids=("${remove_ids[@]}" "${add_ids[@]}")
+    local show_json
+    show_json="$(bdjson show "${all_ids[@]}" 2>/dev/null)"
+    [ -n "$show_json" ] || return 0
+
+    # Decide: add or remove the skip label.
+    local decisions
+    decisions="$(python3 -c '
+import sys, json
+ask, skip = sys.argv[1], sys.argv[2]
+# Reconstruct the sets from newline-separated args 3 and 4.
+remove_set = set(filter(None, sys.argv[3].split(","))) if sys.argv[3] else set()
+add_set    = set(filter(None, sys.argv[4].split(","))) if sys.argv[4] else set()
+try: d = json.load(sys.stdin)
+except: sys.exit(0)
+for item in (d if isinstance(d, list) else [d]):
+    bid = item.get("id", "")
+    deps = item.get("dependencies") or []
+    open_deps    = [x for x in deps if x.get("status") != "closed"]
+    ask_open     = [x for x in open_deps if ask in (x.get("labels") or [])]
+    non_ask_open = [x for x in open_deps if ask not in (x.get("labels") or [])]
+    if bid in remove_set and not ask_open:
+        print("remove", bid)
+    elif bid in add_set and open_deps and ask_open and not non_ask_open:
+        print("add", bid)
+' "$ask_label" "$skip_label" \
+    "$(IFS=,; printf '%s' "${remove_ids[*]}")" \
+    "$(IFS=,; printf '%s' "${add_ids[*]}")" \
+    <<< "$show_json")"
+
+    local action
+    while IFS=' ' read -r action id; do
+        [ -n "$id" ] || continue
+        case "$action" in
+            add)
+                bdq label add "$id" "$skip_label" >/dev/null 2>&1 || true
+                log "CHECK2 $id: only open dep(s) carry $ask_label — labeled $skip_label, excluded from reclaim"
+                act "protected $id from reclaim: waiting on $ask_label dep"
+                ;;
+            remove)
+                bdq label remove "$id" "$skip_label" >/dev/null 2>&1 || true
+                log "CHECK2 $id: $ask_label dep no longer blocking — removed $skip_label, re-enters the reaper"
+                act "unprotected $id: $ask_label dep closed"
+                ;;
+        esac
+    done <<< "$decisions"
+}
+
 # fayth_exclude <fayth> -> the persona's own exclusions, plus every OTHER persona's claim.
 #
 # THE ENCOUNTER CHOOSES THE PARTY (the operator, 2026-09-07: "Spira is the world. there are

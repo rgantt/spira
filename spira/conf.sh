@@ -55,7 +55,7 @@ SPIRA_HOME_REPO SPIRA_DB SPIRA_RUN SPIRA_GOAL
 SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER SPIRA_WATCHERS
 SPIRA_ACTIONABLE SPIRA_ID_PREFIX SPIRA_HEALTH_TIMEOUT SPIRA_ANSWER_STATE SPIRA_NOTIFY_AGE
 SPIRA_CLIENT_SETTINGS SPIRA_HOOK_LINES
-SPIRA_COCKPIT SPIRA_COCKPIT_TRACE_LINES SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
+SPIRA_COCKPIT SPIRA_COCKPIT_TRACE_LINES SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL SPIRA_RECLAIM_SKIP_LABEL
 SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
 SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE SPIRA_VERDICT_TTL SPIRA_REBASE_ESCALATE_AT SPIRA_VERDICT_WINDOW
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S SPIRA_LOOM_BIN
@@ -294,6 +294,13 @@ spira_conf_defaults() {
     # so all of those must agree on it — which is why it is one key and not five literals.
     # Changing it on a live installation orphans every bead already carrying the old value.
     : "${SPIRA_ASK_LABEL:=needs-operator}"
+    # THE LABEL THAT PROTECTS AN IN_PROGRESS BEAD FROM TIME-BASED RECLAIM. When an aeon
+    # exits because its bead's only open dep carries the ask label, the lease goes stale
+    # but the bead is not a dead worker — the aeon followed its contract. CHECK 2 applies
+    # this label so the reaper skips the bead; CHECK 2 also removes it when the dep closes,
+    # after which the reaper reclaims the stale lease as it normally would. The default
+    # derives from the ask label so the two stay paired on a generic installation.
+    : "${SPIRA_RECLAIM_SKIP_LABEL:=spira-waiting-operator}"
     # THE LABEL THAT MEANS "PARKED ON A CI RUN". An aeon puts it on a bead whose pull request
     # is open so nothing pays for a session to sit and watch a test suite; the CI sweep takes
     # it off again when the run resolves. Every predicate that decides what an aeon may claim
@@ -787,7 +794,7 @@ spira_gate_blames_branch() {   # spira_gate_blames_branch <status> -> 0 if the b
 
 # --------------------------------------------------------------------------------------
 export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD COCKPIT_CLIENT_IDLE_SECS SPIRA_PATH SPIRA_GOAL \
-       SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL \
+       SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL SPIRA_RECLAIM_SKIP_LABEL \
        SPIRA_CI_LABEL SPIRA_CI_PARK_MAX \
        SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT \
        SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE \
