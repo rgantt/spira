@@ -336,6 +336,48 @@ restart_spira_collector_if_stale() {
     systemctl --user restart "$unit" 2>/dev/null
 }
 
+# LOOM HAS THE SAME GITIGNORED-BINARY TRAP AS THE PANEL. loom/target/release/loom is in
+# .gitignore, so landing a source change ships nothing to the running server — the binary
+# on disk is still whatever was last hand-built. This pair catches that: rebuild when source
+# is newer than binary, then restart the service if the binary is now newer than the process.
+rebuild_loom_if_stale() {
+    local dir="${SPIRA_REPO:-}/loom" bin="${SPIRA_LOOM_BIN:-}" newest
+    [ -n "$bin" ] || return 0
+    [ -d "$dir/src" ] || return 0
+    command -v cargo >/dev/null 2>&1 || return 0
+    newest=$(find "$dir/src" "$dir/Cargo.toml" -newer "$bin" -print -quit 2>/dev/null)
+    # No binary at all also means build. -newer against a missing file finds nothing.
+    [ -n "$newest" ] || [ ! -x "$bin" ] || return 0
+    # One build at a time: the timer fires every minute and a release build is not fast.
+    exec 9>"$dir/.build.lock" 2>/dev/null || return 0
+    flock -n 9 || return 0
+    heal_log "loom: source newer than binary — rebuilding"
+    if (cd "$dir" && timeout 600 nice -n 10 cargo build --release >/dev/null 2>&1); then
+        heal_log "loom: rebuilt; restart_loom_if_stale will restart the service"
+    else
+        # A broken build must not silently leave the old binary looking current.
+        heal_log "loom: REBUILD FAILED — service still running the previous binary"
+    fi
+    exec 9>&-
+}
+
+restart_loom_if_stale() {
+    local unit=spira-loom.service bin="${SPIRA_LOOM_BIN:-}" main started mtime
+    [ -n "$bin" ] && [ -x "$bin" ] || return 0
+    systemctl --user cat "$unit" >/dev/null 2>&1 || return 0
+    [ "$(systemctl --user is-active "$unit" 2>/dev/null)" = active ] || return 0
+    main=$(systemctl --user show "$unit" -p MainPID --value 2>/dev/null || echo 0)
+    [ -n "$main" ] && [ "$main" != 0 ] || return 0
+    started=$(proc_start "$main") || {
+        heal_log "loom $main start time unreadable — leaving it alone"
+        return 0
+    }
+    mtime=$(stat -c %Y "$bin" 2>/dev/null || echo 0)
+    [ "$mtime" -gt "$started" ] || return 0
+    heal_log "loom $main is running binary older than loom binary — restarting $unit"
+    systemctl --user restart "$unit" 2>/dev/null
+}
+
 # --- the two splits, in the one order that produces the shape -------------------
 # `-f` IS WHAT MAKES A REPAIR PRODUCE THE SAME SHAPE AS A FRESH BUILD. A plain split takes
 # its TARGET pane's height, so a health pane respawned after the left column had already
@@ -575,6 +617,9 @@ ensure)
     if [ -n "$(cockpit_windows)" ]; then
         restart_spira_collector_if_stale
     fi
+    # Loom is not a cockpit component — rebuild and restart regardless of cockpit state.
+    rebuild_loom_if_stale
+    restart_loom_if_stale
     ;;
 
 status)
