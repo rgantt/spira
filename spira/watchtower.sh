@@ -265,6 +265,27 @@ fi
 # reports an absent key as unread, and during a rollout the two halves are briefly skewed.
 # `?` says this pass could not read it. A 0 would say there are none, which nobody checked.
 
+# BRANCH INTEGRITY — two cheap reads per registered repository: is the base branch's tip
+# a non-merge aeon commit, and is the shared checkout ahead of its remote? Both were
+# invisible on the day this defect was filed; both are one git command each.
+#
+# COMPUTED HERE AND NOT INLINE IN THE HEREDOC. Command substitution inside a here-doc
+# expands at the wrong time on some shells, and a multiline output inside $( ) would close
+# the here-doc prematurely. Pre-computed variables avoid both.
+#
+# MISSING GUARD RENDERS A NOTE, NEVER SILENCE. A guard whose script is absent is not the
+# same as a guard that ran and found nothing (law-absence-needs-a-positive-control).
+GUARD_SH="$(dirname "$0")/branch-guard.sh"
+guard_block="  (unavailable — branch-guard.sh is missing or unreadable)"
+if [ -r "$GUARD_SH" ]; then
+    guard_out="$(bash "$GUARD_SH" check 2>&1)"; guard_rc=$?
+    case "$guard_rc" in
+        0) guard_block="  $guard_out" ;;
+        3) guard_block="  (no registered repositories — nothing to audit)" ;;
+        *) guard_block="$(printf '%s\n' "$guard_out" | sed 's/^/  /')" ;;
+    esac
+fi
+
 # Pre-computed so the heredoc below can reference it as a plain variable. A trailing
 # newline is intentional: the heredoc adds one more, giving a blank line between the halt
 # banner and the body text.
@@ -334,6 +355,13 @@ before anything else, because each answers a question the numbers above cannot.
     no result or a stale one; skip it when they are all fresh and green.
 
 $suites_block
+
+### The shared checkout — are base branches clean?
+
+  An aeon commit on a base branch bypasses the gate and every landing instrument. A checkout
+  ahead of its remote means subsequent worktrees base on a ref nobody else has seen.
+
+${guard_block}
 
 ### Can this snapshot be believed?
 
