@@ -316,15 +316,6 @@ impl App {
             .unwrap_or_else(|| Ok(Vec::new()))
     }
 
-    fn counts(&self) -> [Option<usize>; 4] {
-        self.derive();
-        self.cache
-            .borrow()
-            .as_ref()
-            .map(|d| d.counts)
-            .unwrap_or([None; 4])
-    }
-
     fn current(&self) -> Option<Item> {
         self.derive();
         let c = self.cache.borrow();
@@ -909,7 +900,7 @@ fn main() {
                 let v = app.view.prev();
                 switch(&mut app, v);
             }
-            KeyCode::Char('o') | KeyCode::Char(' ') if n > 0 => {
+            KeyCode::Char('o') if n > 0 => {
                 app.reading = true;
                 app.scroll.reset();
             }
