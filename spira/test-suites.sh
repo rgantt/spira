@@ -324,6 +324,36 @@ rm -f "$SH/test-fx-slow.sh" "$STATE/cursor"
 
 # ======================================================================================
 echo
+echo "SPIRA_SUITES_MAXSEC caps the budget regardless of SPIRA_SUITES_BUDGET (sp-o060):"
+# ======================================================================================
+# THE PROBLEM THIS GUARDS. An operator-set SPIRA_SUITES_BUDGET can exceed the unit's
+# TimeoutStartSec, causing every pass to be SIGTERMed. suites.sh must derive its effective
+# budget from the smaller of the two. The unit injects SPIRA_SUITES_MAXSEC for exactly
+# this: a config value cannot outrun the deadline systemd will enforce.
+#
+# POSITIVE CONTROL FIRST. The pass always prints "<N> suite(s)... <BUDGET>s budget" in its
+# first line; without this check, a cap that only silences output would pass the next cases.
+clear_results
+out_nocap="$(sut run)"
+want "positive control: the configured budget is reported" "${BUDGET}s budget" "$out_nocap"
+
+# MAXSEC BELOW BUDGET. With MAXSEC=80, cap = 80 - 60 = 20. Budget was BUDGET=120, now 20.
+# The reported budget line must reflect the cap, not the configured value.
+clear_results
+out_capped="$(sut run SPIRA_SUITES_MAXSEC=80)"
+want "MAXSEC below BUDGET: capped budget is reported" "20s budget" "$out_capped"
+nowant "and the original budget is not used" "${BUDGET}s budget" "$out_capped"
+
+# MAXSEC ABOVE BUDGET. With BUDGET=2 and MAXSEC=9999 (cap=9939), the cap does not apply
+# and the budget stays at 2. The pass may leave suites unreached because of the short budget.
+clear_results
+BUDGET=2
+out_high="$(sut run SPIRA_SUITES_MAXSEC=9999)"
+BUDGET=120
+want "MAXSEC above BUDGET does not raise the effective budget" "2s budget" "$out_high"
+
+# ======================================================================================
+echo
 echo "a suite whose last runtime exceeds the remaining budget is skipped, not timed out:"
 # ======================================================================================
 # POSITIVE CONTROL FIRST. A suite with no prior result is not pre-skipped — it falls

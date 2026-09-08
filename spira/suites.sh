@@ -47,6 +47,14 @@ HERE="$(cd "$(dirname "$0")" && pwd -P)"
 
 STATE="${SPIRA_SUITES_STATE:-$SPIRA_RUN/suites}"
 BUDGET="${SPIRA_SUITES_BUDGET:-420}"
+# SPIRA_SUITES_MAXSEC is the systemd timeout that will kill this process, injected by the
+# unit's Environment= line. Cap the budget 60 seconds under it so cleanup always completes.
+# A conf override of SPIRA_SUITES_BUDGET cannot then schedule work past the kill deadline.
+if [ -n "${SPIRA_SUITES_MAXSEC:-}" ]; then
+    _suites_cap=$(( SPIRA_SUITES_MAXSEC - 60 ))
+    [ "$BUDGET" -gt "$_suites_cap" ] && BUDGET="$_suites_cap"
+    unset _suites_cap
+fi
 PER_SUITE="${SPIRA_SUITE_TIMEOUT:-600}"
 STALE="${SPIRA_SUITES_STALE:-21600}"
 PRIORITY="${SPIRA_SUITES_PRIORITY:-2}"
