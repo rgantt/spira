@@ -56,15 +56,28 @@ cockpit_may_write() {
     [ "$INVOCATION_ID" = "$svc_id" ]
 }
 
-# The sentinel's own ready predicate — the ARRAY from lib.sh, not a copy of it, and not a
-# variable of the same name shadowing it. "Verbatim" was the intent of the copy that stood
-# here and the copy had already drifted: lib.sh grew `-u` and this had not, so the panel
-# would have gone on reporting as ready the very beads no aeon could claim while the queue
-# starved. A dashboard that counts ready work by a different rule than the harness acting on
-# it is a second opinion, not a view — and a copy is a rule that agrees only until somebody
-# edits one of them.
-PLAN_READY_ARGS=("${READY_ARGS[@]}" --label spira,plan
-                 --exclude-label "spira-poison,$SPIRA_ASK_LABEL")
+# Read partition definitions from the chamber without hardcoding a label list. A .fayth file
+# added to the chamber appears here with no edit — the same reason the repository comes from
+# the bead. Returns a JSON object: {"spira,plan": "builder", "spira,incident": "ops", ...}
+_chamber_part_map() {
+    python3 - "$HERE/chamber" "${SPIRA_SPIKE_LABEL:-spike}" <<'PY' 2>/dev/null || echo '{}'
+import sys, glob, json, os
+chamber, spike = sys.argv[1], sys.argv[2]
+result = {}
+for f in sorted(glob.glob(os.path.join(chamber, "*.fayth"))):
+    name = labels = ""
+    for line in open(f, errors="replace"):
+        s = line.strip()
+        if s.startswith("FAYTH_NAME="):
+            name = s[len("FAYTH_NAME="):].strip('"').strip("'")
+        elif s.startswith("FAYTH_LABELS="):
+            labels = s[len("FAYTH_LABELS="):].strip('"').strip("'")
+            labels = labels.replace("$SPIRA_SPIKE_LABEL", spike)
+    if name and labels:
+        result[labels] = name
+print(json.dumps(result))
+PY
+}
 
 # count <bd-args...> -> number of rows, or `?` if the query or the parse failed.
 count() {
@@ -93,6 +106,9 @@ probe() {
     echo "SP_AT=$(date +%s)"
     echo "SP_WINDOW_HOURS=$WINDOW_HOURS"
 
+    # Partition map — derived from the chamber once per pass, used by NOW, NEXT and RECENT.
+    _PART_MAP="$(_chamber_part_map)"
+
     # ---- NOW: what each aeon is doing, by name -----------------------------------------
     # The pane repaints every two seconds and must never shell out, so the live picture is
     # assembled here: which named aeon holds which bead, for how long, and the last thing
@@ -115,16 +131,29 @@ probe() {
         # the same beads at three stages of one lifecycle did not line up and could not be
         # compared down the column (the operator: "parallel structure with the NEXT and
         # RECENT ones").
-        local title pri meta
+        # THE PARTITION IS DERIVED FROM BEAD LABELS, never from the holding persona, so NOW
+        # cannot disagree with NEXT and RECENT about which partition a bead belongs to.
+        local title pri partition meta
         meta="$(bdjson show "$bead" 2>/dev/null | python3 -c '
 import sys, json, re
+part_map = json.loads(sys.argv[1])
 try: d = json.load(sys.stdin); i = (d if isinstance(d, list) else [d])[0]
 except Exception: raise SystemExit
-# Tab separated: a title may contain anything, a priority may not.
-print("%s\t%s" % (i.get("priority"), re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80]))' 2>/dev/null)"
-        pri="${meta%%$'\t'*}"; title="${meta#*$'\t'}"
-        [ "$pri" = "$meta" ] && { pri=""; title=""; }
+# Partition from bead labels: which fayths label-set is a subset of the bead labels.
+labels = set(i.get("labels") or [])
+partition = "?"
+for lset, pname in part_map.items():
+    if all(l in labels for l in lset.split(",")):
+        partition = pname
+        break
+# Tab separated: priority, partition, title (title may contain anything, the rest may not).
+print("%s\t%s\t%s" % (i.get("priority"), partition,
+    re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80]))' "$_PART_MAP" 2>/dev/null)"
+        pri="${meta%%$'\t'*}"; _rest="${meta#*$'\t'}"
+        partition="${_rest%%$'\t'*}"; title="${_rest#*$'\t'}"
+        [ "$pri" = "$meta" ] && { pri=""; partition=""; title=""; }
         echo "SP_AEON${i}_PRI=${pri:-?}"
+        echo "SP_AEON${i}_PARTITION=${partition:-?}"
         echo "SP_AEON${i}_TITLE=${title:-?}"
         echo "SP_AEON${i}_NAME=${name:-?}"
         echo "SP_AEON${i}_FAYTH=${fay:-?}"
@@ -171,38 +200,67 @@ for j, l in enumerate(lines[-n:]):
     done
     echo "SP_AEON_N=$i"
 
-    # ---- NEXT: what the graph says to do, in the order it will be claimed ---------------
-    # The same predicate again — NEXT claims to be "the order it will be claimed", so a bead
-    # listed here that an aeon would skip is the panel inviting a wait for work never taken.
-    bdjson "${PLAN_READY_ARGS[@]}" 2>/dev/null | python3 -c '
+    # ---- NEXT: ready beads from EVERY declared partition, ordered by priority ------------
+    # PARTITIONS COME FROM THE CHAMBER. Each .fayth defines its own label predicate; a new
+    # persona appears here with no edit because _PART_MAP was already read at the top of
+    # probe(). Querying only builder's `spira,plan` left the incident queue invisible: a
+    # stalled incident looked identical to an empty one on the pane Ryan reads.
+    #
+    # CLAIM ORDER IS PARTITION-SPECIFIC, not global. Each partition is drained by its own
+    # persona concurrently, so there is no single claim order across them. Interleaved by
+    # priority this shows outstanding P0 work everywhere, which is what was asked for; the
+    # header now says so rather than promising a single order that does not exist.
+    #
+    # SP_READY IS EMITTED HERE because it is the same population: the union across partitions
+    # that NEXT shows. Counting it again at the old site would be a second query for a number
+    # already in hand; the old PLAN_READY_ARGS site is removed along with the hardcoded label.
+    {
+        python3 -c '
 import sys, json
-try: d = json.load(sys.stdin)
-except Exception: raise SystemExit
-rows = d if isinstance(d, list) else [d]
-# AND THE TITLES ARE CUT AT EIGHTY, NOT FIFTY-EIGHT. The pane cuts a row to the width it
-# has and marks the cut; the collector cannot, because it does not know how wide the column
-# is. A cap here tighter than the pane would be a silent truncation nothing can report, and
-# the width of that column is set by whoever runs the harness.
-#
-# APOSTROPHES ARE FORBIDDEN IN THIS BLOCK. It lives inside python3 -c '...', so one
-# would close the quote and leave the whole file syntactically invalid.
-#
-# FORTY, AND THE RENDERER AGREES. This is the head of a queue, not the queue, but how much
-# of that head is worth showing is not a constant -- it is whatever the column has room for
-# once NOW has taken its rows, and NOW swings with how many aeons are awake. So the cap here
-# is a CEILING rather than a size: it matches health.sh MAX_NEXT_ROWS, and the pane allocator
-# decides the actual height on every repaint.
-#
-# IT WAS FIVE, AND FIVE IS WHAT LEFT THE PANE HALF EMPTY. On the 52-row column this renders
-# into, an idle harness filled about eighteen rows: every section had reached its want and
-# the round-robin had nowhere left to put the remaining budget.
-#
-# A COLLECTOR CAP TIGHTER THAN THE RENDERER IS THE ONE THAT CANNOT BE SEEN. The renderer
-# trimming rows it was given is visible; rows never emitted look exactly like rows that do
-# not exist, so this must be the looser of the two, never the tighter.
+for labels, name in json.loads(sys.argv[1]).items():
+    print(name + "\t" + labels)
+' "$_PART_MAP" 2>/dev/null
+    } | while IFS=$(printf '\t') read -r _pname _plabels; do
+        bdjson "${READY_ARGS[@]}" \
+            --label "$_plabels" \
+            --exclude-label "spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL" \
+            2>/dev/null | python3 -c '
+import sys, json
+name = sys.argv[1]
+try:
+    d = json.load(sys.stdin)
+    for r in (d if isinstance(d, list) else [d]):
+        r["_partition"] = name
+        print(json.dumps(r))
+except Exception:
+    pass
+' "$_pname" 2>/dev/null
+    done | python3 -c '
+import sys, json, re
+rows = []
+seen = set()
+for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
+    try:
+        r = json.loads(line)
+        bid = r.get("id", "")
+        if bid and bid not in seen:
+            seen.add(bid)
+            rows.append(r)
+    except Exception:
+        pass
+# P0 across all partitions, then P1, then P2 — harness order preserved within each priority.
+rows.sort(key=lambda r: (r.get("priority") or 9))
+# FORTY, AND THE RENDERER AGREES. Matches health.sh MAX_NEXT_ROWS; the pane allocator
+# decides the actual height. A collector cap tighter than the renderer is the one that cannot
+# be seen: rows never emitted look exactly like rows that do not exist.
 for n, i in enumerate(rows[:40]):
-    print("SP_NEXT%d=P%s %s %s" % (n, i.get("priority"), i["id"], (i.get("title") or "")[:80].replace("=", "-")))
+    part = i.get("_partition", "?")
+    title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80].replace("=", "-")
+    print("SP_NEXT%d=P%s %s %s %s" % (n, i.get("priority") or "?", part, i["id"], title))
 print("SP_NEXT_N=%d" % len(rows))
+print("SP_READY=%d" % len(rows))
 ' 2>/dev/null
 
     # ---- RECENT: TRANSITIONS, not just outcomes ----------------------------------------
@@ -221,7 +279,7 @@ print("SP_NEXT_N=%d" % len(rows))
     {
         grep -E 'ACT (landed|reopened|poisoned|reclaimed [0-9]|announced|reaped)' \
              "$SPIRA_RUN/sentinel.log" 2>/dev/null | tail -80 \
-          | sed -E 's/^([^ ]+) spira: ACT /\1 /'
+          | sed -E 's/^([^ ]+) spira: ACT /\1 sentinel /'
         # strand.sh's output carries NO timestamp of its own — it is printed inside a pass.
         # Stamping it with now() made a half-hour-old reclaim read "0s ago", which is the
         # dashboard lying about the single event that mattered. Attribute each line to the
@@ -237,7 +295,7 @@ for line in open(sys.argv[1], errors="replace"):
     if line.startswith("RECLAIMED ") and ts:
         parts = line.split()
         if len(parts) > 1:
-            out.append("%s reclaimed %s" % (ts, parts[1]))
+            out.append("%s sentinel reclaimed %s" % (ts, parts[1]))
 print("\n".join(out[-40:]))
 ' "$SPIRA_RUN/sentinel.log" 2>/dev/null
         # THE BEAD IS FIELD 4, NOT 3. A ledger line is `<ts> <verb> <fayth> <bead>`, so `$3`
@@ -251,11 +309,11 @@ print("\n".join(out[-40:]))
         # while the gate is advisory) produced nothing at all. `done` carries the outcome in
         # its status field; a turn that ended with the bead still in progress is the shape
         # worth seeing, because it is the one that repeats.
-        awk '$2 == "awake" && $4 ~ /^sp-/ { printf "%s claimed %s\n", $1, $4 }
+        awk '$2 == "awake" && $4 ~ /^sp-/ { printf "%s %s claimed %s\n", $1, $3, $4 }
              $2 == "done"  && $4 ~ /^sp-/ {
                  st = "ended"
                  for (i = 5; i <= NF; i++) if ($i ~ /^status=/) { sub(/^status=/, "", $i); st = $i }
-                 printf "%s %s %s\n", $1, st == "closed" ? "finished" : st, $4
+                 printf "%s %s %s %s\n", $1, $3, st == "closed" ? "finished" : st, $4
              }' \
             "$SPIRA_RUN/aeon-ledger.log" 2>/dev/null | tail -80
     # EVERY STAGE OF THIS PIPELINE IS A CAP AND THE SMALLEST ONE DECIDES. Widening only the
@@ -280,26 +338,40 @@ now = datetime.datetime.now(datetime.timezone.utc)
 # to Dolt on a pass that runs every minute. --limit 0 because bd list truncates at 50 by
 # default, and a silently short map leaves later rows bare (law-bd-list-truncates-at-50).
 titles = {}
+titlemeta = {}
 try:
     for i in json.load(open(sys.argv[1])):
-        titles[i["id"]] = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))
+        bid = i["id"]
+        titles[bid] = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))
+        titlemeta[bid] = i
 except Exception:
-    titles = {}
+    titles = {}; titlemeta = {}
+
+try: part_map = json.loads(sys.argv[2])
+except Exception: part_map = {}
+
+NON_AEON = {"sentinel", "overseer", "ryan"}
 
 # DEDUPED ON THE EVENT, NOT THE LINE. `sort -u` above collapses byte-identical rows, which
 # is not what repeats here: slay.sh writes two `done` lines a SECOND apart, so the timestamps
 # differ, both survive, and the pane spends two of twenty rows saying one thing once. Keyed on
-# (verb, bead) and keeping the first seen — input is newest-first, so that is the newest.
+# (actor, verb, bead) and keeping the first seen — input is newest-first, so that is the newest.
 seen, rows = set(), []
 for line in sys.stdin:
-    parts = line.strip().split(" ", 1)
-    if len(parts) < 2:
+    parts = line.strip().split(" ", 2)
+    if len(parts) < 3:
         continue
-    key = parts[1].strip()
+    ts_str, actor, body = parts[0], parts[1], parts[2]
+    toks = body.split()
+    bead = toks[-1] if toks else ""
+    if "/" in bead:
+        bead = bead.rsplit("/", 1)[-1]
+    verb = toks[0] if toks else ""
+    key = (actor, verb, bead)
     if key in seen:
         continue
     seen.add(key)
-    rows.append(parts)
+    rows.append((ts_str, actor, body, verb, bead))
 
 # FORTY ROWS, AND THE CAP IS APPLIED HERE RATHER THAN ON THE PIPE ABOVE. The head above is
 # the MERGE WINDOW and has to stay wider than the cap, because the dedup that follows it
@@ -308,9 +380,9 @@ for line in sys.stdin:
 # pane actually shows is decided per repaint by `share`, which hands RECENT whatever NOW is
 # not using. The renderer holds the same ceiling, so a snapshot from a collector with a wider
 # one still renders at most forty.
-for n, parts in enumerate(rows[:40]):
+for n, (ts_str, actor, body, verb, bead) in enumerate(rows[:40]):
     try:
-        t = datetime.datetime.strptime(parts[0], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+        t = datetime.datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
         secs = int((now - t).total_seconds())
     except Exception:
         continue
@@ -318,7 +390,28 @@ for n, parts in enumerate(rows[:40]):
     elif secs < 5400: rel = "%dm ago" % (secs // 60)
     elif secs < 172800: rel = "%dh ago" % (secs // 3600)
     else: rel = "%dd ago" % (secs // 86400)
-    body = parts[1].strip()
+
+    # ACTOR DISPLAY. Bare for non-aeon actors (sentinel, overseer, ryan). For aeon actors
+    # (fayth names like builder/ops/spike) append the bead assignee as the specific aeon;
+    # the assignee field in the titlemap is the name the aeon registered when it claimed work.
+    # If the bead is already closed and unassigned, we fall back to just the fayth name —
+    # knowing which persona did it is more useful than a question mark where a name was.
+    if actor in NON_AEON:
+        actor_disp = actor
+    else:
+        meta = titlemeta.get(bead, {})
+        assignee = (meta.get("assignee") or "").strip()
+        actor_disp = ("%s/%s" % (actor, assignee)) if assignee else actor
+
+    # PARTITION from bead labels against the chamber map. A bead matching no declared
+    # partition renders "?" and is still listed — never silently dropped.
+    bead_labels = set(titlemeta.get(bead, {}).get("labels") or [])
+    partition = "?"
+    for lset, pname in part_map.items():
+        if all(l in bead_labels for l in lset.split(",")):
+            partition = pname
+            break
+
     # The last word of an event is its bead id; look the title up and append it. A missing
     # title is left absent rather than filled with a placeholder, so the row still says what
     # happened when the map could not be built.
@@ -328,10 +421,6 @@ for n, parts in enumerate(rows[:40]):
     # landed row on the pane rendered with no title at all -- the one event class where the
     # reader most wants to know what landed. Fall back to the ref basename, which is the bead.
     toks = body.split()
-    verb = toks[0] if toks else ""
-    bead = toks[-1] if toks else ""
-    if bead not in titles and "/" in bead:
-        bead = bead.rsplit("/", 1)[-1]
     # A LANDING NAMES THE BEAD; A REAP NAMES THE BRANCH. They are different questions. What
     # landed is work, and the branch it arrived on is an implementation detail the reader
     # already knows -- so `spira/` is noise on that row. What was reaped is a REF, in one of
@@ -340,14 +429,12 @@ for n, parts in enumerate(rows[:40]):
     if verb == "landed" and toks and "/" in toks[-1]:
         toks[-1] = bead
         body = " ".join(toks)
-    elif len(toks) > 2 and toks[-1] == bead:
-        for t in toks[:-1]:
-            if t.endswith("/" + bead) or t == bead:
-                body = " ".join(toks[:-1]); break
+    elif len(toks) > 2 and toks[-1] != bead and toks[-1].endswith("/" + bead):
+        body = " ".join(toks[:-1])
     title = titles.get(bead, "")
-    row = "%s %s" % (body, title) if title else body
-    print("SP_EVENT%d=%-7s %s" % (n, rel, row[:110].replace("=", "-")))
-' "$TITLEMAP"
+    body_display = ("%s %s" % (body, title) if title else body)[:80].replace("=", "-")
+    print("SP_EVENT%d=%-7s %-12s %-8s %s" % (n, rel, actor_disp[:12], partition[:8], body_display))
+' "$TITLEMAP" "$_PART_MAP"
 
     # ---- AWAITING CI: parked on a run, and parked on nothing -----------------------------
     # A parked bead has no aeon and is not stranded — its review is open and the sweep is
@@ -600,8 +687,6 @@ print("SP_INPROG=%d"    % sum(1 for i in work if i.get("status") == "in_progress
 print("SP_POISON=%d"    % sum(1 for i in work if i.get("status") != "closed" and has(i, "spira-poison")))
 print("SP_NEEDSOP=%d"  % sum(1 for i in work if i.get("status") != "closed" and has(i, ASK)))
 ' 2>/dev/null || { echo "SP_OPEN=?"; echo "SP_INPROG=?"; echo "SP_POISON=?"; echo "SP_NEEDSOP=?"; }
-
-    echo "SP_READY=$(count "${PLAN_READY_ARGS[@]}")"
 
     # ---- closed versus landed ----------------------------------------------------------
     # law-closed-is-not-landed as a 24h figure matching the header it sits under. The

@@ -124,8 +124,14 @@ if [ ! -f "$PANE" ]; then
     fail=$((fail+1)); printf '  FAIL  cannot find the pane at %s\n' "$PANE"
 else
 
-PD="$TMP/pane"; mkdir -p "$PD/repo/.runtime/spira" "$PD/home"
+PD="$TMP/pane"; mkdir -p "$PD/repo/.runtime/spira" "$PD/home" "$PD/bin"
 SNAPF="$PD/repo/.runtime/spira/cockpit.env"
+# halt_banner calls SPIRA_SYSTEMCTL to check whether the sentinel timer is active.
+# Without a mock it hits the real systemctl, so a box where the timer is not running gets
+# three extra header rows and the NOW budget falls short. Point it at a stub that always
+# returns "active" so header_line emits exactly one row regardless of box state.
+printf '#!/bin/sh\necho active\n' > "$PD/bin/mock-systemctl"
+chmod +x "$PD/bin/mock-systemctl"
 
 # Written the way the collector writes it: every value SINGLE-QUOTED. `SP_NEXT0=P1 sp-a A
 # title` unquoted is not an assignment, it is an assignment followed by a command, and the
@@ -148,6 +154,7 @@ for line in sys.stdin.read().splitlines():
 pane() {                 # pane <rows> [cols] -> the frame, ANSI stripped
     env -i PATH="$PATH" HOME="$PD/home" TERM=dumb LC_ALL=C.UTF-8 \
         SPIRA_CONF="$PD/no.conf" SPIRA_REPO="$PD/repo" SPIRA_RUN="$PD/repo/.runtime/spira" \
+        SPIRA_SYSTEMCTL="$PD/bin/mock-systemctl" \
         bash "$PANE" once "$1" "${2:-0}" 2>/dev/null | sed 's/\x1b\[[?0-9;]*[a-zA-Z]//g'
 }
 rows_of() { printf '%s\n' "$1" | awk -v l=" $2" 'index($0,l)==1{n=1;next} n && /^ [A-Z]/{exit} n{n++} END{print n+0}'; }
@@ -322,8 +329,8 @@ echo "the column is filled, and NOW is served before the sections that fill it"
         printf 'SP_AEON%d_FILES=2\nSP_AEON%d_QUIET=30\nSP_AEON%d_SAID=thinking about it\n' "$i" "$i" "$i"
     done
     printf 'SP_NEXT_N=25\n'
-    for i in $(seq 0 13); do printf 'SP_NEXT%d=P1 sp-n%d A queued bead\n' "$i" "$i"; done
-    for i in $(seq 0 13); do printf 'SP_EVENT%d=%dm ago landed spira/sp-e%d\n' "$i" "$i" "$i"; done
+    for i in $(seq 0 13); do printf 'SP_NEXT%d=P1 builder sp-n%d A queued bead\n' "$i" "$i"; done
+    for i in $(seq 0 13); do printf 'SP_EVENT%d=%dm ago  sentinel    builder  landed sp-e%d\n' "$i" "$i" "$i"; done
     printf 'SP_AWAITING_N=0\n'
 } | snap
 
@@ -409,8 +416,8 @@ is_n "a 20-row pane is filled to exactly 20 rows" 20 "$(printf '%s\n' "$busy" | 
     printf 'SP_AEON0_TITLE=%s\n' "$(printf 't%.0s' $(seq 1 120))"
     printf 'SP_AEON0_ACT=Bash %s\n' "$(printf 'a%.0s' $(seq 1 120))"
     printf 'SP_AEON0_SAID=%s\n' "$(printf 's%.0s' $(seq 1 120))"
-    printf 'SP_NEXT_N=1\nSP_NEXT0=P1 sp-longtitle %s\n' "$(printf 'x%.0s' $(seq 1 120))"
-    printf 'SP_EVENT0=2m ago %s\n' "$(printf 'y%.0s' $(seq 1 120))"
+    printf 'SP_NEXT_N=1\nSP_NEXT0=P1 builder sp-longtitle %s\n' "$(printf 'x%.0s' $(seq 1 120))"
+    printf 'SP_EVENT0=2m ago  sentinel    builder  landed sp-e0 %s\n' "$(printf 'y%.0s' $(seq 1 120))"
     printf 'SP_AWAITING_N=0\n'
 } | snap
 # MEASURED IN CHARACTERS, WITH PYTHON, NOT WITH awk. The frame is full of multibyte

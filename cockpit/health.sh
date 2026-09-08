@@ -464,7 +464,7 @@ now_section() {
     while [ "$i" -lt "${SP_AEON_N}" ]; do
         eval "local nm=\${SP_AEON${i}_NAME:-?} fy=\${SP_AEON${i}_FAYTH:-?}"
         eval "local bd=\${SP_AEON${i}_BEAD:-?} mn=\${SP_AEON${i}_MIN:-?} ac=\${SP_AEON${i}_ACT:-}"
-        eval "local ti=\${SP_AEON${i}_TITLE:-} pr=\${SP_AEON${i}_PRI:-?}"
+        eval "local ti=\${SP_AEON${i}_TITLE:-} pr=\${SP_AEON${i}_PRI:-?} pa=\${SP_AEON${i}_PARTITION:-?}"
         # EVERY ONE OF THESE DEFAULTS TO `?`, NEVER TO 0 OR TO EMPTY. An unset key here means
         # the collector could not read the trace, and a session whose trace cannot be read
         # rendering as "0 turns, 0 files" is an all-clear that displaces the suspicion which
@@ -505,9 +505,12 @@ now_section() {
         # P<n> FIRST, exactly as next_row and the RECENT rows lead — the three sections
         # describe the same beads at three stages of one lifecycle, and until this was here
         # they could not be compared down the column.
-        fit "${ti:-?}" $(( COLS - 12 - (${#bd} > 14 ? ${#bd} : 14) ))
-        printf '        %sP%s%s %s%-14s%s %s%s%s\n' \
-            "$(pri_colour "P$pr")" "$pr" "$C_RST" "$C_ACC" "$bd" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
+        local pw=8; [ "${#pa}" -gt "$pw" ] && pw=${#pa}
+        fit "${ti:-?}" $(( COLS - 13 - pw - (${#bd} > 14 ? ${#bd} : 14) ))
+        printf '        %sP%s%s %s%-*s%s %s%-14s%s %s%s%s\n' \
+            "$(pri_colour "P$pr")" "$pr" "$C_RST" \
+            "$C_DIM" "$pw" "$pa" "$C_RST" \
+            "$C_ACC" "$bd" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
         # THE ACTION AND THE SILENCE ON ONE ROW, at opposite ends of it. They are one fact
         # read together and useless read apart: `Bash gh run watch` quiet for eleven minutes
         # is a session waiting correctly, and the same command quiet for twenty-five is the
@@ -601,12 +604,22 @@ verb_colour() {
     esac
 }
 
+part_colour() {
+    case "$1" in
+        ops) printf '%s' "$C_WARN" ;;
+        *)   printf '%s' "$C_DIM"  ;;
+    esac
+}
+
 next_row() {
-    local raw="$1" pri id rest
-    pri="${raw%% *}"; rest="${raw#* }"; id="${rest%% *}"; rest="${rest#* }"
-    fit "$rest" $(( COLS - 10 - ${#pri} - (${#id} > 14 ? ${#id} : 14) ))
-    printf '        %s%s%s %s%-14s%s %s%s%s\n' \
-        "$(pri_colour "$pri")" "$pri" "$C_RST" "$C_ACC" "$id" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
+    local raw="$1" pri part id rest pw
+    pri="${raw%% *}"; rest="${raw#* }"; part="${rest%% *}"; rest="${rest#* }"; id="${rest%% *}"; rest="${rest#* }"
+    pw=8; [ "${#part}" -gt "$pw" ] && pw=${#part}
+    fit "$rest" $(( COLS - 11 - ${#pri} - pw - (${#id} > 14 ? ${#id} : 14) ))
+    printf '        %s%s%s %s%-*s%s %s%-14s%s %s%s%s\n' \
+        "$(pri_colour "$pri")" "$pri" "$C_RST" \
+        "$C_DIM" "$pw" "$part" "$C_RST" \
+        "$C_ACC" "$id" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
 }
 
 # "P1 sp-id 12m Title..." -> next_row's format plus an age since close, coloured by threshold.
@@ -624,18 +637,18 @@ unlanded_row() {
         "$age_col" "$age" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
 }
 
-# RECENT rows arrive as `<age> <verb> <bead> <title...>`. Split rather than print flat: the
-# id and the verb are what a reader is scanning for, and dimming the whole line hid both.
-# A row that does not split is printed as it came — a formatter must never drop content it
-# failed to parse.
-recent_row() {          # recent_row "<age> <verb> <bead> <title>" <indent-cols>
-    local raw="$1" pad="$2" age verb id rest vw
-    # THE AGE IS TWO WORDS. The collector emits `%-7s` of a relative time — "2m ago", "18h
-    # ago" — so splitting on the first space made the verb "ago" and the id "landed", and
-    # every row rendered its colours one field to the left. Matched as a whole rather than
-    # counted in spaces, because the padding width is the collector's to change.
-    if [[ "$raw" =~ ^([0-9]+[smhd][[:space:]]+ago)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]*(.*)$ ]]; then
-        age="${BASH_REMATCH[1]}"; verb="${BASH_REMATCH[2]}"; id="${BASH_REMATCH[3]}"; rest="${BASH_REMATCH[4]}"
+# RECENT rows arrive as `<age> <actor> <partition> <verb> <bead> <title...>`. The actor
+# column shows who acted (sentinel, overseer, ryan, or fayth/aeon-name); the partition column
+# shows which queue the bead belongs to. Split rather than print flat: the verb and id are
+# what a reader is scanning for. A row that cannot be parsed is printed as-is.
+recent_row() {          # recent_row "<age> <actor> <partition> <verb> <bead> <title>" <indent-cols>
+    local raw="$1" pad="$2" age actor part verb id rest vw
+    # THREE FIXED FIELDS then body. The age is two words ("2m ago"), captured as one group
+    # by the leading digits. Actor may carry a slash (builder/bahamut). Body is verb + bead
+    # (or count) + optional title.
+    if [[ "$raw" =~ ^([0-9]+[smhd][[:space:]]+ago)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]*(.*)$ ]]; then
+        age="${BASH_REMATCH[1]}"; actor="${BASH_REMATCH[2]}"; part="${BASH_REMATCH[3]}"
+        verb="${BASH_REMATCH[4]}"; id="${BASH_REMATCH[5]}"; rest="${BASH_REMATCH[6]}"
     else
         # UNPARSED IS PRINTED AS IT CAME. A formatter must never drop content it could not
         # split — the event is the load-bearing half and the colour is the ornament.
@@ -645,7 +658,7 @@ recent_row() {          # recent_row "<age> <verb> <bead> <title>" <indent-cols>
         fit "$raw" $(( COLS - pad ))
         printf '%s%s%s\n' "$C_DIM" "$FIT" "$C_RST"; return
     fi
-    # THE THIRD FIELD IS NOT ALWAYS A BEAD. Some sentinel ACTs are AGGREGATES over a pass —
+    # THE FIFTH FIELD IS NOT ALWAYS A BEAD. Some sentinel ACTs are AGGREGATES over a pass —
     # "reaped 1 landed branch(es)", "escalated 3 stranded item(s)", "announced and ..." —
     # where the word after the verb is a COUNT or a preposition. Dropped into the id column
     # it wore the same accent colour every real id wears, so "reaped 1" read as a bead named
@@ -655,9 +668,13 @@ recent_row() {          # recent_row "<age> <verb> <bead> <title>" <indent-cols>
     if [[ ! "$id" =~ (^|/)sp-[A-Za-z0-9._-]+$ ]]; then
         rest="$id${rest:+ $rest}"
         vw=${#verb}; if [ "$vw" -lt 9 ]; then vw=9; fi
-        fit "$rest" $(( COLS - pad - 10 - vw ))
-        printf '%s%-7s%s %s%-9s%s %s%s%s\n' \
+        # fit width: 7(age)+1+12(actor)+1+8(part)+1+vw+1+fit = COLS-pad
+        # → fit = COLS - pad - 31 - vw
+        fit "$rest" $(( COLS - pad - 31 - vw ))
+        printf '%s%-7s%s %s%-12s%s %s%-8s%s %s%-9s%s %s%s%s\n' \
             "$C_DIM" "$age" "$C_RST" \
+            "$C_DIM" "$actor" "$C_RST" \
+            "$(part_colour "$part")" "$part" "$C_RST" \
             "$(verb_colour "$verb")" "$verb" "$C_RST" \
             "$C_DIM" "$FIT" "$C_RST"
         return
@@ -668,9 +685,13 @@ recent_row() {          # recent_row "<age> <verb> <bead> <title>" <indent-cols>
     # is the longest verb the collector emits; a longer one widens its own row rather than
     # being cut, so the arithmetic below takes whichever is greater.
     vw=${#verb}; if [ "$vw" -lt 9 ]; then vw=9; fi
-    fit "$rest" $(( COLS - pad - 10 - vw - (${#id} > 14 ? ${#id} : 14) ))
-    printf '%s%-7s%s %s%-9s%s %s%-14s%s %s%s%s\n' \
+    # fit width: 7(age)+1+12(actor)+1+8(part)+1+vw+1+max(14,id)+1+fit = COLS-pad
+    # → fit = COLS - pad - 32 - vw - max(14, id_len)
+    fit "$rest" $(( COLS - pad - 32 - vw - (${#id} > 14 ? ${#id} : 14) ))
+    printf '%s%-7s%s %s%-12s%s %s%-8s%s %s%-9s%s %s%-14s%s %s%s%s\n' \
         "$C_DIM" "$age" "$C_RST" \
+        "$C_DIM" "$actor" "$C_RST" \
+        "$(part_colour "$part")" "$part" "$C_RST" \
         "$(verb_colour "$verb")" "$verb" "$C_RST" \
         "$C_ACC" "$id" "$C_RST" \
         "$C_DIM" "$FIT" "$C_RST"
@@ -690,7 +711,7 @@ next_section() {
             "$C_DIM" "$C_RST" "$C_B" "$C_RST" "$C_DIM" "$C_RST"
         return
     fi
-    printf ' %sNEXT%s   %s%s ready%s %s— next to be claimed:%s\n' "$C_DIM" "$C_RST" \
+    printf ' %sNEXT%s   %s%s ready%s %s— across all partitions:%s\n' "$C_DIM" "$C_RST" \
         "$C_B" "${SP_NEXT_N}" "$C_RST" "$C_DIM" "$C_RST"
     local i=0 raw
     while [ "$i" -lt "$MAX_NEXT_ROWS" ]; do
@@ -873,7 +894,8 @@ standing_lines() {
         "$C_DIM" "${SP_CLOSED:-?}" "$C_RST" "${SP_LANDED:-?}" \
         "$C_DIM" "${SP_AWAITING_LAND:-0}" "$C_RST" \
         "$( [ "${SP_UNLANDED:-0}" = 0 ] && printf '%s' "$C_OK" || printf '%s' "$C_BAD$C_B")" "${SP_UNLANDED:-?}" "$C_RST"
-    printf '        %snever landed = closed, no commit names it, no branch carries it%s\n' "$C_DIM" "$C_RST"
+    fit "never landed = closed, no commit names it, no branch carries it" $(( COLS - 8 ))
+    printf '        %s%s%s\n' "$C_DIM" "$FIT" "$C_RST"
 
     # LAND — the DONE-to-LANDED stretch. The operator (2026-09-07): "there's currently a
     # lot that happens between 'DONE' and 'LANDED' and the ops dashboard shows none of it."
@@ -939,13 +961,13 @@ standing_lines() {
     # strand.sh classifies and only `ghost` is a claimed bead whose holder is gone; the size
     # rendered under that name made a childless epic read as a dead worker. The ledger total
     # stays alongside in parentheses, because it is context rather than an alarm.
-    printf '        %sopen%s %s · %sready%s %s · %sworking%s %s · %spoison%s %s%s%s · %sstranded%s %s %s(ledger %s)%s\n' \
-        "$C_DIM" "$C_RST" "${SP_OPEN:-?}" \
-        "$C_DIM" "$C_RST" "${SP_READY:-?}" \
-        "$C_DIM" "$C_RST" "${SP_INPROG:-?}" \
-        "$C_DIM" "$C_RST" "$( [ "${SP_POISON:-0}" = 0 ] && printf '%s' "$C_OK" || printf '%s' "$C_BAD$C_B")" "${SP_POISON:-?}" "$C_RST" \
-        "$C_DIM" "$C_RST" "${SP_STRAND_GHOST:-?}" \
-        "$C_DIM" "${SP_STRANDS:-?}" "$C_RST"
+    local _graph
+    _graph="$(printf 'open %s · ready %s · working %s · poison %s · stranded %s (ledger %s)' \
+        "${SP_OPEN:-?}" "${SP_READY:-?}" "${SP_INPROG:-?}" "${SP_POISON:-?}" \
+        "${SP_STRAND_GHOST:-?}" "${SP_STRANDS:-?}")"
+    fit "$_graph" $(( COLS - 8 ))
+    printf '        %s%s%s\n' \
+        "$( [ "${SP_POISON:-0}" = 0 ] && printf '%s' "$C_DIM" || printf '%s' "$C_WARN")" "$FIT" "$C_RST"
 
     # GATE — is the check between work and its landings buying anything? The pane already
     # instruments what the harness COSTS; this is the only line that says whether one of its
