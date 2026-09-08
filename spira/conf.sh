@@ -743,17 +743,18 @@ unset _spira_conf_here _spira_conf_env _spira_conf_home_env
 # --------------------------------------------------------------------------------------
 export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
-# THE DATABASE IS AT SCHEMA v61, MIGRATED BY THE ACCIDENTAL v1.2.0/v1.2.1 RELEASE, and every
-# bd newer than v1.1.0 refuses it outright. That refusal EXITS 0 with the complaint on stdout,
-# so a caller that checks status reads success and parses an error as data: on 2026-09-08 a
-# CGO rebuild of bd landed in ~/.local/bin and fayth_ready returned nothing, the sentinel
-# logged "no fayth in the chamber" for every persona, and Spira summoned nothing for six
-# minutes while the panes showed 0 ready rather than a fault. This is the vendor's own
-# stopgap and it is verified safe for this schema range; audit-event versioning stays paused
-# until the schema is rolled back to v53 per RECOVERY-1.2.1.md (sp-sk3p). REMOVE THIS LINE
-# the moment that recovery runs - a stopgap nobody deletes is how the next binary silently
-# gets the same pass.
-export BD_IGNORE_SCHEMA_SKEW=1
+# BD_IGNORE_SCHEMA_SKEW WAS EXPORTED HERE AND IS GONE, because the recovery it was waiting on
+# has run. The database was at schema v61, migrated by the accidental v1.2.0/v1.2.1 release,
+# and every bd newer than v1.1.0 refused it outright — a refusal that EXITS 0 with the
+# complaint on stdout, so a caller checking status read success and parsed an error as data.
+# On 2026-09-08 a CGO rebuild of bd landed in ~/.local/bin, fayth_ready returned nothing, the
+# sentinel logged "no fayth in the chamber" for every persona, and Spira summoned nothing for
+# six minutes while the panes showed 0 ready rather than a fault.
+#
+# The cursor was rolled back v61 -> v53 per the vendor's RECOVERY-1.2.1.md on 2026-09-08
+# (sp-6ylz, on Ryan's verdict). Verified after: bd reads and writes the database with the flag
+# UNSET, 2346 issues intact, and audit-event versioning is no longer paused. The revert point
+# and the eight deleted rows are recorded in $SPIRA_RUN/reaped/sp-6ylz.schema-rollback-*.md.
 
 # --------------------------------------------------------------------------------------
 # WHAT IS EXPORTED, AND WHAT MUST NEVER BE.
