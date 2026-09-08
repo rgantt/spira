@@ -42,7 +42,7 @@ create)
 
     # No existing sweep bead: create one. Priority 3 (below plan P1/P2, above background
     # work) keeps sweeps from crowding out builder work when both are ready.
-    id="$(bd create "QA sweep" --type task --priority 3 \
+    id="$(bdq create "QA sweep" --type task --priority 3 \
              -l "spira,qa-sweep,repo:spira" 2>/dev/null | grep -oE 'sp-[a-z0-9]+' | head -1)" || id=""
     if [ -n "$id" ]; then
         log "qa-sweep: created $id"

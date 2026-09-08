@@ -34,7 +34,36 @@ mkdir -p "$SPIRA_RUN"
 # silently and its gaps surface as failures in correct code. It exists as an env var rather
 # than a PATH entry because lib.sh overwrites PATH outright, as it must to run under
 # systemd, so a directory prepended by a test would be thrown away by the export above.
-bdq() { timeout "${BD_TIMEOUT:-180}" "${SPIRA_BD:-bd}" -C "$SPIRA_DB" "$@"; }
+bdq() {
+    # Refuse a repo: label at create time if it has no repo-map entry, naming valid keys.
+    # A bad label is refused here, before bd is called, so no bead is created and no summon
+    # is wasted reaching the summon-time unmapped-repo fence (law-bake-rules-into-tools).
+    [ "${1:-}" = create ] && { _bdq_check_repo_label "$@" || return 1; }
+    timeout "${BD_TIMEOUT:-180}" "${SPIRA_BD:-bd}" -C "$SPIRA_DB" "$@"
+}
+
+_bdq_check_repo_label() {   # _bdq_check_repo_label <create-args> -> 0 or refuse
+    local arg next_is_labels=0 labels="" repo_val valid
+    for arg in "$@"; do
+        if [ "$next_is_labels" = 1 ]; then
+            labels="$arg"; next_is_labels=0; continue
+        fi
+        case "$arg" in
+            --labels|-l) next_is_labels=1 ;;
+            --labels=*)  labels="${arg#--labels=}" ;;
+        esac
+    done
+    [ -z "$labels" ] && return 0
+    repo_val="$(printf '%s\n' "$labels" | tr ',' '\n' | grep '^repo:' | head -1 | cut -c6-)"
+    [ -z "$repo_val" ] && return 0
+    valid="$(repo_names 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//')"
+    if ! repo_names 2>/dev/null | grep -qxF "$repo_val"; then
+        printf 'spira: repo:%s is not in the repo map; valid keys: %s\n' \
+            "$repo_val" "${valid:-<map not found>}" >&2
+        return 1
+    fi
+    return 0
+}
 
 # `gh` gets the same treatment and for the same reason. The pull-request landing path is the
 # part of this harness that reaches OUTSIDE the box, so it is the part that most needs a
