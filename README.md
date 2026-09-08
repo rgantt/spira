@@ -558,12 +558,21 @@ affordable, so completions per day and created-to-closed cycle time have no sour
 are absent and labelled absent rather than approximated from the open population, where the
 number would be wrong and would still read as the number it is named after.
 
-`test-loom.sh` gates the server, `test-loom-page.sh` gates the model and the page's structure,
-and they are separate because they fail for different reasons and skip on different machines —
-one wants a Rust toolchain, the other a JS runtime. `render-check.sh` is run by hand, because a
-browser is not something a clone has any reason to have. Every assertion in it is
-one the static markup cannot satisfy — an earlier version looked for a tag the legend supplies
-either way, and reported greens over a page whose render call the port had dropped.
+`spira/test-loom-page.sh` holds the model and the page's structure: it derives the fixture
+under a bare JS runtime and requires the components, layers and counters the generator states,
+then plants a missing edge and requires the comparison to reject it. Its last arm seeds a
+throwaway database and derives from what `bd` actually emits, so the fixture's record shape
+cannot drift away from the tracker's in silence. It is in the timed set rather than the gate.
+
+The Rust endpoint beside it is **not run by anything here.** `loom/tests/endpoint.rs` holds
+real assertions over a real socket, and it deliberately fails rather than skips when its
+fixture is absent — so it needs the shell suite that builds that fixture, and there is none.
+A bare `cargo test` does not substitute for it; it reports the missing fixture as failures.
+
+`render-check.sh` is run by hand, because a browser is not something a clone has any reason to
+have. Every assertion in it is one the static markup cannot satisfy — an earlier version
+looked for a tag the legend supplies either way, and reported greens over a page whose render
+call the port had dropped.
 
 ## Clearing a session without losing it
 
