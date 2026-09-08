@@ -45,14 +45,28 @@ ENABLE=(cockpit-ensure.timer concierge.timer spira-watch-refresh.timer
         spira-suites.timer
         spira-cockpit.service)
 
+# UNITS THIS BOX DELIBERATELY DECLINED. A conditional unit is absent from UNITS on purpose,
+# so unlisted must be told the difference between "not installed here" and "nobody ever
+# listed it" — otherwise the check that exists to catch a forgotten unit cries wolf on every
+# box without a Dolt server, and a check that is always red is a check nobody reads.
+OPTIONAL=()
+
 # dolt-beads.service supervises the Dolt server itself, which is only this harness's business
 # when the operator says so. Empty SPIRA_DOLT_DATA means they run the server their own way,
 # and installing a unit that would fight them is worse than not installing one.
 if [ -n "$SPIRA_DOLT_DATA" ]; then
     UNITS+=(dolt-beads.service); ENABLE+=(dolt-beads.service)
 else
+    OPTIONAL+=(dolt-beads.service)
     echo "note: SPIRA_DOLT_DATA is empty — not installing dolt-beads.service." >&2
     echo "      Start your Dolt server yourself, or set it in ${SPIRA_CONF_FILE:-spira.conf}." >&2
+fi
+
+# dolt-beads-test.service is a second Dolt server for test fixtures, gated identically.
+if [ -n "$SPIRA_TESTDB_DATA" ]; then
+    UNITS+=(dolt-beads-test.service); ENABLE+=(dolt-beads-test.service)
+else
+    OPTIONAL+=(dolt-beads-test.service)
 fi
 
 # `dolt` is resolved once, absolutely, because a systemd unit has no PATH worth the name.
@@ -107,9 +121,32 @@ if [ "${1:-}" = "--render" ]; then
     exit 0
 fi
 
+# A UNIT FILE IN THIS DIRECTORY THAT IS NOT IN UNITS IS INVISIBLE TO EVERYTHING.
+# --diff compares the units it already knows about, so a unit added here but never listed
+# is never installed, never enabled, and never reported as missing — it simply does not
+# exist as far as this script is concerned. spira-cockpit.service sat in exactly that
+# state: committed, and enabled by hand on the one box that had it, so it looked healthy
+# while the next install.sh would have installed every unit except that one and re-enabled
+# the Gas Town collector it replaced. The check is here rather than in a comment because a
+# list that must be remembered is the thing that failed.
+unlisted() {
+    local f b
+    for f in "$SRC"/*.service "$SRC"/*.timer; do
+        [ -e "$f" ] || continue
+        b="$(basename "$f")"
+        case " ${UNITS[*]} " in *" $b "*) continue ;; esac
+        case " ${OPTIONAL[*]} " in *" $b "*) continue ;; esac
+        echo "$b"
+    done
+}
+
 if [ "${1:-}" = "--diff" ]; then
     rc=0
     TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+    for u in $(unlisted); do
+        echo "UNLISTED $u (in this directory but absent from UNITS — it will never be installed)"
+        rc=1
+    done
     for u in "${UNITS[@]}"; do
         render "$SRC/$u" > "$TMP/$u" || { rc=1; continue; }
         if [ ! -f "$DEST/$u" ]; then echo "MISSING  $u (not installed)"; rc=1; continue; fi
