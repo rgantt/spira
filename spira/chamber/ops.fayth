@@ -52,9 +52,9 @@ FAYTH_SOP_REQUIRED=1
 # persona that can only ever work one of them, and every fayth here named the same
 # one. A bead with no `repo:` label is the home repo, which is what Spira's own plan
 # beads are.
-# SONNET, NOT OPUS (per the operator, 2026-09-07). Ops matches a runbook off the shelf and
-# either executes it or writes one — recognition and procedure, which is the shape Sonnet is
-# for. It is also the persona that runs most often: it wakes on every sweep whether or not
+# HAIKU (per the operator, 2026-09-08). Ops matches a runbook off the shelf and either
+# executes it or writes one — recognition and procedure, which is the shape the small model
+# is for. It is also the persona that runs most often: it wakes on every sweep whether or not
 # anything is wrong, and one such no-op sweep was measured at 1.8M cache-read tokens and
 # $2.23 to conclude the pipeline was fine. The account's five-hour window is Spira's real
 # throughput ceiling, so a persistent role spending it on routine confirmation takes capacity
@@ -66,7 +66,13 @@ FAYTH_SOP_REQUIRED=1
 # the closing rule below is a mechanism rather than an instruction: an Ops session that
 # learns something must leave an SOP behind, so what a cheaper model works out once is on
 # the shelf for every session after it.
-FAYTH_MODEL=claude-sonnet-5
+#
+# VERIFIED, NOT ASSUMED: `claude --model claude-haiku-4-5-20251001 -p ...` answers on this
+# box, and the DATED id is the one that answers — the catalog at CLI 2.1.263 rejects
+# claude-haiku-5 and claude-haiku-4-6 outright. An id the CLI rejects does not fail loudly:
+# every summon dies and the role looks merely quiet, which is the shape of outage this
+# harness is worst at noticing. Probe a candidate id before writing it here.
+FAYTH_MODEL=claude-haiku-4-5-20251001
 FAYTH_MAX_CONCURRENT=1
 
 # THE OPS LANE — the declared configuration for what FAYTH_ROLE=party expressed implicitly.

@@ -550,9 +550,9 @@ now_section() {
         # THE STATS SHARE THE NAME'S ROW because they describe the same thing the name does:
         # the session, not the bead. Only the tail is fitted — the name is the one field on
         # this row that must never be cut, since it is how two aeons are told apart.
-        # THE MODEL, BECAUSE THE PERSONAE NO LONGER SHARE ONE. Ops runs Sonnet, the builders
-        # Opus 4.6, spike Opus 5, and a bead that went slowly or answered oddly is a different
-        # fact depending on which was behind it (per the operator, 2026-09-07). It sits on the
+        # THE MODEL, BECAUSE THE PERSONAE NO LONGER SHARE ONE. Ops runs Haiku 4.5, the
+        # builders Sonnet 4.6, spike Opus 5, and a bead that went slowly or answered oddly is a
+        # different fact depending on which was behind it. It sits on the
         # NAME's row rather than the bead's because a model is a property of the SESSION, like
         # the turns and the context beside it, and not of the work.
         #
