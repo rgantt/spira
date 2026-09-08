@@ -74,6 +74,14 @@ mkdir -p "$RUN/worktree" "$SH"
 cp "$HERE/landing.sh" "$HERE/lib.sh" "$HERE/conf.sh" "$HERE/incident.sh" "$HERE/skew.sh" "$SH/"
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SH/$1"; chmod +x "$SH/$1"; }
 stub confine.sh 'exit 0'
+# THE OUTCOME STREAM IS RECORDED, NOT MERELY SWALLOWED, and it is stubbed EXPLICITLY. Left to
+# conf.sh's default this resolves to `$(dirname $SPIRA_HOME)/cockpit/ask.sh`, which is absent
+# under $TMP and so happens to be inert — a suite writing into the operator's live database
+# on a box where that path DOES resolve is not a risk worth leaving to a coincidence of where
+# the fixture was built (law-gates-run-in-a-clean-environment).
+stub ask.sh 'printf "%s\n" "$*" >> "$EMITTED"'
+export EMITTED="$TMP/events"; : > "$EMITTED"
+events() { cat "$EMITTED" 2>/dev/null; }
 
 # THE GATE IS ALSO THE REAPER, and that is the whole fixture. A pass holds its branch list
 # across the gate, which is the only long call in it, so a branch removed from inside the
@@ -158,7 +166,7 @@ landing() {
     SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
     SPIRA_HOME_REPO="$REPONAME" \
     SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GH="$SH/gh" \
-    SPIRA_NOTIFY="$TMP/no-such-ask.sh" SPIRA_ASK="$TMP/no-such-ask.sh" \
+    SPIRA_NOTIFY="$SH/ask.sh" SPIRA_ASK="$SH/ask.sh" \
         bash "$SH/landing.sh" 2>&1
 }
 notes_of() { B show "$1" 2>/dev/null; }
@@ -198,12 +206,30 @@ echo "test-landing.sh"
 # land, and it can reopen. A suite whose assertions are all "did not happen" passes just as
 # well against a landing.sh that does nothing at all.
 # --------------------------------------------------------------------------------------
+: > "$EMITTED"
 seed; branch sp-plain; out="$(landing)"
 want "an uncontested land is reported" "landed spira/sp-plain" "$out"
 # Landing pushes the base from the .landing worktree; the home checkout must be advanced in
 # the same pass or every hand-run script reads a past state (sp-wud).
 want "the same pass also advances the checkout humans read" "skew: refreshed to" "$out"
+# AND IT SURVIVES THE PASS. The mailbox above is drained by the sentinel and the log line
+# scrolls off the health pane below the fourth row; the event is the only record still
+# answerable tomorrow. It is emitted AFTER the push, so what it asserts is the ancestry just
+# proved rather than the close that preceded it (law-closed-is-not-landed).
+want "the land is recorded as an event"  "--kind bead.landed"   "$(events)"
+want "against the bead that landed"      "--target sp-plain"    "$(events)"
 drop_branch sp-plain
+
+# A GATE FAILURE ALSO RECORDS AN EVENT, and the negative is the landing above: a gate that
+# passed produced bead.landed, not bead.reopened, so the check is not just reading the stub.
+: > "$EMITTED"
+stub gate.sh 'echo "gate: VERDICT=FAIL reason=stub-fail branch=$1 repo=${2:-?}" >&2; exit 1'
+seed; branch sp-gfail; out="$(landing)"
+want "a failed gate reopens the bead"          "reopened sp-gfail — failed the gate" "$out"
+want "and the reopen is recorded as an event"  "--kind bead.reopened" "$(events)"
+want "against the bead that was reopened"      "--target sp-gfail"    "$(events)"
+drop_branch sp-gfail
+cp "$TMP/gate-full.sh" "$SH/gate.sh"   # restore for the tests that follow
 
 # THE VERDICT CACHE IS PRUNED BY THE PASS, at the age the gate refuses to read at. The gate
 # computes each verdict once and reuses it, so what accumulates here is one file per gated

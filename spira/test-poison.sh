@@ -178,6 +178,17 @@ out="$(sentinel)"
 ispoisoned  "a dispatchable bead at the threshold is poisoned"  sp-orphan
 want        "and the pass says so"          "poisoned sp-orphan after 3 attempts" "$out"
 want        "and the operator is asked what to do about it"  "failed 3 times" "$(cat "$ASK_LOG")"
+# THE POISONING IS RECORDED AS AN EVENT, separate from the ask. The ask is read and answered;
+# the event is an outcome, recorded by the machinery, moved on from. The transition fires once
+# — on entry to poisoned; the label is now on the bead, so every later pass takes the other
+# branch. This is the first half of the rate limiting the sentinel enforces; spira_event's own
+# cooldown is the second.
+want "and the poisoning is recorded as an event" "--kind bead.poisoned" "$(cat "$ASK_LOG")"
+want "against the bead that poisoned"            "--target sp-orphan"   "$(cat "$ASK_LOG")"
+# AND ONLY ON THE TRANSITION. The next pass sees spira-poison on the bead and takes the `;;`
+# branch — the spira_event call is never reached.
+: > "$ASK_LOG"; out="$(sentinel)"
+nowant "an already-poisoned bead emits nothing" "--kind bead.poisoned" "$(cat "$ASK_LOG")"
 ispoisoned  "a goal child at the threshold is poisoned too"    sp-kid
 notpoisoned "and a bead below the threshold is left alone"     sp-young
 want        "the check names the size of the set it examined"  "CHECK4 examining" "$out"

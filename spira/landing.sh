@@ -619,6 +619,8 @@ rebase_survivors() {     # rebase_survivors <repo> <name> <base> <landed-branch>
             else
                 bead_reopen "$id" "$_reopen_note"
                 progress "reopened $id — does not rebase onto $base"
+                spira_event bead.reopened "$id" "reopened $id — $br does not rebase onto $base in $name" \
+                    "conflicts in ${REBASE_CONFLICTS:-unknown}; the next aeon is handed the rebase" || true
             fi
             land_mark "$id" RED "$(git -C "$repo" rev-parse "$br" 2>/dev/null)" no-rebase
             continue
@@ -910,6 +912,8 @@ for i in d:
             else
                 bead_reopen "$id" "$_reopen_note"
                 progress "reopened $id — does not rebase onto $base"
+                spira_event bead.reopened "$id" "reopened $id — $br does not rebase onto $base in $name" \
+                    "conflicts in ${REBASE_CONFLICTS:-unknown}; the next aeon is handed the rebase" || true
             fi
             land_mark "$id" RED "$tip" no-rebase
             continue
@@ -1066,6 +1070,8 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
 
 $(printf '%s' "$gate_out" | tail -20)"
             progress "reopened $id — failed the gate"
+            spira_event bead.reopened "$id" "reopened $id — $br failed $name's landing gate" \
+                "$(printf '%s' "$gate_out" | tail -3)" || true
             land_mark "$id" RED "$tip" gate
             unset 'judged[$br]'
             continue
@@ -1215,6 +1221,10 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
                 # rather than before, so a push that never landed can never leave a memory
                 # saying it did (law-closed-is-not-landed, one layer in).
                 land_mark "$id" LANDED "$tip" "$name"
+                # AFTER the push, never before it: the event says the commit is on the base
+                # branch, which is the one claim CLOSED does not make (law-closed-is-not-landed).
+                spira_event bead.landed "$id" "landed $br on $name's $base" \
+                    "merged as $(git -C "$land" rev-parse --short HEAD 2>/dev/null) from $tip" || true
                 # THE BASE HAS MOVED, SO EVERY SURVIVOR IS NOW BEHIND IT. Last, because
                 # everything above is about the branch that just landed and must not be
                 # delayed by other branches' rebases; and unset first, so this branch is not
@@ -1232,6 +1242,8 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
                 bead_reopen "$id" "Reopened by sentinel: branch $br conflicts with $base. A merge conflict is not an escalation — rebase and finish."
                 bump_requeue "$id" merge-conflict >/dev/null
                 progress "reopened $id — branch conflicts with $base"
+                spira_event bead.reopened "$id" "reopened $id — $br conflicts with $name's $base" \
+                    "the merge would not apply; rebase and finish" || true
                 unset 'judged[$br]'
             fi
             ;;

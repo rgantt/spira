@@ -164,7 +164,8 @@ stub sending.sh    'exit 0'
 stub governor.sh   'exit 0'
 stub gate.sh       'exit 0'
 stub reflect.sh    'exit 0'
-stub ask.sh        'exit 0'
+stub ask.sh        'printf "%s\n" "$*" >> "${ASK_LOG:-/dev/null}"; exit 0'
+export ASK_LOG="$TMP/ask.log"; : > "$ASK_LOG"
 # THE PULL-REQUEST PROBE IS THE SEAM, injected through SPIRA_GH rather than by PATH: conf.sh
 # replaces $PATH, so a shim placed there would be stepped over and the real `gh` would answer
 # from the operator's account. GH_STATE empty means the probe fails, which is the state every
@@ -311,6 +312,33 @@ is "and the priority is unchanged at P2" 2     "$(priority_of sp-pk-red)"
 want   "the pass mentions the bead"                 "sp-pk-red" "$out"
 want   "the bead note records the sweep acted"      "Cleared awaiting-ci" "$(notes sp-pk-red)"
 nowant "and the note makes no claim about priority" "P0" "$(notes sp-pk-red)"
+
+# ======================================================================================
+# THE OUTCOME STREAM: a red run records an event, a run still in progress is silent.
+#
+# ci.failed fires inside the FAILURE branch of the state switch and only there. A run still
+# in progress is a steady state on a two-minute timer — one event per pass would bury every
+# other outcome in the same view, which is the failure the stream was built to prevent.
+# ======================================================================================
+echo
+echo "CI outcome events:"
+
+GH_STATE="OPEN MERGEABLE FAILURE"
+seed_parks
+: > "$ASK_LOG"
+out="$(sweep 600)"
+want "a red run hands sp-pk-live back to the queue"  "CI red on sp-pk-live" "$out"
+want "and the verdict is recorded as an event"        "--kind ci.failed"    "$(cat "$ASK_LOG")"
+want "against the bead that was parked"               "--target sp-pk-live" "$(cat "$ASK_LOG")"
+
+# THE NEGATIVE THAT MATTERS MOST: a run still going is a steady state, and a steady state on
+# a two-minute timer is what buries every other outcome in the same view.
+GH_STATE="OPEN MERGEABLE PENDING"
+seed_parks
+: > "$ASK_LOG"
+out="$(sweep 600)"
+nowant "a run still in progress says nothing about sp-pk-live" "sp-pk-live" "$out"
+is     "and emits no event for it"                             ""            "$(cat "$ASK_LOG")"
 
 
 # ======================================================================================

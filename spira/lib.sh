@@ -2487,6 +2487,94 @@ spira_reaplog() {        # spira_reaplog <verb> <id> <detail>
         >> "$SPIRA_REAPLOG" 2>/dev/null || true
 }
 
+# --------------------------------------------------------------------------------------
+# EVENTS — what the harness DID, in a form that survives the next repaint.
+#
+# Outcomes used to exist only as text. The health pane's RECENT line scraped three log files
+# for landings, reopenings, poisonings, reclaims and claims and then `sort -r | head -4`, so
+# everything below the fourth line was not aged out — it was never stored. "How many times
+# did a bead reopen" was unanswerable without grepping a log that rotates.
+#
+# An event is a CLOSED `event` bead written through `$SPIRA_NOTIFY`, which is the one place
+# that knows the shape: no labels at all, because an OPEN bead carrying `spira,plan` is
+# claimable by an aeon and one carrying `overseer` lands in the queue of things awaiting the
+# operator; `--kind` for the badge the panel renders; and `--target` for the bead the outcome
+# happened TO, in its own column, so the stream filters per bead rather than per substring.
+# That column comes back from `bd --json` as `target` — only `event_kind` keeps the prefix
+# its flag carries, so a reader spelling it `event_target` gets null from a row that is
+# populated and reads it as an emitter that never set it.
+#
+# THE RATE LIMIT IS PART OF THE EMITTER, NOT A LATER FIX. These fire on a two-minute timer
+# and a reclaim storm is real. One event per attempt would bury every pilgrimage.complete in
+# the same view, and a stream nobody can read is the log line it replaced. So a (kind, target)
+# pair emits at most once per SPIRA_EVENT_COOLDOWN; repeats inside the window are COUNTED,
+# not written, and the count rides out on the next event — "+26 more since 09:14Z" is the
+# fact worth having about a retry loop, and one row is how it stays readable. A hot loop is
+# a steady state, and a steady state is not news.
+#
+# SUPPRESSED IS NOT DROPPED, and that distinction is the reason the count is carried rather
+# than the window simply being silent: a panel that renders a storm as one quiet row is a
+# check reporting all-clear on the thing it exists to show.
+#
+# PER-KEY FILES, NOT ONE TABLE. aeon.sh, landing.sh and strand.sh emit from separate
+# processes at the same time, and a read-modify-write of a shared table loses the OTHER
+# pairs' counts under a race. One file per pair races only with itself, and the worst
+# outcome of that race is one duplicate row.
+# --------------------------------------------------------------------------------------
+# Not in SPIRA_CONF_KEYS deliberately, alongside SPIRA_GHOST_GRACE and SPIRA_STRAND_GRACE
+# in strand.sh: it is an environment knob with a working default, and every key added to
+# that allowlist is a key the config file may then carry into a gate.
+SPIRA_EVENT_COOLDOWN="${SPIRA_EVENT_COOLDOWN:-3600}"
+
+spira_event() {          # spira_event <kind> <target|-> <title> [detail]
+    local kind="${1:-}" target="${2:--}" title="${3:-}" detail="${4:-}"
+    local dir="$SPIRA_RUN/events" key f now last=0 supp=0 out
+    local -a extra=()
+    [ -n "$kind" ] && [ -n "$title" ] || return 1
+    [ "$target" = "-" ] && target=""
+
+    # NAME THE MISSING DELIVERY PATH. A silent return here is how an emitter converted
+    # today records nothing for a month: `ask.sh note` either exists or it does not, and
+    # the difference must be visible in the log that every other outcome is already written
+    # to (law-absence-needs-a-positive-control).
+    if [ ! -x "${SPIRA_NOTIFY:-}" ]; then
+        log "event: $kind on ${target:-the plan} not recorded — no emitter at ${SPIRA_NOTIFY:-(unset)}"
+        return 1
+    fi
+
+    mkdir -p "$dir" 2>/dev/null || return 1
+    key="$(printf '%s@%s' "$kind" "${target:-plan}" | tr -c 'a-zA-Z0-9._@-' '_')"
+    f="$dir/$key"
+    now="$(date -u +%s)"
+    # Two windows of quiet and the pair is not in a storm any more, so its counter is
+    # meaningless — collect it rather than let one file per (kind, bead) accumulate forever.
+    find "$dir" -maxdepth 1 -type f -mmin +"$(( (SPIRA_EVENT_COOLDOWN * 2) / 60 + 1 ))" -delete 2>/dev/null
+    [ -s "$f" ] && read -r last supp < "$f"
+    case "${last:-}" in ''|*[!0-9]*) last=0 ;; esac
+    case "${supp:-}" in ''|*[!0-9]*) supp=0 ;; esac
+
+    if [ "$last" -gt 0 ] && [ "$(( now - last ))" -lt "$SPIRA_EVENT_COOLDOWN" ]; then
+        # The window belongs to the FIRST emission, not the last suppression: refreshing
+        # `last` on every repeat is how a fast enough loop goes permanently silent.
+        printf '%s %s\n' "$last" "$(( supp + 1 ))" > "$f"
+        return 0
+    fi
+    [ "$supp" -gt 0 ] \
+        && title="$title (+$supp more since $(date -u -d "@$last" +%H:%MZ 2>/dev/null || echo 'the last one'))"
+    printf '%s 0\n' "$now" > "$f"
+
+    [ -n "$target" ] && extra+=(--target "$target")
+    [ -n "$detail" ] && extra+=(--why "$detail")
+    # Bounded: a hung `bd` must not hold a landing pass open. The pass's own work is already
+    # done by the time this runs, so a failure here is worth a line and nothing more.
+    if ! out="$(timeout "${SPIRA_EVENT_TIMEOUT:-60}" \
+                    "$SPIRA_NOTIFY" note "$title" --kind "$kind" ${extra+"${extra[@]}"} 2>&1)"; then
+        log "event: $kind on ${target:-the plan} could not be recorded — $(printf '%s' "$out" | tail -1)"
+        return 1
+    fi
+    return 0
+}
+
 # The status witness, and the seam a suite drives it through. `--status-from` is the honest
 # manual entry point too: it says exactly what the caller believes about each bead.
 declare -A SPIRA_STATUS_MAP=()

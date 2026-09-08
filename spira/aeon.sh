@@ -239,6 +239,15 @@ if [ -z "${BEAD_ID:-}" ]; then
 fi
 log "$FAYTH/$AEON: claimed $BEAD_ID"
 ledger "awake $FAYTH $BEAD_ID"
+# A CLAIM IS A TRANSITION, AND IT IS THE ONE THE PANE COULD NOT SHOW. Every other outcome
+# recorded here is an ENDING — landed, reopened, poisoned, reclaimed — so a bead changing
+# hands was invisible: an aeon could exit mid-CI believing something would resume it, the
+# lease expired, and the health pane showed a stale landing while commits sat abandoned.
+# Nothing on screen said a thing had changed hands.
+#
+# Emitted AFTER the ledger, never instead of it. The ledger is what aeon_count and the
+# born/awake positive control read, and it must not depend on a database being reachable.
+spira_event aeon.claimed "$BEAD_ID" "$AEON claimed $BEAD_ID" "summoned from the $FAYTH fayth" || true
 
 # THE CLAIM AND THE PREDICATE CHECK ARE NOT ATOMIC. The predicate excludes spira-poison,
 # but `bd ready --claim` reads, then writes: a bead that receives the poison label in that

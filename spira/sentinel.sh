@@ -272,6 +272,10 @@ for id in $dispatchable; do
         *)  bdq label add "$id" spira-poison >/dev/null 2>&1
             bdq note "$id" "Poisoned after $n attempts, charged by: ${charges:-unrecorded}. Not retried until a human changes the approach. Any live holder keeps its claim and releases on its own exit path; no persona can claim it again while the label stands." >/dev/null 2>&1
             progress "poisoned $id after $n attempts (${charges:-unrecorded})"
+            # Inside the label guard, so it fires on the TRANSITION into poisoned and never
+            # again — the bead keeps the label, and every later pass takes the other branch.
+            spira_event bead.poisoned "$id" "poisoned $id after $n attempts" \
+                "not retried until a human changes the approach; the ask below carries the failure" || true
             ;;
     esac
 
@@ -755,6 +759,8 @@ while IFS="$(printf '\t')" read -r id park_repo park_at; do
             bdq label remove "$id" "$SPIRA_CI_LABEL" >/dev/null 2>&1
             bdq note "$id" "CI failed on $br. Cleared $SPIRA_CI_LABEL; the bead returns to the queue at its own priority — the branch and its commits are recorded on this bead." >/dev/null 2>&1
             progress "CI red on $id — handed back to the queue at its own priority"
+            spira_event ci.failed "$id" "CI red on $br — $id handed back to the queue" \
+                "pull request state: $state" || true
             ;;
         *PENDING*|*IN_PROGRESS*|*QUEUED*|*" null"*)
             : ;;   # still running; leave it parked, and say nothing

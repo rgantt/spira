@@ -419,6 +419,14 @@ cmd_check() {
                     n="$(bump_reclaim "$id" ghost)"
                     bdq note "$id" "Reclaimed by strand.sh: in_progress with no live aeon holding it and the lease expired. Reclaim $n — the worker died; this is not an attempt at the work." >/dev/null 2>&1
                     printf 'RECLAIMED %s — %s\n' "$id" "$detail"
+                    # This line is what the health pane scrapes, and it carries no timestamp
+                    # of its own — it is attributed to the last stamped line above it, then
+                    # dropped below the fourth row. The event is the durable half.
+                    #
+                    # A HOT RETRY LOOP RECLAIMS THE SAME BEAD EVERY FEW MINUTES. The
+                    # emitter's own cooldown is what keeps that one readable row rather than
+                    # 26, and prevents burying every other outcome in the same view.
+                    spira_event branch.reclaimed "$id" "reclaimed $id — reclaim $n" "$detail" || true
                     # The ceiling has its OWN escalation. The question it asks is about the
                     # host, not about the bead, so it must not read like a poison ask. `-eq`
                     # on a counter that only ever increases fires it exactly once — no episode
