@@ -19,7 +19,7 @@ Type=oneshot
 # It is idempotent and writes nothing when the file already says what it should, and it
 # REFUSES while the hook's own file is absent — so between arming this and the branch that
 # adds the hook landing, the pass is a no-op rather than a registration pointing at nothing.
-ExecStartPre=-@SPIRA_HOME@/install-session-hook.sh install
+ExecStartPre=-@SPIRA_PROD@/install-session-hook.sh install
 ExecStart=@SPIRA_COCKPIT@/layout.sh ensure
 TimeoutStartSec=60
 # This box may be running production on the same cores, and this fires every minute

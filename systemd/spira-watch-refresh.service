@@ -11,7 +11,7 @@ After=default.target
 
 [Service]
 Type=oneshot
-ExecStart=@SPIRA_HOME@/watch-refresh.sh
+ExecStart=@SPIRA_PROD@/watch-refresh.sh
 # A pass is two execs and no restarts in the steady state; anything past this is a fault,
 # not a slow box, and a check that hangs every minute is worse than one that fails.
 TimeoutStartSec=60

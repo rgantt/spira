@@ -10,7 +10,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=@SPIRA_HOME@/cockpit.sh loop
+ExecStart=@SPIRA_PROD@/cockpit.sh loop
 Restart=always
 RestartSec=15
 # A pass shells out to bd and git several times. This box also runs prod, so it is fenced

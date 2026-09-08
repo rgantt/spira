@@ -9,7 +9,7 @@ After=default.target
 
 [Service]
 Type=oneshot
-ExecStart=@SPIRA_HOME@/archivist.sh sweep
+ExecStart=@SPIRA_PROD@/archivist.sh sweep
 # THE CONCURRENCY CAP IS THIS LINE PLUS Type=oneshot, and it is why archivist.sh spawns
 # nothing: a oneshot service that is still active is not started again by its timer, so a
 # sweep that is in the middle of an archive simply skips its next tick. A lock file would be

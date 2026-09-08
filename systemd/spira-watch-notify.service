@@ -9,7 +9,7 @@ After=default.target
 
 [Service]
 Type=oneshot
-ExecStart=@SPIRA_HOME@/watchd.sh notify
+ExecStart=@SPIRA_PROD@/watchd.sh notify
 # A STANDING BACKLOG IS NOT A UNIT FAILURE. Exit 1 means the condition was found and the
 # decision is already in front of the operator; leaving the unit red on top of that is a
 # second alert for one condition, and a unit permanently red is one whose next genuine

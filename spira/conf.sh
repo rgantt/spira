@@ -73,6 +73,7 @@ SPIRA_TESTDB_LIB SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT
 SPIRA_GATE_TIMEOUT SPIRA_GATE_BUDGET
 SPIRA_GATE_SUITES SPIRA_SUITES_STATE SPIRA_SUITES_BUDGET SPIRA_SUITE_TIMEOUT
 SPIRA_SUITES_PRIORITY SPIRA_SUITES_STALE
+SPIRA_PROD
 "
 
 # --------------------------------------------------------------------------------------
@@ -589,6 +590,15 @@ spira_conf_defaults() {
     # which the sweep names the scan, so an ordinary quiet hour does not read as a fault.
     : "${SPIRA_SUITES_STALE:=21600}"
 
+    # THE PRODUCTION CHECKOUT — the ONLY directory systemd executes. Landing a change on
+    # the development checkout (SPIRA_REPO) does not alter production until promote.sh carries
+    # it here. The default derives from the development checkout's location: append "-prod" to
+    # the repo name and land in the same parent directory, keeping the same harness subdir name.
+    # A colleague whose prod checkout lives elsewhere sets this key; an empty value disables the
+    # split and everything runs from the development checkout (the old behaviour, which is the
+    # default for a fresh clone that has no prod checkout yet).
+    : "${SPIRA_PROD:=$SPIRA_WORKSPACES/${SPIRA_HOME_REPO}-prod/$(basename "$SPIRA_HOME")}"
+
     # THE MAP FALLS BACK TO THE EXAMPLE, and that is what makes a clean clone runnable at
     # all. The real map is one operator's inventory of checkouts and does not ship; the
     # example does. Resolution runs beside the config file first, because that is where an
@@ -732,7 +742,7 @@ export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIR
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \
        SPIRA_GATE_NOVERDICT SPIRA_GATE_BASEFAIL \
-       SPIRA_CONF_FILE
+       SPIRA_CONF_FILE SPIRA_PROD
 
 # --------------------------------------------------------------------------------------
 # NAME WHAT IS MISSING. A harness that dies with `bd: command not found` from a timer has

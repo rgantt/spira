@@ -8,7 +8,7 @@ After=default.target
 
 [Service]
 Type=oneshot
-ExecStart=@SPIRA_HOME@/archive.sh sweep
+ExecStart=@SPIRA_PROD@/archive.sh sweep
 # THE FIRST PASS IS THE WHOLE CORPUS and every one after it is only what changed, so the
 # timeout has to cover the former: gigabytes read, hashed and compressed once. A timeout sized
 # for the steady state kills the only pass that had real work to do, every time, and leaves an

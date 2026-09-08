@@ -20,15 +20,15 @@ Type=oneshot
 # ExecCondition that exits non-zero makes systemd SKIP the pass and record success, so the
 # timer sits silent and starts working by itself the moment the file is there. No step for
 # anyone to remember.
-ExecCondition=/usr/bin/test -f @SPIRA_HOME@/chamber/ops.fayth
+ExecCondition=/usr/bin/test -f @SPIRA_PROD@/chamber/ops.fayth
 # Repair the wiring on every pass. A new store gets a new alert template that an install
 # run months ago never saw; this is idempotent, costs a find and a diff, and is the
 # cockpit-ensure lesson — repair from systemd, not from a session that may be dead.
-ExecStartPre=-@SPIRA_HOME@/install-intake.sh install
+ExecStartPre=-@SPIRA_PROD@/install-intake.sh install
 # Anything the spool is still holding because the database was unreachable when the event
 # arrived. A write-ahead record nobody drains is a lost event with extra steps.
-ExecStartPre=-@SPIRA_HOME@/incident.sh drain
-ExecStart=@SPIRA_HOME@/aeon.sh ops
+ExecStartPre=-@SPIRA_PROD@/incident.sh drain
+ExecStart=@SPIRA_PROD@/aeon.sh ops
 # Matches FAYTH_TIMEOUT_SECONDS plus room for the claim and the verdict. An aeon that
 # outlives this is killed, its lease goes stale, and `bd reclaim` returns the bead.
 TimeoutStartSec=2000
