@@ -74,7 +74,7 @@ SPIRA_TESTDB_LIB SPIRA_TESTDB_BD SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT
 SPIRA_GATE_TIMEOUT SPIRA_GATE_BUDGET
 SPIRA_GATE_SUITES SPIRA_SUITES_STATE SPIRA_SUITES_BUDGET SPIRA_SUITE_TIMEOUT
 SPIRA_SUITES_PRIORITY SPIRA_SUITES_STALE
-SPIRA_PROD
+SPIRA_PROD SPIRA_INSTANCE
 SPIRA_REVIEWER_MODEL SPIRA_REVIEWER_VERDICTS SPIRA_REVIEWER_TIMEOUT SPIRA_REVIEWER_DIFF_LIMIT
 SPIRA_REVIEW_LABEL
 SPIRA_SELF_WINDOW
@@ -197,11 +197,29 @@ spira_conf_read() {
 # earlier ones.
 spira_conf_defaults() {
     : "${SPIRA_HOME_REPO:=$(basename "$SPIRA_REPO")}"
+    # THE INSTANCE NAME. Two instances (e.g. 'prod' and 'test') may run side by side on
+    # one machine; each reads its own database and writes its own runtime tree. 'prod' is
+    # the default so every existing installation is unaffected by this key's existence.
+    # An unset SPIRA_INSTANCE is identical to SPIRA_INSTANCE=prod — the suffix below
+    # collapses to empty and every derived path resolves to the path it always had.
+    : "${SPIRA_INSTANCE:=prod}"
+    # The suffix appended to instance-specific path segments. Empty for 'prod'; the prod
+    # case must produce no suffix so a clean clone with no config sees exactly the paths
+    # every existing box already has — not a new layout that would break on upgrade.
+    local _spira_inst_sfx=""
+    [ "${SPIRA_INSTANCE}" = "prod" ] || _spira_inst_sfx="-${SPIRA_INSTANCE}"
+
     # The database is NOT under the checkout by default. A beads database accumulates
     # internal working notes and agent memories, so a default that puts it inside a git
     # repository is one `git add -A` away from publishing them (law-beads-is-never-public).
-    : "${SPIRA_DB:=${XDG_DATA_HOME:-$HOME/.local/share}/spira/db}"
-    : "${SPIRA_RUN:=$SPIRA_REPO/.runtime/spira}"
+    # INSTANCE-QUALIFIED: each instance gets its own sidecar database so stopping or wiping
+    # 'test' leaves the 'prod' store untouched. For prod the suffix is empty; the path is
+    # identical to what every existing box has.
+    : "${SPIRA_DB:=${XDG_DATA_HOME:-$HOME/.local/share}/spira${_spira_inst_sfx}/db}"
+    # INSTANCE-QUALIFIED: each instance writes its own runtime tree — pid files, the aeon
+    # ledger, the cockpit state — so a test instance cannot overwrite prod's working state.
+    # For prod the suffix is empty; the path is unchanged.
+    : "${SPIRA_RUN:=$SPIRA_REPO/.runtime/spira${_spira_inst_sfx}}"
     : "${SPIRA_GOAL:=sp-spira}"
     : "${SPIRA_PATH:=}"
     : "${SPIRA_WORKSPACES:=$(dirname "$SPIRA_REPO")}"
@@ -826,7 +844,8 @@ spira_gate_blames_branch() {   # spira_gate_blames_branch <status> -> 0 if the b
 }
 
 # --------------------------------------------------------------------------------------
-export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD COCKPIT_CLIENT_IDLE_SECS SPIRA_PATH SPIRA_GOAL \
+export SPIRA_INSTANCE \
+       SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD COCKPIT_CLIENT_IDLE_SECS SPIRA_PATH SPIRA_GOAL \
        SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL SPIRA_RECLAIM_SKIP_LABEL \
        SPIRA_CI_LABEL SPIRA_CI_PARK_MAX \
        SPIRA_TESTDB_BD SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT \
