@@ -169,6 +169,46 @@ spira_ask_timeout_loop() {  # <bead> <branch> <fayth> <cap-seconds> <timeout-cou
         >/dev/null 2>&1
 }
 
+# land_log_tail — last N lines of landing.log for escalation evidence.
+#
+# landing.log is PLAIN TEXT, so it is tailed with `tail` and not with trace_tail. trace_tail
+# renders a stream-json session log and silently drops every line that does not start with
+# `{` — pointed at this file it returns the empty string, and an escalation whose evidence
+# section is empty is the same failure as no escalation at all, arriving with a reassuring
+# shape (law-escalations-carry-their-evidence).
+land_log_tail() {
+    local f="$SPIRA_RUN/landing.log" n="${1:-30}"
+    [ -r "$f" ] || { printf '(no landing log — the worker has never written one)'; return 0; }
+    tail -n "$n" "$f" 2>/dev/null
+}
+
+# land_escalate — ask the operator once when the landing leg is broken.
+#
+# The escalation is rate limited because a dead landing leg stays dead until someone fixes
+# it, and a check that says so every two minutes is a check the operator learns to scroll past
+# (law-alerts-must-be-actionable).
+land_escalate() {        # land_escalate <subject-tail> <evidence>
+    local why="$1" ev="$2" cd="$SPIRA_RUN/landing.escalated" now last
+    # ALREADY ON HIS SCREEN? THEN DO NOT ASK AGAIN. The clock below is a floor, not the
+    # answer: a dead landing leg stays dead until somebody fixes it, so an hourly re-ask put
+    # NINE identical "Spira is landing nothing" decisions in the operator's pane in one day.
+    # He closed eight of them and the ninth arrived anyway — "why do i keep getting this."
+    # The queue is the database, so ask the database rather than this box's memory of it.
+    ask_already_open "Spira is landing nothing" && return 0
+    now="$(date +%s)"; last=0
+    [ -f "$cd" ] && last="$(cat "$cd" 2>/dev/null || echo 0)"
+    [ $(( now - last )) -lt "${SPIRA_LAND_ESCALATE_EVERY:-3600}" ] && return 0
+    echo "$now" > "$cd"
+    "$SPIRA_NOTIFY" add \
+        "Spira is landing nothing — $why" \
+        --default "run \`$SPIRA_HOME/landing.sh\` by hand to see the failure, then file the fix as a bead" \
+        --why "every finished branch in every repository is standing unlanded until this is fixed; aeons go on working and closing beads, so the board will read as healthy while nothing reaches a base branch" \
+        --evidence "$ev" >/dev/null 2>&1
+    # An escalation is a write, never a movement. Counting a report of paralysis as progress
+    # would mute the one check that notices paralysis.
+    act "escalated: the landing leg is not running"
+}
+
 # How many rows a `bd --json` payload carries. Never `| wc -l` and never a grep: the payload
 # is one line, and a warning printed before it would be counted as a row.
 json_count() {           # stdin: JSON; stdout: an integer, 0 on anything unparseable
