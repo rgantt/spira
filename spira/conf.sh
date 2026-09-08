@@ -65,6 +65,7 @@ COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_VIEW SPIRA_VIEW_SESSION
 SPIRA_ALERT_GLOB
+SPIRA_BD_PIN
 SPIRA_FAYTHS SPIRA_MAX_AEONS SPIRA_LANES SPIRA_QA_DEPTH
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
 SPIRA_ARCHIVE
@@ -570,6 +571,12 @@ spira_conf_defaults() {
     # said, and a default inside a shared checkout is one `git add -A` away from publishing
     # all of it. Point it at whichever volume has the room; nothing here ever deletes.
     : "${SPIRA_ARCHIVE:=$SPIRA_RUN/archive}"
+    # WHERE THE BD BINARY PIN LIVES. A pin file records which bd is installed —
+    # its migration count, version string, sha256, and build flags — so doctor.sh
+    # can detect an unannounced rebuild before the loop tries to run. Default is
+    # machine-local (under SPIRA_RUN, which is gitignored), not in the harness tree.
+    # Populate it after every bd install with: spira/bd-pin.sh write
+    : "${SPIRA_BD_PIN:=$SPIRA_RUN/bd-pin}"
 
     # ---- THE ARCHIVIST: WHEN A FULL SESSION GETS ITS UNFINISHED BUSINESS RESCUED ---------
     # HOW MANY TURNS BETWEEN SWEEPS. The timer fires every five minutes; on each pass, a
@@ -760,10 +767,11 @@ export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin
 #
 # The rollback (sp-6ylz, 2026-09-08 18:14) ran and was reverted three minutes later at 18:17:
 # at v53 every write to the production database failed. The cursor has been at v61 since 18:17.
-# Reads and writes work without BD_IGNORE_SCHEMA_SKEW because this bd is a CGO main-build that
-# knows all 61 migrations — NOT because the cursor moved. The rule the scar teaches: bd's version
-# string does not order against release tags. A main build knows MORE migrations than tagged
-# v1.2.2 (which knows only 53), so pin by migration count, never by version string.
+# Reads and writes work without BD_IGNORE_SCHEMA_SKEW because this bd is a CGO_ENABLED=0
+# (server-mode) dev build from main that knows all 61 migrations — NOT because the cursor
+# moved. The rule the scar teaches: bd's version string does not order against release tags.
+# A dev build from main knows MORE migrations than a tagged release (v1.2.2 knows only 53),
+# so pin by migration count, never by version string. See spira/bd-pin.sh and SPIRA_BD_PIN.
 # The revert evidence is in $SPIRA_RUN/reaped/sp-6ylz.schema-rollback-*.md.
 
 # --------------------------------------------------------------------------------------

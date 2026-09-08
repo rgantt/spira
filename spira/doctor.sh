@@ -87,6 +87,49 @@ case "$SPIRA_DB" in
 esac
 
 echo
+echo "bd schema"
+# BD MIGRATION COUNT vs DATABASE CURSOR. When the installed bd knows more or fewer
+# migrations than the database cursor, bd exits 0 with the complaint on stdout — callers
+# that check exit status read success and parse the error message as data. This was the
+# failure mode on 2026-09-08: a rebuild replaced the installed bd with one that knows only
+# v53, the production database was at v61, and the harness summoned nothing for six minutes
+# while the panes showed 0 ready rather than a fault.
+#
+# `bd migrate schema` WITHOUT --ignore-schema-skew is the discriminating check: it exits 0
+# and names the matching version on agreement, and exits non-zero naming both counts when
+# they differ. The pair (installed bd, database) must stay in lock-step; rebuild one and
+# the other may need to move too. Record the installed bd's state right after any rebuild:
+#   spira/bd-pin.sh write
+if [ -d "$SPIRA_DB/.beads" ]; then
+    if _schema_out="$(timeout 30 bd -C "$SPIRA_DB" migrate schema 2>&1)"; then
+        _schema_ver="$(printf '%s\n' "$_schema_out" | grep -oE 'already at v[0-9]+' | grep -oE '[0-9]+')"
+        OK "bd migration count matches database cursor (v${_schema_ver:-?})"
+    else
+        _schema_db="$(printf '%s\n' "$_schema_out" | grep -oE 'database is at v[0-9]+' | grep -oE '[0-9]+')"
+        _schema_bd="$(printf '%s\n' "$_schema_out" | grep -oE 'binary knows up to v[0-9]+' | grep -oE '[0-9]+')"
+        if [ -n "${_schema_db:-}" ] && [ -n "${_schema_bd:-}" ]; then
+            FAIL "bd migration count (v$_schema_bd) does not match database cursor (v$_schema_db)" \
+                 "Rebuild bd from the commit recorded in $SPIRA_BD_PIN, then run:
+        $SPIRA_HOME/bd-pin.sh write"
+        else
+            FAIL "bd migrate schema failed — cannot verify migration count" \
+                 "$(printf '%s' "$_schema_out" | head -2)"
+        fi
+    fi
+    unset _schema_out _schema_ver _schema_db _schema_bd
+    if [ -f "${SPIRA_BD_PIN:-}" ]; then
+        _pin_migs="$(grep '^BD_PIN_MIGRATIONS=' "$SPIRA_BD_PIN" 2>/dev/null | cut -d= -f2)"
+        OK "bd pin at $SPIRA_BD_PIN (pinned v${_pin_migs:-?})"
+        unset _pin_migs
+    else
+        WARN "no bd pin file at ${SPIRA_BD_PIN:-<unset>}" \
+             "After installing a new bd binary, record it: $SPIRA_HOME/bd-pin.sh write"
+    fi
+else
+    WARN "cannot check bd schema — no database yet"
+fi
+
+echo
 echo "statutes"
 if command -v bd >/dev/null 2>&1 && [ -d "$SPIRA_DB/.beads" ]; then
     missing="$("$SPIRA_HOME/seed.sh" --list 2>/dev/null | grep -c ' -$' || true)"
