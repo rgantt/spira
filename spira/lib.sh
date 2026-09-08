@@ -2264,6 +2264,92 @@ for i in (d if isinstance(d, list) else [d]):
 # clean clone has a map at all. This line is the guard for a lib.sh sourced without it.
 SPIRA_REPO_MAP="${SPIRA_REPO_MAP:-$SPIRA_HOME/repo-map}"
 
+# --------------------------------------------------------------------------------------
+# CONTAINMENT: a non-prod instance may not name a repo outside its workspaces root, nor
+# one with a real (network-reachable) remote. Two independent refusals, both failing
+# closed, because a path check alone is not containment — a clone in the right location
+# can still push to github.com. What is contained is REACH, not location.
+#
+# Prod is entirely unaffected: the check is a no-op when SPIRA_INSTANCE is absent or
+# 'prod'. The map is read exactly once, at the moment lib.sh is sourced, so the
+# harness refuses before it does any work rather than at first use.
+#
+# A "real remote" is any fetch URL that does not start with '/' (absolute path) and is
+# not a file:// URL and is not empty. https://, git@, ssh:// are all real remotes.
+# A clone with no remotes at all passes — that is the intended shape for test repos.
+# --------------------------------------------------------------------------------------
+_spira_remote_is_real() {   # _spira_remote_is_real <url> -> 0 if network-reachable
+    local url="${1:-}"
+    [ -n "$url" ] || return 1          # no URL is not a real remote
+    case "$url" in
+        /*)        return 1 ;;         # absolute local path
+        file:///*) return 1 ;;         # file:// URL pointing locally
+        *)         return 0 ;;         # https://, git@, ssh://, etc.
+    esac
+}
+
+spira_containment_check() {
+    # prod (or unset) is always allowed; the map is unconstrained.
+    case "${SPIRA_INSTANCE:-prod}" in prod) return 0 ;; esac
+
+    local ws path url row name bad=0
+    ws="${SPIRA_WORKSPACES:-}"
+
+    [ -f "$SPIRA_REPO_MAP" ] || return 0   # no map to check
+
+    while IFS='|' read -r name path rest || [ -n "$name" ]; do
+        # strip whitespace and skip comments/blanks
+        name="${name#"${name%%[![:space:]]*}"}"; name="${name%"${name##*[![:space:]]}"}"
+        path="${path#"${path%%[![:space:]]*}"}"; path="${path%"${path##*[![:space:]]}"}"
+        case "$name" in ''|'#'*) continue ;; esac
+        [ -n "$path" ] || continue
+
+        # REFUSAL 1: path must be under SPIRA_WORKSPACES.
+        if [ -n "$ws" ]; then
+            # resolve the workspace root to its canonical prefix
+            local ws_real; ws_real="$(cd "$ws" 2>/dev/null && pwd -P)"
+            if [ -n "$ws_real" ]; then
+                # canonical path of the repo entry (use the directory if it exists, else
+                # compare the literal string so an unmade path is still caught by name)
+                local path_real; path_real="$(cd "$path" 2>/dev/null && pwd -P)"
+                [ -n "$path_real" ] || path_real="$path"
+                case "$path_real" in
+                    "$ws_real"/*|"$ws_real") ;;   # inside workspaces root — ok
+                    *) printf 'spira: containment: instance %s is confined to %s — %s (%s) is outside it\n' \
+                           "${SPIRA_INSTANCE}" "$ws" "$name" "$path" >&2
+                       bad=1 ;;
+                esac
+            else
+                # SPIRA_WORKSPACES does not exist as a directory; compare literal prefix
+                case "$path" in
+                    "$ws"/*|"$ws") ;;
+                    *) printf 'spira: containment: instance %s is confined to %s — %s (%s) is outside it\n' \
+                           "${SPIRA_INSTANCE}" "$ws" "$name" "$path" >&2
+                       bad=1 ;;
+                esac
+            fi
+        fi
+
+        # REFUSAL 2: no real (network) remote on any registered checkout.
+        # Only check if the path is a git repository at all.
+        if git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
+            while IFS= read -r url; do
+                _spira_remote_is_real "$url" || continue
+                printf 'spira: containment: instance %s may not have a real remote — %s (%s) has %s\n' \
+                    "${SPIRA_INSTANCE}" "$name" "$path" "$url" >&2
+                bad=1; break
+            done < <(git -C "$path" remote -v 2>/dev/null | awk '/\(fetch\)/ { print $2 }')
+        fi
+    done < "$SPIRA_REPO_MAP"
+
+    [ "$bad" -eq 0 ] || { printf 'spira: containment check failed for instance %s — halting\n' \
+        "${SPIRA_INSTANCE}" >&2; exit 1; }
+}
+
+# Run at source time. The cost is one read of the map file and, for non-prod instances,
+# one `git remote -v` per registered checkout — a fraction of a second on summon.
+spira_containment_check
+
 # The name is DERIVED from the checkout the harness is installed in (conf.sh: basename of
 # SPIRA_REPO) and overridable in spira.conf. It used to be the literal `brain`, which is one
 # operator's repository written into the mechanism.
