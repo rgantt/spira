@@ -194,5 +194,62 @@ out="$(world status)"
 wcount="$(printf '%s' "$out" | grep 'live workers' | grep -oE '[0-9]+' | tail -1)"
 is "and is 0 after the process exits" "0" "${wcount:-?}"
 
+# ---- DRAIN / RESUME -----------------------------------------------------------------
+# The property that matters is what drain does NOT do. The first implementation stopped
+# spira-sentinel.timer to halt summons, which also halted LANDING — landing is a leg of the
+# sentinel pass, not a timer — and three finished branches sat unlanded (2026-09-08). So the
+# assertion is negative and deliberate: drain must touch no unit at all.
+
+out="$(world drain)"
+want "drain reports DRAINED with an empty pool" "DRAINED" "$out"
+want "drain says the loop keeps running" "landing and reaping continue" "$out"
+
+# THE LOAD-BEARING ONE. If drain ever stops a unit again, this fails.
+calls="$(cat "$CALLS" 2>/dev/null || true)"
+nowant "drain stops no timer" "stop spira-sentinel.timer" "$calls"
+nowant "drain stops no landing service" "stop spira-landing.service" "$calls"
+
+[ -f "$RUN/world.draining" ] && ok "drain writes the stamp" \
+                             || bad "drain writes the stamp" "no $RUN/world.draining"
+want "the stamp says how to lift it" "resume" "$(cat "$RUN/world.draining" 2>/dev/null)"
+
+out="$(world status)"
+want "status reports DRAINING while the stamp exists" "DRAINING" "$out"
+
+out="$(world resume)"
+want "resume reports it" "summons resumed" "$out"
+[ -f "$RUN/world.draining" ] && bad "resume removes the stamp" "stamp still present" \
+                             || ok "resume removes the stamp"
+
+out="$(world status)"
+nowant "status stops saying DRAINING after resume" "DRAINING" "$out"
+
+out="$(world resume)"
+want "resume on a world that was not draining says so" "not draining" "$out"
+
+# A DRAIN THAT TIMES OUT MUST FAIL LOUDLY. Reporting DRAINED while an aeon is still working
+# is the whole reason this is a command rather than a hand-typed systemctl. The fake aeon has
+# to carry "$SH/aeon.sh" in its OWN argv, because that substring is exactly what live_aeons
+# matches in /proc — a `sleep 120 &` is invisible to it, which is how the first version of
+# this case passed while proving nothing.
+printf '#!/usr/bin/env bash\nsleep 120\n' > "$SH/aeon.sh"; chmod +x "$SH/aeon.sh"
+bash "$SH/aeon.sh" & WORKER_PID=$!
+sleep 0.3
+
+rc=0
+out="$(SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_CONF="$TMP/no-such-conf" \
+       SPIRA_SYSTEMCTL="$TMP/systemctl" \
+       bash "$SH/world.sh" drain --timeout 0 2>&1)" || rc=$?
+
+is  "drain exits non-zero when it times out with an aeon live" "1" "$rc"
+want "and says NOT DRAINED"        "NOT DRAINED"          "$out"
+nowant "and never claims DRAINED"  "spira: DRAINED"       "$out"
+want "and says summons stay gated" "REMAIN GATED"         "$out"
+[ -f "$RUN/world.draining" ] && ok "a timed-out drain leaves the gate in place" \
+                             || bad "a timed-out drain leaves the gate in place" "stamp was removed"
+
+kill "$WORKER_PID" 2>/dev/null; wait "$WORKER_PID" 2>/dev/null; WORKER_PID=""
+world resume >/dev/null
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

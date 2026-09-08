@@ -875,6 +875,22 @@ fayths_for_labels() {    # fayths_for_labels <labels> -> personas whose partitio
 # least.
 summon_fayth() {         # summon_fayth <fayth> [pool-remaining]
     local f="$1" pool="${2:-}" r free
+    # DRAINING — the operator asked for an empty pool and is waiting on it. Checked FIRST,
+    # ahead of capacity and readiness, because it is the only condition here a person is
+    # actively blocked on: a rollout that must not kill work in flight — install.sh, a schema
+    # change, swapping the checkout aeon.sh itself is read from — needs the pool to reach
+    # zero, and it never does while summons continue (per Ryan, 2026-09-08: "that's the only
+    # way they will ever drain").
+    #
+    # THE GATE IS HERE, NOT ON THE TIMER, and that is the whole design. Landing is a LEG of
+    # the sentinel pass (sentinel.sh starts spira-landing) and not a timer of its own, so
+    # stopping spira-sentinel.timer to halt summons also halts landing and strands every
+    # finished branch — measured 2026-09-08, three branches unlanded across a 16-minute
+    # hand-drain. Gate the spawn; leave the loop running.
+    if [ -f "${SPIRA_RUN:-}/world.draining" ]; then
+        log "CHECK7 $f: draining — not summoning (world.sh resume to lift)"
+        return 1
+    fi
     # THE ACCOUNT BEFORE THE QUEUE. A summon during a capacity outage cannot succeed, and it
     # does not fail for free: the aeon it starts claims a bead, is refused by the API, and
     # the bead pays an attempt to discover a fact the harness already knew. Asked first, and

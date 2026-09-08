@@ -4,6 +4,8 @@
 #
 #   world.sh stop [--why "..."]   halt the loop: no summons, no landing, no live aeons
 #   world.sh start                bring it back
+#   world.sh drain [--timeout N]  no NEW aeons; loop and landing keep running until the pool empties
+#   world.sh resume               lift a drain
 #   world.sh status               what is up, what is down, what is running
 #
 # WHY THIS EXISTS. Stopping Spira meant remembering six unit names and then hunting aeon
@@ -31,6 +33,7 @@ SC="${SPIRA_SYSTEMCTL:-systemctl}"
 TIMERS=(spira-sentinel.timer spira-ops.timer spira-watchtower.timer
         spira-archivist.timer spira-archive.timer spira-skew.timer)
 STAMP="$SPIRA_RUN/world.halted"
+DRAIN_STAMP="$SPIRA_RUN/world.draining"
 
 # live_aeons -> "<pid> <unit>" per running aeon, resolved from /proc argv.
 # NEVER pgrep -f: the pattern is a substring of this script's own command line.
@@ -178,7 +181,55 @@ start)
     echo "spira: RUNNING"
     ;;
 
+# DRAIN IS NOT A SOFTER STOP — IT IS A DIFFERENT SHAPE. `stop` halts the timers, the work
+# services and the live aeons, because it exists to make everything quiet. `drain` closes the
+# door and lets the room empty: no NEW aeon is summoned, while the loop, landing and reaping
+# all keep running so an aeon already working can finish and LAND what it built.
+#
+# NOTHING IS STOPPED, so there is no channel to forget to restart (law-arm-before-you-retire).
+# The gate is a stamp file that summon_fayth() checks in lib.sh — one place, covering every
+# caller. The first attempt at this stopped spira-sentinel.timer instead, which also stopped
+# landing, because landing is a leg of the sentinel pass rather than a timer of its own:
+# three finished branches sat unlanded for sixteen minutes (2026-09-08).
+drain)
+    shift; dtimeout=1800
+    [ "${1:-}" = "--timeout" ] && { dtimeout="${2:-1800}"; shift 2; }
+
+    { date '+%Y-%m-%d %H:%M:%S %Z'
+      printf 'summons gated in summon_fayth; loop and landing still running. Lift with: %s resume\n' "$0"
+    } > "$DRAIN_STAMP"
+    echo "spira: draining — no new aeons; loop, landing and reaping continue"
+
+    waited=0
+    while :; do
+        n="$(live_aeons | grep -c . || true)"
+        [ "$n" -eq 0 ] && break
+        if [ "$waited" -ge "$dtimeout" ]; then
+            printf 'spira: NOT DRAINED — %s aeon(s) still live after %ss\n' "$n" "$dtimeout" >&2
+            printf 'spira: summons REMAIN GATED. Lift with: %s resume\n' "$0" >&2
+            exit 1
+        fi
+        [ $(( waited % 60 )) -eq 0 ] && [ "$waited" -gt 0 ] && \
+            printf '  %s aeon(s) still working (%ss elapsed)\n' "$n" "$waited"
+        sleep 10; waited=$(( waited + 10 ))
+    done
+
+    echo "spira: DRAINED — no aeon running, summons gated"
+    printf 'spira: resume with: %s resume\n' "$0"
+    ;;
+
+resume)
+    if [ -f "$DRAIN_STAMP" ]; then
+        rm -f "$DRAIN_STAMP"; echo "spira: summons resumed"
+    else
+        echo "spira: was not draining — nothing to resume"
+    fi
+    ;;
+
 status)
+    # A GATED SUMMON MUST NEVER BE INVISIBLE: a pool held at zero on purpose and a queue with
+    # nothing in it look identical from every other surface.
+    [ -f "$DRAIN_STAMP" ] && { printf 'spira: DRAINING since %s — summons gated\n' "$(head -1 "$DRAIN_STAMP")"; sed -n 2p "$DRAIN_STAMP"; }
     if [ -f "$STAMP" ]; then printf 'spira: HALTED since %s\n' "$(head -1 "$STAMP")"; sed -n 2p "$STAMP"
     else echo "spira: not halted by world.sh"; fi
     for t in "${TIMERS[@]}"; do
@@ -205,5 +256,5 @@ status)
 
     a="$(live_aeons | grep -c . || true)"; printf '  live aeons: %s\n' "$a"
     ;;
-*)  echo "usage: world.sh {stop [--why \"...\"] [--hard] | start | status}" >&2; exit 64 ;;
+*)  echo "usage: world.sh {stop [--why \"...\"] [--hard] | drain [--timeout SECS] | resume | start | status}" >&2; exit 64 ;;
 esac
