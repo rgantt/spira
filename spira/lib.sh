@@ -2583,15 +2583,10 @@ salvage() {              # salvage <label> <worktree-path> -> 0 saved or nothing
 spira_destroy_worktree() {
     local id="$1" w="$2" repo="$3" why="${4:-}" held
     [ -n "$w" ] || return 0
-    # THE FENCE FIRST, before anything is read off the path or acted on. A deleter handed a
-    # path outside the harness's own scratch directory has been misconfigured — a fixture
-    # that forgot to set SPIRA_RUN, a repo-map naming a real checkout — and a misconfigured
-    # caller must not be able to reach any of what follows, prune included.
-    case "$w" in
-        "$SPIRA_RUN/worktree/"?*) ;;
-        *) spira_reaplog REFUSED "$id" "$w is not under $SPIRA_RUN/worktree — refusing to remove it"
-           return 1 ;;
-    esac
+    # ABSENT DIRECTORY FIRST — before the fence. A path whose directory no longer exists
+    # needs no removal: only a registry prune to clear the dangling entry. git worktree prune
+    # touches nothing on disk, so it is safe regardless of where the path points. The fence
+    # below guards rm -rf; it does not apply here.
     if [ ! -e "$w" ]; then
         # The directory has already gone but its REGISTRATION may not have, and a live
         # registration is enough to make `git branch -D` refuse — which is how an interrupted
@@ -2601,6 +2596,15 @@ spira_destroy_worktree() {
         spira_prune_worktrees "$repo" >/dev/null 2>&1
         return 0
     fi
+    # THE FENCE. A deleter handed a path outside the harness's own scratch directory has been
+    # misconfigured — a fixture that forgot to set SPIRA_RUN, a repo-map naming a real
+    # checkout — and a misconfigured caller must not rm -rf an arbitrary path. The
+    # absent-directory case is handled above; the fence guards only paths whose directories exist.
+    case "$w" in
+        "$SPIRA_RUN/worktree/"?*) ;;
+        *) spira_reaplog REFUSED "$id" "$w is not under $SPIRA_RUN/worktree — refusing to remove it"
+           return 1 ;;
+    esac
     if held="$(spira_holder_witnesses "$id")"; then
         spira_reaplog REFUSED "$id" "worktree $w — $held"
         return 1
