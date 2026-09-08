@@ -253,6 +253,11 @@ sys.exit(0 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
             continue
         fi
         send_branch "$id" "$br"
+        # Mark beads sent via content_landed so CHECK 5 does not reopen them.
+        # The branch is deleted but no merge commit names this id, so CHECK 5's
+        # search for the id in subject lines finds nothing. This label is CHECK 5's
+        # guard against that false positive.
+        bdq label add "$id" content-landed >/dev/null 2>&1
     done
 
     # ----------------------------------------------------------------------------------

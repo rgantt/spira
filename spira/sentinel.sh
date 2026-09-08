@@ -405,6 +405,13 @@ while IFS=$'\t' read -r id r_name superseded dropped nopayload; do
         if git -C "$r_path" show-ref --verify -q "refs/heads/spira/$id"; then
             continue   # work exists on a branch; CHECK 6 lands it
         fi
+        # CONTENT-LANDED REAPS HAVE NO MERGE COMMIT. The Sending marks them with
+        # content-landed so this check does not reopen them. Similarly, a poisoned bead
+        # must not be reopened by this check — the poison label is terminal.
+        if bdjson show "$id" 2>/dev/null | grep -qE '"label".*"content-landed"|"label".*"spira-poison"'; then
+            log "CHECK5 $id: closed, but content-landed or poisoned — not reopening"
+            continue
+        fi
         # COUNT IT. A bead that closes itself without committing a working change is
         # reopened here, becomes ready, is claimed, and closes itself again — a loop
         # with no counter, which is precisely the loop the poison threshold exists to
