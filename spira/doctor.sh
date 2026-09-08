@@ -219,12 +219,42 @@ if [ ! -f "$SETTINGS" ]; then
     WARN "no client settings at $SETTINGS — the context meter is not on the status line" \
          "Point statusLine.command at $SPIRA_HOME/ctx-meter.sh, with refreshInterval beside it."
 else
-    sl="$(python3 "$SPIRA_HOME/statusline-check.py" "$SETTINGS" "$SPIRA_HOME/ctx-meter.sh")"
+    sl="$(python3 "$SPIRA_HOME/statusline-check.py" "$SETTINGS" "$SPIRA_HOME/ctx-meter.sh" "$SPIRA_RUN")"
     case "$sl" in
         unreadable*) WARN "cannot read $SETTINGS — ${sl#unreadable }" ;;
         absent)      WARN "no status line configured — the context meter is not being shown" \
                           "Add a statusLine object to $SETTINGS whose command is
         $SPIRA_HOME/ctx-meter.sh, with \"refreshInterval\": 5 beside it." ;;
+        "stale "*)
+            _sl_rest="${sl#stale }"
+            _sl_path="${_sl_rest% *}"
+            case "$_sl_path" in
+                "$SPIRA_RUN"/worktree/*)
+                    WARN "the status line runs a copy of the context meter from a worktree — $_sl_path" \
+                         "That worktree is deleted when the Sending reaps it, so the status line
+        is one landing away from rendering nothing. If the copy carries behaviour the
+        landed one lacks, land that work first: $SPIRA_HOME/ctx-meter.sh is what survives." ;;
+                /tmp/*)
+                    WARN "the status line runs a copy of the context meter under /tmp — $_sl_path" \
+                         "Lost on reboot. If it carries behaviour the landed one lacks, land that
+        work first: $SPIRA_HOME/ctx-meter.sh is what survives." ;;
+                *)
+                    WARN "the status line runs a different copy of the context meter — $_sl_path" \
+                         "If it carries behaviour the landed one lacks, the fix is to land that
+        work, not to repoint. The landed meter is $SPIRA_HOME/ctx-meter.sh." ;;
+            esac ;;
+        "fragile "*)
+            _sl_rest="${sl#fragile }"
+            _sl_path="${_sl_rest% *}"
+            case "$_sl_path" in
+                "$SPIRA_RUN"/worktree/*)
+                    WARN "the status line command lives in a worktree — $_sl_path" \
+                         "That worktree is deleted when the Sending reaps it. The status line
+        is one landing away from rendering nothing." ;;
+                /tmp/*)
+                    WARN "the status line command lives under /tmp — $_sl_path" \
+                         "Lost on reboot." ;;
+            esac ;;
         "other "*)   WARN "the status line runs a different command — the context meter is not being shown" \
                           "Point statusLine.command at $SPIRA_HOME/ctx-meter.sh." ;;
         "ours -")    WARN "the status line has no refreshInterval — it cannot update between turns" \
