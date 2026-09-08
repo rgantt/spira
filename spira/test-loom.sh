@@ -67,14 +67,10 @@ bdq update sp-ccc --parent sp-bbb >/dev/null 2>&1          # parent-child edge
 bdq dep add sp-aaa sp-ccc >/dev/null 2>&1                  # sp-aaa blocks sp-ccc
 bdq dep add sp-bbb sp-zzz >/dev/null 2>&1                  # sp-bbb blocks sp-zzz (closed — dropped)
 
-# Locate the real bd, resolving it from the harness PATH rather than from $PATH alone. The
-# shim in the Rust tests wraps this exact binary so its call counter is accurate.
-BD_BIN="$(command -v bd 2>/dev/null)"
-if [ -z "$BD_BIN" ]; then
-    bad "bd is on PATH" "The endpoint tests need it to build the fixture"
-    printf '\n  %d ok, %d failed\n' "$pass" "$fail"
-    exit 1
-fi
+# Route through the SPIRA_BD seam: testdb_up unsets SPIRA_BD so bdq calls the real binary
+# via PATH; the fallback bare "bd" is reachable via the PATH conf.sh exports. testdb_available
+# already verified bd is callable, so no second check here.
+BD_BIN="${SPIRA_BD:-bd}"
 ok "fixture database ready at $SPIRA_DB"
 
 export LOOM_TEST_DB="$SPIRA_DB"
