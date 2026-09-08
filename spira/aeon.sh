@@ -789,8 +789,6 @@ fi
 # runs, so a suite under it that summons an aeon hands that database straight through. Passed
 # on, the session would reset a database it does not own, mid-run, while the caller's own
 # suites were still reading it, and every one of them would fail for a reason none could name.
-# TESTDB_HOST and TESTDB_PORT survive on purpose: those are the server's coordinates, not the
-# fixture's identity, and a caller that named a different server means it.
 #
 # THE COST IS ONE BUILD PER SESSION, PAID EVEN BY A BEAD THAT RUNS NO TESTS, and the log
 # line below is the meter that says when that stops being a good trade (the number to watch
@@ -802,7 +800,7 @@ if [ -f "$WORK/$SPIRA_TESTDB_LIB" ]; then
     fixture_t0="$(date +%s%3N)"
     # A subshell, so the fixture library's functions never enter the supervisor: this is
     # branch code, and aeon.sh is the process that decides whether the branch's bead may be
-    # reclaimed. The five values it prints are the whole interface.
+    # reclaimed. The three values it prints are the whole interface.
     #
     # THE REDIRECTION IS INSIDE THE SUBSTITUTION, and it has to be. A simple command that is
     # nothing but an assignment — `v="$(...)" 2>f` — performs its redirection in an
@@ -812,14 +810,13 @@ if [ -f "$WORK/$SPIRA_TESTDB_LIB" ]; then
     # reason for a failure that had none.
     fixture_out="$( {
         . "$WORK/$SPIRA_TESTDB_LIB" && testdb_up "aeon${BEAD_ID//[^a-zA-Z0-9]/}" >&2 &&
-        printf '%s\n%s\n%s\n%s\n%s\n' \
-            "$TESTDB_NAME" "$TESTDB_DIR" "$TESTDB_BASELINE" "$TESTDB_HOST" "$TESTDB_PORT"
+        printf '%s\n%s\n%s\n' \
+            "$TESTDB_NAME" "$TESTDB_DIR" "$TESTDB_BASELINE"
     } 2>"$fixture_err" )"
     fixture_ms=$(( $(date +%s%3N) - fixture_t0 ))
     if [ -n "$fixture_out" ]; then
-        { read -r TESTDB_NAME; read -r TESTDB_DIR; read -r TESTDB_BASELINE
-          read -r TESTDB_HOST; read -r TESTDB_PORT; } <<< "$fixture_out"
-        export TESTDB_SHARED=1 TESTDB_NAME TESTDB_DIR TESTDB_BASELINE TESTDB_HOST TESTDB_PORT
+        { read -r TESTDB_NAME; read -r TESTDB_DIR; read -r TESTDB_BASELINE; } <<< "$fixture_out"
+        export TESTDB_SHARED=1 TESTDB_NAME TESTDB_DIR TESTDB_BASELINE
         FIXTURE_LIB="$WORK/$SPIRA_TESTDB_LIB"
         log "$FAYTH: $BEAD_ID shares one test fixture $TESTDB_NAME, built in ${fixture_ms}ms"
     else
@@ -911,7 +908,10 @@ session and exported into your environment (\`TESTDB_SHARED=1\`, \`TESTDB_NAME=$
 so a suite that sources \`$SPIRA_TESTDB_LIB\` and calls \`testdb_up\` resets it in a fraction of
 a second instead of spending the ${fixture_ms}ms that build cost. Never unset those variables
 and never build a database of your own: a suite that reaches past \`testdb_up\` pays the build
-again on every run, and nothing anywhere reports that it did."
+again on every run, and nothing anywhere reports that it did.
+
+The fixture uses the embedded Dolt engine — no shared server, no external port. Cleanup is
+\`rm -rf\` on the fixture directory."
 else
     FIXTURE_BRIEF="This repository has no shared test fixture, so a suite that needs one builds
 its own. If that turns out to be the slowest thing in your session, say so when you close the

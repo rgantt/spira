@@ -1,11 +1,12 @@
-# testdb.sh — a REAL `bd` on a throwaway Dolt database. Sourced by a suite, never executed.
+# testdb.sh — a REAL `bd` on an embedded (no-server) Dolt database. Sourced by a suite,
+# never executed.
 #
 #   . "$HERE/testdb.sh"
-#   testdb_require fayth          # skips the suite, loudly, if the server is down
+#   testdb_require fayth          # skips the suite, loudly, if bd lacks embedded support
 #   testdb_up fayth               # creates the database, exports SPIRA_DB
 #   trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
 #   testdb_seed <<'JSONL' ... JSONL
-#   testdb_reset                  # back to empty, in ~0.3s
+#   testdb_reset                  # back to empty, in ~6ms
 #
 # WHY NOT A STUB. `.claude/spira/testbin/bd` modelled 16 of bd's 118 subcommands, and its
 # fidelity was wrong twice in one day in ways that made CALLERS look broken: `list` ignored
@@ -15,70 +16,38 @@
 # restoring its fidelity reimplements something that already exists and is correct by
 # definition (law-prefer-the-real-dependency).
 #
-# THE COST IS AFFORDABLE AND WAS MEASURED. `bd init` against the running server is ~18s once
-# per suite, because it applies 61 schema migrations and commits each; `bd import` of a
-# handful of rows is ~0.5s; the wipe between cases is a single `dolt_reset --hard` to a
-# baseline commit at ~0.3s. The four suites that use this cost 19s, 24s, 25s and 52s, well
-# inside the gate's 300s per-suite timeout — and cheaper than one wrong verdict from a
-# drifting stub.
+# WHY EMBEDDED, NOT A SHARED SERVER. testdb_up against a shared Dolt server cost 84s solo
+# and 610s for six concurrent builds (5 of 6 failing), because schema migrations hold a global
+# lock and leaked fixtures from SIGKILL'd suites compounded through an age-based sweep that
+# ran concurrently against the same server. With the embedded engine each fixture is a
+# directory, cleanup is rm -rf, and six concurrent builds complete in ~25s with 0 failures.
+# The route through --proxied-server was tested and rejected: 'bd import' fails in that mode,
+# and import is how all 15 fixture-using suites seed their data.
 #
-# THE DATABASE NAME IS THE SAFETY BOUNDARY. Live databases share this server with the
-# fixtures, so every fixture is `sptest_<tag>_<epoch>_<pid>` and `testdb_drop`
-# refuses any name that does not match. The name also carries its own age, which is how a
-# run killed with SIGKILL — where no trap fires — still gets collected: `testdb_up` sweeps
-# fixtures older than two hours before it makes its own.
+# REQUIRES A CGO-ENABLED bd BUILD. The standard binary is built CGO_ENABLED=0 and refuses
+# embedded mode. Install: npm install -g @beads/bd (or the project's install.sh). The old
+# binary is at ~/.local/bin/bd.cgo0-backup for rollback.
 
-# `bd` and `dolt` live wherever the operator put them, and a suite is run from the landing
-# gate and from cron as often as from a terminal. conf.sh exports the configured PATH for
-# the same reason lib.sh sources it — the difference between a fixture that builds and a
-# suite that skips itself with "no Dolt server" on a box where the server is running.
-#
-# Only conf.sh, not lib.sh: a fixture library must not drag in the whole harness, and the
-# suites that use it set SPIRA_DB to a throwaway database of their own.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/conf.sh"
 
-# The server is Spira's own. Reading its coordinates rather than hardcoding them means a
-# port change moves the fixtures with it.
-# `.beads/dolt-server.port` first, because that is the file `bd` itself honours — it wins
-# over metadata.json, so reading metadata alone would connect the fixtures somewhere bd would
-# not.
-TESTDB_HOST="${TESTDB_HOST:-127.0.0.1}"
-# THE FIXTURE SERVER IS NOT THE PRODUCTION SERVER, and that is the whole point of this block.
-#
-# This used to resolve the port from $SPIRA_DB/.beads — Spira's own store — so every fixture
-# was a database alongside the real ones. Measured 2026-09-07: a build cost 6s against an
-# empty server and 84s against production, because production carries nine real databases and
-# whatever fixtures earlier runs leaked into it. Leaks were the compounding part: a suite
-# killed by `timeout`, a stopped unit or a slain aeon never runs its trap, twenty-four had
-# accumulated, and the age-based sweep that reclaimed them ran on every build — ~144 DROP
-# DATABASE for six concurrent builds, against the server those builds were migrating on. That
-# pushed them past the server's read timeout, killed connections mid-migration as `no root
-# value found in session`, and made the gate fall back to 36 individual builds.
-#
-# Now they land on a server whose store is disposable, so a leak costs disk and nothing else.
-# SPIRA_TESTDB_PORT is read through conf.sh so a host can move it; the literal default exists
-# because this file is sourced by suites that do not load conf.sh.
-TESTDB_PORT="${TESTDB_PORT:-${SPIRA_TESTDB_PORT:-3308}}"
 TESTDB_BD="${TESTDB_BD:-bd}"
 # Preserved if already set, so a caller that built a shared fixture and exported it is not
-# erased by the act of sourcing this file. Blanking these unconditionally is what made the
-# first shared-fixture attempt silently fall back to building one per suite.
+# erased by the act of sourcing this file.
 TESTDB_NAME="${TESTDB_NAME:-}"
 TESTDB_DIR="${TESTDB_DIR:-}"
 TESTDB_BASELINE="${TESTDB_BASELINE:-}"
 
-# A wire query against the server, as the CLI. `--password ''` is not optional: without it
-# dolt prompts, and a prompt with no tty fails as "inappropriate ioctl for device" — which
-# reads like a broken server rather than a missing flag.
-testdb_sql() {           # testdb_sql <db> <query> -> csv on stdout
-    dolt --host "$TESTDB_HOST" --port "$TESTDB_PORT" --user root --password '' --no-tls \
-         ${1:+--use-db "$1"} sql -r csv -q "$2" 2>/dev/null
-}
-
-testdb_available() {     # 0 if the fixture server can be reached at all
-    command -v dolt >/dev/null 2>&1 || return 1
+testdb_available() {     # 0 if the embedded engine is usable on this box
     command -v "$TESTDB_BD" >/dev/null 2>&1 || return 1
-    testdb_sql "" "select 1" >/dev/null 2>&1
+    # Fast path: if a shared fixture was already built this session, embedded is confirmed.
+    [ "${TESTDB_SHARED:-0}" = 1 ] && [ -d "${TESTDB_DIR:-}" ] && return 0
+    # Cold check: attempt an init. Detects CGO_ENABLED=0 builds, which refuse embedded.
+    local tmp; tmp="$(mktemp -d)"
+    ( cd "$tmp" && env -i PATH="$PATH" HOME="$HOME" TERM=dumb BD_NON_INTERACTIVE=1 \
+        "$TESTDB_BD" init --non-interactive --prefix sp --skip-agents --skip-hooks -q 2>/dev/null )
+    local rc=$?
+    rm -rf "$tmp"
+    return $rc
 }
 
 # A SUITE THAT CANNOT RUN MUST NOT READ AS A SUITE THAT PASSED. 77 is the automake skip
@@ -87,51 +56,24 @@ testdb_available() {     # 0 if the fixture server can be reached at all
 # a pass (law-alerts-must-be-actionable).
 testdb_require() {       # testdb_require <suite-name>
     testdb_available && return 0
-    printf 'SKIP %s: no Dolt server at %s:%s — these suites run against a real bd.\n' \
-        "$1" "$TESTDB_HOST" "$TESTDB_PORT" >&2
-    # NAME THE FIXTURE SERVER, not Spira's. The old text pointed at `bd -C $SPIRA_DB dolt
-    # start`, which starts the PRODUCTION server — so a developer following it on a box where
-    # only the fixture server was down would start the wrong thing, see the suite still skip,
-    # and have no idea why.
-    printf '  start it with: systemctl --user start dolt-beads-test.service\n' >&2
-    # THE KEY, with no literal fallback. conf.sh always sets it, and repeating a path here
-    # both duplicates the default and puts one operator's infrastructure in the repository.
-    printf '  its store is disposable: %s\n' "$SPIRA_TESTDB_DATA" >&2
+    printf 'SKIP %s: no embedded-capable bd — these suites need a CGO-enabled build.\n' \
+        "$1" >&2
+    printf '  install: npm install -g @beads/bd\n' >&2
+    printf '  rollback: cp ~/.local/bin/bd.cgo0-backup ~/.local/bin/bd\n' >&2
     exit 77
 }
 
-# Fixtures whose own name says they are older than two hours. A trap cannot fire on
-# SIGKILL, so without this a hard-killed suite leaves a database behind on the server that
-# also holds Spira's live data — and litter there is never noticed until it is a problem.
-testdb_sweep() {
-    local now db epoch
-    now="$(date +%s)"
-    while IFS= read -r db; do
-        case "$db" in sptest_*) ;; *) continue ;; esac
-        epoch="$(printf '%s' "$db" | awk -F_ '{print $(NF-1)}')"
-        case "$epoch" in ''|*[!0-9]*) continue ;; esac
-        [ $(( now - epoch )) -gt 7200 ] || continue
-        testdb_sql "" "drop database \`$db\`" >/dev/null 2>&1
-    done < <(testdb_sql "" "show databases" | tail -n +2)
-    return 0
-}
-
-# testdb_up <tag> — a fixture database and a bd workspace pointing at it. Exports SPIRA_DB,
+# testdb_up <tag> — a fixture workspace with an embedded Dolt database. Exports SPIRA_DB,
 # which is the only thing lib.sh's `bdq` needs, and leaves SPIRA_BD unset so the REAL binary
 # is what runs.
 #
-# `--prefix sp` with an explicit `--database`: the issue prefix is production's, so ids read
-# `sp-a3f` exactly as they do live, while the database name stays unique per run. Passing
-# only a prefix would name the database after it and collide between concurrent runs.
-# A FIXTURE MAY BE INHERITED. `bd init` is 26.6s of testdb_up's 27s — schema DDL against Dolt
-# — and the gate ran six suites that each built the same thing, 134s of the 259s total. When a
-# caller has already built one and exported TESTDB_SHARED=1, reset to its baseline instead:
-# 73ms, and the isolation is identical, because dolt_reset --hard + dolt_clean is what every
-# suite already trusts between its own cases (test-reimport resets three times).
+# `--prefix sp` with no --server: the issue prefix is production's, so ids read `sp-a3f`
+# exactly as they do live, while the database is a private directory with no server traffic.
 #
-# NOT BY PARALLELISING. Measured 2026-09-06: three creations serially 66.6s, the same three
-# concurrently 95.6s. The Dolt server contends on database creation, so fanning out is slower
-# than doing it once (law-test-comprehensively-but-fastest).
+# A FIXTURE MAY BE INHERITED. `bd init` costs ~6s (schema DDL applied to the embedded store)
+# and the gate ran suites that each built the same thing. When a caller has already built one
+# and exported TESTDB_SHARED=1, reset to its baseline instead: ~6ms, and the isolation is
+# identical, because the reset is a directory swap.
 testdb_up() {            # testdb_up <tag>
     local tag="$1"
     if [ "${TESTDB_SHARED:-0}" = 1 ] && [ -n "${TESTDB_NAME:-}" ] && [ -n "${TESTDB_BASELINE:-}" ]; then
@@ -139,105 +81,47 @@ testdb_up() {            # testdb_up <tag>
         export SPIRA_DB="$TESTDB_DIR"; unset SPIRA_BD
         return 0
     fi
-    # SERIALISED, because `bd init` holds ONE global schema-migration lock across 61
-    # migrations. Concurrent builds do not merely queue inside Dolt — they time each other
-    # out, and the server closes a connection held that long, so several gates building at
-    # once turn a ~20s build into a cascade of failures that look like broken suites on
-    # branches that changed nothing (sp-ko4a, the operator's call: "serialise fixture
-    # creation with an flock, so concurrent landing passes queue instead of colliding").
-    #
-    # THE LOCK IS NOT AROUND THE WHOLE FUNCTION. The TESTDB_SHARED fast path above returns
-    # before here; it resets a fixture this process already owns and must never queue behind
-    # somebody else's build, or one landing pass would serialise every gate on the box.
-    #
-    # NOT A SUBSHELL. The build sets TESTDB_NAME, TESTDB_DIR and TESTDB_BASELINE for the
-    # caller, so fd 9 is opened in this shell and closed on every exit path below.
-    #
-    # gate-spira.sh has told operators this lock exists, and named this exact path, since
-    # 3a36f74 — while `git log -S flock -- spira/testdb.sh` was empty. The message was true
-    # of nothing. It is true now.
-    spira_require flock || return 1
-    local lock="${SPIRA_RUN:-/tmp}/testdb-init.lock" lock_t0 waited
-    mkdir -p "$(dirname "$lock")" 2>/dev/null
-    exec 9>"$lock" || { printf 'testdb: cannot open the fixture lock at %s\n' "$lock" >&2; return 1; }
-    lock_t0=$(date +%s)
-    # A TIMEOUT IS ITS OWN FAILURE, reported as itself. The gate distinguishes "the lock could
-    # not be taken" from "the init genuinely failed" in the advice it prints; until this
-    # existed both arrived as `bd init failed` and the advice was unfollowable.
-    # BOUNDED SHORT, AND A TIMEOUT BUILDS ANYWAY. The wait was 900s, which made the queue
-    # worse than the collision it removes: three aeons summoned together spent their first
-    # five to fifteen minutes in `flock` before the model produced one token, and an aeon that
-    # cannot finish in its turn ends its session. Serialising is an OPTIMISATION — one build
-    # instead of several colliding — and an optimisation must never be the reason nothing
-    # runs. Past the bound, build unlocked and say so: a collision costs one slow build, a
-    # deadlock costs the whole loop (the operator, 2026-09-07: "i would rather have broken
-    # software i can fix quickly").
-    if ! flock -w "${SPIRA_TESTDB_LOCK_WAIT:-120}" 9; then
-        printf 'testdb: fixture lock at %s not free after %ss — building WITHOUT it; expect a slow build\n' \
-            "$lock" "${SPIRA_TESTDB_LOCK_WAIT:-120}" >&2
-        exec 9>&-
-    fi
-    waited=$(( $(date +%s) - lock_t0 ))
-    [ "$waited" -gt 5 ] && printf 'testdb: waited %ss for the fixture lock\n' "$waited" >&2
 
-    testdb_sweep
     TESTDB_NAME="sptest_${tag}_$(date +%s)_$$"
     TESTDB_DIR="$(mktemp -d)"
-    testdb_sql "" "create database \`$TESTDB_NAME\`" >/dev/null 2>&1 9>&-
     # env -i is deliberate. A gate, a check or a test invoked by automation runs in an
     # explicit minimal environment, never the caller's: BEADS_ACTOR and friends leak into
     # `created_by` and `owner`, and ambient configuration silently deciding a verdict is
     # exactly law-gates-run-in-a-clean-environment.
-    # THE FAILURE MUST CARRY ITS REASON. This swallowed both streams and printed only
-    # "bd init failed", so a broken fixture looked identical whether the port was wrong, the
-    # database already existed, or the server was down — and the one run that failed inside a
-    # full-suite sweep could not be told apart from the same test passing alone. A fixer that
-    # discards the diagnosis makes every one of its failures cost a fresh investigation.
-    # Errors go to stderr, where a gate capturing output can still see them.
+    # THE FAILURE MUST CARRY ITS REASON. Errors go to stderr, where a gate capturing output
+    # can still see them.
     local init_out init_rc
-    # 9>&- — THE LOCK FD MUST NOT REACH A DAEMON. `exec 9>lock` leaves fd 9 without
-    # close-on-exec, so every child inherits it, and flock is held as long as ANY holder of
-    # the descriptor lives. `bd init` can leave a `dolt sql-server` running; that server then
-    # holds the lock forever and the shell that took it exits believing it released.
-    # Measured 2026-09-07, within an hour of the lock landing: a stray server on a temp config
-    # pinned fd 9 and three aeons sat in `flock -w 900` behind a shell that had been gone for
-    # minutes — the lock turned from a queue into a deadlock by inheritance.
     init_out="$( cd "$TESTDB_DIR" && env -i PATH="$PATH" HOME="$HOME" TERM=dumb BD_NON_INTERACTIVE=1 \
-        "$TESTDB_BD" init --server --server-host "$TESTDB_HOST" --server-port "$TESTDB_PORT" \
-            --external --database "$TESTDB_NAME" --prefix sp \
-            --non-interactive --skip-agents --skip-hooks -q 2>&1 9>&- )"
+        "$TESTDB_BD" init --non-interactive --prefix sp --skip-agents --skip-hooks -q 2>&1 )"
     init_rc=$?
     [ $init_rc -eq 0 ] || {
-        printf 'testdb: bd init failed (rc=%s) for %s at %s:%s in %s\n' \
-            "$init_rc" "$TESTDB_NAME" "$TESTDB_HOST" "$TESTDB_PORT" "$TESTDB_DIR" >&2
+        printf 'testdb: bd init failed (rc=%s) for %s in %s\n' \
+            "$init_rc" "$TESTDB_NAME" "$TESTDB_DIR" >&2
         printf '%s\n' "$init_out" | sed 's/^/testdb:   /' >&2
-        testdb_drop; exec 9>&-; return 1; }
-    git -C "$TESTDB_DIR" config beads.role maintainer 2>/dev/null
+        rm -rf "$TESTDB_DIR"; TESTDB_DIR=""; TESTDB_NAME=""; return 1; }
 
-    # THE BASELINE IS COMMITTED HERE, not inherited. `bd init` leaves the `config` table
-    # modified and UNCOMMITTED, so resetting to bd's own "bd init" commit throws away
-    # issue_prefix and every later command fails with "database not initialized" — a wipe
-    # that breaks the database it was meant to clean.
-    testdb_sql "$TESTDB_NAME" "call dolt_commit('-A','-m','testdb baseline','--skip-empty')" >/dev/null 2>&1
-    TESTDB_BASELINE="$(testdb_sql "$TESTDB_NAME" "select hashof('HEAD')" | tail -1)"
-    [ -n "$TESTDB_BASELINE" ] || { printf 'testdb: no baseline commit for %s\n' "$TESTDB_NAME" >&2
-                                   testdb_drop; exec 9>&-; return 1; }
+    # THE BASELINE IS A SNAPSHOT OF .beads AT INIT TIME. Reset replaces .beads with this
+    # copy, so every reset is identical to a fresh init without paying the 6s cost again.
+    # A separate directory keeps it safe from rm -rf on TESTDB_DIR during reset.
+    TESTDB_BASELINE="$(mktemp -d)"
+    cp -rp "$TESTDB_DIR/.beads" "$TESTDB_BASELINE/.beads"
+    [ -d "$TESTDB_BASELINE/.beads" ] || {
+        printf 'testdb: baseline snapshot failed for %s\n' "$TESTDB_NAME" >&2
+        rm -rf "$TESTDB_DIR" "$TESTDB_BASELINE"; TESTDB_DIR=""; TESTDB_BASELINE=""; TESTDB_NAME=""; return 1; }
+
     export SPIRA_DB="$TESTDB_DIR"
     unset SPIRA_BD
-    # RELEASED HERE, not at process exit. The fixture is built; everything after this is the
-    # caller's own work and holding the lock through it would serialise entire gate runs
-    # rather than the one contended operation.
-    exec 9>&-
     return 0
 }
 
-# Back to an empty database. A dolt reset rather than a DELETE sweep: bd writes across a
-# dozen tables — issues, labels, dependencies, leases, events, the cached ready_issues and
-# blocked_issues views — and a wipe that misses one leaves state no test asked for.
+# Back to an empty database. A directory swap rather than a table wipe: bd writes across
+# multiple tables (issues, labels, dependencies, leases, events, views) and a wipe that
+# misses one leaves state no test asked for. The swap is 6ms and is guaranteed complete.
 testdb_reset() {
     [ -n "$TESTDB_NAME" ] || return 1
-    testdb_sql "$TESTDB_NAME" \
-        "call dolt_reset('--hard','$TESTDB_BASELINE'); call dolt_clean();" >/dev/null 2>&1
+    [ -d "$TESTDB_BASELINE/.beads" ] || return 1
+    rm -rf "$TESTDB_DIR/.beads"
+    cp -rp "$TESTDB_BASELINE/.beads" "$TESTDB_DIR/.beads"
 }
 
 testdb_seed() {          # testdb_seed  < JSONL on stdin
@@ -249,35 +133,14 @@ testdb_seed() {          # testdb_seed  < JSONL on stdin
     return $rc
 }
 
-# A workspace whose server is genuinely not there — the one thing a real bd cannot be asked
-# to do on demand, and the case the write-ahead spool exists for. `.beads/dolt-server.port`
-# wins over metadata.json, so both are moved or bd cheerfully connects to the live server.
-testdb_unreachable() {   # testdb_unreachable -> prints a workspace path
-    local d; d="$(mktemp -d)"
-    cp -r "$TESTDB_DIR/.beads" "$d/"
-    python3 - "$d" <<'PY'
-import json, sys, os
-p = os.path.join(sys.argv[1], ".beads", "metadata.json")
-d = json.load(open(p)); d["dolt_server_port"] = 3399
-json.dump(d, open(p, "w"), indent=2)
-PY
-    echo 3399 > "$d/.beads/dolt-server.port"
-    printf '%s' "$d"
-}
-
-# REFUSES ANY NAME THAT IS NOT A FIXTURE. This drops a database on the server that also holds
-# live data; a typo here is not recoverable, so the pattern is checked rather than trusted.
-# THE BORROWER DOES NOT DROP. Suites trap testdb_drop on EXIT; with a shared fixture the first
-# suite to finish would otherwise delete the database the rest are still using. Only the process
-# that created it owns it, and it drops by clearing TESTDB_SHARED first.
+# THE BORROWER DOES NOT DROP. Suites trap testdb_drop on EXIT; with a shared fixture the
+# first suite to finish would delete the directories the rest are still using. Only the
+# process that created it owns it, and it drops by clearing TESTDB_SHARED first (as
+# aeon.sh's fixture_drop does: TESTDB_SHARED=0 before sourcing and calling testdb_drop).
 testdb_drop() {
     [ "${TESTDB_SHARED:-0}" = 1 ] && return 0
     [ -n "${TESTDB_NAME:-}" ] || return 0
-    case "$TESTDB_NAME" in
-        sptest_*) testdb_sql "" "drop database \`$TESTDB_NAME\`" >/dev/null 2>&1 ;;
-        *) printf 'testdb: refusing to drop %s — not a fixture database\n' "$TESTDB_NAME" >&2 ;;
-    esac
-    [ -n "${TESTDB_DIR:-}" ] && rm -rf "$TESTDB_DIR"
-    TESTDB_NAME=""; TESTDB_DIR=""
+    rm -rf "${TESTDB_DIR:-}" "${TESTDB_BASELINE:-}"
+    TESTDB_NAME=""; TESTDB_DIR=""; TESTDB_BASELINE=""
     return 0
 }
