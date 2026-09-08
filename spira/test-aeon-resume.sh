@@ -163,5 +163,40 @@ want "rebased: RESUME_BRIEF present" \
 want "rebased: count is 1 after rebase" \
     "**1** commit(s)" "$(cat "$TMP/prompt")"
 
+# ======================================================================================
+echo
+echo "STALE LOCAL BASE — branch is cut from fresh origin/main, not stale local main:"
+# ======================================================================================
+# The sentinel lands from a dedicated worktree and never fast-forwards the shared
+# checkout, so origin/main advances without updating local main. This reproduces the
+# pattern: a second clone pushes to origin, leaving local main behind. aeon.sh must
+# fetch from the remote before cutting the branch, so the new branch starts at the
+# FRESH origin/main rather than the stale local ref.
+#
+# The discriminator: git merge-base(branch, origin/main).
+#   If cut from fresh origin/main (B):  merge-base = B  (origin/main is an ancestor)
+#   If cut from stale local main (A):   merge-base = A  (diverged before origin/main)
+# defect: sp-stale-base
+testdb_reset; seed sp-ar-stalebase
+SECOND="$TMP/second"; git clone -q "$ORIGIN" "$SECOND" 2>/dev/null
+git -C "$SECOND" config user.email t@t; git -C "$SECOND" config user.name t
+printf 'sentinel-landed\n' >> "$SECOND/g"; git -C "$SECOND" add g
+git -C "$SECOND" commit -qm "sentinel: landed something — origin/main advances"
+git -C "$SECOND" push -q origin main 2>/dev/null
+local_main_sha="$(git -C "$REPO" rev-parse main)"  # stale — does not include the push above
+run_aeon
+fresh_origin="$(git -C "$REPO" rev-parse origin/main)"   # updated by the fetch inside aeon.sh
+branch_base="$(git -C "$REPO" merge-base "spira/sp-ar-stalebase" origin/main 2>/dev/null)"
+# Prove the setup is valid: local main must differ from origin/main for this test to mean
+# something. If they are equal, the stale-vs-fresh distinction collapses and silence
+# passes vacuously.
+[ "$local_main_sha" != "$fresh_origin" ] \
+    && ok "setup: local main is behind origin/main" \
+    || bad "setup: local main is behind origin/main" "local and remote are the same commit — stale setup failed"
+[ "$branch_base" = "$fresh_origin" ] \
+    && ok "stale-local-base: branch is cut from fresh origin/main, not stale local main" \
+    || bad "stale-local-base: branch is cut from fresh origin/main, not stale local main" \
+       "merge-base is [$branch_base], wanted fresh origin/main [$fresh_origin]"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

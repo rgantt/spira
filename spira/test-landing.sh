@@ -567,6 +567,31 @@ nowant "and nothing rebased it"                 "rebased spira/sp-taken" "$out"
 drop_branch sp-taken; drop_branch sp-tlands
 
 # --------------------------------------------------------------------------------------
+# THE LANDING LOOP DEFERS WHEN A LIVE AEON HOLDS THE BEAD
+#
+# The loop checks holder_alive before the rebase AND before the gate, so a bead the aeon
+# closed but hasn't quite exited yet is left for the next pass rather than landing under
+# the aeon. This is a different code path from the sweep's check (rebase_survivors),
+# which fires AFTER a landing — both must refuse, and each has its own test.
+#
+# A REAL PROCESS with 'aeon.sh' in its cmdline: aeon_alive reads /proc/<pid>/cmdline and
+# requires that string, so a fabricated pid would assert the guard fires when the guard
+# would in fact have seen nobody home (law-absence-needs-a-positive-control).
+# defect: sp-stale-base
+# --------------------------------------------------------------------------------------
+seed; branch sp-loop-held loop-held.txt
+"$TMP/aeon.sh" >/dev/null 2>&1 & loop_held_pid=$!
+printf '%s\n' "$loop_held_pid" > "$RUN/aeon-builder-sp-loop-held.pid"
+out="$(landing)"
+kill "$loop_held_pid" 2>/dev/null; wait "$loop_held_pid" 2>/dev/null
+rm -f "$RUN/aeon-builder-sp-loop-held.pid"
+want   "the loop defers when a live aeon holds the bead" \
+       "a live aeon still holds spira/sp-loop-held — deferring the land" "$out"
+nowant "and the branch was not landed"                   "landed spira/sp-loop-held" "$out"
+is     "and the bead stays closed"                       closed "$(status_of sp-loop-held)"
+drop_branch sp-loop-held
+
+# --------------------------------------------------------------------------------------
 # THE BULK SCAN: one query not N
 #
 # The scan was the whole cost of a quiet pass, growing linearly with the branch count.
