@@ -70,10 +70,24 @@ except Exception: print("")' 2>/dev/null)"
 # watchers there are no processes for a departing session to guarantee.
 [ "$event" = SessionEnd ] && exit 0
 
-# THE SOURCE IS NOT BRANCHED ON, and that is deliberate. A SessionStart carries a `source` of
-# `startup`, `resume`, `clear`, `compact` or `fork`, and every one of them is a context window
-# that has just opened with no Monitor attached — which is the only condition this output is
-# about. Branching on it could only ever print less on some of them.
+# FIRE THE ARCHIVIST ON CLEAR. A clear starts a new session while the previous transcript is
+# still on disk. The turns between the last drift sweep and now are uncovered; this catches
+# them. `archivist.sh now` without an argument picks the most recently written non-empty
+# transcript, which at the instant of a clear is the one being discarded — the new session has
+# not yet written anything. Fire and forget: the state file is where the result is read, and
+# the new session must not wait on the old one's archive.
+source="$(printf '%s' "$payload" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("source",""))
+except Exception: print("")' 2>/dev/null)"
+if [ "$source" = "clear" ] && [ -x "$SPIRA_HOME/archivist.sh" ]; then
+    "$SPIRA_HOME/archivist.sh" now </dev/null >/dev/null 2>&1 &
+fi
+
+# THE SOURCE IS NOT BRANCHED ON FOR THE STATUS OUTPUT, and that is deliberate. A SessionStart
+# carries a `source` of `startup`, `resume`, `clear`, `compact` or `fork`, and every one of
+# them is a context window that has just opened with no Monitor attached — which is the only
+# condition the output below is about. Branching on it could only ever print less on some of
+# them. The archivist fire above is a separate concern from what this hook prints.
 status="$("$WATCHD" status 2>/dev/null)" || status=""
 
 # `status` PRINTS SEVERAL THINGS AND ONLY THE FIRST IS A TABLE: one line per watcher under a

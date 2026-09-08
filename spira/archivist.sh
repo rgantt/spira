@@ -2,7 +2,7 @@
 #
 # archivist.sh — rescue a full session's unfinished business before it is thrown away.
 #
-#   archivist.sh sweep            every live session; archive the ones that crossed a band
+#   archivist.sh sweep            every live session; archive the ones that have drifted
 #   archivist.sh now [<session>]  archive one session now, whatever its context (the manual
 #                                 path — "hibernate", before a deliberate clear)
 #   archivist.sh list             what the sweep can see, and what it would do about each
@@ -52,21 +52,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ARC="$SPIRA_RUN/archivist"
 PROMPT_FILE="$SPIRA_CHAMBER/archivist.md"
 
-# THE TRIGGER BAND IS NAMED, NOT NUMBERED, so it can only ever be one of the three thresholds
-# the status line and the dashboard already render — and an unrecognised name is refused here
-# rather than silently never matching. A watcher configured to fire at a band that does not
-# exist reports nothing, forever, and looks exactly like a watcher with nothing to report
-# (law-absence-needs-a-positive-control).
-case "$SPIRA_ARCHIVIST_AT" in
-    warn|high|limit) ;;
-    *) die "SPIRA_ARCHIVIST_AT is '$SPIRA_ARCHIVIST_AT'; it must be warn, high or limit" ;;
-esac
-
 # HOW MANY BANDS A SESSION HAS ALREADY CROSSED, from the threshold it has NOT yet reached.
 # `SP_CTX_NEXT` is the next one above the current context, so "next is high" means warn is
-# behind it. `over` means past every one of them.
+# behind it. `over` means past every one of them. Still used for the band-3 push notification.
 crossed() { case "$1" in warn) echo 0 ;; high) echo 1 ;; limit) echo 2 ;; over) echo 3 ;; *) echo -1 ;; esac; }
-trigger() { case "$SPIRA_ARCHIVIST_AT" in warn) echo 1 ;; high) echo 2 ;; limit) echo 3 ;; esac; }
 
 # ---- the state file, which is a contract with two readers ------------------------------
 # ctx-meter.sh renders it in the status line and cockpit/health.sh renders it on the
@@ -95,15 +84,11 @@ state_key() {            # state_key <session> <key>
     sed -n "s/^$2=//p" "$ARC/$1.state" 2>/dev/null | head -1
 }
 
-# ---- the high-water mark, so one crossing fires once ------------------------------------
-# A band is acted on the first time it is crossed and never again. Without this the sweep would
-# summon an archivist on every pass for as long as the session stayed full, which is every pass
-# from the moment it matters until the operator clears — the sessions being rescued are
-# precisely the ones that sit at the top of the range for hours.
-#
-# IT RECORDS THE BAND, NOT A TIMESTAMP, because the question is "has this session been archived
-# at this depth", and a session that keeps growing genuinely does need looking at again: the
-# turns since the last sweep are the ones nobody has persisted.
+# ---- the high-water mark, for the band-3 notification only ------------------------------
+# The band-3 push fires once per session: when the context reaches the limit band AND the
+# archivist found something to file. The hwm prevents re-notifying after a second sweep of the
+# same session pushes it past the threshold again. The .notified sentinel is the primary guard;
+# the hwm is kept so the notification block can read it without re-deriving the band.
 set_hwm() {              # set_hwm <session> <band-rank>
     mkdir -p "$ARC" 2>/dev/null || return 1
     local tmp="$ARC/.$1.hwm.$$"
@@ -316,8 +301,7 @@ case "${1:-sweep}" in
 
 sweep|list)
     MODE="${1:-sweep}"
-    [ "$MODE" = list ] && printf '%-40s %10s %6s %8s %s\n' SESSION CONTEXT TURNS BAND WOULD
-    want="$(trigger)"
+    [ "$MODE" = list ] && printf '%-40s %10s %6s %8s %5s %s\n' SESSION CONTEXT TURNS BAND DRIFT WOULD
     while IFS=$'\t' read -r sid tp; do
         [ -n "$sid" ] || continue
         # ONE MEASUREMENT, SHARED. ctx-meter.sh is what the status line and the dashboard read,
@@ -329,21 +313,35 @@ sweep|list)
         nxt="$(sed -n 's/^SP_CTX_NEXT=//p' <<<"$e")"
         band="$(crossed "${nxt:-}")"
         [ "$band" -lt 0 ] 2>/dev/null && continue          # the meter could not read it
-        seen="$(get_hwm "$sid")"; seen="${seen:-0}"
+
+        # THE TRIGGER IS TURNS SINCE THE LAST SWEEP, not the context band. What the archivist
+        # covers is turns — covered() is a turn cursor, the prompt takes {{FROM_TURN}}, and the
+        # cost of a run is proportional to the turns since the last one. Context depth tells you
+        # the session is expensive; turns since the last sweep tells you work is uncovered.
+        cov="$(covered "$sid")"; cov="${cov:-0}"
+        drift=$(( ${turns:-0} - cov ))
+
+        # A SESSION WHOSE LAST RUN FAILED IS NOT RE-FIRED. covered is written only on success,
+        # so without this gate a failure would re-trigger on every pass — drift stays above the
+        # threshold because covered was never advanced. The failure is reported through the state
+        # file, where the operator is already looking; leave it to them.
+        prev_state="$(state_key "$sid" state)"
+
         would=hold
-        if [ "$band" -ge "$want" ] && [ "$band" -gt "$seen" ]; then would=archive; fi
+        if [ "$drift" -ge "$SPIRA_ARCHIVIST_EVERY" ] && [ "$prev_state" != "failed" ]; then
+            would=archive
+        fi
         if [ "$MODE" = list ]; then
-            printf '%-40s %10s %6s %8s %s\n' "$sid" "${ctx:--}" "${turns:--}" "$band" "$would"
+            printf '%-40s %10s %6s %8s %5s %s\n' "$sid" "${ctx:--}" "${turns:--}" "$band" "$drift" "$would"
             continue
         fi
         [ "$would" = archive ] || continue
-        # THE MARK IS SET BEFORE THE RUN, NOT AFTER IT. A crossing that summoned an archivist
-        # which then failed has still been acted on; re-firing it on the next pass would retry
-        # the same failure every two minutes for as long as the session stayed full. The
-        # failure is reported through the state file, where the operator is already looking.
-        set_hwm "$sid" "$band"
-        archive "$sid" "$tp" "${turns:-0}" "${ctx:-0}" "crossed into $SPIRA_ARCHIVIST_AT or beyond" \
+        archive "$sid" "$tp" "${turns:-0}" "${ctx:-0}" "turns since last sweep ($drift) >= $SPIRA_ARCHIVIST_EVERY" \
             || continue
+
+        # Record the band so a later sweep can read it without re-deriving. This is only for
+        # the notification below; the archive trigger is turns, not bands.
+        set_hwm "$sid" "$band"
 
         # THE ONE PUSH, AND ONLY FROM THE TOP BAND. Everything below this is already delivered
         # by the two readers of the state file — the status line and the dashboard both render

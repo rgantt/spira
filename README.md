@@ -583,9 +583,11 @@ stated and never filed, verdicts acted on and never recorded. The expensive stat
 sticky one, which is why nobody clears.
 
 The **archivist** makes clearing cheap. `spira-archivist.timer` sweeps the live sessions every
-five minutes, computes what each is carrying, and when one crosses `SPIRA_ARCHIVIST_AT` it
-summons an agent whose entire input is that session's transcript. The agent reads the log,
-rescues what is loose into asks, insights, notes and — sparingly — beads, and exits.
+five minutes. When a session's turn count has advanced by at least `SPIRA_ARCHIVIST_EVERY`
+(default 40) since the last successful archive, it summons an agent whose entire input is that
+session's transcript. The agent reads the log, rescues what is loose into asks, insights, notes
+and — sparingly — beads, and exits. Context depth is not in the trigger: a 74k session that has
+moved 40 turns is swept, a 900k session that has moved none is not.
 
 **It reads the transcript, not the conversation.** Everything it needs is already on disk, so
 it costs the session it is rescuing nothing: no turn, no tokens, no interruption. That is a
@@ -630,9 +632,10 @@ doing, reporting that the clear did not work. That setting lives in the client's
 file, outside every repository, so nothing here can set it — `spira/doctor.sh` reports its
 absence as a finding with the one-line fix.
 
-Four keys, all with defaults: `SPIRA_ARCHIVIST_AT` (which of the three context thresholds
-summons it), `SPIRA_ARCHIVIST_IDLE` (how recently a transcript must have been written to count
-as live), `SPIRA_ARCHIVIST_MODEL` and `SPIRA_ARCHIVIST_TIMEOUT`.
+Four keys, all with defaults: `SPIRA_ARCHIVIST_EVERY` (how many turns between sweeps),
+`SPIRA_ARCHIVIST_IDLE` (how recently a transcript must have been written to count as live),
+`SPIRA_ARCHIVIST_MODEL` and `SPIRA_ARCHIVIST_TIMEOUT`. Clearing a session also triggers an
+immediate archive of the discarded transcript via the session hook.
 
 ## Escalations, and their answers
 

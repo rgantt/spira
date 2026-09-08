@@ -67,7 +67,7 @@ SPIRA_ALERT_GLOB
 SPIRA_FAYTHS SPIRA_MAX_AEONS
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
 SPIRA_ARCHIVE
-SPIRA_ARCHIVIST_AT SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
+SPIRA_ARCHIVIST_EVERY SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
 SPIRA_TESTDB_LIB SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT
 SPIRA_GATE_TIMEOUT
 SPIRA_GATE_SUITES SPIRA_SUITES_STATE SPIRA_SUITES_BUDGET SPIRA_SUITE_TIMEOUT
@@ -467,17 +467,13 @@ spira_conf_defaults() {
     : "${SPIRA_ARCHIVE:=$SPIRA_RUN/archive}"
 
     # ---- THE ARCHIVIST: WHEN A FULL SESSION GETS ITS UNFINISHED BUSINESS RESCUED ---------
-    # WHICH BAND SUMMONS IT, named rather than numbered, so it can only ever be one of the
-    # three thresholds above — the same three the status line and the dashboard render. A
-    # fourth number here would be a second opinion about how close to the edge a session is,
-    # and the operator would be reading one while the archivist acted on the other.
-    #
-    # `high` and not `warn` because the bands mean different things. Crossing `warn` is the
-    # NOTICE, and it is already delivered for free: both readers begin rendering "· not
-    # archived" at exactly that point. Crossing `high` is where acting pays, and crossing
-    # `limit` is where it is urgent. Summoning at `warn` would spend a session on most of the
-    # sessions that never get long enough to need one.
-    : "${SPIRA_ARCHIVIST_AT:=high}"
+    # HOW MANY TURNS BETWEEN SWEEPS. The timer fires every five minutes; on each pass, a
+    # session whose turn count has advanced by at least this delta since the last successful
+    # archive is swept. A session nobody has typed in costs a stat and a measurement; one that
+    # has moved 40 turns gets an archivist. Context depth is not in the trigger at all — a
+    # 74k session that has moved 40 turns is swept, a 900k session that has moved none is not
+    # — because what the archivist covers is TURNS, and its cost is proportional to them.
+    : "${SPIRA_ARCHIVIST_EVERY:=40}"
     # HOW RECENTLY A TRANSCRIPT MUST HAVE BEEN WRITTEN TO COUNT AS LIVE. Everything the
     # archivist rescues is rescued so that the session can be cleared, which only matters
     # while somebody is still sitting in it. Far too short and a session that pauses to read
