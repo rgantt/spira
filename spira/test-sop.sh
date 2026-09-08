@@ -391,5 +391,72 @@ is   "an unwritable ledger path fails rather than pretending" "1" "$(sop_rc ledg
 unset LEDGER_OVERRIDE
 
 echo
+echo "--- match: sweep SOP fires on a real payload, scores via MATCH not key-tokens"
+
+# A REAL SWEEP PAYLOAD excerpted from a live incident's bd-show output (sp-t3dc,
+# 2026-09-07T23:50Z), not invented. The bead title and the watchtower body come from
+# the same template, so this fixture reproduces the form the matcher actually receives.
+# Using real output rather than synthetic text prevents a test that passes on words the
+# template does not generate (law-fixtures-carry-real-cadence).
+SWEEP_PAYLOAD='Spira sweep — is the pipeline moving?   [● P1 · CLOSED]
+Type: bug
+
+DESCRIPTION
+
+  ## Spira pipeline, 2026-09-07T23:50:17Z
+
+  N workers pull from a DAG into a merge queue. These are that queue'"'"'s vital
+  signs. A field reading ? is one this pass COULD NOT READ.
+
+  ### The far end — is anything coming out?
+
+  minutes since the last landing      7
+  branches finished but not landed    0
+
+  ### The workers
+
+  aeons alive                         3
+  ready to claim                      85'
+
+# A PAYLOAD FROM AN UNRELATED INCIDENT — a unit failure with no sweep content.
+UNRELATED_PAYLOAD='unit failed: mtgc-alert-prod@1.service   [● P2 · OPEN]
+Type: bug
+
+DESCRIPTION
+
+  systemctl status: failed (ExitCode=1)
+  Journal: connection refused on port 5432'
+
+# Write the sweep SOP with the deployed MATCH regex to the fixture database. This is
+# what controls exactly what the matcher sees — the test does NOT read the live database,
+# which would be reading the state of this box.
+sop write spira-sweep - <<'SOP' >/dev/null 2>&1
+MATCH: Spira sweep — is the pipeline moving|minutes since the last landing
+SYMPTOM: the ten-minute watchtower sweep — vital signs, not a failure.
+CHECK: read the bead metadata as procedure, not as severity signal.
+FIX: check landstate, check workers, commit before close.
+SOP
+
+# THE POSITIVE CONTROL COMES FIRST: verify the sweep SOP is on the fixture shelf
+# before testing that match finds it. A shelf missing the SOP looks identical to a
+# broken matcher — only the positive control tells them apart.
+want "the sweep SOP is on the fixture shelf" "sop-spira-sweep" "$(sop list)"
+
+sweep_match="$(printf '%s\n' "$SWEEP_PAYLOAD" | sop match -)"
+unrel_match="$(printf '%s\n' "$UNRELATED_PAYLOAD" | sop match -)"
+
+want "sop-spira-sweep fires on a real sweep payload" "sop-spira-sweep" "$sweep_match"
+want "it scores via MATCH, not key-tokens"           "MATCH"           "$sweep_match"
+nowant "it does NOT fire on an unrelated payload"    "sop-spira-sweep" "$unrel_match"
+
+# THE POSITIVE CONTROL FOR THE NEGATIVE: the disk-full SOP fires on a payload that
+# names disk-full symptoms, proving the matcher works. If it could not find a hit even
+# here, the negative above would be a broken matcher reporting silence.
+disk_payload='No space left on device — df -h shows /var at 100%'
+disk_match="$(printf '%s\n' "$disk_payload" | sop match -)"
+want "disk-full fires on its own payload (positive control for the negative)" "sop-disk-full" "$disk_match"
+nowant "disk-full does not fire on a sweep payload" "sop-disk-full" "$sweep_match"
+
+echo
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
