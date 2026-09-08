@@ -68,6 +68,7 @@ SPIRA_FAYTHS SPIRA_MAX_AEONS
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
 SPIRA_ARCHIVE
 SPIRA_ARCHIVIST_EVERY SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
+SPIRA_ARCHIVIST_PER_PASS
 SPIRA_TESTDB_LIB SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT
 SPIRA_GATE_TIMEOUT
 SPIRA_GATE_SUITES SPIRA_SUITES_STATE SPIRA_SUITES_BUDGET SPIRA_SUITE_TIMEOUT
@@ -493,6 +494,11 @@ spira_conf_defaults() {
     # while it runs, so an archivist wedged on a huge transcript would stop every other session
     # from ever being looked at.
     : "${SPIRA_ARCHIVIST_TIMEOUT:=900}"
+    # HOW MANY SESSIONS ONE SWEEP MAY ARCHIVE. Serial-and-unbounded is what turns a quiet
+    # morning into a 20-minute pass when several sessions drift past the threshold together;
+    # with a budget the work still drains — drift does not disappear — but at a rate the
+    # account window can absorb, and the timer is the throttle rather than the session count.
+    : "${SPIRA_ARCHIVIST_PER_PASS:=1}"
     # WHERE A REPOSITORY'S TEST-FIXTURE LIBRARY SITS, relative to that repository's ROOT.
     # An aeon builds one fixture at summon for a repository that has one and exports it, so
     # every suite the session runs resets that fixture instead of building its own — measured

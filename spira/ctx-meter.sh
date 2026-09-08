@@ -282,6 +282,20 @@ except FileNotFoundError:
 except Exception:
     arc_name = "?"
 
+# THE SWEEP-LEVEL STATE. When the last sweep was skipped for capacity, the per-session state
+# is still "none" — the archivist never ran — but the REASON it did not run is different from
+# "nothing to do", and a quiet archivist must be distinguishable from a stalled one
+# (law-absence-needs-a-positive-control).
+sweep_skipped = False
+if arc_name == "none":
+    try:
+        with open(os.path.join(state_dir, "archivist", "sweep.state")) as fh:
+            sw = dict(l.strip().split("=", 1) for l in fh if "=" in l)
+        if sw.get("sweep_state") == "skipped" and sw.get("reason") == "capacity":
+            sweep_skipped = True
+    except Exception:
+        pass
+
 # ---- the two windows that actually stop work --------------------------------------------
 # CONTEXT SAYS WHEN TO CLEAR; THESE SAY WHETHER THERE IS ANYTHING LEFT TO CLEAR INTO. The
 # 5-hour and 7-day rate-limit windows are what ends a working day outright, and neither was
@@ -565,7 +579,7 @@ if mode == "env":
     # and a fabricated "∞ turns left" would be a number where there is no measurement.
     print(f"SP_CTX_TURNS_LEFT={head // growth_per_turn if growth_per_turn > 0 else '-'}")
     print(f"SP_CTX_AGE={age}")
-    print(f"SP_CTX_ARCHIVIST={arc_name or '-'}")
+    print(f"SP_CTX_ARCHIVIST={'skipped' if sweep_skipped else arc_name or '-'}")
     print(f"SP_CTX_ARCHIVIST_BEHIND={arc_behind}")
     # HOW MUCH WAS RESCUED, which is the difference between "the sweep ran" and "the sweep was
     # worth running". A pane reporting only that the archivist finished cannot distinguish a
@@ -611,7 +625,12 @@ elif arc_name == "safe":
 elif arc_name == "failed":
     arc = " \x1b[31m! archive failed\x1b[0m"
 elif arc_name == "none":
-    arc = " \x1b[2m· not archived\x1b[0m" if ctx >= warn else ""
+    if sweep_skipped:
+        arc = " \x1b[33m⏸ skipped (capacity)\x1b[0m"
+    elif ctx >= warn:
+        arc = " \x1b[2m· not archived\x1b[0m"
+    else:
+        arc = ""
 elif arc_name == "?":
     arc = " \x1b[31m· archivist ?\x1b[0m"
 else:

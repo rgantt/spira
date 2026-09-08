@@ -40,17 +40,20 @@
 # and its cadence is different: a lease dies in minutes, a session crosses a band over tens of
 # them.
 #
-# THE SWEEP HOLDS NO LOCK OF ITS OWN AND SPAWNS NOTHING. The archivist runs synchronously
-# inside the pass, so the concurrency cap is the service manager's: a `oneshot` unit already
-# active is not started again by its timer, which is one fewer thing to get right than a lock
-# file. What the sweep does hold is a per-session lock, so a manual `now` and a timer pass
-# cannot both archive one session — that would file everything twice.
+# CONCURRENCY IS CAPPED AT ONE ARCHIVE AT A TIME, across both entry points, by a single
+# archivist-wide lock. Type=oneshot plus the timer's refusal to restart an active unit means
+# one sweep cannot overlap the next, but a manual `now <session>` is outside both mechanisms
+# by construction — the per-session lock only prevents two callers archiving the SAME session.
+# The archivist-wide lock is what prevents two callers archiving DIFFERENT sessions at once:
+# the sweep skips a session it cannot lock and moves on; the manual path waits, because an
+# operator told "busy, try later" will simply run it again in a loop.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$HERE/lib.sh"
 
 ARC="$SPIRA_RUN/archivist"
 PROMPT_FILE="$SPIRA_CHAMBER/archivist.md"
+ARC_LOCK="$ARC/archivist.lock"
 
 # HOW MANY BANDS A SESSION HAS ALREADY CROSSED, from the threshold it has NOT yet reached.
 # `SP_CTX_NEXT` is the next one above the current context, so "next is high" means warn is
@@ -201,20 +204,29 @@ for ln in sys.stdin:
     fi
 }
 
-archive() {              # archive <session> <transcript> <at_turn> <ctx> <why>
-    local sid="$1" tp="$2" at="$3" ctx="$4" why="$5" from
+archive() {              # archive <session> <transcript> <at_turn> <ctx> <why> [wait]
+    local sid="$1" tp="$2" at="$3" ctx="$4" why="$5" lock_mode="${6:-try}" from
     from="$(covered "$sid")"; from="${from:-0}"
     [ -f "$PROMPT_FILE" ] || { log "archivist: no prompt at $PROMPT_FILE"; return 1; }
     mkdir -p "$ARC/cwd" || return 1
 
-    # A SUBSHELL WITH THE LOCK ON A FILE DESCRIPTOR, so it is released when the shell exits
+    # A SUBSHELL WITH TWO LOCKS ON FILE DESCRIPTORS, so both are released when the shell exits
     # however it exits — a lock cleared by a trap is a lock leaked whenever the process is
     # killed, and a stale one would wedge every later sweep of that session silently.
     (
+        # THE ARCHIVIST-WIDE LOCK (fd 8). One archive at a time across both entry points. The
+        # sweep passes lock_mode=try and skips if busy; the manual path passes lock_mode=wait,
+        # because the operator asked and "busy, try later" invites a retry loop.
+        if [ "$lock_mode" = wait ]; then
+            log "archivist: $sid — waiting for the archivist-wide lock"
+            flock 8 || { log "archivist: $sid could not take the archivist-wide lock"; exit 75; }
+        else
+            flock -n 8 || { log "archivist: $sid skipped — another archive is already running"; exit 75; }
+        fi
+
+        # THE PER-SESSION LOCK (fd 9). Prevents two callers archiving the SAME session.
         # NON-ZERO, so the caller reads a refused lock as "this pass did not archive it" and
-        # goes no further. Exiting 0 here would have the sweep treat somebody else's run as its
-        # own and act on its results — including sending the one notice, off a count from a run
-        # that is still going.
+        # goes no further.
         flock -n 9 || { log "archivist: $sid is already being archived"; exit 75; }
 
         write_state "$sid" sweeping "$at" 0
@@ -293,7 +305,7 @@ home.}"
             log "archivist: $sid FAILED rc=$rc after $items item(s) — see $logf"
         fi
         exit "$rc"
-    ) 9>"$ARC/$sid.lock"
+    ) 8>"$ARC_LOCK" 9>"$ARC/$sid.lock"
 }
 
 # ---- the modes ---------------------------------------------------------------------------
@@ -301,6 +313,24 @@ case "${1:-sweep}" in
 
 sweep|list)
     MODE="${1:-sweep}"
+
+    # HONOUR THE PAUSE. The archivist spends from the same five-hour window the aeons draw on,
+    # and capacity_paused is the one predicate that says it is shut. Checked once per pass, not
+    # per session: the window does not reopen mid-pass, and a per-session check invites four
+    # identical log lines.
+    if [ "$MODE" = sweep ] && capacity_paused; then
+        log "archivist: skipped — account capacity paused for another ${SPIRA_CAPACITY_LEFT}s"
+        # WRITE A SWEEP-LEVEL STATE so the cockpit can distinguish "skipped for capacity" from
+        # "idle" and "failed". The file is named for the sweep, not a session: it is cleared by
+        # the next pass that runs normally.
+        mkdir -p "$ARC" 2>/dev/null
+        printf 'sweep_state=skipped\nreason=capacity\nat=%s\n' "$(date +%s)" > "$ARC/sweep.state"
+        exit 0
+    fi
+
+    # ---- measure every live session -------------------------------------------------------
+    # Collected into parallel arrays so they can be sorted by drift before the budget is spent.
+    declare -a C_SID=() C_TP=() C_CTX=() C_TURNS=() C_NXT=() C_BAND=() C_DRIFT=() C_WOULD=() C_PREV=()
     [ "$MODE" = list ] && printf '%-40s %10s %6s %8s %5s %s\n' SESSION CONTEXT TURNS BAND DRIFT WOULD
     while IFS=$'\t' read -r sid tp; do
         [ -n "$sid" ] || continue
@@ -333,11 +363,41 @@ sweep|list)
         fi
         if [ "$MODE" = list ]; then
             printf '%-40s %10s %6s %8s %5s %s\n' "$sid" "${ctx:--}" "${turns:--}" "$band" "$drift" "$would"
+        fi
+        C_SID+=("$sid"); C_TP+=("$tp"); C_CTX+=("${ctx:-0}"); C_TURNS+=("${turns:-0}")
+        C_NXT+=("${nxt:-}"); C_BAND+=("$band"); C_DRIFT+=("$drift"); C_WOULD+=("$would")
+        C_PREV+=("$prev_state")
+    done < <(live_transcripts)
+    [ "$MODE" = list ] && exit 0
+
+    # SORT CANDIDATES BY DRIFT DESCENDING, so the budget is spent on the most drifted session
+    # first. With a budget of 1 the choice of WHICH session matters: ordering by discovery
+    # would let a chatty session at the front of the list starve the one carrying the most
+    # unpersisted work, indefinitely.
+    sorted_idx="$(python3 -c '
+import sys
+drifts = [int(x) for x in sys.argv[1].split(",") if x]
+for i in sorted(range(len(drifts)), key=lambda i: drifts[i], reverse=True):
+    print(i)' "$(IFS=,; echo "${C_DRIFT[*]+"${C_DRIFT[*]}"}")" 2>/dev/null)"
+
+    archived=0
+    while IFS= read -r idx; do
+        [ -n "$idx" ] || continue
+        sid="${C_SID[$idx]}"; tp="${C_TP[$idx]}"; ctx="${C_CTX[$idx]}"; turns="${C_TURNS[$idx]}"
+        band="${C_BAND[$idx]}"; drift="${C_DRIFT[$idx]}"; would="${C_WOULD[$idx]}"
+
+        [ "$would" = archive ] || continue
+
+        # BUDGET THE PASS. At most SPIRA_ARCHIVIST_PER_PASS sessions per sweep; the rest are
+        # left for the next tick five minutes later. Serial-and-unbounded is what turns a quiet
+        # morning into a 20-minute pass.
+        if [ "$archived" -ge "$SPIRA_ARCHIVIST_PER_PASS" ]; then
+            log "archivist: $sid deferred — budget of $SPIRA_ARCHIVIST_PER_PASS reached (drift $drift)"
             continue
         fi
-        [ "$would" = archive ] || continue
-        archive "$sid" "$tp" "${turns:-0}" "${ctx:-0}" "turns since last sweep ($drift) >= $SPIRA_ARCHIVIST_EVERY" \
+        archive "$sid" "$tp" "$turns" "$ctx" "turns since last sweep ($drift) >= $SPIRA_ARCHIVIST_EVERY" \
             || continue
+        archived=$((archived + 1))
 
         # Record the band so a later sweep can read it without re-deriving. This is only for
         # the notification below; the archive trigger is turns, not bands.
@@ -363,17 +423,20 @@ sweep|list)
             "A session at the keyboard is carrying $ctx tokens; its unfinished business is now saved ($filed item(s)) and it is safe to clear" \
             --why "Every further turn re-reads all of it. The archivist swept it at turn $turns; anything said since is not covered." \
             >/dev/null 2>&1
-    done < <(live_transcripts)
+    done <<< "$sorted_idx"
+
+    # CLEAR THE SWEEP STATE on a normal pass, so a stale "skipped" does not linger.
+    rm -f "$ARC/sweep.state"
 
     # ---- what the sessions that no longer exist left behind ---------------------------
     # A state, a mark and a log per session, forever, in a directory nothing else prunes.
     # Tied to the TRANSCRIPT rather than to an age: while the client still holds the
     # transcript the state is still the truth about it, and once the transcript is gone
     # there is no session for any of it to describe.
-    [ "$MODE" = sweep ] || exit 0
     for f in "$ARC"/*.state; do
         [ -e "$f" ] || break
         s="$(basename "$f")"; s="${s%.state}"
+        [ "$s" = sweep ] && continue     # the sweep-level state is not a session
         [ -z "$(find "$SPIRA_TOKEN_PROJECTS" -name "$s.jsonl" -print -quit 2>/dev/null)" ] || continue
         rm -f "$ARC/$s.state" "$ARC/$s.hwm" "$ARC/$s.covered" "$ARC/$s.notified" \
               "$ARC/$s.lock" "$SPIRA_RUN/archivist-$s.log"
@@ -407,7 +470,7 @@ PY
     e="$("$HERE/ctx-meter.sh" env "$tp" 2>/dev/null)" || e=""
     ctx="$(sed -n 's/^SP_CTX_NOW=//p' <<<"$e")"
     turns="$(sed -n 's/^SP_CTX_TURNS=//p' <<<"$e")"
-    archive "$sid" "$tp" "${turns:-0}" "${ctx:-0}" "asked for by hand"
+    archive "$sid" "$tp" "${turns:-0}" "${ctx:-0}" "asked for by hand" wait
     ;;
 
 mark)
@@ -516,10 +579,11 @@ state)
     else
         for f in "$ARC"/*.state; do
             [ -e "$f" ] || { echo "no session has been archived"; break; }
-            s="$(basename "$f")"
-            printf '%s\t%s\t%s turn\t%s filed\n' "${s%.state}" \
-                "$(state_key "${s%.state}" state)" "$(state_key "${s%.state}" at_turn)" \
-                "$(state_key "${s%.state}" items_filed)"
+            s="$(basename "$f")"; s="${s%.state}"
+            [ "$s" = sweep ] && continue     # the sweep-level state is not a session
+            printf '%s\t%s\t%s turn\t%s filed\n' "$s" \
+                "$(state_key "$s" state)" "$(state_key "$s" at_turn)" \
+                "$(state_key "$s" items_filed)"
         done
     fi
     ;;

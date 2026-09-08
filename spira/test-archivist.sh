@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 #
-# test-archivist.sh — the sweep trigger is turns since last sweep, not context depth.
+# test-archivist.sh — the sweep trigger, the capacity gate, the budget, and the ordering.
 #
 #   ./test-archivist.sh
 #
 # WHAT THIS SUITE IS GUARDING. The archivist sweeps a session when its turn count has drifted
 # past SPIRA_ARCHIVIST_EVERY since the last successful archive, regardless of context depth.
 # A session that has not drifted is not swept. A session whose last run failed is not re-fired.
-# The band-3 push notification fires at most once per session.
+# The band-3 push notification fires at most once per session. A sweep is skipped entirely when
+# the account capacity is paused. A pass archives at most SPIRA_ARCHIVIST_PER_PASS sessions,
+# choosing the most drifted first. No two archives run concurrently, even across entry points.
 #
-# covers: spira/archivist.sh spira/conf.sh spira/hooks/session.sh
+# covers: spira/archivist.sh spira/conf.sh spira/hooks/session.sh spira/ctx-meter.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 ARC="$HERE/archivist.sh"
@@ -41,6 +43,16 @@ mktranscript() {   # mktranscript <path> <turns> <ctx>
     done
 }
 
+# A stub claude that consumes stdin and exits 0. SPIRA_CLAUDE is the injection point, and it
+# exists so a suite does not spend real money against the operator's account.
+STUB_CLAUDE="$T/stub-claude"
+cat > "$STUB_CLAUDE" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 0
+STUB
+chmod +x "$STUB_CLAUDE"
+
 # Run archivist.sh list in a clean environment.
 alist() {
     env -i HOME="$T/home" PATH="$PATH" SPIRA_CONF="$NONE" \
@@ -49,6 +61,20 @@ alist() {
         SPIRA_NOW="$EPOCH" SPIRA_ARCHIVIST_IDLE="$IDLE" \
         SPIRA_ARCHIVIST_EVERY="$EVERY" \
         bash "$ARC" list 2>/dev/null
+}
+
+# Run archivist.sh sweep in a clean environment with the stub claude.
+asweep() {
+    env -i HOME="$T/home" PATH="$PATH" SPIRA_CONF="$NONE" \
+        SPIRA_RUN="$T/run" SPIRA_TOKEN_PROJECTS="$T/projects" \
+        SPIRA_CTX_WARN="$CW" SPIRA_CTX_HIGH="$CH" SPIRA_CTX_LIMIT="$CL" \
+        SPIRA_NOW="$EPOCH" SPIRA_ARCHIVIST_IDLE="$IDLE" \
+        SPIRA_ARCHIVIST_EVERY="$EVERY" \
+        SPIRA_CLAUDE="$STUB_CLAUDE" \
+        SPIRA_ARCHIVIST_TIMEOUT=10 \
+        SPIRA_ARCHIVIST_PER_PASS="${BUDGET:-1}" \
+        SPIRA_CHAMBER="$T/chamber" \
+        bash "$ARC" sweep 2>&1
 }
 
 # Write archivist state files.
@@ -183,6 +209,119 @@ except Exception: print("")' 2>/dev/null)"
 else
     bad "session hook not found at $HOOK"
 fi
+
+# ==========================================================================================
+echo
+echo "SPIRA_ARCHIVIST_PER_PASS is in the key list and defaults to 1"
+# ==========================================================================================
+out="$(env -i HOME="$T/home" PATH="$PATH" SPIRA_CONF="$NONE" SPIRA_RUN="$T/run" \
+    bash -c '. "'"$HERE"'/conf.sh" && echo "$SPIRA_CONF_KEYS"' 2>/dev/null)"
+has "SPIRA_ARCHIVIST_PER_PASS is in the key list" "$out" "SPIRA_ARCHIVIST_PER_PASS"
+val="$(env -i HOME="$T/home" PATH="$PATH" SPIRA_CONF="$NONE" SPIRA_RUN="$T/run" \
+    bash -c '. "'"$HERE"'/conf.sh" && echo "$SPIRA_ARCHIVIST_PER_PASS"' 2>/dev/null)"
+is "default SPIRA_ARCHIVIST_PER_PASS" "1" "$val"
+
+# ==========================================================================================
+echo
+echo "a sweep is skipped entirely when capacity is paused"
+# ==========================================================================================
+rm -rf "$T/run" "$T/projects" "$T/home" "$T/chamber"
+mkdir -p "$T/home" "$T/run" "$T/projects/-test-project" "$T/chamber"
+cp "$HERE/chamber/archivist.md" "$T/chamber/" 2>/dev/null || printf 'test prompt {{TRANSCRIPT}}' > "$T/chamber/archivist.md"
+mktranscript "$T/projects/-test-project/sess-cap.jsonl" 60 300000
+# Plant a capacity pause that expires far in the future from the REAL clock. capacity_paused()
+# uses date +%s (the real time, not SPIRA_NOW), so this must be ahead of the actual wall clock.
+mkdir -p "$T/run"
+printf '%d 2099-01-01T00:00:00Z a test pause\n' $(( $(date +%s) + 3600 )) > "$T/run/capacity-pause"
+
+out="$(asweep)"
+has "sweep reports skipped for capacity" "$out" "skipped"
+is "sweep.state says skipped" "skipped" \
+    "$(sed -n 's/^sweep_state=//p' "$T/run/archivist/sweep.state" 2>/dev/null)"
+is "sweep.state says reason=capacity" "capacity" \
+    "$(sed -n 's/^reason=//p' "$T/run/archivist/sweep.state" 2>/dev/null)"
+# The session must NOT have been archived — no session state should exist.
+is "session was not archived" "" "$(cat "$T/run/archivist/sess-cap.state" 2>/dev/null)"
+
+# ==========================================================================================
+echo
+echo "capacity.sh resume restores normal behaviour on the next tick"
+# ==========================================================================================
+# Remove the pause file (simulating `capacity.sh resume`).
+rm -f "$T/run/capacity-pause"
+BUDGET=1 out="$(asweep)"
+hasnt "sweep did not skip" "$out" "skipped"
+# The session should now be archived (state file exists).
+_st="$(sed -n 's/^state=//p' "$T/run/archivist/sess-cap.state" 2>/dev/null)"
+is "session was archived after resume" "safe" "$_st"
+# The sweep.state from the capacity-skipped pass should be cleaned up.
+is "sweep.state cleared on normal pass" "" "$(cat "$T/run/archivist/sweep.state" 2>/dev/null)"
+
+# ==========================================================================================
+echo
+echo "a pass with more drifted sessions than the budget archives exactly that many"
+# ==========================================================================================
+rm -rf "$T/run" "$T/projects" "$T/home"
+mkdir -p "$T/home" "$T/run" "$T/projects/-test-project"
+mktranscript "$T/projects/-test-project/sess-a.jsonl" 60 300000   # drift 60
+mktranscript "$T/projects/-test-project/sess-b.jsonl" 80 300000   # drift 80
+mktranscript "$T/projects/-test-project/sess-c.jsonl" 100 300000  # drift 100
+
+BUDGET=2 out="$(asweep)"
+# Count how many sessions got a state file (archived).
+_archived=0
+for _s in sess-a sess-b sess-c; do
+    _st="$(sed -n 's/^state=//p' "$T/run/archivist/$_s.state" 2>/dev/null)"
+    [ "$_st" = safe ] && _archived=$((_archived + 1))
+done
+is "exactly 2 sessions archived with budget=2" "2" "$_archived"
+# The deferred one should have been logged.
+has "a session was deferred for budget" "$out" "deferred"
+
+# ==========================================================================================
+echo
+echo "the next pass picks up the remainder rather than re-choosing the same one"
+# ==========================================================================================
+# sess-c (drift 100) and sess-b (drift 80) were archived in the previous pass. Their covered
+# marks are now at their turn counts, so their drift is 0. sess-a still has drift 60.
+BUDGET=2 out="$(asweep)"
+_st="$(sed -n 's/^state=//p' "$T/run/archivist/sess-a.state" 2>/dev/null)"
+is "previously deferred session is archived on the next pass" "safe" "$_st"
+
+# ==========================================================================================
+echo
+echo "given two drifted sessions, the one with the larger drift is chosen"
+# ==========================================================================================
+rm -rf "$T/run" "$T/projects" "$T/home"
+mkdir -p "$T/home" "$T/run" "$T/projects/-test-project"
+mktranscript "$T/projects/-test-project/sess-small.jsonl" 50 300000   # drift 50
+mktranscript "$T/projects/-test-project/sess-big.jsonl" 90 300000     # drift 90
+
+BUDGET=1 out="$(asweep)"
+# Only one should be archived; it should be sess-big (drift 90).
+_big="$(sed -n 's/^state=//p' "$T/run/archivist/sess-big.state" 2>/dev/null)"
+_small="$(sed -n 's/^state=//p' "$T/run/archivist/sess-small.state" 2>/dev/null)"
+is "the more drifted session (sess-big) was archived" "safe" "$_big"
+hasnt "the less drifted session (sess-small) was NOT archived" "${_small:-}" "safe"
+has "sess-small deferred for budget" "$out" "deferred"
+
+# ==========================================================================================
+echo
+echo "the cockpit status line distinguishes skipped-for-capacity from idle"
+# ==========================================================================================
+rm -rf "$T/run" "$T/projects" "$T/home"
+mkdir -p "$T/home" "$T/run/archivist" "$T/projects/-test-project"
+mktranscript "$T/projects/-test-project/sess-viz.jsonl" 50 300000
+
+# Plant a sweep.state saying skipped for capacity.
+printf 'sweep_state=skipped\nreason=capacity\nat=%s\n' "$EPOCH" > "$T/run/archivist/sweep.state"
+# No per-session state exists, so arc_name will be "none" and sweep_skipped will be True.
+out="$(env -i HOME="$T/home" PATH="$PATH" SPIRA_CONF="$NONE" \
+    SPIRA_RUN="$T/run" SPIRA_TOKEN_PROJECTS="$T/projects" \
+    SPIRA_CTX_WARN="$CW" SPIRA_CTX_HIGH="$CH" SPIRA_CTX_LIMIT="$CL" \
+    SPIRA_NOW="$EPOCH" SPIRA_ARCHIVIST_IDLE="$IDLE" \
+    bash "$HERE/ctx-meter.sh" env "$T/projects/-test-project/sess-viz.jsonl" 2>/dev/null)"
+has "env mode shows skipped archivist state" "$out" "SP_CTX_ARCHIVIST=skipped"
 
 echo
 echo "  $pass passed, $fail failed"
