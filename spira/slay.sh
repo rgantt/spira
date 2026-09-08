@@ -57,45 +57,58 @@ say() { printf '%s\n' "$*"; }
 # ---- 1. the marker ---------------------------------------------------------------------
 printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WHY" > "$SPIRA_RUN/$ID.slain"
 
-# ---- 2. the aeon -----------------------------------------------------------------------
-pf="$(ls "$SPIRA_RUN"/aeon-*-"$ID".pid 2>/dev/null | head -1)"
-pid=""; [ -n "$pf" ] && pid="$(cat "$pf" 2>/dev/null)"
-name=""; [ -n "$pf" ] && name="$(cat "${pf%.pid}.name" 2>/dev/null)"
-unit=""
-if [ -n "$pid" ] && command -v systemctl >/dev/null 2>&1; then
-    for u in $(systemctl --user list-units 'spira-aeon-*' --no-legend 2>/dev/null | awk '{print $1}'); do
-        [ "$(systemctl --user show -p MainPID --value "$u" 2>/dev/null)" = "$pid" ] && { unit="$u"; break; }
-    done
-fi
-if [ -z "$pid" ] || [ ! -d "/proc/$pid" ]; then
-    say "aeon: none running for $ID (no live pid file) — setting the bead and the work only"
+# ---- 2. the holder (aeon OR manual hold) -----------------------------------------------
+# A hold pidfile means a non-aeon actor (brain session, concierge, hand-run tool) claimed
+# this bead via hold.sh. It has no systemd unit and no aeon.sh cleanup trap, so slay just
+# kills the heartbeat (recorded in the .hb companion) and removes the pidfile.
+hpf="$SPIRA_RUN/hold-$ID.pid"
+if [ -f "$hpf" ]; then
+    hpid="$(cat "$hpf" 2>/dev/null)"
+    hbpid=""; [ -f "${hpf%.pid}.hb" ] && hbpid="$(cat "${hpf%.pid}.hb" 2>/dev/null)"
+    [ -n "$hbpid" ] && kill "$hbpid" 2>/dev/null
+    rm -f "$hpf" "${hpf%.pid}.hb"
+    say "hold: manual hold released for $ID (holder pid ${hpid:-?}, heartbeat ${hbpid:-none})"
     rm -f "$SPIRA_RUN/$ID.slain"
-    # A pid file whose process is gone is litter from an aeon that died without its cleanup;
-    # aeon_count removes the same litter, and leaving it here fails the verify below.
-    [ -n "$pf" ] && rm -f "$pf" "${pf%.pid}.name"
 else
-    if [ -n "$unit" ]; then
-        say "aeon: ${name:-?} pid $pid is $unit — stopping the unit"
-        systemctl --user stop "$unit" 2>/dev/null || { say "aeon: systemctl stop failed — sending TERM to $pid"; kill -TERM "$pid" 2>/dev/null; }
-    else
-        say "aeon: ${name:-?} pid $pid has no unit — sending TERM"
-        kill -TERM "$pid" 2>/dev/null
+    pf="$(ls "$SPIRA_RUN"/aeon-*-"$ID".pid 2>/dev/null | head -1)"
+    pid=""; [ -n "$pf" ] && pid="$(cat "$pf" 2>/dev/null)"
+    name=""; [ -n "$pf" ] && name="$(cat "${pf%.pid}.name" 2>/dev/null)"
+    unit=""
+    if [ -n "$pid" ] && command -v systemctl >/dev/null 2>&1; then
+        for u in $(systemctl --user list-units 'spira-aeon-*' --no-legend 2>/dev/null | awk '{print $1}'); do
+            [ "$(systemctl --user show -p MainPID --value "$u" 2>/dev/null)" = "$pid" ] && { unit="$u"; break; }
+        done
     fi
-    # ---- 3. wait for aeon.sh's own cleanup: it removes the pid file last -------------------
-    t0=$(date +%s)
-    while [ -e "$pf" ] || [ -d "/proc/$pid" ]; do
-        sleep 1
-        if [ $(( $(date +%s) - t0 )) -ge 60 ]; then
-            say "aeon: still alive after 60s — KILL"
-            kill -KILL "$pid" 2>/dev/null; sleep 1
-            rm -f "$pf" "${pf%.pid}.name"
-            break
+    if [ -z "$pid" ] || [ ! -d "/proc/$pid" ]; then
+        say "aeon: none running for $ID (no live pid file) — setting the bead and the work only"
+        rm -f "$SPIRA_RUN/$ID.slain"
+        # A pid file whose process is gone is litter from an aeon that died without its cleanup;
+        # aeon_count removes the same litter, and leaving it here fails the verify below.
+        [ -n "$pf" ] && rm -f "$pf" "${pf%.pid}.name"
+    else
+        if [ -n "$unit" ]; then
+            say "aeon: ${name:-?} pid $pid is $unit — stopping the unit"
+            systemctl --user stop "$unit" 2>/dev/null || { say "aeon: systemctl stop failed — sending TERM to $pid"; kill -TERM "$pid" 2>/dev/null; }
+        else
+            say "aeon: ${name:-?} pid $pid has no unit — sending TERM"
+            kill -TERM "$pid" 2>/dev/null
         fi
-    done
-    [ -d "/proc/$pid" ] && { say "aeon: pid $pid SURVIVED a KILL — investigate by hand"; fail=1; } \
-                        || say "aeon: stopped ($(( $(date +%s) - t0 ))s)"
+        # ---- 3. wait for aeon.sh's own cleanup: it removes the pid file last -------------------
+        t0=$(date +%s)
+        while [ -e "$pf" ] || [ -d "/proc/$pid" ]; do
+            sleep 1
+            if [ $(( $(date +%s) - t0 )) -ge 60 ]; then
+                say "aeon: still alive after 60s — KILL"
+                kill -KILL "$pid" 2>/dev/null; sleep 1
+                rm -f "$pf" "${pf%.pid}.name"
+                break
+            fi
+        done
+        [ -d "/proc/$pid" ] && { say "aeon: pid $pid SURVIVED a KILL — investigate by hand"; fail=1; } \
+                            || say "aeon: stopped ($(( $(date +%s) - t0 ))s)"
+    fi
+    rm -f "$SPIRA_RUN/$ID.slain"
 fi
-rm -f "$SPIRA_RUN/$ID.slain"
 
 # ---- 4a. release the claim, BEFORE anything is destroyed --------------------------------
 # A LIVE CLAIM IS ANOTHER ACTOR'S, and bd refuses to overwrite one without being told the

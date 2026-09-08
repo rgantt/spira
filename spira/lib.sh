@@ -2168,13 +2168,35 @@ for line in sys.stdin:
 }
 
 # --------------------------------------------------------------------------------------
-# holder_alive <id> -> 0 if an aeon process is working this bead. The pidfile is the only
-# witness that answers in the seconds between `bd ready --claim` and the aeon writing it,
-# and it is the witness that matters before anything DESTRUCTIVE: rewriting a branch under
-# a running aeon destroys work that exists nowhere else.
+# hold_alive <pidfile> -> 0 if the recorded pid is a live process. Unlike aeon_alive this
+# does NOT check argv, because the holder can be any process — a brain session, the
+# concierge, a hand-run tool. The recycled-pid risk is accepted: a hold is short-lived
+# manual work, and a false positive only delays reclamation, while a false negative (the
+# aeon_alive failure this fixes) steals work out from under an operator mid-landing.
+# --------------------------------------------------------------------------------------
+hold_alive() {
+    local pf="$1" pid
+    [ -f "$pf" ] || return 1
+    pid="$(cat "$pf" 2>/dev/null)"
+    [ -n "${pid:-}" ] || return 1
+    [ -d "/proc/$pid" ] || return 1
+    return 0
+}
+
+# --------------------------------------------------------------------------------------
+# holder_alive <id> -> 0 if a live process is working this bead. Checks BOTH hold
+# pidfiles (non-aeon actors: brain session, concierge, hand-run tools) and aeon pidfiles.
+# The two use different liveness tests: a hold is checked by pid only (the holder can be
+# anything), an aeon is checked by pid AND argv (a recycled pid must not resurrect a dead
+# aeon's claim). Both satisfy the SAME predicate the reaper reads, so the two can never
+# disagree.
 # --------------------------------------------------------------------------------------
 holder_alive() {
     local id="$1" pf
+    for pf in "$SPIRA_RUN"/hold-"$id".pid; do
+        [ -e "$pf" ] || continue
+        hold_alive "$pf" && return 0
+    done
     for pf in "$SPIRA_RUN"/aeon-*-"$id".pid; do
         [ -e "$pf" ] || continue
         aeon_alive "$pf" && return 0
@@ -2291,7 +2313,7 @@ spira_db_reachable() {
 spira_holder_witnesses() {
     local id="$1" st
     if holder_alive "$id"; then
-        printf 'a live aeon holds it'; return 0
+        printf 'a live process holds it'; return 0
     fi
     if ! spira_db_reachable; then
         printf 'the bead database did not answer, so the status witness proves nothing'; return 0

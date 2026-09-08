@@ -112,12 +112,18 @@ while [ $# -gt 0 ]; do
 done
 
 # --------------------------------------------------------------------------------------
-# Liveness. holder_alive answers "is a live aeon working THIS bead", which is a stronger
+# Liveness. holder_alive answers "is a live process working THIS bead", which is a stronger
 # statement than any status column can make: the bead says in_progress until something
-# reclaims it, whether or not anyone is still there.
+# reclaims it, whether or not anyone is still there. Checks both hold pidfiles (non-aeon
+# actors) and aeon pidfiles — the two use different liveness tests but satisfy the same
+# predicate.
 # --------------------------------------------------------------------------------------
 holder_alive() {   # holder_alive <bead-id>
     local id="$1" pf
+    for pf in "$SPIRA_RUN"/hold-"$id".pid; do
+        [ -e "$pf" ] || continue
+        hold_alive "$pf" && return 0
+    done
     for pf in "$SPIRA_RUN"/aeon-*-"$id".pid; do
         [ -e "$pf" ] || continue
         aeon_alive "$pf" && return 0
