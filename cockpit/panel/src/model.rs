@@ -7,13 +7,20 @@
 //! |---|---|---|---|
 //! | DECISIONS | open work on the operator | beads, the escalation label + `overseer` | close it; the reason IS the verdict |
 //! | FYI | something already true | beads, `insight`+`overseer` | dismiss it — read and move on |
-//! | NOTIFICATIONS | something already happened | Gas Town mail, `overseer` | mark it read |
+//! | NOTIFICATIONS | something already happened | beads, `issue_type: event` | mark it read |
 //! | ALERTS | a condition that is true NOW | beads, `event`+`alert`+`overseer` | acknowledge it, or silence it for an hour |
 //!
 //! An INSIGHT is closed by construction: there is nothing to do, only something to know. It
-//! exists because an answer that scrolls off screen is lost. A NOTIFICATION is neither work
-//! nor a keepsake — mail is a PULL medium, so nothing announces one, and 80 had accumulated
-//! unread including "CI failed" and "HOLLOW-CLOSE: 1 bead(s) closed with an open dependency".
+//! exists because an answer that scrolls off screen is lost. A NOTIFICATION is an OUTCOME —
+//! a landing, a reclaim, a CI verdict, a gate stall. Those flash on the health pane's RECENT
+//! line and scroll away with no durable surface anywhere.
+//!
+//! IT USED TO READ GAS TOWN MAIL, and kept reading it for a day after the town was
+//! decommissioned: nothing had written to that mailbox since the 2026-09-05 cutover, so the
+//! tab could only be empty or historical while the store paid ~816 ms per 60 s refresh —
+//! 1,440 subprocess calls a day — to find out. Repointed rather than dropped, because the
+//! gap it now fills is real and the rows were already in the snapshot: `bd list --all`
+//! returns events, and both surviving filters were throwing them away.
 //!
 //! WHY THE INSIGHTS TAB SAYS "FYI" (the operator, verbatim: *"these insights seem more like bug
 //! reports which means they're implicitly asking me for feedback -- really they should be FYI
@@ -102,14 +109,14 @@ impl View {
     }
 
     /// What the destructive key does HERE. Closing a decision records a verdict; dismissing
-    /// an insight only means "read"; marking mail read changes nothing but the inbox;
-    /// acknowledging an alert says "seen" and changes NOTHING about the condition. One
-    /// word for all four is how a keypress silently does nothing — `bd close` on an
-    /// insight is a no-op, because an insight was created closed.
+    /// an insight or marking an event read only means "read"; acknowledging an alert says
+    /// "seen" and changes NOTHING about the condition. One word for all four is how a keypress
+    /// silently does nothing — `bd close` on an insight or event is a no-op, because both
+    /// were created closed.
     ///
-    /// `dismissed` is the history toggle. In FYI the same key UNDOES the dismissal; in
-    /// ALERTS it lifts a silence. Saying "dismiss" over a list of already-dismissed items is
-    /// the same silent no-op one layer along.
+    /// `dismissed` is the history toggle. In record views (FYI, NOTIFICATIONS) the same key
+    /// UNDOES the dismissal; in ALERTS it lifts a silence. Saying "dismiss" over a list of
+    /// already-dismissed items is the same silent no-op one layer along.
     pub fn verb(self, dismissed: bool) -> &'static str {
         match self {
             View::Decisions => "close",
@@ -117,18 +124,26 @@ impl View {
             View::Insights => "dismiss",
             View::Alerts if dismissed => "unsilence",
             View::Alerts => "ack",
+            View::Notifications if dismissed => "restore",
             View::Notifications => "mark read",
         }
     }
 
+    /// Views whose destructive key toggles `archived` rather than closing anything, and which
+    /// therefore have a history `h` can show. DECISIONS has none — a closed decision is a
+    /// verdict, not a hidden row. ALERTS has its own history mechanism (closed/silenced).
+    pub fn is_record(self) -> bool {
+        matches!(self, View::Insights | View::Notifications)
+    }
+
     /// Whether this view keeps a set of items behind `h`.
     ///
-    /// FYI hides what has been dismissed; ALERTS hides what has cleared or been silenced.
-    /// DECISIONS has none — a closed decision is a verdict, not a hidden row — and mail has
-    /// `gt mail`. Asked rather than open-coded so the key, the tab name and the footer
-    /// cannot come to disagree about which views have a history.
+    /// FYI and NOTIFICATIONS use `archived` to dismiss. ALERTS hides what has cleared or been
+    /// silenced. DECISIONS has none — a closed decision is a verdict, not a hidden row.
+    /// Asked rather than open-coded so the key, the tab name and the footer cannot come to
+    /// disagree about which views have a history.
     pub fn has_history(self) -> bool {
-        matches!(self, View::Insights | View::Alerts)
+        matches!(self, View::Insights | View::Notifications | View::Alerts)
     }
 
     pub fn next(self) -> View {
@@ -268,18 +283,12 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
 /// `actor` sets BEADS_ACTOR, which is the name a comment is recorded under.
 fn run_as(cmd: &str, args: &[&str], actor: Option<&str>) -> Result<(), String> {
     // Absolute path: tmux's global PATH has no ~/.local/bin, so a respawned pane cannot
-    // find `bd` or `gt` by name. See store::bin.
+    // find `bd` by name. See store::bin.
     let mut c = Command::new(crate::store::bin(cmd));
     c.args(args);
     c.env("PATH", crate::store::child_path());
     if let Some(a) = actor {
         c.env("BEADS_ACTOR", a);
-    }
-    // Inside the predecessor's directory when there is one: `gt` resolves its world from the
-    // working directory. When there is none, do not set one — a nonexistent cwd fails the
-    // spawn and would read as a broken binary.
-    if let Some(t) = crate::store::town() {
-        c.current_dir(t);
     }
     match c.output() {
         Err(e) => Err(format!("{cmd}: {e}")),
@@ -338,20 +347,31 @@ fn close_decision(db: &str, id: &str, reason: &str) -> Result<(), String> {
     }
 }
 
-/// Mark every notification read in one call. `gt mail mark-read` costs ~3.8s per message;
-/// at 80 unread that is five minutes of keypresses to clear an inbox nobody had read. The
-/// bulk form is a single call.
-pub fn act_all(view: View) -> Result<(), String> {
+/// Archive every record in one call. At many rows that is many keypresses replaced by one.
+///
+/// `dismissed` is the history toggle: in the history the same key restores all. Only valid
+/// for record views (Insights, Notifications) — closing every decision at once would discard
+/// verdicts, and there is no undo.
+pub fn act_all(view: View, ids: &[String], dismissed: bool) -> Result<(), String> {
     match view {
-        View::Notifications => run("gt", &["mail", "mark-read", "--all"]),
-        // Deliberately unavailable elsewhere: closing every decision at once would discard
-        // verdicts, and there is no undo.
-        _ => Err("bulk clear is only for notifications".into()),
+        View::Insights | View::Notifications if !ids.is_empty() => {
+            let db = crate::store::db();
+            let flag = if dismissed { "--remove-label" } else { "--add-label" };
+            let mut args: Vec<&str> = vec!["-C", &db, "update"];
+            for id in ids {
+                args.push(id.as_str());
+            }
+            args.extend(&[flag, ARCHIVED]);
+            run("bd", &args)
+        }
+        View::Insights | View::Notifications => Ok(()),
+        _ => Err("bulk clear is only for record views".into()),
     }
 }
 
-/// The label a dismissed insight carries. `store` filters on it and `ask.sh list insights`
-/// already honours it, so the pane and the shell path agree on what "read" means.
+/// The label a dismissed insight or a read notification carries. `store` filters on it and
+/// `ask.sh list insights` already honours it, so the pane and the shell path agree on what
+/// "read" means.
 pub const ARCHIVED: &str = "archived";
 
 /// `dismissed` says the FYI view is showing its history, where the same key RESTORES.
@@ -378,7 +398,7 @@ pub fn act(
         // on its own echo, and it is silent because the text reads exactly like a
         // real verdict.
         (View::Decisions, _) => close_decision(&db, &item.id, reason),
-        (View::Insights, _) => run(
+        (View::Insights | View::Notifications, _) => run(
             "bd",
             &[
                 "-C",
@@ -389,7 +409,6 @@ pub fn act(
                 ARCHIVED,
             ],
         ),
-        (View::Notifications, _) => run("gt", &["mail", "mark-read", &item.id]),
 
         // SILENCING WRITES A DEADLINE, NOT A FLAG. `silent-until:<ISO>` expires by being read,
         // so nothing has to run to lift it. Re-silencing replaces the old label rather than

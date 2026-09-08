@@ -10,7 +10,11 @@
 //! memory. Switching tabs costs nothing, and a slow or hung `bd` can never freeze the pane —
 //! it just means the snapshot is a few seconds old, which the header says out loud.
 //!
-//! The two fetches run concurrently, so a refresh costs max(1134, 816) rather than the sum.
+//! There used to be a second fetch here — `gt mail inbox`, 816 ms, run concurrently with the
+//! beads query so a refresh cost max() rather than the sum. It is gone with the town it read:
+//! nothing has written to that mailbox since the 2026-09-05 cutover, so it was 1,440 subprocess
+//! calls a day into a decommissioned harness to render a tab that could only be empty or
+//! historical. NOTIFICATIONS now filters rows this store already had.
 
 use crate::model::{Item, View};
 use serde_json::Value;
@@ -18,21 +22,6 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-
-/// The predecessor harness this panel still reads mail from: where `gt mail` lives and the
-/// working directory every `gt` call needs, because `gt` resolves its world from the cwd and
-/// reports an empty one from anywhere else without erroring. It is NOT a beads database this
-/// panel reads — see `db()`.
-///
-/// `None` is the ORDINARY case and every caller must handle it: an operator who never ran the
-/// predecessor has no such directory, and the notifications section simply has no source. A
-/// hardcoded path here made the panel unbuildable for anyone but one box.
-pub fn town() -> Option<String> {
-    match std::env::var("SPIRA_TOWN") {
-        Ok(t) if !t.is_empty() => Some(t),
-        _ => None,
-    }
-}
 
 /// Directories prepended to every child's PATH, from `SPIRA_PATH` in `spira.conf`. `bd` and
 /// `gt` live in a different place on every box, and this panel is started by tmux, whose
@@ -86,9 +75,7 @@ pub struct Snapshot {
     pub beads: Option<Vec<Value>>,
     /// issue id -> comment rows, for the beads that have any.
     pub threads: std::collections::HashMap<String, Vec<Value>>,
-    pub mail: Option<Vec<Value>>,
     pub beads_err: Option<String>,
-    pub mail_err: Option<String>,
     pub at: Option<Instant>,
     pub refreshing: bool,
 }
@@ -102,23 +89,39 @@ impl Snapshot {
 
 pub type Shared = Arc<Mutex<Snapshot>>;
 
-/// Every id the snapshot currently holds, across both stores.
+/// What an optimistic hide is waiting to see.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Expect {
+    /// A decision was closed.
+    Closed,
+    /// A record was archived (`true`) or restored (`false`).
+    Archived(bool),
+}
+
+/// Whether the snapshot has caught up with an optimistic hide.
 ///
-/// `pending` — the ids hidden optimistically after a keypress — has to be pruned against
-/// this. Left to grow it eventually hides live items: after eight keypresses the panel
-/// reported NOTIFICATIONS 0 against a real 17 unread, because entries from earlier actions
-/// were still filtering. A count that reads zero when the answer is seventeen is the exact
-/// reassuring lie this panel exists to prevent.
-pub fn present_ids(s: &Snapshot) -> Vec<String> {
-    let mut v = Vec::new();
-    for rows in [&s.beads, &s.mail].into_iter().flatten() {
-        for r in rows {
-            if let Some(id) = r["id"].as_str() {
-                v.push(id.to_string());
-            }
-        }
+/// `pending` — the ids hidden after a keypress — has to be pruned against something, or it
+/// grows and keeps filtering: after eight keypresses the panel reported NOTIFICATIONS 0
+/// against a real 17 unread. A count that reads zero when the answer is seventeen is the
+/// exact reassuring lie this panel exists to prevent.
+///
+/// PRESENCE IS NOT THAT SOMETHING. Pruning on "the id is no longer returned" was right for a
+/// close only by accident — a closed decision leaves DECISIONS' filter — and wrong for an
+/// archive, which LABELS a row rather than removing it. So every dismissed id stayed pending
+/// for the life of the session and went on hiding its row, and pressing `A` and then `h`
+/// showed an empty history over the burst just archived: the same reassuring lie, arriving
+/// through the mechanism built to prevent it. The hide now ends when the WRITE IT WAS
+/// COVERING becomes visible, which is what it always meant.
+pub fn settled(s: &Snapshot, id: &str, e: Expect) -> bool {
+    let Some(rows) = &s.beads else { return false };
+    let Some(r) = rows.iter().find(|r| r["id"].as_str() == Some(id)) else {
+        // Gone from the store outright. Nothing is left to hide, whatever was expected.
+        return true;
+    };
+    match e {
+        Expect::Closed => r["status"].as_str() == Some("closed"),
+        Expect::Archived(want) => labels(r).contains(&crate::model::ARCHIVED) == want,
     }
-    v
 }
 
 /// Resolve a tool to an absolute path, because PATH cannot be trusted here.
@@ -135,12 +138,10 @@ pub fn bin(cmd: &str) -> String {
         return cmd.to_string();
     }
     let home = std::env::var("HOME").unwrap_or_default();
-    // SPIRA_PATH comes FIRST, deliberately, and the operator decides what is in it. On this
-    // kind of installation it holds a shim directory whose `gt` is not a duplicate of the
-    // real binary: it refuses `gt mail send` to a live agent, and sets BEADS_ACTOR for
-    // `gt mail` so mark-read and archive satisfy the mailbox's assignee check. Resolving
-    // straight to ~/.local/bin looked like a tidier fix and would have silently broken `d`
-    // on a notification.
+    // SPIRA_PATH comes FIRST, deliberately, and the operator decides what is in it: it may
+    // hold a shim directory whose tools are not duplicates of the real binaries. Resolving
+    // straight to ~/.local/bin looks tidier and would step around whatever the operator put
+    // in front of them.
     let mut dirs = extra_path();
     dirs.extend([
         format!("{home}/.local/bin"),
@@ -156,13 +157,12 @@ pub fn bin(cmd: &str) -> String {
     cmd.to_string() // let PATH try, and let the error say so
 }
 
-/// Always run inside the town: `gt` resolves the town from its working directory and
-/// reports an empty world from anywhere else, without erroring.
 /// The PATH our children get.
 ///
-/// Resolving `gt` absolutely is not enough: the shim execs the real `gt`, and `gt` shells out
-/// to `bd` BY NAME. So a child inherits our PATH and fails one level down, which is how
-/// NOTIFICATIONS rendered `?` while DECISIONS worked. Hand them a PATH that has the tools.
+/// Resolving a tool absolutely is not enough on its own: a shim execs the real binary, and a
+/// tool may shell out to another BY NAME. So a child inherits our PATH and fails one level
+/// down, which is how NOTIFICATIONS once rendered `?` while DECISIONS worked. Hand them a
+/// PATH that has the tools.
 pub fn child_path() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let inherited = std::env::var("PATH").unwrap_or_default();
@@ -182,11 +182,9 @@ pub fn child_path() -> String {
 fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
     let mut c = Command::new(bin(cmd));
     c.args(args).env("PATH", child_path());
-    // Only when there IS one. `current_dir` on a path that does not exist fails the spawn
-    // outright, so defaulting it would turn "no predecessor configured" into "gt is broken".
-    if let Some(t) = town() {
-        c.current_dir(t);
-    }
+    // NO `current_dir`. It existed so `gt` could resolve its town, and `gt` is gone from this
+    // panel; `bd` takes its database from `-C`, so a working directory here could only ever
+    // decide something by accident.
     match c.output() {
         Err(e) => Err(format!("{cmd}: {e}")),
         Ok(o) if !o.status.success() && o.stdout.is_empty() => Err(format!(
@@ -201,7 +199,7 @@ fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// `bd --json` and `gt --json` can print human warnings on stdout before the payload.
+/// `bd --json` can print human warnings on stdout before the payload.
 fn rows(text: &str, key: &str) -> Result<Vec<Value>, String> {
     let start = text.find(['[', '{']).ok_or("no JSON in output")?;
     let v: Value = serde_json::from_str(&text[start..]).map_err(|e| format!("bad JSON: {e}"))?;
@@ -212,7 +210,10 @@ fn rows(text: &str, key: &str) -> Result<Vec<Value>, String> {
     })
 }
 
-/// `--all` is required: insights are created CLOSED and `bd list` hides closed issues.
+/// `--all` is required: insights AND events are created CLOSED, and `bd list` hides closed
+/// issues. Every view the panel has is a filter over this one result — decisions, FYI and
+/// now events too, which were already in this payload and dropped on the floor because
+/// neither surviving filter matched them.
 ///
 /// One call against one database. An error here is a real error and reaches the pane as one:
 /// there is no other database whose rows could stand in for these, so silently returning an
@@ -285,10 +286,6 @@ fn fetch_threads(beads: &[Value]) -> std::collections::HashMap<String, Vec<Value
         .collect()
 }
 
-fn fetch_mail() -> Result<Vec<Value>, String> {
-    rows(&run("gt", &["mail", "inbox", "--unread", "--json"])?, "messages")
-}
-
 /// A FROZEN SNAPSHOT, for verifying the pane without a human and without the beads.
 ///
 /// `PANEL_FIXTURE=<file.json>` makes the store read that file instead of shelling out, and
@@ -309,7 +306,6 @@ pub fn dump(s: &Snapshot) -> String {
     serde_json::to_string_pretty(&serde_json::json!({
         "beads": s.beads.clone().unwrap_or_default(),
         "threads": s.threads.clone(),
-        "mail": s.mail.clone().unwrap_or_default(),
     }))
     .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
 }
@@ -324,13 +320,9 @@ fn load_fixture(shared: &Shared, path: &str) {
         .map_err(|e| format!("{path}: {e}"))
         .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| format!("{path}: {e}")))
     {
-        Err(e) => {
-            s.beads_err = Some(e.clone());
-            s.mail_err = Some(e);
-        }
+        Err(e) => s.beads_err = Some(e),
         Ok(v) => {
             s.beads = Some(v["beads"].as_array().cloned().unwrap_or_default());
-            s.mail = Some(v["mail"].as_array().cloned().unwrap_or_default());
             s.threads = v["threads"]
                 .as_object()
                 .map(|m| {
@@ -340,7 +332,6 @@ fn load_fixture(shared: &Shared, path: &str) {
                 })
                 .unwrap_or_default();
             s.beads_err = None;
-            s.mail_err = None;
         }
     }
     // A FIXED age, not `Instant::now()`. The header prints how stale the snapshot is, so a
@@ -366,10 +357,9 @@ pub fn refresh(shared: &Shared) {
     }
     let shared = Arc::clone(shared);
     thread::spawn(move || {
-        // Concurrently: a refresh costs max(bd, mail), not their sum.
-        let h = thread::spawn(fetch_mail);
+        // ONE call. There was a `thread::spawn` here to overlap this with `gt mail inbox`;
+        // with the mail fetch gone the concurrency was overlapping a query with nothing.
         let b = fetch_beads();
-        let m = h.join().unwrap_or_else(|_| Err("mail thread panicked".into()));
         // Only for beads that actually have comments — `comment_count` is already in the
         // list payload, so this is usually two or three extra calls, not one per bead.
         let threads = match &b {
@@ -384,13 +374,6 @@ pub fn refresh(shared: &Shared) {
                 s.threads = threads;
             }
             Err(e) => s.beads_err = Some(e),
-        }
-        match m {
-            Ok(v) => {
-                s.mail = Some(v);
-                s.mail_err = None;
-            }
-            Err(e) => s.mail_err = Some(e),
         }
         s.at = Some(Instant::now());
         s.gen = s.gen.wrapping_add(1);
@@ -667,11 +650,11 @@ fn operator_spoke_last(s: &Snapshot, id: &str) -> bool {
 
 /// Filter the cached rows down to one view. Pure, in memory, instant.
 ///
-/// `dismissed` only means anything in the FYI view, where it swaps the live insights for the
-/// ones already read. It is a parameter rather than a second function because the list, the
-/// tab count and the destructive key must all agree about which set is on screen: the tab
-/// said 0 while the list showed twelve is exactly the reassuring-lie shape `present_ids`
-/// exists to prevent, one layer up.
+/// `dismissed` only means anything in record views (FYI, NOTIFICATIONS), where it swaps the
+/// live rows for the ones already read. It is a parameter rather than a second function
+/// because the list, the tab count and the destructive key must all agree about which set is
+/// on screen: the tab said 0 while the list showed twelve is exactly the reassuring-lie shape
+/// `settled` exists to prevent, one layer up.
 pub fn view_items(
     s: &Snapshot,
     view: View,
@@ -681,154 +664,183 @@ pub fn view_items(
     if view == View::Alerts {
         return alerts(s, dismissed, now);
     }
-    match view {
-        View::Notifications => match (&s.mail, &s.mail_err) {
-            (_, Some(e)) => Err(e.clone()),
-            (None, _) => Err("loading…".into()),
-            (Some(rows), _) => Ok(rows
+    match (&s.beads, &s.beads_err) {
+        (_, Some(e)) => Err(e.clone()),
+        (None, _) => Err("loading…".into()),
+        (Some(all), _) => {
+            let ask = ask_label();
+            let want_insight = view == View::Insights;
+            let want_event = view == View::Notifications;
+            let mut out: Vec<Item> = all
                 .iter()
-                .map(|m| Item {
-                    id: m["id"].as_str().unwrap_or("?").to_string(),
-                    title: m["subject"].as_str().unwrap_or("(no subject)").to_string(),
-                    lead: String::new(),
-                    body: m["body"].as_str().unwrap_or("").to_string(),
-                    badge: m["from"].as_str().unwrap_or("?").to_string(),
-                    when: m["timestamp"].as_str().unwrap_or("").to_string(),
-                    thread: Vec::new(),
-                    labels: Vec::new(),
-                })
-                .collect()),
-        },
-        _ => match (&s.beads, &s.beads_err) {
-            (_, Some(e)) => Err(e.clone()),
-            (None, _) => Err("loading…".into()),
-            (Some(all), _) => {
-                let ask = ask_label();
-                let want_insight = view == View::Insights;
-                let mut out: Vec<Item> = all
-                    .iter()
-                    .filter(|r| {
-                        let l = labels(r);
-                        let is_insight = l.contains(&"insight");
-                        if want_insight {
-                            // Insights are a town-side record, created closed. `archived` is
-                            // the dismissal: an insight the operator has read leaves the pane, and
-                            // `h` is what brings the read ones back. Same label `ask.sh list
-                            // insights` filters on, so the two paths cannot disagree.
-                            if !(l.contains(&"overseer") && is_insight) {
-                                return false;
-                            }
-                            let arch = l.contains(&crate::model::ARCHIVED);
-                            if dismissed {
-                                return arch;
-                            }
-                            // ARCHIVING ENDS A NOTICE, NOT A CONVERSATION. Dismissal is how a
-                            // read FYI leaves the pane, which is right for a notice nobody
-                            // replied to. But an insight the operator has commented on is a
-                            // thread they are owed an answer in, and archiving it hid my
-                            // replies from the only surface they read them in — they asked
-                            // where the acknowledgement was, and it was behind this filter.
-                            //
-                            // OWED, NOT MERELY DISCUSSED. This read `comment_count > 0`, so
-                            // any insight that had ever been spoken on came back however the
-                            // conversation ended — including when the last thing in it was my
-                            // own reply. Dismissal did nothing to precisely the finished ones,
-                            // and the operator dismissed five and watched all five return.
-                            // The question is whose turn it is, and `operator_spoke_last`
-                            // asks it.
-                            return !arch
-                                || operator_spoke_last(s, r["id"].as_str().unwrap_or(""));
-                        }
-                        if is_insight {
+                .filter(|r| {
+                    let l = labels(r);
+                    let is_insight = l.contains(&"insight");
+                    // THE EVENT ARM IS MATCHED FIRST, AND EVENTS ARE EXCLUDED BY TYPE BELOW.
+                    // Both halves are load-bearing and neither is sufficient. DECISIONS matches
+                    // on `needs-ryan || overseer`, so an event carrying either — and an emitter
+                    // reaching for `ask.sh`'s vocabulary will carry `overseer` — would land in
+                    // the queue of things waiting on the operator. Same shape as the bug where
+                    // requiring `overseer` hid every rig escalation: a filter reading labels
+                    // alone cannot tell two kinds of thing apart, so the kind has to be read
+                    // from the type.
+                    let is_event = r["issue_type"].as_str() == Some("event");
+                    if want_event {
+                        if !is_event {
                             return false;
                         }
-                        // AN ALERT IS NEVER A DECISION, and this exclusion is load-bearing
-                        // rather than defensive: an alert bead carries `overseer`, and the
-                        // predicate below admits the escalation label OR `overseer`, so every
-                        // firing alert would otherwise appear HERE — in the one list whose
-                        // whole value is that nothing leaves it unless the operator moved it.
-                        // See the module header of `model` for why the discriminator is
-                        // lifecycle.
+                        // An ALERT is a special-purpose event that belongs to the ALERTS tab,
+                        // not here. The ALERTS tab selects on the `alert` label, not on
+                        // `issue_type`, so a mislabelled alert still shows there; this side
+                        // excludes the correctly-labelled ones from NOTIFICATIONS so they
+                        // cannot appear on both tabs at once.
                         if l.contains(&crate::model::alert::LABEL) {
                             return false;
                         }
-                        // DECISIONS is "what is waiting on the operator", and the label that
-                        // means exactly that is the configured escalation label -- the same
-                        // one the escalation gate defers on and every predicate excludes. An
-                        // escalation raised by a worker carries only that label, never
-                        // `overseer`, so requiring `overseer` hid every one of them.
-                        let waiting = l.contains(&ask.as_str()) || l.contains(&"overseer");
-                        if !waiting {
+                        // Events are created CLOSED — they are records, not work — so status
+                        // says nothing about whether the operator has read one. `archived` does,
+                        // and it is the same label FYI dismisses with, so `h` retrieves here
+                        // for free and the two views cannot disagree about what "read" means.
+                        return l.contains(&crate::model::ARCHIVED) == dismissed;
+                    }
+                    if is_event {
+                        return false;
+                    }
+                    if want_insight {
+                        // Insights are a town-side record, created closed. `archived` is
+                        // the dismissal: an insight the operator has read leaves the pane, and
+                        // `h` is what brings the read ones back. Same label `ask.sh list
+                        // insights` filters on, so the two paths cannot disagree.
+                        if !(l.contains(&"overseer") && is_insight) {
                             return false;
                         }
-                        // An EPIC is a container for a branch of work, not a question, so it
-                        // can never be a decision however it is labelled. Two reached the operator
-                        // once reached the operator carrying the escalation label from a
-                        // deferred-sweep triage, with nothing in them but two lines of branch
-                        // metadata, and the answer to "what is the decision?" was: none.
-                        // Structural exclusion, not a guess about content.
-                        if r["issue_type"].as_str() == Some("epic") {
-                            return false;
+                        let arch = l.contains(&crate::model::ARCHIVED);
+                        if dismissed {
+                            return arch;
                         }
-                        // And NOT `status == open`: an escalated bead is legitimately parked
-                        // in `deferred` -- that is the one status the policy allows it to sit
-                        // in, and filtering on `open` once hid every bead that was in it.
-                        // Anything not closed is still awaiting an answer.
-                        r["status"].as_str() != Some("closed")
-                    })
-                    .map(|r| {
-                        let l = labels(r);
-                        let badge = if l.contains(&"insight") {
-                            "insight"
-                        } else if l.contains(&"ask-decision") {
-                            "decision"
-                        } else if l.contains(&"ask-task") {
-                            "task"
-                        } else {
-                            "question"
-                        };
-                        let desc = r["description"].as_str().unwrap_or("");
-                        // AN INSIGHT HAS NO DEFAULT AND NO CALL TO ACTION. A `default:` line
-                        // is a recommendation awaiting agreement, which is precisely the
-                        // "implicitly asking me for feedback" shape; `lead` matches any line
-                        // containing the word, so suppressing it here is what guarantees one
-                        // can never appear on an FYI rather than merely usually not appearing.
-                        let insight = badge == "insight";
-                        Item {
-                            id: r["id"].as_str().unwrap_or("?").to_string(),
-                            title: r["title"].as_str().unwrap_or("").to_string(),
-                            lead: if insight { String::new() } else { lead(desc) },
-                            body: if insight { fyi_body(desc) } else { desc.to_string() },
-                            badge: badge.to_string(),
-                            when: r["created_at"].as_str().unwrap_or("").to_string(),
-                            thread: oldest_first(
-                                s.threads
-                                    .get(r["id"].as_str().unwrap_or(""))
-                                    .map(|cs| {
-                                        cs.iter()
-                                            .map(|c| {
-                                                (
-                                                    c["author"].as_str().unwrap_or("?").to_string(),
-                                                    c["created_at"]
-                                                        .as_str()
-                                                        .or_else(|| c["timestamp"].as_str())
-                                                        .unwrap_or("")
-                                                        .to_string(),
-                                                    c["text"].as_str().unwrap_or("").to_string(),
-                                                )
-                                            })
-                                            .collect()
-                                    })
-                                    .unwrap_or_default(),
-                            ),
-                            labels: l.iter().map(|x| x.to_string()).collect(),
-                        }
-                    })
-                    .collect();
-                out.reverse();
-                Ok(out)
-            }
-        },
+                        // ARCHIVING ENDS A NOTICE, NOT A CONVERSATION. Dismissal is how a
+                        // read FYI leaves the pane, which is right for a notice nobody
+                        // replied to. But an insight the operator has commented on is a
+                        // thread they are owed an answer in, and archiving it hid my
+                        // replies from the only surface they read them in — they asked
+                        // where the acknowledgement was, and it was behind this filter.
+                        //
+                        // OWED, NOT MERELY DISCUSSED. This read `comment_count > 0`, so
+                        // any insight that had ever been spoken on came back however the
+                        // conversation ended — including when the last thing in it was my
+                        // own reply. Dismissal did nothing to precisely the finished ones,
+                        // and the operator dismissed five and watched all five return.
+                        // The question is whose turn it is, and `operator_spoke_last`
+                        // asks it.
+                        return !arch
+                            || operator_spoke_last(s, r["id"].as_str().unwrap_or(""));
+                    }
+                    if is_insight {
+                        return false;
+                    }
+                    // AN ALERT IS NEVER A DECISION, and this exclusion is load-bearing
+                    // rather than defensive: an alert bead carries `overseer`, and the
+                    // predicate below admits the escalation label OR `overseer`, so every
+                    // firing alert would otherwise appear HERE — in the one list whose
+                    // whole value is that nothing leaves it unless the operator moved it.
+                    // See the module header of `model` for why the discriminator is
+                    // lifecycle.
+                    if l.contains(&crate::model::alert::LABEL) {
+                        return false;
+                    }
+                    // DECISIONS is "what is waiting on the operator", and the label that
+                    // means exactly that is the configured escalation label -- the same
+                    // one the escalation gate defers on and every predicate excludes. An
+                    // escalation raised by a worker carries only that label, never
+                    // `overseer`, so requiring `overseer` hid every one of them.
+                    let waiting = l.contains(&ask.as_str()) || l.contains(&"overseer");
+                    if !waiting {
+                        return false;
+                    }
+                    // An EPIC is a container for a branch of work, not a question, so it
+                    // can never be a decision however it is labelled. Two once reached the
+                    // operator carrying the escalation label from a deferred-sweep triage,
+                    // with nothing in them but two lines of branch metadata, and the answer
+                    // to "what is the decision?" was: none. Structural exclusion, not a
+                    // guess about content.
+                    if r["issue_type"].as_str() == Some("epic") {
+                        return false;
+                    }
+                    // And NOT `status == open`: an escalated bead is legitimately parked
+                    // in `deferred` -- that is the one status the policy allows it to sit
+                    // in, and filtering on `open` once hid every bead that was in it.
+                    // Anything not closed is still awaiting an answer.
+                    r["status"].as_str() != Some("closed")
+                })
+                .map(|r| {
+                    let l = labels(r);
+                    let is_event = r["issue_type"].as_str() == Some("event");
+                    // AN EVENT'S BADGE IS ITS OWN COLUMN, not a guess from its labels.
+                    // `event_kind` is what the emitter said this was — `spira.landed`,
+                    // `wisp.compaction` — and it is the only field that distinguishes a
+                    // landing from a reclaim from a CI verdict. Deriving it from labels
+                    // would badge every event identically and lose the one thing the
+                    // view exists to show.
+                    let badge = if is_event {
+                        r["event_kind"].as_str().unwrap_or("event")
+                    } else if l.contains(&"insight") {
+                        "insight"
+                    } else if l.contains(&"ask-decision") {
+                        "decision"
+                    } else if l.contains(&"ask-task") {
+                        "task"
+                    } else {
+                        "question"
+                    };
+                    // An event with no prose still has to say something, and its payload
+                    // is the record. Better a raw JSON line than a blank detail pane.
+                    let desc = match r["description"].as_str() {
+                        Some(d) if !d.trim().is_empty() => d,
+                        _ if is_event => r["payload"].as_str().unwrap_or(""),
+                        _ => r["description"].as_str().unwrap_or(""),
+                    };
+                    // AN INSIGHT HAS NO DEFAULT AND NO CALL TO ACTION. A `default:` line
+                    // is a recommendation awaiting agreement, which is precisely the
+                    // "implicitly asking me for feedback" shape; `lead` matches any line
+                    // containing the word, so suppressing it here is what guarantees one
+                    // can never appear on an FYI rather than merely usually not appearing.
+                    // NO `lead` ON EVENTS EITHER. An event has already happened, so there
+                    // is nothing to agree to.
+                    let is_record = badge == "insight" || is_event;
+                    Item {
+                        id: r["id"].as_str().unwrap_or("?").to_string(),
+                        title: r["title"].as_str().unwrap_or("").to_string(),
+                        lead: if is_record { String::new() } else { lead(desc) },
+                        body: if badge == "insight" { fyi_body(desc) } else { desc.to_string() },
+                        badge: badge.to_string(),
+                        when: r["created_at"].as_str().unwrap_or("").to_string(),
+                        thread: oldest_first(
+                            s.threads
+                                .get(r["id"].as_str().unwrap_or(""))
+                                .map(|cs| {
+                                    cs.iter()
+                                        .map(|c| {
+                                            (
+                                                c["author"].as_str().unwrap_or("?").to_string(),
+                                                c["created_at"]
+                                                    .as_str()
+                                                    .or_else(|| c["timestamp"].as_str())
+                                                    .unwrap_or("")
+                                                    .to_string(),
+                                                c["text"].as_str().unwrap_or("").to_string(),
+                                            )
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        ),
+                        labels: l.iter().map(|x| x.to_string()).collect(),
+                    }
+                })
+                .collect();
+            out.reverse();
+            Ok(out)
+        }
     }
 }
 
@@ -893,6 +905,170 @@ mod tests {
     fn a_plain_body_is_left_alone() {
         let b = "one line.\n\nand another.";
         assert_eq!(fyi_body(b), b);
+    }
+
+    // ── NOTIFICATIONS: events as outcomes ────────────────────────────────────────────
+    //
+    // Every one of these asserts a property that keeps NOTIFICATIONS separate from DECISIONS.
+    // The event arm is matched first and events are excluded by type below; both halves are
+    // needed and neither is sufficient alone.
+
+    /// One row, in the shape `bd list --all --json` returns.
+    fn event_row(id: &str, extra_labels: &[&str]) -> Value {
+        let mut labels = vec!["overseer"];
+        labels.extend_from_slice(extra_labels);
+        serde_json::json!({
+            "id": id,
+            "title": format!("t {id}"),
+            "description": "what happened",
+            "status": "closed",
+            "issue_type": "event",
+            "labels": labels,
+            "event_kind": "spira.landed",
+            "payload": r#"{"bead":"sp-q7k"}"#,
+            "created_at": "2026-09-06T10:00:00Z",
+            "comment_count": 0,
+        })
+    }
+
+    fn notif_ids(s: &Snapshot, dismissed: bool) -> Vec<String> {
+        view_items(s, View::Notifications, dismissed, NOW)
+            .unwrap()
+            .into_iter()
+            .map(|i| i.id)
+            .collect()
+    }
+
+    fn decision_ids(s: &Snapshot) -> Vec<String> {
+        view_items(s, View::Decisions, false, NOW)
+            .unwrap()
+            .into_iter()
+            .map(|i| i.id)
+            .collect()
+    }
+
+    /// THE FILTER-ORDER TRAP, stated as a test. DECISIONS matches `needs-ryan || overseer`
+    /// and excludes insights BY LABEL, so an event carrying either label would land in the
+    /// queue of things waiting on the operator. Two halves are needed: the event arm matched
+    /// first, AND the decisions arm excluding on `issue_type`. Same shape as the bug where
+    /// requiring `overseer` hid every rig escalation.
+    #[test]
+    fn an_event_is_a_notification_and_never_a_decision() {
+        // AN *OPEN* EVENT, deliberately. DECISIONS also drops anything closed, and every
+        // event `sp-emit` writes is closed — so a closed fixture here would pass on the
+        // status check alone and prove nothing about the type check.
+        let mut ev = event_row("sp-ev", &["needs-operator", "spira", "plan"]);
+        ev["status"] = Value::from("open");
+        // A closed decision is not shown either, so the control has to be genuinely open.
+        let mut open_ask = serde_json::json!({
+            "id": "sp-ask", "title": "t", "description": "body",
+            "status": "open", "issue_type": "task",
+            "labels": ["needs-operator", "overseer"],
+            "created_at": "2026-09-06T10:00:00Z", "comment_count": 0,
+        });
+        open_ask["status"] = Value::from("open");
+        let s = snap(vec![
+            ev,
+            open_ask,
+            // ...and the ordinary closed event still reaches NOTIFICATIONS.
+            event_row("sp-ev2", &[]),
+        ]);
+        assert_eq!(notif_ids(&s, false), ["sp-ev2", "sp-ev"]);
+        assert_eq!(decision_ids(&s), ["sp-ask"]);
+    }
+
+    /// THE POSITIVE CONTROL. A filter that returned nothing at all would satisfy "no event in
+    /// DECISIONS" while being completely broken. Same labels, same status: only the type
+    /// differs, so the exclusion is the type doing the work and nothing else
+    /// (law-absence-needs-a-positive-control).
+    #[test]
+    fn the_same_row_as_a_task_is_a_decision() {
+        let mut r = serde_json::json!({
+            "id": "sp-x", "title": "t", "description": "body",
+            "status": "open", "issue_type": "task",
+            "labels": ["needs-operator", "overseer"],
+            "created_at": "2026-09-06T10:00:00Z", "comment_count": 0,
+        });
+        r["status"] = Value::from("open");
+        let s = snap(vec![r]);
+        assert_eq!(decision_ids(&s), ["sp-x"]);
+        assert!(notif_ids(&s, false).is_empty());
+    }
+
+    /// An event is created CLOSED, so `archived` is the only thing "read" can mean.
+    /// `h` toggles between live events and archived ones; both use the same label as FYI.
+    #[test]
+    fn a_read_event_leaves_the_pane_and_h_brings_it_back() {
+        let s = snap(vec![
+            event_row("sp-new", &[]),
+            event_row("sp-read", &[crate::model::ARCHIVED]),
+        ]);
+        assert_eq!(notif_ids(&s, false), ["sp-new"]);
+        assert_eq!(notif_ids(&s, true), ["sp-read"]);
+    }
+
+    /// The badge is what distinguishes a landing from a reclaim from a CI verdict, and only
+    /// `event_kind` carries that. Derived from labels it would badge every event alike.
+    /// An event also never has a `lead` — it has already happened; there is nothing to agree to.
+    #[test]
+    fn an_events_badge_is_its_event_kind_and_it_has_no_lead() {
+        let s = snap(vec![event_row("sp-ev", &[])]);
+        let it = &view_items(&s, View::Notifications, false, NOW).unwrap()[0];
+        assert_eq!(it.badge, "spira.landed");
+        assert_eq!(it.lead, "");
+    }
+
+    /// THE OPTIMISTIC HIDE ENDS WHEN THE WRITE IS VISIBLE. Archiving labels a row; it does not
+    /// remove it. Pruning on presence therefore never released a dismissed event, so `A` then
+    /// `h` rendered an empty history over the burst just archived.
+    #[test]
+    fn an_archived_row_stops_being_hidden_once_the_label_lands() {
+        let before = snap(vec![event_row("sp-ev", &[])]);
+        assert!(!settled(&before, "sp-ev", Expect::Archived(true)));
+        let after = snap(vec![event_row("sp-ev", &[crate::model::ARCHIVED])]);
+        assert!(settled(&after, "sp-ev", Expect::Archived(true)));
+        assert!(!settled(&after, "sp-ev", Expect::Archived(false)));
+        assert!(settled(&before, "sp-ev", Expect::Archived(false)));
+    }
+
+    /// A close settles on the status; a row gone from the store entirely is also settled.
+    #[test]
+    fn a_close_settles_on_the_status_or_on_the_row_going_away() {
+        let mut open = serde_json::json!({
+            "id": "sp-ask", "title": "t", "description": "",
+            "status": "open", "issue_type": "task",
+            "labels": ["needs-operator"], "created_at": "2026-09-06T10:00:00Z",
+        });
+        open["status"] = Value::from("open");
+        let s = snap(vec![open]);
+        assert!(!settled(&s, "sp-ask", Expect::Closed));
+        let closed = snap(vec![serde_json::json!({
+            "id": "sp-ask", "title": "t", "status": "closed",
+            "issue_type": "task", "labels": [],
+        })]);
+        assert!(settled(&closed, "sp-ask", Expect::Closed));
+        // A row gone from the store has nothing left to hide.
+        assert!(settled(&s, "sp-gone", Expect::Closed));
+    }
+
+    /// Nothing has synced yet: hide everything rather than releasing a row prematurely.
+    #[test]
+    fn an_unsynced_store_settles_nothing() {
+        let s = Snapshot::default();
+        assert!(!settled(&s, "sp-ev", Expect::Archived(true)));
+        assert!(!settled(&s, "sp-ask", Expect::Closed));
+    }
+
+    /// An event whose emitter wrote only a payload still has to say something.
+    #[test]
+    fn an_event_with_no_prose_falls_back_to_its_payload() {
+        let mut r = event_row("sp-ev", &[]);
+        r["description"] = Value::from("");
+        let s = snap(vec![r]);
+        assert_eq!(
+            view_items(&s, View::Notifications, false, NOW).unwrap()[0].body,
+            r#"{"bead":"sp-q7k"}"#
+        );
     }
 
     // ── ALERTS: a condition that self-clears ─────────────────────────────────────────
@@ -1047,14 +1223,25 @@ mod tests {
     /// exclusion exists, not merely that the labels happen not to overlap today.
     #[test]
     fn a_firing_alert_is_not_a_decision() {
+        // sp-d1 is a genuine task-type decision bead, not an event.  The local `bead()`
+        // helper hardcodes `issue_type: "event"` for the alerts test context, so this one
+        // is inlined as a plain task the way every other decisions-section bead is.
+        let d1 = serde_json::json!({
+            "id": "sp-d1", "title": "a question", "description": "what to do?",
+            "status": "open", "issue_type": "task",
+            "labels": ["needs-operator", "overseer"],
+            "created_at": "2026-09-05T10:00:00Z", "comment_count": 0,
+        });
         let s = snap(vec![
             firing("sp-a1", "2026-09-05T10:00:00Z"),
-            bead("sp-d1", "open", "2026-09-05T10:00:00Z", &["needs-operator", "overseer"]),
+            d1,
         ]);
         assert_eq!(ids(view_items(&s, View::Decisions, false, NOW)), ["sp-d1"]);
         assert_eq!(ids(view_items(&s, View::Alerts, false, NOW)), ["sp-a1"]);
         // And it is not an FYI either — that view wants `insight`.
         assert!(ids(view_items(&s, View::Insights, false, NOW)).is_empty());
+        // And not a notification — the event arm is checked by a_wrongly_typed_alert_is_still_shown.
+        assert!(ids(view_items(&s, View::Notifications, false, NOW)).is_empty());
     }
 
     /// THE POSITIVE CONTROL (law-absence-needs-a-positive-control). "No alerts" and "the

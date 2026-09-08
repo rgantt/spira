@@ -339,7 +339,7 @@ fayth_get() {            # fayth_get <fayth> <VAR> [default] -> one field of a f
 # claim.pools is unset on this installation, so nothing is legitimately pre-assigned to an
 # alias an aeon could still claim. If that ever changes, this is the line that must learn
 # about it: `-u` would then hide pool work that `--claim` would happily take.
-READY_ARGS=(ready --limit 0 --exclude-type epic -u)
+READY_ARGS=(ready --limit 0 --exclude-type epic,event -u)
 
 # ready_count <labels> <exclude-labels> -> how many beads that predicate can claim.
 ready_count() {
@@ -1925,7 +1925,7 @@ for i in d:
 #
 # A PARTITION'S EXCLUSIONS ARE ITS OWN, applied here exactly as claiming applies them, so
 # this set and the claimable set cannot disagree. Epics go too — the summoner passes
-# --exclude-type epic, and a container is not work.
+# --exclude-type epic,event, and a container or a record is not work.
 #
 # EMPTY WHEN THE CHAMBER IS EMPTY, and it says so on stderr rather than returning a quiet
 # zero: nothing dispatchable and nothing watched are the same silence otherwise
@@ -1943,7 +1943,7 @@ excl = {x for x in (os.environ.get("SPIRA_EXCL") or "").split(",") if x}
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
 for i in (d if isinstance(d, list) else [d]):
-    if i.get("status") == "closed" or i.get("issue_type") == "epic":
+    if i.get("status") == "closed" or i.get("issue_type") in ("epic", "event"):
         continue
     if excl & set(i.get("labels") or []):
         continue

@@ -52,16 +52,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-/// How often the store re-reads beads and mail.
+/// How often the store re-reads beads.
 ///
-/// 60s, not 15s. A refresh is a `bd list` over every bead there is, plus a comment fetch per
-/// displayable bead and a `gt mail` call — measured at 3.0s on this box back when the list
-/// was eight parallel calls over eight databases, so a 15s cycle spent a fifth of its life
-/// shelling out, on the same four cores that run prod and the CI runner. One database is
-/// cheaper than that and the interval is unchanged: the cost that set it was never the
-/// dominant one. Nothing here is real-time: it answers "what is waiting on the operator",
-/// which changes a few times a day. The `r` key forces an immediate sync when that is not
-/// good enough, and the header always says how stale the view is.
+/// 60s, not 15s. A refresh is one `bd list --all` call, plus a comment fetch per displayable
+/// bead. It used to also call `gt mail` — 816 ms per 60 s refresh, 1,440 subprocess calls a
+/// day into a decommissioned store. Nothing here is real-time: it answers "what is waiting on
+/// the operator", which changes a few times a day. The `r` key forces an immediate sync when
+/// that is not good enough, and the header always says how stale the view is.
 const REFRESH: Duration = Duration::from_secs(60);
 
 struct App {
@@ -71,9 +68,10 @@ struct App {
     mode: Option<String>,
     buf: String,
     flash: String,
-    /// Ids acted on locally, hidden until the next sync confirms them. This is what makes a
-    /// keypress feel instant instead of costing a round trip.
-    pending: Vec<String>,
+    /// Ids acted on locally, hidden until the next sync confirms them, paired with what state
+    /// that confirmation looks like. This is what makes a keypress feel instant instead of
+    /// costing a round trip.
+    pending: Vec<(String, store::Expect)>,
     /// Failures from writes that ran off-thread. A write that fails must surface; the
     /// optimistic hide would otherwise lose the item silently.
     errors: Arc<Mutex<Vec<String>>>,
@@ -206,24 +204,39 @@ impl App {
         // else is decided about what to draw.
         let failed: Vec<String> = std::mem::take(&mut *self.unhide.lock().unwrap());
         if !failed.is_empty() {
-            self.pending.retain(|id| !failed.contains(id));
+            self.pending.retain(|(id, _)| !failed.iter().any(|f| f == id));
             self.pending_rev = self.pending_rev.wrapping_add(1);
         }
         if self.pending.is_empty() {
             return;
         }
-        let present = {
-            let s = self.shared.lock().unwrap();
-            if s.at.is_none() {
-                return; // nothing has synced yet; keep hiding
-            }
-            store::present_ids(&s)
-        };
+        let s = self.shared.lock().unwrap();
+        if s.at.is_none() {
+            return; // nothing has synced yet; keep hiding
+        }
         let before = self.pending.len();
-        self.pending.retain(|id| present.contains(id));
+        // Drain entries whose expected post-write state has arrived in the snapshot.
+        // Presence-based pruning fails for archived rows: the bead stays in the store
+        // and only its labels change, so `present_ids` would keep it hidden forever.
+        self.pending.retain(|(id, e)| !store::settled(&s, id, *e));
         if self.pending.len() != before {
             self.pending_rev = self.pending_rev.wrapping_add(1);
         }
+    }
+
+    /// What confirmation we expect after acting on the current item.
+    fn expect(&self) -> store::Expect {
+        if self.view.is_record() {
+            // Archiving adds the label (expect archived=true); restoring removes it (expect archived=false).
+            store::Expect::Archived(!self.dismissed)
+        } else {
+            store::Expect::Closed
+        }
+    }
+
+    /// Whether this id is optimistically hidden.
+    fn hidden(&self, id: &str) -> bool {
+        self.pending.iter().any(|(pending_id, _)| pending_id == id)
     }
 
     /// Unix seconds, or whatever `PANEL_NOW` froze it at.
@@ -262,7 +275,7 @@ impl App {
         let s = self.shared.lock().unwrap();
         let items = store::view_items(&s, self.view, self.dismissed, self.now()).map(|v| {
             v.into_iter()
-                .filter(|i| !self.pending.contains(&i.id))
+                .filter(|i| !self.hidden(&i.id))
                 .collect::<Vec<_>>()
         });
         let mut counts = [None; 4];
@@ -275,7 +288,7 @@ impl App {
                 // advertise a history nobody asked to see.
                 store::view_items(&s, *v, false, self.now())
                     .ok()
-                    .map(|x| x.iter().filter(|i| !self.pending.contains(&i.id)).count())
+                    .map(|x| x.iter().filter(|i| !self.hidden(&i.id)).count())
             };
         }
         *self.cache.borrow_mut() = Some(Derived {
@@ -324,7 +337,7 @@ impl App {
         // someone looked at it is precisely the reassuring lie this pane exists to prevent.
         let hides = model::act_hides(self.view, what);
         if hides {
-            self.pending.push(it.id.clone());
+            self.pending.push((it.id.clone(), self.expect()));
             self.pending_rev = self.pending_rev.wrapping_add(1);
         }
         self.flash = match what {
@@ -357,11 +370,12 @@ impl App {
         self.sel = self.sel.min(n.saturating_sub(1));
     }
 
-    /// Clear the whole view at once. Only notifications — closing every decision in one
-    /// keystroke would discard verdicts with no undo.
+    /// Archive every record in the current view at once. Only record views (Insights,
+    /// Notifications) — closing every decision in one keystroke would discard verdicts with
+    /// no undo.
     fn do_act_all(&mut self) {
-        if self.view != View::Notifications {
-            self.flash = "bulk clear is only for notifications".into();
+        if !self.view.is_record() {
+            self.flash = "bulk clear is only for record views".into();
             return;
         }
         let Ok(items) = self.items() else { return };
@@ -369,20 +383,24 @@ impl App {
         if n == 0 {
             return;
         }
-        for it in &items {
-            self.pending.push(it.id.clone());
-        self.pending_rev = self.pending_rev.wrapping_add(1);
+        let ids: Vec<String> = items.iter().map(|it| it.id.clone()).collect();
+        let expect = self.expect();
+        for id in &ids {
+            self.pending.push((id.clone(), expect));
         }
-        self.flash = format!("marking {n} read…");
-        let (errors, inflight, shared, view) = (
+        self.pending_rev = self.pending_rev.wrapping_add(1);
+        let verb = if self.dismissed { "restoring" } else { self.view.verb(false) };
+        self.flash = format!("{verb} {n}…");
+        let (errors, inflight, shared, view, dismissed) = (
             Arc::clone(&self.errors),
             Arc::clone(&self.inflight),
             Arc::clone(&self.shared),
             self.view,
+            self.dismissed,
         );
         *inflight.lock().unwrap() += 1;
         thread::spawn(move || {
-            if let Err(e) = model::act_all(view) {
+            if let Err(e) = model::act_all(view, &ids, dismissed) {
                 errors.lock().unwrap().push(e);
             }
             *inflight.lock().unwrap() -= 1;
@@ -784,8 +802,8 @@ fn main() {
                 app.reading = true;
                 app.scroll.reset();
             }
-            // `h` — the retrieval half of dismissal. Only in FYI: DECISIONS has no dismissed
-            // set (a closed decision is a verdict, not a hidden row) and mail has `gt mail`.
+            // `h` — the retrieval half of dismissal. Only in record views and ALERTS:
+            // DECISIONS has no dismissed set — a closed decision is a verdict, not a hidden row.
             KeyCode::Char('h') if app.view.has_history() => {
                 app.dismissed = !app.dismissed;
                 app.sel = 0;

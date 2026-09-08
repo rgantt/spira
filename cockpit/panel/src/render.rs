@@ -673,7 +673,9 @@ pub fn frame(f: &Frame) -> Vec<String> {
         // then means dismissed-so-far rather than waiting-to-read, and a tab whose number
         // silently changes meaning is worse than one that says which number it is showing.
         let name = match (*v, f.dismissed && *v == f.view) {
-            (View::Insights, true) => "DISMISSED",
+            // Record views (Insights, Notifications) both use "DISMISSED" — only the view on
+            // screen is renamed; the other tabs keep their ordinary title.
+            (View::Insights, true) | (View::Notifications, true) => "DISMISSED",
             // "CLEARED" rather than "SILENCED": the history holds both, and what is in it
             // mostly is conditions that went away. Either way the count beside the tab now
             // means something else, and a tab whose number silently changes meaning is worse
@@ -721,7 +723,8 @@ pub fn frame(f: &Frame) -> Vec<String> {
             (View::Insights, false) => "nothing new to know",
             (View::Alerts, true) => "nothing has cleared or been silenced yet",
             (View::Alerts, false) => "read the alerts — none firing",
-            (View::Notifications, _) => "inbox clear",
+            (View::Notifications, true) => "nothing marked read yet",
+            (View::Notifications, false) => "nothing has happened",
         };
         out.push(String::new());
         out.push(format!("  {}{}{}", OK, msg, RST));
@@ -991,7 +994,15 @@ fn footer(f: &Frame, pos: usize, total: usize) -> String {
                 if f.dismissed { "back" } else { "cleared" }
             ));
         }
-        View::Notifications => {}
+        // `A` bulk-archives; `h` shows what has been marked read (same pattern as FYI).
+        View::Notifications => s.push_str(&format!(
+            " · {}A{} mark all read · {}h{} {}",
+            KEY,
+            BAR,
+            KEY,
+            BAR,
+            if f.dismissed { "back" } else { "read" }
+        )),
     }
     s.push_str(&format!(
         " · {}o{} full · {}⇥{} view · {}r{} sync",
