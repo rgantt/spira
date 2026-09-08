@@ -499,25 +499,50 @@ now_section() {
             elif [ "$qt" -ge 300 ]  2>/dev/null; then qcol="$C_WARN"
             else                                      qcol="$C_DIM"; fi
         fi
-        # THE PAD IS COMPUTED FROM THE FITTED TEXT, not from the raw. Right-aligning against a
-        # length the row does not have is how a pane that has cut a line then overflows it by
-        # exactly what it cut — the terminal has autowrap off and cuts silently, which is the
-        # failure the ellipsis exists to prevent, arriving from the other side.
-        local aw=$(( COLS - 12 - ${#qs} )); [ "$aw" -lt 2 ] && aw=2
-        fit "${ac:--}" "$aw"
-        local pad=$(( COLS - 10 - ${#FIT} - ${#qs} )); [ "$pad" -lt 1 ] && pad=1
-        printf '        %s↳ %s%s%*s%s%s%s\n' \
-            "$C_DIM" "$FIT" "$C_RST" "$pad" "" "$qcol" "$qs" "$C_RST"
-        # WHAT IT LAST SAID, IN ITS OWN WORDS — omitted when there is nothing. A tool call
-        # says what a session is doing; only its prose says what it thinks it is doing, which
-        # is the difference between "running a test suite" and "running the token suite before
-        # touching the meter". A row of quotation marks around a dash would be worse than the
-        # row not being there, so `-` and `?` are treated as nothing: the read already failed
-        # visibly on the three rows above.
-        case "$sd" in ''|'-'|'?') ;; *)
-            fit "$sd" $(( COLS - 12 ))
-            printf '        %s“ %s ”%s\n' "$C_DIM" "$FIT" "$C_RST" ;;
-        esac
+        # TRAILING MOMENTS — the N most recent things the session did, oldest first, from
+        # the collector's trace_tail read. The newest carries the quiet indicator; the older
+        # ones are dim context answering "what led here". When the snapshot holds no ACT{j}
+        # keys — N=0, or an older collector — the single ACT line and the SAID line render
+        # as before.
+        local tl="${SPIRA_COCKPIT_TRACE_LINES:-3}" trail_n=0
+        if [ "$tl" -gt 0 ] 2>/dev/null; then
+            local j=0
+            while [ "$j" -lt "$tl" ]; do
+                eval "[ -n \"\${SP_AEON${i}_ACT${j}:-}\" ]" || break
+                trail_n=$((trail_n+1))
+                j=$((j+1))
+            done
+        fi
+        if [ "$trail_n" -gt 0 ]; then
+            local j=0
+            while [ "$j" -lt "$trail_n" ]; do
+                eval "local trail_line=\${SP_AEON${i}_ACT${j}:-}"
+                if [ "$j" -eq $((trail_n - 1)) ]; then
+                    local aw=$(( COLS - 12 - ${#qs} )); [ "$aw" -lt 2 ] && aw=2
+                    fit "${trail_line:--}" "$aw"
+                    local pad=$(( COLS - 10 - ${#FIT} - ${#qs} )); [ "$pad" -lt 1 ] && pad=1
+                    printf '        %s↳ %s%s%*s%s%s%s\n' \
+                        "$C_RST" "$FIT" "$C_RST" "$pad" "" "$qcol" "$qs" "$C_RST"
+                else
+                    fit "$trail_line" $(( COLS - 12 ))
+                    printf '        %s↳ %s%s\n' "$C_DIM" "$FIT" "$C_RST"
+                fi
+                j=$((j+1))
+            done
+        else
+            # No trailing moments: original single-line behaviour.
+            local aw=$(( COLS - 12 - ${#qs} )); [ "$aw" -lt 2 ] && aw=2
+            fit "${ac:--}" "$aw"
+            local pad=$(( COLS - 10 - ${#FIT} - ${#qs} )); [ "$pad" -lt 1 ] && pad=1
+            printf '        %s↳ %s%s%*s%s%s%s\n' \
+                "$C_DIM" "$FIT" "$C_RST" "$pad" "" "$qcol" "$qs" "$C_RST"
+            # WHAT IT LAST SAID, IN ITS OWN WORDS — kept only in single-line mode.
+            # When trailing moments are shown the said text appears naturally among them.
+            case "$sd" in ''|'-'|'?') ;; *)
+                fit "$sd" $(( COLS - 12 ))
+                printf '        %s“ %s ”%s\n' "$C_DIM" "$FIT" "$C_RST" ;;
+            esac
+        fi
         i=$((i+1))
     done
 }

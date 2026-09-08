@@ -200,6 +200,89 @@ for want in '37 turns' 'ctx 123k' '4 files' 'quiet 12s' '“ running the token s
 done
 is_n "and it is four rows for one aeon" 4 "$(rows_of "$row" NOW)"
 
+echo
+echo "trailing moments — the last N actions rendered under each aeon"
+
+# THREE TRAILING MOMENTS FROM THE SNAPSHOT. These are the sanitised lines the collector
+# would emit from trace_tail; the pane reads them as ACT{j} keys.
+{ printf 'SP_AEON_N=1\nSP_AEON0_NAME=valefor\nSP_AEON0_FAYTH=builder\nSP_AEON0_BEAD=sp-7xn\n'
+  printf 'SP_AEON0_MIN=11\nSP_AEON0_TURNS=37\nSP_AEON0_CTX=123400\nSP_AEON0_FILES=4\n'
+  printf 'SP_AEON0_QUIET=12\nSP_AEON0_ACT=Bash test-sentinel.sh\n'
+  printf 'SP_AEON0_ACT0=Read spira/lib.sh\n'
+  printf 'SP_AEON0_ACT1=Grep trace_tail\n'
+  printf 'SP_AEON0_ACT2=Bash test-sentinel.sh\n'
+  printf 'SP_AEON0_TITLE=a bead\nSP_AEON0_PRI=1\nSP_NEXT_N=0\nSP_AWAITING_N=0\n'; } | snap
+trail="$(pane 0)"
+for want in 'Read spira/lib.sh' 'Grep trace_tail' 'Bash test-sentinel.sh'; do
+    if grep -qF "$want" <<< "$trail"; then
+        pass=$((pass+1)); printf '  ok    trailing moment "%s" appears\n' "$want"
+    else
+        fail=$((fail+1)); printf '  FAIL  trailing moment "%s" missing:\n%s\n' "$want" "$trail"
+    fi
+done
+is_n "three trailing moments are 2+3=5 rows per aeon" 5 "$(rows_of "$trail" NOW)"
+if grep -qF 'quiet 12s' <<< "$trail"; then
+    pass=$((pass+1)); printf '  ok    the newest moment carries quiet\n'
+else
+    fail=$((fail+1)); printf '  FAIL  quiet indicator missing:\n%s\n' "$trail"
+fi
+
+# N=0 RESTORES THE OLD SINGLE-LINE BEHAVIOUR, including the SAID row, even when ACT{j}
+# keys are in the snapshot.
+{ printf 'SP_AEON_N=1\nSP_AEON0_NAME=valefor\nSP_AEON0_FAYTH=builder\nSP_AEON0_BEAD=sp-7xn\n'
+  printf 'SP_AEON0_MIN=11\nSP_AEON0_TURNS=37\nSP_AEON0_CTX=123400\nSP_AEON0_FILES=4\n'
+  printf 'SP_AEON0_QUIET=12\nSP_AEON0_ACT=Bash test-sentinel.sh\n'
+  printf 'SP_AEON0_ACT0=Read spira/lib.sh\n'
+  printf 'SP_AEON0_ACT1=Grep trace_tail\n'
+  printf 'SP_AEON0_ACT2=Bash test-sentinel.sh\n'
+  printf 'SP_AEON0_TITLE=a bead\nSP_AEON0_PRI=1\nSP_AEON0_SAID=running something\n'
+  printf 'SP_NEXT_N=0\nSP_AWAITING_N=0\n'; } | snap
+trail0="$(env -i PATH="$PATH" HOME="$PD/home" TERM=dumb LC_ALL=C.UTF-8 \
+    SPIRA_CONF="$PD/no.conf" SPIRA_REPO="$PD/repo" SPIRA_RUN="$PD/repo/.runtime/spira" \
+    SPIRA_COCKPIT_TRACE_LINES=0 \
+    bash "$PANE" once 0 0 2>/dev/null | sed 's/\x1b\[[?0-9;]*[a-zA-Z]//g')"
+is_n "N=0 is four rows (name + bead + act + said)" 4 "$(rows_of "$trail0" NOW)"
+if grep -qF 'running something' <<< "$trail0"; then
+    pass=$((pass+1)); printf '  ok    N=0 shows the SAID row\n'
+else
+    fail=$((fail+1)); printf '  FAIL  N=0 did not show SAID:\n%s\n' "$trail0"
+fi
+
+# THE SANITISER MAKES EVERY LINE SAFE FOR A SOURCED FILE. A trace with a newline inside a
+# JSON value, an "=", and non-ASCII — each would break a KEY=value file the pane sources.
+cat > "$TD/sp-dirty.log" <<'TRACE'
+{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","name":"Bash","input":{"command":"echo foo=bar\nbaz"}}]}}
+{"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"résumé → done"}]}}
+{"type":"assistant","message":{"id":"m3","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/tmp/tëst"}}]}}
+TRACE
+dirty="$(env -i PATH="$PATH" HOME="$TMP" LC_ALL=C.UTF-8 SPIRA_CONF="$TMP/no.conf" \
+    bash -c '. "$1"/lib.sh; trace_tail "$2" 3' _ "$HERE" "$TD/sp-dirty.log" 2>/dev/null \
+    | python3 -c '
+import sys, re
+ALLOW = re.compile(r"[^ A-Za-z0-9._/:,()#+-]")
+n = int(sys.argv[1])
+lines = []
+for raw in sys.stdin:
+    c = re.sub(r"\s+", " ", ALLOW.sub(" ", raw)).strip()[:96]
+    if c:
+        lines.append(c)
+for j, l in enumerate(lines[-n:]):
+    print("SP_AEON0_ACT%d=%s" % (j, l))
+' 3 2>/dev/null)"
+dk="$(sed -n 's/=.*//p' <<< "$dirty" | sort | tr '\n' ' ' | sed 's/ $//')"
+is_n "dirty trace produces exactly 3 well-formed keys" "SP_AEON0_ACT0 SP_AEON0_ACT1 SP_AEON0_ACT2" "$dk"
+if ( set -u; eval "$(python3 -c '
+import sys
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if "=" not in line: continue
+    k, _, v = line.partition("=")
+    print("%s=%s" % (k, "\x27" + v.replace("\x27", "\x27\\\x27\x27") + "\x27"))' <<< "$dirty")" ) 2>/dev/null; then
+    pass=$((pass+1)); printf '  ok    sanitised trace output sources cleanly\n'
+else
+    fail=$((fail+1)); printf '  FAIL  sanitised output does not source:\n%s\n' "$dirty"
+fi
+
 # The same aeon with no trace to read. Every figure must be `?` — a `0` here is the panel
 # saying all-clear about a session it cannot see at all.
 { printf 'SP_AEON_N=1\nSP_AEON0_NAME=valefor\nSP_AEON0_FAYTH=builder\nSP_AEON0_BEAD=sp-7xn\n'

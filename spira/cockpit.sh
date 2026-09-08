@@ -146,6 +146,27 @@ print("%s\t%s" % (i.get("priority"), re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.
         # wanted behaviour rather than a gap: a failed read must never arrive as a zero
         # (law-absence-needs-a-positive-control).
         trace_stats "$SPIRA_RUN/$bead.log" 2>/dev/null | sed "s/^/SP_AEON${i}_/"
+        # THE TRAILING MOMENTS, from trace_tail. Each line is sanitised by the same
+        # allowlist trace_stats uses for ACT: the snapshot is a KEY=value file the pane
+        # SOURCES, so a newline injects extra lines and an "=" makes a bogus key. trace_tail
+        # has no such clamp — it is multi-line by design and emits $ and -> prefixes —
+        # so every line goes through the allowlist before it becomes a value.
+        local tl="${SPIRA_COCKPIT_TRACE_LINES:-3}"
+        if [ "$tl" -gt 0 ] 2>/dev/null; then
+            trace_tail "$SPIRA_RUN/$bead.log" "$tl" 2>/dev/null | python3 -c '
+import sys, re
+ALLOW = re.compile(r"[^ A-Za-z0-9._/:,()#+-]")
+pfx = sys.argv[1]
+n = int(sys.argv[2])
+lines = []
+for raw in sys.stdin:
+    c = re.sub(r"\s+", " ", ALLOW.sub(" ", raw)).strip()[:96]
+    if c:
+        lines.append(c)
+for j, l in enumerate(lines[-n:]):
+    print("%sACT%d=%s" % (pfx, j, l))
+' "SP_AEON${i}_" "$tl" 2>/dev/null
+        fi
         i=$((i+1))
     done
     echo "SP_AEON_N=$i"
