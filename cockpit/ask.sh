@@ -214,10 +214,30 @@ parse_opts() { # sets WHY / DFLT / KIND / TARGET from remaining args
     done
 }
 
+# Print usage and exit 0 for -h/--help anywhere in the argument list, and for bare
+# invocation. Scanning the full list means `ask.sh insight --help` cannot create a bead
+# titled '--help' by treating the flag as the insight's title.
+if [ $# -eq 0 ]; then
+    sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0
+fi
+for _a in "$@"; do
+    case "$_a" in -h|--help) sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+done
+unset _a
+
+# A title beginning with - is almost certainly a mistyped flag. Refuse it before any bead
+# is created so the caller can correct it rather than find a junk bead in the queue.
+require_title() {
+    case "$1" in
+        -*) printf 'ask: title looks like a flag: %s — pass --help for usage\n' "$1" >&2; exit 1 ;;
+    esac
+}
+
 case "${1:-list}" in
 
 add|ask|question)
     shift; text="${1:?usage: ask.sh add \"<question>\" [--why ...] [--default ...]}"; shift || true
+    require_title "$text"
     parse_opts "$@"
     id=$(create decision "$text" "$WHY" "$DFLT" "$SPIRA_ASK_LABEL,overseer,ask-question") || exit 1
     echo "asked [$id] $text"
@@ -226,6 +246,7 @@ add|ask|question)
 
 decide|decision)
     shift; text="${1:?usage: ask.sh decide \"<the choice>\" [--why ...] [--default ...]}"; shift || true
+    require_title "$text"
     parse_opts "$@"
     id=$(create decision "$text" "$WHY" "$DFLT" "$SPIRA_ASK_LABEL,overseer,ask-decision") || exit 1
     echo "decision [$id] $text"
@@ -233,6 +254,7 @@ decide|decision)
 
 insight|learned)
     shift; text="${1:?usage: ask.sh insight \"<what was learned>\" [--why ...]}"; shift || true
+    require_title "$text"
     parse_opts "$@"
     # Created then immediately closed: an insight is a record, not work. Left open it would
     # show up in `bd ready` and eventually in front of a polecat.
@@ -251,6 +273,7 @@ note|event)
     # OPEN event carrying the plan's labels is claimable by an aeon. It carries no labels at
     # all, so `bd ready --label spira,plan` cannot see it even before it is closed.
     shift; text="${1:?usage: ask.sh note \"<what happened>\" --kind <event.kind> [--why ...] [--target <bead>]}"; shift || true
+    require_title "$text"
     parse_opts "$@"
     : "${KIND:=note}"
     id=$(create event "$text" "$WHY" "" "") || exit 1
