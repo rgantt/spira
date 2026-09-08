@@ -109,6 +109,12 @@ import os, re, sys
 keys = ["SPIRA_HOME", "SPIRA_REPO", "SPIRA_RUN", "SPIRA_DB", "SPIRA_COCKPIT",
         "SPIRA_DOLT_DATA", "SPIRA_TESTDB_DATA", "DOLT", "SPIRA_PROD"]
 m = dict(zip(keys, sys.argv[2:]))
+# FALLBACK: an empty SPIRA_PROD is the documented signal that no checkout split
+# is wanted — everything runs from the development checkout (SPIRA_HOME). An
+# empty string substituted into @SPIRA_PROD@ yields ExecStart=/sentinel.sh,
+# which is both wrong and silent (no unresolved placeholder remains).
+if not m["SPIRA_PROD"]:
+    m["SPIRA_PROD"] = m["SPIRA_HOME"]
 text = open(sys.argv[1]).read()
 out = re.sub(r"@([A-Z_]+)@", lambda x: m.get(x.group(1), x.group(0)), text)
 left = sorted(set(re.findall(r"@([A-Z_]+)@", out)))

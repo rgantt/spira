@@ -179,5 +179,33 @@ is_empty=""
 
 # ==========================================================================
 echo
+echo "RENDER FALLBACK — empty SPIRA_PROD renders as SPIRA_HOME (empty-in, dev-checkout-out):"
+# ==========================================================================
+
+# When SPIRA_PROD is empty — the signal that no checkout split is wanted — render()
+# must substitute SPIRA_HOME so @SPIRA_PROD@ yields a real path, not an empty prefix
+# (which would produce ExecStart=/sentinel.sh and pass silently, since no placeholder
+# remains unresolved).
+render_fb_out="$(
+    env -i \
+        "PATH=$PATH" \
+        "HOME=$TMP/home" \
+        SPIRA_CONF=/nonexistent \
+        SPIRA_DOLT_DATA= SPIRA_TESTDB_DATA= \
+        "SPIRA_RUN=$SPIRA_RUN_DIR" \
+        "SPIRA_HOME=$HERE" \
+        SPIRA_PROD= \
+        "SPIRA_REPO=$REAL_REPO" \
+        "SPIRA_COCKPIT=$REAL_COCKPIT" \
+        bash "$FIXTURE/systemd/install.sh" --render 2>&1
+)"
+render_fb_rc=$?
+iszero  "render fallback: --render exits 0 with empty SPIRA_PROD" "$render_fb_rc"
+# With the fallback, @SPIRA_PROD@ resolves to SPIRA_HOME ($HERE). Verify the
+# rendered sentinel ExecStart contains SPIRA_HOME, not a bare-slash path.
+want    "render fallback: sentinel ExecStart contains SPIRA_HOME" "ExecStart=$HERE/sentinel.sh" "$render_fb_out"
+
+# ==========================================================================
+echo
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
