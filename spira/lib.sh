@@ -123,6 +123,26 @@ spira_ask_rebase_loop() {  # <bead> <branch> <repo-name> <requeue-count> <confli
         >/dev/null 2>&1
 }
 
+# spira_ask_timeout_loop — escalate a bead that keeps timing out in a capped lane.
+#
+# A bead routed to a lane with FAYTH_TIMEOUT_SECONDS is killed when the cap expires. One
+# timeout is expected for work that arrived labelled as an incident but carries more code than
+# the 8-minute cap allows. N timeouts in a row is a loop: the cap is the wrong lane, and the
+# right answer is either a persona with no cap, or splitting the work.
+#
+# Deduped on the bead id so the ask fires once per (id, timeout-count): a new timeout is new
+# information even if a previous ask about the same bead was already closed.
+spira_ask_timeout_loop() {  # <bead> <branch> <fayth> <cap-seconds> <timeout-count>
+    local id="$1" br="$2" fayth="$3" cap="$4" n="$5"
+    [ -n "${SPIRA_NOTIFY:-}" ] && [ -x "${SPIRA_NOTIFY:-/nonexistent}" ] || return 0
+    ask_already_open "$id timed out $n" && return 0
+    "$SPIRA_NOTIFY" add \
+        "$id timed out $n times in the $fayth lane (${cap}s cap)" \
+        --default "move the bead to a persona with no cap (e.g. a builder) by replacing the 'incident' label with 'plan', or split the work into pieces that fit the lane" \
+        --why "$br has been killed by the ${cap}s cap $n times without committing anything. This is the lane routing the bead to a wall it cannot finish inside, not a verdict about the approach. The work is neither wrong nor charged; it is stuck in a lane too short for it." \
+        >/dev/null 2>&1
+}
+
 # How many rows a `bd --json` payload carries. Never `| wc -l` and never a grep: the payload
 # is one line, and a warning printed before it would be counted as a row.
 json_count() {           # stdin: JSON; stdout: an integer, 0 on anything unparseable
@@ -909,6 +929,8 @@ bump_reclaim()   { bump_counter "$1" sp-reclaim "${2:-}"; }
 requeues_of()    { counter_of "$1" sp-requeue; }
 bump_requeue()   { bump_counter "$1" sp-requeue "${2:-}"; }
 requeue_causes() { counter_causes "$1" sp-requeue; }
+timeouts_of()    { counter_of "$1" sp-timeout; }
+bump_timeout()   { bump_counter "$1" sp-timeout "${2:-timeout-kill}"; }
 
 # --------------------------------------------------------------------------------------
 # WHAT ENDED THIS SESSION — AND THE DEFAULT IS "WE DO NOT KNOW".

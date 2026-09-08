@@ -240,6 +240,29 @@ fi
 log "$FAYTH/$AEON: claimed $BEAD_ID"
 ledger "awake $FAYTH $BEAD_ID"
 
+# THE CLAIM AND THE PREDICATE CHECK ARE NOT ATOMIC. The predicate excludes spira-poison,
+# but `bd ready --claim` reads, then writes: a bead that receives the poison label in that
+# gap is claimed by an aeon that is excluded from working it. One was claimed one second
+# after the label landed and retried sp-m56w identically until the database ran out of
+# attempts.
+#
+# Read-after-claim is the only reliable check: re-read the bead's labels the moment after
+# claiming and release if spira-poison is present. The window is short enough that the
+# check is virtually free, and the cost of missing it is a retried-identical session.
+if bdjson show "$BEAD_ID" 2>/dev/null | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+d = d if isinstance(d, list) else [d]
+if d and "spira-poison" in (d[0].get("labels") or []): sys.exit(1)' 2>/dev/null; then
+    : # no poison — proceed
+else
+    release_own_claim "$BEAD_ID"
+    log "$FAYTH/$AEON: $BEAD_ID carries spira-poison — released immediately after claim (race with the label)"
+    ledger_done 0 poison-raced
+    exit 0
+fi
+
 # ---- the workspace -------------------------------------------------------------------
 # THE REPOSITORY COMES FROM THE BEAD. A fayth supplies the persona, the statutes and the
 # tool allowlist; the bead supplies the workspace, through the same `repo:<name>` partition
@@ -449,6 +472,35 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
             ledger_done "$rc" gate-unfinished
             exit $rc
         fi
+        # THE LANE CAP KILLING THE SESSION IS NOT A VERDICT ABOUT THE WORK. rc=124 is
+        # `timeout`'s own exit code for a process it killed. Combined with nothing committed,
+        # this is the harness's clock ending the turn — the work was mid-flight, not wrong.
+        # Charge the timeout counter (sp-timeout), not the attempt counter: poison reads
+        # "we know this work keeps failing", and a bead timed out four times in a row has not
+        # been tried once. Follow the slain-aeon reading, which uses the same logic (sp-l7f5).
+        #
+        # After FAYTH_TIMEOUT_LIMIT consecutive timeout kills, the bead is poisoned and
+        # escalated as "too large for its lane" — a different ask from "change the approach",
+        # with the rc=124 streak as its evidence, so the operator knows to re-label or split
+        # the work rather than tell the aeon to try something different.
+        #
+        # committed may be unset if the verdict block did not reach the line that sets it.
+        # The default is "not yes" — the unset case is the case where nothing was committed.
+        if [ "${SESSION_RC:-0}" = 124 ] && [ "${committed:-}" != yes ]; then
+            n="$(bump_timeout "$BEAD_ID")"
+            bdq note "$BEAD_ID" "Timeout $n: the session was killed by the lane cap (${FAYTH_TIMEOUT_SECONDS:-?}s) with nothing committed. This is the harness's clock ending the turn, not a verdict about the work. No attempt charged." >/dev/null 2>&1
+            log "$FAYTH: $BEAD_ID timed out ($n) — no attempt charged"
+            local tmax="${FAYTH_TIMEOUT_LIMIT:-2}"
+            if [ "$n" -ge "$tmax" ]; then
+                bdq label add "$BEAD_ID" spira-poison >/dev/null 2>&1
+                bdq note "$BEAD_ID" "Poisoned after $n timeout kills in the $FAYTH lane (${FAYTH_TIMEOUT_SECONDS:-?}s cap). The bead is too large for this lane — it needs a persona with no cap, or to be split into pieces that fit. Nothing about the work is wrong; it was never tried." >/dev/null 2>&1
+                log "$FAYTH: $BEAD_ID POISONED — $n timeouts in a ${FAYTH_TIMEOUT_SECONDS:-?}s lane"
+                spira_ask_timeout_loop "$BEAD_ID" "$BRANCH" "$FAYTH" "${FAYTH_TIMEOUT_SECONDS:-?}" "$n"
+            fi
+            release_own_claim "$BEAD_ID"
+            ledger_done "$rc" timeout
+            exit $rc
+        fi
         # THE BEAD IS OPEN BECAUSE THIS SCRIPT REOPENED IT, thirty lines ago and for a reason
         # it recorded. session_outcome cannot see that: it reads the session's trace, and the
         # trace of a session that committed, closed the bead and ran to its own end is
@@ -496,6 +548,11 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
 # — open, unclaimed, no verdict. Only the process that performed the reopen knows, and it
 # knows for the few seconds between doing it and exiting.
 REQUEUE_CAUSE=""; REQUEUE_WHY=""
+# THE SESSION'S OWN EXIT CODE, held separately so cleanup can read it. `cleanup() { local
+# rc=$?` captures the script's exit code at the time the trap fires, which is the last
+# command before the fall-off — not the session's. SESSION_RC is set right after `rc=$?`
+# captures the session and is the only witness to rc=124 in the teardown.
+SESSION_RC=0
 trap cleanup EXIT INT TERM
 
 # ---- heartbeat: PROVE WORK, NOT MERE EXISTENCE ---------------------------------------
@@ -1065,6 +1122,7 @@ printf '%s' "$FULL" | ${FAYTH_TIMEOUT_SECONDS:+timeout $FAYTH_TIMEOUT_SECONDS} \
            --dangerously-skip-permissions \
     >> "$LOGF" 2>&1
 rc=$?
+SESSION_RC=$rc   # held for cleanup, which sees only $? at the time the trap fires
 set -e
 log "$FAYTH: $BEAD_ID session exited rc=$rc"
 

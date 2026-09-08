@@ -561,7 +561,17 @@ except Exception: print("")' 2>/dev/null)"
     echo "SP_SENTINEL_TIMER=$(unit_active spira-sentinel.timer)"
     echo "SP_SENTINEL_AGE=$(age_of "$SPIRA_RUN/sentinel.log")"
     echo "SP_OPS_TIMER=$(unit_active spira-ops.timer)"
-    echo "SP_OPS_AGE=$(age_of "$SPIRA_RUN/ops.log")"
+    # SP_OPS_AGE: "ops is inside a session" vs "ops has stopped". ops.log only gets new lines
+    # from aeon.sh's own log() calls, which are silent during the 480s claude session itself,
+    # so its mtime is frozen while ops is actually working — indistinguishable from a dead
+    # collector. A live ops pid file is the authoritative "busy" signal (law-alerts-must-be-actionable).
+    _ops_age="$(age_of "$SPIRA_RUN/ops.log")"
+    for _ops_pf in "$SPIRA_RUN"/aeon-ops-*.pid; do
+        [ -e "$_ops_pf" ] || continue
+        if aeon_alive "$_ops_pf"; then _ops_age=0; break; fi
+    done
+    echo "SP_OPS_AGE=$_ops_age"
+    unset _ops_pf _ops_age
 
     # ---- the sphere grid ---------------------------------------------------------------
     # Scoped by LABEL, not by the goal epic's children: the goal epic is one pilgrimage, and
