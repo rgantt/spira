@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # install.sh — render the unit TEMPLATES for this box, install them, and start their timers.
 #
-#   ./install.sh          render, install, enable and start
-#   ./install.sh --diff   show how the installed units differ from what this box would
-#                         render, and change nothing
-#   ./install.sh --render show the rendered units on stdout and change nothing
+#   ./install.sh [<instance>]          render, install, enable and start for the named
+#                                      instance (default: $SPIRA_INSTANCE from conf.sh,
+#                                      which is 'prod' on a clean install)
+#   ./install.sh [<instance>] --diff   show how the installed units differ from what this
+#                                      instance would render, and change nothing
+#   ./install.sh [<instance>] --render show the rendered units on stdout and change nothing
 #
 # THE FILES HERE ARE TEMPLATES, NOT UNITS. Every path in them is a placeholder — @SPIRA_HOME@,
 # @SPIRA_DB@ and so on — filled from spira.conf. A unit file with a path baked into it runs on
@@ -15,11 +17,55 @@
 # NEVER EDIT AN INSTALLED UNIT. Edit the template and re-run this; `--diff` is how you find
 # out that somebody did. The copies here are the source of truth, because
 # ~/.config/systemd/user is one directory on one disk that nothing backs up.
+#
+# UNITS ARE CATTLE: unique plain names per instance — spira-sentinel-prod.service,
+# spira-sentinel-test.service — no systemd templates, no %i, each unit carrying its
+# instance written out in full. Units whose names start with 'spira-' get the instance
+# suffix; units whose names do not (cockpit-ensure, concierge, beads-push, dolt-beads)
+# are shared across instances and installed under their plain names. The watcher template
+# (spira-watch@.service) is rendered once per manifest row, with %i substituted, and
+# installed as spira-watch-<name>-<instance>.service — no systemd @-instantiation.
 set -uo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+
+# PARSE THE INSTANCE ARGUMENT AND THE MODE FLAG BEFORE SOURCING conf.sh SO THAT conf.sh
+# DERIVES SPIRA_RUN, SPIRA_DB, ETC. FOR THE CORRECT INSTANCE. conf.sh reads SPIRA_INSTANCE
+# from the environment before the config file, so setting it here in the environment wins.
+_install_mode=""      # --diff | --render | empty (install)
+_install_instance=""  # explicit instance arg, empty means use conf.sh default
+for _a in "$@"; do
+    case "$_a" in
+        --diff|--render) _install_mode="$_a" ;;
+        --*)             ;;
+        *) [ -z "$_install_instance" ] && _install_instance="$_a" ;;
+    esac
+done
+unset _a
+[ -n "$_install_instance" ] && export SPIRA_INSTANCE="$_install_instance"
+unset _install_instance
+
 . "$(cd "$SRC/../spira" && pwd -P)/conf.sh"
 DEST="$HOME/.config/systemd/user"
+
+# UNIT NAME MAPPING. Each spira-*.service/.timer gets a per-instance suffix appended before
+# the extension so two instances can coexist on one machine without colliding unit names.
+# Non-spira units (cockpit-ensure, concierge, beads-push, dolt-beads) are shared and keep
+# their plain names. The watcher template (spira-watch@.service) is excluded here; its
+# per-watcher per-instance names are built by inst_watch_name.
+inst_name() {
+    local u="$1"
+    case "$u" in
+        spira-watch@.service)  printf '%s' "$u" ;;   # never installed directly; handled below
+        spira-*.service)       printf '%s-%s.service' "${u%.service}" "$SPIRA_INSTANCE" ;;
+        spira-*.timer)         printf '%s-%s.timer'   "${u%.timer}"   "$SPIRA_INSTANCE" ;;
+        *)                     printf '%s' "$u" ;;
+    esac
+}
+
+# WATCHER UNIT NAME. The manifest row named <wname> installs as this unit for this instance.
+# spira-watch@<name>.service (watchd.sh output) → spira-watch-<name>-<instance>.service
+inst_watch_name() { printf 'spira-watch-%s-%s.service' "$1" "$SPIRA_INSTANCE"; }
 
 UNITS=(spira-sentinel.service spira-sentinel.timer
        spira-ops.service spira-ops.timer
@@ -41,13 +87,18 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
        )
 # Only these get enabled. The .service behind a .timer is started BY the timer; enabling it
 # as well would also run it once at boot, outside the schedule.
-ENABLE=(cockpit-ensure.timer concierge.timer spira-watch-refresh.timer
-        beads-push.timer spira-sentinel.timer spira-ops.timer spira-auron.timer spira-watchtower.timer spira-skew.timer
-        spira-archive.timer
-        spira-archivist.timer spira-watch-notify.timer
-        spira-suites.timer
-        spira-qa.timer
-        spira-cockpit.service spira-loom.service)
+# Template names mapped through inst_name so the enabled unit matches its installed name.
+_ENABLE_TMPL=(cockpit-ensure.timer concierge.timer spira-watch-refresh.timer
+              beads-push.timer spira-sentinel.timer spira-ops.timer spira-auron.timer
+              spira-watchtower.timer spira-skew.timer
+              spira-archive.timer
+              spira-archivist.timer spira-watch-notify.timer
+              spira-suites.timer
+              spira-qa.timer
+              spira-cockpit.service spira-loom.service)
+ENABLE=()
+for _t in "${_ENABLE_TMPL[@]}"; do ENABLE+=("$(inst_name "$_t")"); done
+unset _t _ENABLE_TMPL
 
 # UNITS THIS BOX DELIBERATELY DECLINED. A conditional unit is absent from UNITS on purpose,
 # so unlisted must be told the difference between "not installed here" and "nobody ever
@@ -85,15 +136,27 @@ DOLT="$(command -v dolt 2>/dev/null || true)"
 # rows that happened to parse would be worse than refusing: a watcher that was never started
 # looks exactly like a watcher with nothing to say, and this is the last moment anybody is
 # looking (law-absence-needs-a-positive-control).
+#
+# _watch_names collects the plain watcher names (e.g., "testview") so --render and --diff
+# can produce per-instance watcher unit files. watch_units accumulates the installed unit
+# names (e.g., "spira-watch-testview-prod.service") for the prune membership check below.
+_watch_names=()
+watch_units=" "
 if watch_list="$("$SPIRA_HOME/watchd.sh" units)"; then
-    watch_units=" "
-    for u in $watch_list; do ENABLE+=("$u"); watch_units="$watch_units$u "; done
+    for _wu in $watch_list; do
+        _wname="${_wu#spira-watch@}"; _wname="${_wname%.service}"
+        _inst_wu="$(inst_watch_name "$_wname")"
+        ENABLE+=("$_inst_wu")
+        watch_units="$watch_units$_inst_wu "
+        _watch_names+=("$_wname")
+    done
+    unset _wu _wname _inst_wu
 else
     echo "install: the watcher manifest is malformed — installing none of it" >&2
     exit 1
 fi
 
-# render <template> -> the unit for this box, on stdout.
+# render <template> [<watcher-name>] -> the unit for this instance on stdout.
 #
 # The substitution is done by a program, not by `sed s|@X@|$X|`: a value containing a `|`,
 # an `&` or a backslash would be interpreted by sed, and these values are paths an operator
@@ -102,13 +165,19 @@ fi
 # HANDED IN, NOT INHERITED. conf.sh deliberately does not export anything derived from where
 # it sits — SPIRA_HOME and its children differ per copy of the harness — so this passes them
 # on argv rather than reading an environment that will not have them.
+# SPIRA_INSTANCE is included so a template may embed the instance name if needed (e.g., in a
+# Description= line). The watcher name, when supplied as the second shell argument, is
+# substituted for every %i in the rendered output — replacing systemd's own instance specifier
+# so the unit is a plain file rather than a template instantiation.
 render() {
     python3 - "$1" "$SPIRA_HOME" "$SPIRA_REPO" "$SPIRA_RUN" "$SPIRA_DB" "$SPIRA_COCKPIT" \
-                   "$SPIRA_DOLT_DATA" "$SPIRA_TESTDB_DATA" "$DOLT" "$SPIRA_PROD" <<'PY'
+                   "$SPIRA_DOLT_DATA" "$SPIRA_TESTDB_DATA" "$DOLT" "$SPIRA_PROD" \
+                   "$SPIRA_INSTANCE" "${2:-}" <<'PY'
 import os, re, sys
 keys = ["SPIRA_HOME", "SPIRA_REPO", "SPIRA_RUN", "SPIRA_DB", "SPIRA_COCKPIT",
-        "SPIRA_DOLT_DATA", "SPIRA_TESTDB_DATA", "DOLT", "SPIRA_PROD"]
-m = dict(zip(keys, sys.argv[2:]))
+        "SPIRA_DOLT_DATA", "SPIRA_TESTDB_DATA", "DOLT", "SPIRA_PROD", "SPIRA_INSTANCE"]
+m = dict(zip(keys, sys.argv[2:12]))
+watcher_name = sys.argv[12] if len(sys.argv) > 12 else ""
 # FALLBACK: an empty SPIRA_PROD is the documented signal that no checkout split
 # is wanted — everything runs from the development checkout (SPIRA_HOME). An
 # empty string substituted into @SPIRA_PROD@ yields ExecStart=/sentinel.sh,
@@ -117,6 +186,11 @@ if not m["SPIRA_PROD"]:
     m["SPIRA_PROD"] = m["SPIRA_HOME"]
 text = open(sys.argv[1]).read()
 out = re.sub(r"@([A-Z_]+)@", lambda x: m.get(x.group(1), x.group(0)), text)
+# Substitute %i with the watcher name for templates that use systemd's instance
+# specifier. Under per-instance naming there is no systemd @-template; %i is
+# only a placeholder that render replaces at install time.
+if watcher_name:
+    out = out.replace("%i", watcher_name)
 left = sorted(set(re.findall(r"@([A-Z_]+)@", out)))
 if left:
     sys.stderr.write("install: %s has placeholders nothing fills: %s\n"
@@ -126,8 +200,16 @@ sys.stdout.write(out)
 PY
 }
 
-if [ "${1:-}" = "--render" ]; then
-    for u in "${UNITS[@]}"; do printf '===== %s =====\n' "$u"; render "$SRC/$u" || exit 1; done
+if [ "$_install_mode" = "--render" ]; then
+    for u in "${UNITS[@]}"; do
+        [ "$u" = "spira-watch@.service" ] && continue
+        printf '===== %s =====\n' "$(inst_name "$u")"
+        render "$SRC/$u" || exit 1
+    done
+    for _wname in "${_watch_names[@]}"; do
+        printf '===== %s =====\n' "$(inst_watch_name "$_wname")"
+        render "$SRC/spira-watch@.service" "$_wname" || exit 1
+    done
     exit 0
 fi
 
@@ -150,7 +232,7 @@ unlisted() {
     done
 }
 
-if [ "${1:-}" = "--diff" ]; then
+if [ "$_install_mode" = "--diff" ]; then
     rc=0
     TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
     for u in $(unlisted); do
@@ -158,10 +240,20 @@ if [ "${1:-}" = "--diff" ]; then
         rc=1
     done
     for u in "${UNITS[@]}"; do
-        render "$SRC/$u" > "$TMP/$u" || { rc=1; continue; }
-        if [ ! -f "$DEST/$u" ]; then echo "MISSING  $u (not installed)"; rc=1; continue; fi
-        if ! diff -q "$TMP/$u" "$DEST/$u" >/dev/null; then
-            echo "DIFFERS  $u"; diff -u "$TMP/$u" "$DEST/$u" | sed 's/^/    /'; rc=1
+        [ "$u" = "spira-watch@.service" ] && continue
+        inst="$(inst_name "$u")"
+        render "$SRC/$u" > "$TMP/$inst" || { rc=1; continue; }
+        if [ ! -f "$DEST/$inst" ]; then echo "MISSING  $inst (not installed)"; rc=1; continue; fi
+        if ! diff -q "$TMP/$inst" "$DEST/$inst" >/dev/null; then
+            echo "DIFFERS  $inst"; diff -u "$TMP/$inst" "$DEST/$inst" | sed 's/^/    /'; rc=1
+        fi
+    done
+    for _wname in "${_watch_names[@]}"; do
+        inst="$(inst_watch_name "$_wname")"
+        render "$SRC/spira-watch@.service" "$_wname" > "$TMP/$inst" || { rc=1; continue; }
+        if [ ! -f "$DEST/$inst" ]; then echo "MISSING  $inst (not installed)"; rc=1; continue; fi
+        if ! diff -q "$TMP/$inst" "$DEST/$inst" >/dev/null; then
+            echo "DIFFERS  $inst"; diff -u "$TMP/$inst" "$DEST/$inst" | sed 's/^/    /'; rc=1
         fi
     done
     [ "$rc" = 0 ] && echo "installed units match what this box renders"
@@ -176,13 +268,34 @@ mkdir -p "$DEST"
 # only conf.sh, and those fail on a path that does not exist yet. Install is the one act that
 # turns a clone into an installation, so it is where the directory is made.
 mkdir -p "$SPIRA_RUN"
-# AND THE WATCHERS' DIRECTORY. `spira-watch@.service` appends its stdout to a file in here,
-# and systemd opens that file BEFORE ExecStart — so a missing directory is not a watcher that
-# starts and complains, it is a unit that fails instantly with a message about a path.
+# AND THE WATCHERS' DIRECTORY. `spira-watch-<name>-<instance>.service` appends its stdout to
+# a file in here, and systemd opens that file BEFORE ExecStart — so a missing directory is not
+# a watcher that starts and complains, it is a unit that fails instantly with a message about
+# a path.
 mkdir -p "$SPIRA_RUN/watchd"
+
+# REFUSE IF THIS INSTANCE'S AEONS ARE LIVE. Scoped to the named instance so that installing
+# 'test' does not refuse because 'prod' aeons are running — isolation between instances is the
+# whole point of per-instance naming. Under per-instance naming, a prod aeon is
+# spira-aeon-*-prod.service and a test aeon is spira-aeon-*-test.service, so the pattern
+# below only matches aeons that belong to the instance being installed.
+if [ -z "${SPIRA_INSTALL_FORCE:-}" ]; then
+    live_aeons="$(systemctl --user list-units --state=active --no-legend \
+        "spira-aeon-*-${SPIRA_INSTANCE}.service" 2>/dev/null \
+        | tr -s ' \t' '\n\n' \
+        | grep -E "^spira-aeon-[^[:space:]]+-${SPIRA_INSTANCE}\.service$" | sort -u || true)"
+    if [ -n "$live_aeons" ]; then
+        printf 'install: refusing — live aeons for instance %s would be disrupted:\n' "$SPIRA_INSTANCE" >&2
+        printf '%s\n' "$live_aeons" | sed 's/^/    /' >&2
+        printf 'install: wait for them to finish, or set SPIRA_INSTALL_FORCE=1 to override.\n' >&2
+        exit 1
+    fi
+fi
 
 declare -A _CHANGED=()  # units whose rendered content differs from what is installed
 for u in "${UNITS[@]}"; do
+    [ "$u" = "spira-watch@.service" ] && continue
+    inst="$(inst_name "$u")"
     unit_text="$(render "$SRC/$u")" || { echo "install: $u FAILED" >&2; exit 1; }
     # REFUSE AN UNEXECUTABLE ExecStart TARGET before writing a single byte. The failure mode
     # this prevents is 203/EXEC: systemd accepts the unit, a timer reports 'active', and the
@@ -191,23 +304,51 @@ for u in "${UNITS[@]}"; do
     # System binaries (/usr/*, /bin/*, /sbin/*) are the OS's responsibility, not ours.
     while IFS= read -r line; do
         case "$line" in
-            ExecStart=*)
-                exec_path="${line#ExecStart=}"; exec_path="${exec_path%% *}"
-                case "$exec_path" in ''|/usr/*|/bin/*|/sbin/*) continue ;; esac
+            ExecStart=*|ExecStartPre=*)
+                exec_path="${line#*=}"; exec_path="${exec_path%% *}"
+                case "$exec_path" in ''|-*|/usr/*|/bin/*|/sbin/*) continue ;; esac
                 if [ ! -x "$exec_path" ]; then
                     printf 'install: %s: ExecStart target is not executable: %s\n' \
-                        "$u" "$exec_path" >&2
+                        "$inst" "$exec_path" >&2
                     exit 1
                 fi
                 ;;
         esac
     done <<< "$unit_text"
-    if [ ! -f "$DEST/$u" ] || ! cmp -s <(printf '%s\n' "$unit_text") "$DEST/$u"; then
-        _CHANGED[$u]=1
+    if [ ! -f "$DEST/$inst" ] || ! cmp -s <(printf '%s\n' "$unit_text") "$DEST/$inst"; then
+        _CHANGED[$inst]=1
     fi
-    printf '%s\n' "$unit_text" > "$DEST/$u.new"
-    mv "$DEST/$u.new" "$DEST/$u" && chmod 0644 "$DEST/$u" && echo "installed $u"
+    printf '%s\n' "$unit_text" > "$DEST/$inst.new"
+    mv "$DEST/$inst.new" "$DEST/$inst" && chmod 0644 "$DEST/$inst" && echo "installed $inst"
 done
+
+# WATCHER UNITS — one plain file per manifest row per instance. The template
+# (spira-watch@.service) is rendered with %i substituted for the watcher name, so the
+# installed file has no @-template syntax and systemd never instantiates it.
+for _wname in "${_watch_names[@]}"; do
+    inst="$(inst_watch_name "$_wname")"
+    unit_text="$(render "$SRC/spira-watch@.service" "$_wname")" \
+        || { echo "install: watcher $_wname FAILED" >&2; exit 1; }
+    while IFS= read -r line; do
+        case "$line" in
+            ExecStart=*)
+                exec_path="${line#ExecStart=}"; exec_path="${exec_path%% *}"
+                case "$exec_path" in ''|-*|/usr/*|/bin/*|/sbin/*) continue ;; esac
+                if [ ! -x "$exec_path" ]; then
+                    printf 'install: %s: ExecStart target is not executable: %s\n' \
+                        "$inst" "$exec_path" >&2
+                    exit 1
+                fi
+                ;;
+        esac
+    done <<< "$unit_text"
+    if [ ! -f "$DEST/$inst" ] || ! cmp -s <(printf '%s\n' "$unit_text") "$DEST/$inst"; then
+        _CHANGED[$inst]=1
+    fi
+    printf '%s\n' "$unit_text" > "$DEST/$inst.new"
+    mv "$DEST/$inst.new" "$DEST/$inst" && chmod 0644 "$DEST/$inst" && echo "installed $inst"
+done
+
 systemctl --user daemon-reload
 
 # Without lingering, user units stop when the last session closes — which is precisely the
@@ -294,23 +435,34 @@ fi
 # for what starts, and a watcher deleted from it goes on polling — and goes on being believed
 # — until somebody reads `systemctl` output they had no reason to read.
 #
-# The instance list is taken from BOTH unit-files (enabled) and units (loaded but perhaps
-# no longer enabled), and the name is picked out by pattern rather than by column, because
-# `list-units` prefixes a failed unit with a status glyph that shifts every column along.
-for u in $({ systemctl --user list-unit-files --no-legend 'spira-watch@*.service' 2>/dev/null
-             systemctl --user list-units --all --no-legend 'spira-watch@*.service' 2>/dev/null
-           } | tr -s ' \t' '\n\n' | grep -E '^spira-watch@[A-Za-z0-9_-]+\.service$' | sort -u); do
-    # SPACE-JOINED ABOVE, and that is the whole reason: matched against `units`' raw
-    # newline-separated output, every instance failed to find its own row and a second
-    # install disabled every watcher it had just enabled.
+# Keyed on the per-instance watcher pattern: spira-watch-*-<instance>.service. This means
+# a prune run for 'test' only disables 'test' watchers, not 'prod' watchers, which is the
+# isolation guarantee the per-instance naming provides. The old template pattern
+# (spira-watch@*.service) matches nothing under per-instance names and is gone.
+#
+# The instance name in the pattern is matched literally in the grep; no regex escaping is
+# needed as long as the instance name is [A-Za-z0-9_-] — which conf.sh enforces via the
+# SPIRA_INSTANCE default 'prod'.
+#
+# SPACE-JOINED ABOVE, and that is the whole reason: matched against `units`' raw
+# newline-separated output, every instance failed to find its own row and a second
+# install disabled every watcher it had just enabled.
+for u in $({ systemctl --user list-unit-files --no-legend \
+                 "spira-watch-*-${SPIRA_INSTANCE}.service" 2>/dev/null
+             systemctl --user list-units --all --no-legend \
+                 "spira-watch-*-${SPIRA_INSTANCE}.service" 2>/dev/null
+           } | tr -s ' \t' '\n\n' \
+             | grep -E "^spira-watch-[A-Za-z0-9_-]+-${SPIRA_INSTANCE}\.service$" | sort -u); do
     case "$watch_units" in *" $u "*) continue ;; esac
     systemctl --user disable --now "$u" >/dev/null 2>&1 && echo "disabled  $u (no row in the manifest)"
 done
 systemctl --user list-timers --all 2>/dev/null | grep -E 'cockpit|concierge|beads-push|spira' || true
 # Long-running services never appear above. Everything else on this list is worthless if
 # they are down.
-for u in spira-cockpit.service spira-loom.service ${SPIRA_DOLT_DATA:+dolt-beads.service}; do
-    printf '%-28s %s\n' "$u" "$(systemctl --user is-active "$u")"
+for u in "spira-cockpit-${SPIRA_INSTANCE}.service" \
+         "spira-loom-${SPIRA_INSTANCE}.service" \
+         ${SPIRA_DOLT_DATA:+dolt-beads.service}; do
+    printf '%-36s %s\n' "$u" "$(systemctl --user is-active "$u")"
 done
 
 # REPORT THE END STATE. A silent partial install is the defect: a unit enabled but not
