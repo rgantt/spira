@@ -191,7 +191,26 @@ if [ -z "${SPIRA_INSTALL_FORCE:-}" ]; then
 fi
 
 for u in "${UNITS[@]}"; do
-    render "$SRC/$u" > "$DEST/$u.new" || { rm -f "$DEST/$u.new"; echo "install: $u FAILED" >&2; exit 1; }
+    unit_text="$(render "$SRC/$u")" || { echo "install: $u FAILED" >&2; exit 1; }
+    # REFUSE AN UNEXECUTABLE ExecStart TARGET before writing a single byte. The failure mode
+    # this prevents is 203/EXEC: systemd accepts the unit, a timer reports 'active', and the
+    # service never runs. Every path is in hand at render time; an unresolved @KEY@ raises an
+    # error above, so what reaches this check is a fully-substituted path.
+    # System binaries (/usr/*, /bin/*, /sbin/*) are the OS's responsibility, not ours.
+    while IFS= read -r line; do
+        case "$line" in
+            ExecStart=*)
+                exec_path="${line#ExecStart=}"; exec_path="${exec_path%% *}"
+                case "$exec_path" in ''|/usr/*|/bin/*|/sbin/*) continue ;; esac
+                if [ ! -x "$exec_path" ]; then
+                    printf 'install: %s: ExecStart target is not executable: %s\n' \
+                        "$u" "$exec_path" >&2
+                    exit 1
+                fi
+                ;;
+        esac
+    done <<< "$unit_text"
+    printf '%s\n' "$unit_text" > "$DEST/$u.new"
     mv "$DEST/$u.new" "$DEST/$u" && chmod 0644 "$DEST/$u" && echo "installed $u"
 done
 systemctl --user daemon-reload

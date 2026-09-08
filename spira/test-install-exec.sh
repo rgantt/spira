@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+#
+# test-install-exec.sh — install.sh refuses to write a unit whose ExecStart target is
+# not executable, and conf.sh preserves an explicitly-empty SPIRA_PROD.
+#
+#   ./test-install-exec.sh
+#
+# PROPERTIES UNDER TEST
+# ---------------------
+# 1. EXEC FENCE: install.sh exits non-zero and names the path when an ExecStart target
+#    is absent or lacks +x. Nothing is written to DEST for that unit or any later one.
+# 2. CLEAN PASS: install.sh exits 0 when all ExecStart targets are executable.
+# 3. CONF EMPTY: conf.sh's no-colon := for SPIRA_PROD preserves an empty value rather
+#    than overriding it with the derived default (the colon form would have silently
+#    replaced SPIRA_PROD="" with a path from a layout that may not exist).
+#
+# defect: sp-82jo
+# covers: systemd/install.sh spira/conf.sh
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REAL_REPO="$(cd "$HERE/.." && pwd -P)"
+REAL_COCKPIT="$(cd "$HERE/../cockpit" && pwd -P)"
+pass=0; fail=0
+ok()      { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
+bad()     { fail=$((fail+1)); printf '  FAIL  %s: %s\n' "$1" "$2"; }
+want()    { [[ "$3" == *"$2"* ]] && ok "$1" || bad "$1" "wanted [$2] in [$3]"; }
+nowant()  { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3]"; }
+iszero()  { [ "$2" = 0 ] && ok "$1" || bad "$1" "wanted exit 0, got $2"; }
+nonzero() { [ "$2" != 0 ] && ok "$1" || bad "$1" "wanted non-zero exit, got 0"; }
+
+echo "test-install-exec.sh"
+
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+
+# ---------------------------------------------------------------------------
+# Fixture: minimal harness tree (same pattern as test-install-aeons.sh).
+# ---------------------------------------------------------------------------
+FIXTURE="$TMP/harness"
+mkdir -p "$FIXTURE/systemd" "$FIXTURE/spira"
+
+for f in "$HERE/../systemd/"*.service "$HERE/../systemd/"*.timer; do
+    [ -e "$f" ] || continue
+    ln -s "$f" "$FIXTURE/systemd/$(basename "$f")"
+done
+ln -s "$HERE/../systemd/install.sh" "$FIXTURE/systemd/install.sh"
+for f in conf.sh watchd.sh lib.sh; do
+    [ -e "$HERE/$f" ] && ln -s "$HERE/$f" "$FIXTURE/spira/$f"
+done
+printf '# empty\n' > "$FIXTURE/spira/watchers"
+printf '# empty\n' > "$FIXTURE/spira/repo-map.example"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FIXTURE/spira/install-session-hook.sh"
+chmod +x "$FIXTURE/spira/install-session-hook.sh"
+
+DEST="$TMP/home/.config/systemd/user"
+SPIRA_RUN_DIR="$TMP/run"
+MOCK_BIN="$TMP/mock-bin"
+mkdir -p "$DEST" "$SPIRA_RUN_DIR" "$MOCK_BIN"
+MOCK_LOG="$TMP/systemctl.log"
+
+cat > "$MOCK_BIN/systemctl" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${MOCK_LOG}"
+case "$*" in
+    *list-units*active*spira-aeon*) true ;;
+    *list-unit-files*spira-watch*) printf 'spira-watch@testview.service enabled\n' ;;
+    *list-units*spira-watch*) printf 'spira-watch@testview.service loaded active running\n' ;;
+    *is-active*) printf 'active\n' ;;
+    *list-timers*) true ;;
+esac
+exit 0
+MOCK
+chmod +x "$MOCK_BIN/systemctl"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCK_BIN/loginctl"
+chmod +x "$MOCK_BIN/loginctl"
+
+# inst [args] — run install.sh in a controlled environment.
+# TEST_PROD overrides SPIRA_PROD for the scenario under test; default is $HERE (all
+# ExecStart targets exist and are executable there).
+inst() {
+    > "$MOCK_LOG"
+    env -i \
+        "PATH=$PATH" \
+        "HOME=$TMP/home" \
+        SPIRA_CONF=/nonexistent \
+        "SPIRA_PATH=$MOCK_BIN" \
+        "SPIRA_WATCHERS=$FIXTURE/spira/watchers" \
+        SPIRA_DOLT_DATA= SPIRA_TESTDB_DATA= \
+        "SPIRA_RUN=$SPIRA_RUN_DIR" \
+        "SPIRA_HOME=$HERE" \
+        "SPIRA_PROD=${TEST_PROD:-$HERE}" \
+        "SPIRA_REPO=$REAL_REPO" \
+        "SPIRA_COCKPIT=$REAL_COCKPIT" \
+        "MOCK_LOG=$MOCK_LOG" \
+        bash "$FIXTURE/systemd/install.sh" "$@" 2>&1
+}
+
+# Seed DEST with pre-rendered units so --diff comparisons work and the install
+# loop has existing files to replace rather than encountering missing targets.
+rendered="$(inst --render)"; render_rc=$?
+if [ "$render_rc" != 0 ]; then
+    printf 'fixture: install.sh --render failed (rc=%s) — cannot continue\n' "$render_rc"
+    printf '%s\n' "$rendered"
+    exit 1
+fi
+current_unit=""
+while IFS= read -r line; do
+    if [[ "$line" =~ ^=====\ (.+)\ =====$ ]]; then
+        current_unit="${BASH_REMATCH[1]}"; > "$DEST/$current_unit"
+    elif [ -n "$current_unit" ]; then
+        printf '%s\n' "$line" >> "$DEST/$current_unit"
+    fi
+done <<< "$rendered"
+
+# ==========================================================================
+echo
+echo "CLEAN INSTALL — ExecStart targets exist and are executable:"
+# ==========================================================================
+
+clean_out="$(inst)"
+clean_rc=$?
+iszero  "clean: exit 0 when all ExecStart targets are executable" "$clean_rc"
+nowant  "clean: no 'not executable' in output" "not executable" "$clean_out"
+
+# ==========================================================================
+echo
+echo "MISSING PROD — SPIRA_PROD points at a non-existent directory:"
+# ==========================================================================
+
+TEST_PROD="/no/such/spira/directory" \
+missing_out="$(TEST_PROD="/no/such/spira/directory" inst)"
+missing_rc=$?
+nonzero "missing: exit non-zero when ExecStart target does not exist" "$missing_rc"
+want    "missing: output names the bad path" "/no/such/spira/directory" "$missing_out"
+want    "missing: output says 'not executable'" "not executable" "$missing_out"
+want    "missing: output names install as the reporter" "install:" "$missing_out"
+
+# ==========================================================================
+echo
+echo "NON-EXECUTABLE TARGET — target exists but lacks +x:"
+# ==========================================================================
+
+# Build a prod directory with scripts that exist but are not executable.
+NOEXEC="$TMP/noexec-prod"
+mkdir -p "$NOEXEC"
+for s in aeon.sh archive.sh archivist.sh cockpit.sh loom.sh sentinel.sh \
+         skew.sh suites.sh watchd.sh watchtower.sh; do
+    printf '#!/usr/bin/env bash\ntrue\n' > "$NOEXEC/$s"
+    # Deliberately NOT chmod +x
+done
+
+TEST_PROD="$NOEXEC" \
+noexec_out="$(TEST_PROD="$NOEXEC" inst)"
+noexec_rc=$?
+nonzero "noexec: exit non-zero when ExecStart target exists but lacks +x" "$noexec_rc"
+want    "noexec: output names the non-executable script path" "$NOEXEC" "$noexec_out"
+want    "noexec: output says 'not executable'" "not executable" "$noexec_out"
+
+# ==========================================================================
+echo
+echo "CONF EMPTY — SPIRA_PROD= (empty) is preserved, not replaced by default:"
+# ==========================================================================
+
+# Source conf.sh in an environment where SPIRA_PROD is explicitly empty.
+# With no-colon =, an empty value is kept; with := it would be overwritten.
+conf_result="$(
+    env -i \
+        "PATH=$PATH" \
+        "HOME=$TMP/home" \
+        SPIRA_CONF=/nonexistent \
+        SPIRA_PROD= \
+        bash -c '. '"$HERE/conf.sh"'; printf "%s" "${SPIRA_PROD:-__EMPTY__}"' 2>/dev/null
+)"
+# If the fix works, SPIRA_PROD stays empty and we get __EMPTY__.
+# If := is still there, we get the derived path (non-empty string, not __EMPTY__).
+is_empty=""
+[ "$conf_result" = "__EMPTY__" ] && is_empty=1
+[ -n "$is_empty" ] && ok "conf empty: SPIRA_PROD= preserved as empty (no-colon form)" \
+                  || bad "conf empty: SPIRA_PROD= was overridden by derived default: [$conf_result]"
+
+# ==========================================================================
+echo
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" = 0 ]

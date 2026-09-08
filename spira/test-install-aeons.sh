@@ -22,6 +22,8 @@
 # covers: systemd/install.sh spira/skew.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REAL_REPO="$(cd "$HERE/.." && pwd -P)"
+REAL_COCKPIT="$(cd "$HERE/../cockpit" && pwd -P)"
 pass=0; fail=0
 ok()     { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
 bad()    { fail=$((fail+1)); printf '  FAIL  %s: %s\n' "$1" "$2"; }
@@ -117,6 +119,10 @@ inst() {
         SPIRA_DOLT_DATA= \
         SPIRA_TESTDB_DATA= \
         "SPIRA_RUN=$SPIRA_RUN_DIR" \
+        "SPIRA_HOME=$HERE" \
+        "SPIRA_PROD=$HERE" \
+        "SPIRA_REPO=$REAL_REPO" \
+        "SPIRA_COCKPIT=$REAL_COCKPIT" \
         "MOCK_LOG=$MOCK_LOG" \
         "MOCK_AEONS=${MOCK_AEONS:-}" \
         "MOCK_IS_ACTIVE=${MOCK_IS_ACTIVE:-active}" \

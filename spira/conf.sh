@@ -646,10 +646,12 @@ spira_conf_defaults() {
     # the development checkout (SPIRA_REPO) does not alter production until promote.sh carries
     # it here. The default derives from the development checkout's location: append "-prod" to
     # the repo name and land in the same parent directory, keeping the same harness subdir name.
-    # A colleague whose prod checkout lives elsewhere sets this key; an empty value disables the
-    # split and everything runs from the development checkout (the old behaviour, which is the
-    # default for a fresh clone that has no prod checkout yet).
-    : "${SPIRA_PROD:=$SPIRA_WORKSPACES/${SPIRA_HOME_REPO}-prod/$(basename "$SPIRA_HOME")}"
+    # A colleague whose prod checkout lives elsewhere sets this key. A fresh clone has no prod
+    # checkout, so the default resolves to a path that does not exist; install.sh will refuse
+    # on the ExecStart fence — set SPIRA_PROD explicitly or create the checkout.
+    # NO-COLON FORM: := fills on unset OR empty, so SPIRA_PROD= in spira.conf would have been
+    # silently replaced by the derived default, making "I want no split" unexpressible.
+    : "${SPIRA_PROD=$SPIRA_WORKSPACES/${SPIRA_HOME_REPO}-prod/$(basename "$SPIRA_HOME")}"
 
     # ---- THE REVIEWER: ADVERSARIAL REVIEW AT THE RELEASE-UNIT BOUNDARY -------------------
     # THE MODEL IS STRONG BY DESIGN. The reviewer looks for intent violations, cross-commit
