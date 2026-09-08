@@ -743,8 +743,12 @@ recent_row() {          # recent_row "<age> <actor> <verb> <bead> <title>" <inde
     # THE VERB IS PADDED, like the age and the persona either side of it. Unpadded, the
     # columns after it began wherever the verb happened to end — `ended` to `reclaimed` is
     # five columns of drift in the one section whose purpose is to be scanned straight down.
-    # Nine is the longest verb the collector emits; a longer one widens its own row rather
-    # than being cut, so the arithmetic below takes whichever is greater. Same for the
+    # Nine covers every verb the sentinel logs and the common aeon outcomes. It is NOT the
+    # longest string that can land here — an aeon that dies on `unmapped-repo` writes its
+    # thirteen-character status as the verb — and such a row widens itself rather than being
+    # cut, so the arithmetic below takes whichever is greater. Padding to thirteen would
+    # spend four columns on every row for a state that is a defect when it appears, and a
+    # row that breaks the column is a fair way for a defect to announce itself. Same for the
     # persona: eight covers sentinel, overseer and every fayth name in the chamber.
     vw=${#verb};  if [ "$vw" -lt 9 ]; then vw=9; fi
     pw=${#actor}; if [ "$pw" -lt 8 ]; then pw=8; fi
