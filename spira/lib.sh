@@ -39,6 +39,9 @@ bdq() {
     # A bad label is refused here, before bd is called, so no bead is created and no summon
     # is wasted reaching the summon-time unmapped-repo fence (law-bake-rules-into-tools).
     [ "${1:-}" = create ] && { _bdq_check_repo_label "$@" || return 1; }
+    # Refuse a bead whose title or description contains vocabulary that halts the harness,
+    # unless needs-ryan is already on it — which is the label that makes such a bead correct.
+    [ "${1:-}" = create ] && { _bdq_check_destructive "$@" || return 1; }
     timeout "${BD_TIMEOUT:-180}" "${SPIRA_BD:-bd}" -C "$SPIRA_DB" "$@"
 }
 
@@ -63,6 +66,71 @@ _bdq_check_repo_label() {   # _bdq_check_repo_label <create-args> -> 0 or refuse
         return 1
     fi
     return 0
+}
+
+_bdq_check_destructive() {  # _bdq_check_destructive <create-args> -> 0 or refuse
+    # Refuse a bead whose title or description names a procedure that halts the harness —
+    # world.sh stop, spira-world down, systemd/install.sh, daemon-reload, systemctl
+    # stop/restart of a spira-* unit, schema migrations, or the phrase "world stopped" —
+    # unless needs-ryan is already on the bead, which is what makes such a bead correct.
+    #
+    # THE SCAR THIS CLOSES. sp-6ylz had "needs the world stopped" in its own title and was
+    # dispatchable anyway. An aeon ran world.sh stop from step 2 and killed the sentinel
+    # timer, the ops timer, both watchers, and three live aeons including itself. The filer
+    # had written the danger into the title and still filed it dispatchable; a rule that
+    # requires remembering at file time is a resolution, not a mechanism. (sp-6hdi)
+    local arg next="" labels="" title="" desc="" saw_create=0 positioned=0
+    for arg in "$@"; do
+        if [ -n "$next" ]; then
+            case "$next" in
+                labels)      labels="$arg" ;;
+                title)       title="$arg"; positioned=1 ;;
+                description) desc="$arg" ;;
+            esac
+            next=""; continue
+        fi
+        case "$arg" in
+            --labels|-l)       next=labels ;;
+            --labels=*)        labels="${arg#--labels=}" ;;
+            --title)           next=title ;;
+            --title=*)         title="${arg#--title=}"; positioned=1 ;;
+            -d|--description)  next=description ;;
+            --description=*)   desc="${arg#--description=}" ;;
+            -*)                ;;
+            *)
+                if [ "$saw_create" = 0 ]; then saw_create=1  # skip "create"
+                elif [ "$positioned" = 0 ]; then title="$arg"; positioned=1
+                fi ;;
+        esac
+    done
+
+    # needs-ryan is the label that makes a halting bead correct — if it is already there,
+    # the filer has already acknowledged the danger.
+    printf '%s\n' "$labels" | tr ',' '\n' | grep -qxF "needs-ryan" && return 0
+
+    local text="$title $desc"
+    [ -z "${text# }" ] && return 0
+
+    # Each pattern is a case-insensitive ERE covering one class of halting procedure.
+    local patterns=(
+        'world\.sh +stop'
+        'spira-world +down'
+        'systemd/install\.sh'
+        '\bdaemon-reload\b'
+        'systemctl +(stop|restart) +spira-'
+        'schema +migrat'
+        'world +stopped'
+    )
+    local matched="" p
+    for p in "${patterns[@]}"; do
+        matched="$(printf '%s\n' "$text" | grep -ioE "$p" | head -1)" && [ -n "$matched" ] && break
+        matched=""
+    done
+    [ -z "$matched" ] && return 0
+
+    printf 'spira: bead contains "%s" — procedures that halt the harness require needs-ryan.\nAdd needs-ryan to --labels, or reword to remove the destructive step.\n' \
+        "$matched" >&2
+    return 1
 }
 
 # `gh` gets the same treatment and for the same reason. The pull-request landing path is the
