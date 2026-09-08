@@ -51,6 +51,14 @@ LABELS="${SPIRA_INCIDENT_LABELS:-spira,incident}"
 SPOOL="${SPIRA_SPOOL:-$SPIRA_RUN/incident-spool}"
 ILOG="${SPIRA_INCIDENT_LOG:-$SPIRA_RUN/incident.log}"
 SIN_AT="${SPIRA_SIN_AT:-5}"
+# A CALLER MAY DECLARE ITSELF EXEMPT FROM THE SIN ESCALATION. The recurrence counter and the
+# notes still increment — the signal stays where it belongs, on the bead and in the ops pane —
+# but the counter cannot cross the SIN threshold and page the operator. The watchtower sweep
+# is the canonical case: it fires on a ten-minute timer, so N counts intervals in which nobody
+# closed a routine health report, not unremediated failures. Fifty minutes of quiet is five
+# recurrences and a page, and closing the bead re-arms the cycle. $18/day of aeon cost to
+# re-derive "the pipeline is fine" (measured sp-kufh).
+SIN_EXEMPT="${SPIRA_SIN_EXEMPT:-0}"
 ASK="${SPIRA_ASK:-$SPIRA_NOTIFY}"
 mkdir -p "$SPOOL" "$(dirname "$ILOG")"
 
@@ -105,7 +113,12 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
         ilog "$ref recurred ($n) — $id"
         # A Sin: it keeps coming back because nothing has broken the cycle. Escalated once,
         # on the crossing, never again — a second page buries the first.
-        if [ "$n" -ge "$SIN_AT" ] && ! bdq label list "$id" 2>/dev/null | grep -q '\bsin\b'; then
+        # AN EXEMPT REF NEVER REACHES THIS BLOCK. The recurrence counter and the notes have
+        # already been written above, so the signal is preserved; what is removed is its ability
+        # to raise an ask against the operator. The log still says the threshold was crossed.
+        if [ "$SIN_EXEMPT" = 1 ] && [ "$n" -ge "$SIN_AT" ]; then
+            ilog "$ref crossed SIN_AT=$SIN_AT ($n recurrences) but is exempt — no escalation"
+        elif [ "$n" -ge "$SIN_AT" ] && ! bdq label list "$id" 2>/dev/null | grep -q '\bsin\b'; then
             bdq label add "$id" sin >/dev/null 2>&1
             # THE ASK IS BUILT FROM THE BEAD, NEVER FROM $ref. $ref is a dedupe slug
             # ("incident:Spira-sweep-----is-the-pipeline-moving-"), so an ask titled with it

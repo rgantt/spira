@@ -340,6 +340,7 @@ INC="$(dirname "$0")/incident.sh"
 snapshot | SPIRA_INCIDENT_TYPE=chore \
 SPIRA_INCIDENT_PRIORITY=2 \
 SPIRA_INCIDENT_ACTOR=watchtower \
+SPIRA_SIN_EXEMPT=1 \
 bash "$INC" file "Spira sweep — is the pipeline moving?" - >/dev/null || {
     log "watchtower: could not file the sweep"; exit 1; }
 log "watchtower: swept — ${since_land}m since the last landing, $(g SP_UNLANDED) unlanded, ${aeons_live} aeons"
