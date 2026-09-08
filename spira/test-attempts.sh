@@ -369,6 +369,47 @@ case "$out" in *"nothing to reclassify"*) ok "a second sweep finds nothing" ;;
                *) bad "a second sweep finds nothing" "got [$out]" ;; esac
 
 echo
+echo "prune-reclaims — strip ghost-storm unrecorded reclaim labels:"
+
+# The five beads that accumulated unrecorded reclaims from the 2026-09-06 429 storm are all
+# closed; this test uses an open bead to exercise the same code path through the real bd.
+seed sp-p1
+bump_reclaim sp-p1 unrecorded >/dev/null; bump_reclaim sp-p1 unrecorded >/dev/null
+bump_reclaim sp-p1 ghost >/dev/null       # a named-cause rung — must survive pruning
+is "pre-prune: 3 reclaims total"  3 "$(num "$(reclaims_of sp-p1)")"
+is "pre-prune: reclaims are 1 unrecorded, 2 unrecorded, 3 ghost" \
+   "1 unrecorded
+2 unrecorded
+3 ghost" "$(counter_causes sp-p1 sp-reclaim)"
+
+"$ATT" prune-reclaims sp-p1 >/dev/null 2>&1
+is "a dry run removes nothing"    3 "$(num "$(reclaims_of sp-p1)")"
+
+"$ATT" prune-reclaims sp-p1 --apply >/dev/null 2>&1
+# The named-cause rung stays; only the unrecorded ones come off. The rung does NOT get
+# renumbered — unlike the attempt counter (where position is what the poison threshold reads),
+# the reclaim counter is diagnostic only, and leaving the ghost at rung 3 is the faithful record.
+is "named-cause rung survives at its original position" "3 ghost" "$(counter_causes sp-p1 sp-reclaim)"
+# counter_of reads the maximum N; the remaining label is sp-reclaim-3-ghost, so it reads 3.
+is "counter reflects the surviving rung"                3 "$(num "$(reclaims_of sp-p1)")"
+
+# IDEMPOTENT: a second apply on a clean bead prints "nothing to prune".
+out="$("$ATT" prune-reclaims sp-p1 --apply 2>&1)"
+case "$out" in *"nothing to prune"*) ok "idempotent: a second sweep finds nothing" ;;
+               *) bad "idempotent: a second sweep finds nothing" "got [$out]" ;; esac
+
+# POSITIVE CONTROL: a bead with no unrecorded reclaims is skipped.
+seed sp-p2
+bump_reclaim sp-p2 ghost >/dev/null
+out="$("$ATT" prune-reclaims sp-p2 --apply 2>&1)"
+case "$out" in *"nothing to prune"*) ok "a bead with only named reclaims is skipped" ;;
+               *) bad "a bead with only named reclaims is skipped" "got [$out]" ;; esac
+
+# NO IDs = error, not a sweep.
+if "$ATT" prune-reclaims 2>/dev/null; then r=0; else r=1; fi
+is "prune-reclaims with no args exits non-zero" 1 "$r"
+
+echo
 echo "the release (real bd):"
 
 # THE DISCRIMINATING FACT, seen both ways. The claim records BEADS_ACTOR; the teardown must

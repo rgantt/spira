@@ -126,6 +126,48 @@ reclassify)
     [ "$APPLY" = 1 ] || printf -- '--- dry run; pass --apply to make these changes\n'
     ;;
 
+prune-reclaims)
+    # Strip sp-reclaim-N-unrecorded labels from named beads. These accumulate when sessions die
+    # within seconds — before they can record their own exit — and strand.sh ghost-reclaims
+    # them. The reclaim counter is diagnostic and feeds nothing that stops a bead being worked,
+    # but dozens of unrecorded rungs make bd show and label views unreadable and cause any
+    # logic that counts reclaims to flag the bead as troubled.
+    #
+    # Pass bead IDs as arguments. With no arguments the command prints usage and exits: the
+    # cleanup is targeted rather than a sweep, because this tool must not strip a named-cause
+    # rung by accident. DO NOT pass --all to work around this; the distinction exists so a
+    # future caller who gets the flag wrong cannot silently destroy the reclaim record.
+    #
+    # DO NOT touch sp-reclaim-N labels without the unrecorded suffix: those carry a named
+    # cause (ghost, killed, etc.) and record real information about the worker.
+    ids=()
+    for a in "$@"; do [ "$a" != "--apply" ] && ids+=("$a"); done
+    if [ "${#ids[@]}" -eq 0 ]; then
+        die "usage: attempts.sh prune-reclaims <id> [<id>...] [--apply]"
+    fi
+    n=0
+    for id in "${ids[@]}"; do
+        # Read all labels, capture before matching — piping into grep -q closes the pipe early
+        # and SIGPIPEs the writer under pipefail (law-no-grep-q-under-pipefail).
+        all="$(bdq label list "$id" 2>/dev/null | sed -n 's/^ *- //p')" || all=""
+        mapfile -t to_remove < <(grep -xE 'sp-reclaim-[0-9]+-unrecorded' <<<"$all" || true)
+        count="${#to_remove[@]}"
+        [ "$count" -gt 0 ] || continue
+        n=$((n+1))
+        if [ "$APPLY" != 1 ]; then
+            printf 'would prune %-20s %s sp-reclaim-N-unrecorded label(s)\n' "$id" "$count"
+            continue
+        fi
+        for lbl in "${to_remove[@]}"; do
+            bdq label remove "$id" "$lbl" >/dev/null 2>&1
+        done
+        bdq note "$id" "Stripped $count sp-reclaim-N-unrecorded label(s). Each was written by a ghost-reclaim when an aeon session was terminated by rate-limiting in under ten seconds, before it could record its own exit; they describe infrastructure noise, not the work. The reclaim counter feeds nothing that stops a bead being worked, but at this count it made bd show and label views unreadable and caused reclaim-counting logic to flag the bead as troubled. sp-39c." >/dev/null 2>&1
+        printf 'PRUNED %-20s %s sp-reclaim-N-unrecorded label(s) removed\n' "$id" "$count"
+    done
+    [ "$n" = 0 ] && printf 'nothing to prune — no named beads carry sp-reclaim-N-unrecorded labels\n'
+    [ "$APPLY" = 1 ] || printf -- '--- dry run; pass --apply to remove these labels\n'
+    ;;
+
 deadlocked)
     # THE PREDICATE IS THE COMMIT GRAPH, NOT THE COUNTER. Beads damaged before a rung carried
     # its cause have nothing in their counts saying why they were charged, so a sweep reasoning
@@ -189,5 +231,5 @@ deadlocked)
     [ "$APPLY" = 1 ] || printf -- '--- dry run; pass --apply to lift these\n'
     ;;
 
-*) die "usage: attempts.sh audit | reclassify [--apply] | deadlocked [--apply]" ;;
+*) die "usage: attempts.sh audit | reclassify [--apply] | prune-reclaims <id>... [--apply] | deadlocked [--apply]" ;;
 esac
