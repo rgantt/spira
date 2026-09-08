@@ -667,7 +667,7 @@ pri_colour() {          # pri_colour P0 -> the escape for that priority
 verb_colour() {
     case "$1" in
         landed|finished|announced)      printf '%s' "$C_OK" ;;
-        reopened|poisoned|slain|reaped) printf '%s' "$C_BAD" ;;
+        reopened|poisoned|slain|sent)   printf '%s' "$C_BAD" ;;
         in_progress|ended|reclaimed)    printf '%s' "$C_WARN" ;;
         claimed)                        printf '%s' "$C_ACC" ;;
         *)                              printf '%s' "$C_DIM" ;;
@@ -729,12 +729,11 @@ recent_row() {          # recent_row "<age> <actor> <partition> <verb> <bead> <t
         printf '%s%s%s\n' "$C_DIM" "$FIT" "$C_RST"; return
     fi
     # THE FIFTH FIELD IS NOT ALWAYS A BEAD. Some sentinel ACTs are AGGREGATES over a pass —
-    # "reaped 1 landed branch(es)", "escalated 3 stranded item(s)", "announced and ..." —
-    # where the word after the verb is a COUNT or a preposition. Dropped into the id column
-    # it wore the same accent colour every real id wears, so "reaped 1" read as a bead named
-    # `1` and the operator went looking for it. A bead reference is an `sp-` id, optionally
-    # carrying its branch prefix (`spira/sp-d0c2`); anything else is prose, and prose is
-    # printed as prose across the id and title columns rather than being cut in half by them.
+    # "escalated 3 stranded item(s)", "announced and ..." — where the word after the verb is a
+    # COUNT or a preposition. Dropped into the id column it wore the same accent colour every
+    # real id wears. A bead reference is an `sp-` id, optionally carrying its branch prefix
+    # (`spira/sp-d0c2`); anything else is prose, and prose is printed as prose across the id
+    # and title columns rather than being cut in half by them.
     if [[ ! "$id" =~ (^|/)sp-[A-Za-z0-9._-]+$ ]]; then
         rest="$id${rest:+ $rest}"
         vw=${#verb}; if [ "$vw" -lt 9 ]; then vw=9; fi

@@ -188,10 +188,10 @@ def ledger_metrics(lines, since):
 
 
 def sending_metrics(lines, since):
-    """The Sending: work reaped, work refused, and work that would not go.
+    """The Sending: work sent, work refused, and work that would not go.
 
-    The refusals are the point. Reaping a branch is routine; DECLINING to reap one a live
-    aeon still holds is the check that stops the reaper destroying work in flight, and
+    The refusals are the point. Sending a branch is routine; DECLINING to send one a live
+    aeon still holds is the check that stops the Sending destroying work in flight, and
     KEEPing one that is closed but not yet an ancestor of main is the check that stops a
     bead's word being taken over the commit graph. FAILED is the fiend precursor: before
     sending.sh existed, a branch left behind by its aeon could not be deleted (git refuses
@@ -222,7 +222,7 @@ def sending_metrics(lines, since):
         if cur is None or cur < since:
             continue
         t = line.strip()
-        if t.startswith("REAPED"):
+        if t.startswith("SENT"):
             parts = t.split()
             if len(parts) > 1: sent_ids.add(parts[1])
         elif t.startswith("HELD"):

@@ -39,7 +39,7 @@ POISON_AT="${SPIRA_POISON_AT:-3}"
 FAYTHS="$(spira_fayths)"
 # THE PARTITIONS THIS PASS SWEEPS, read from the chamber once. Every check below that asks
 # the database a question about "the work" asks it once per partition: naming one of them —
-# `spira,plan`, the builder's — is how reaping, stalled-work reporting and landing
+# `spira,plan`, the builder's — is how the Sending, stalled-work reporting and landing
 # verification came to watch a single persona while reading as if they watched the harness.
 PARTITIONS="$(fayth_partitions)"
 COOLDOWN="$SPIRA_RUN/inference.cooldown"
@@ -333,7 +333,7 @@ while IFS=$'\t' read -r id r_name superseded dropped; do
     [ -f "$SPIRA_RUN/$id.log" ] || continue
     # A SUPERSEDED BEAD WILL NEVER HAVE A COMMIT NAMING IT, and that is correct: its work
     # was carried onto the successor's branch and lands under the successor's name. Without
-    # this, two checks fought each other — the Sending reaped the branch, and this check
+    # this, two checks fought each other — the Sending sent the branch, and this check
     # then read the missing branch as work lost and reopened a bead that was deliberately
     # retired. `bd supersede` records the relation as a `supersedes` dependency; read it
     # rather than inventing a label for something the database already models.
@@ -592,37 +592,37 @@ fi
 land_drain
 
 # ======================================================================================
-# CHECK 6b — the Sending. Reap the branch and worktree of every bead whose work is now an
+# CHECK 6b — the Sending. Send the branch and worktree of every bead whose work is now an
 # ancestor of its repository's base.
 #
 # THIS STILL RUNS INSIDE THE PASS, and it may run while a landing is in flight. That is safe
-# by the same predicate that makes the two separate checks: the Sending reaps only branches
+# by the same predicate that makes the two separate checks: the Sending sends only branches
 # ALREADY an ancestor of the base, and those are exactly the branches landing.sh skips, so
 # the two never hold the same ref. The one interleaving that looks alarming — landing pushes
-# a branch and this reaps it in the same minute — is the intended path arriving a pass early.
+# a branch and this sends it in the same minute — is the intended path arriving a pass early.
 #
 # This is `gt convoy land`'s worktree cleanup, scoped to branches,
 # and it is a separate check from CHECK 6 on purpose: a branch also arrives at "landed" by
-# a hand merge, by an earlier pass whose reap was interrupted, or by a reap that a locked
+# a hand merge, by an earlier pass whose send was interrupted, or by a send that a locked
 # worktree refused, and a cleanup that only ever runs on the success path of one code path
 # leaks everywhere else. sending.sh judges by ancestry alone, never by bead status, so it
 # cannot be talked into deleting work by a database that is merely optimistic.
 # ======================================================================================
 sent="$("$SPIRA_HOME/sending.sh" 2>&1)"
 [ -n "$sent" ] && printf '%s\n' "$sent"
-n_reaped="$(grep -c '^REAPED' <<< "$sent" || true)"
-# ONE ACT PER BRANCH, NAMING IT, rather than one act carrying a count. "reaped 2 landed
+n_sent="$(grep -c '^SENT' <<< "$sent" || true)"
+# ONE ACT PER BRANCH, NAMING IT, rather than one act carrying a count. "sent 2 landed
 # branch(es)" told the pane that something had been cleaned up and withheld the only part a
 # reader can act on — WHICH branch, in WHICH repository. Two of these a pass is two rows, and
 # RECENT now has the height for them; a count is what a section with five rows had to settle
 # for. The id is last so the title lookup in the collector still finds it.
-if [ "${n_reaped:-0}" -gt 0 ]; then
+if [ "${n_sent:-0}" -gt 0 ]; then
     while read -r _ rid rrepo rbr _; do
         [ -n "${rbr:-}" ] || continue
-        act "reaped $rrepo $rbr $rid"
-    done < <(grep '^REAPED' <<< "$sent")
+        act "sent $rrepo $rbr $rid"
+    done < <(grep '^SENT' <<< "$sent")
 fi
-# A FAILED reap is a leak that will repeat every pass, so it is worth a line in the log —
+# A FAILED send is a leak that will repeat every pass, so it is worth a line in the log —
 # but it is NOT an action, because counting a failure as an action is precisely how the
 # starvation check was blinded in the first place.
 grep -q '^FAILED' <<< "$sent" && log "sending reported a branch it could not delete"

@@ -216,7 +216,7 @@ find "${SPIRA_VERDICTS:-$SPIRA_RUN/verdicts}" -maxdepth 1 -type f \
 #
 # ONE FILE PER BEAD, holding the last transition and the commit it was about:
 #
-#   DONE -> GATED -> REBASED -> LANDED -> REAPED
+#   DONE -> GATED -> REBASED -> LANDED -> SENT
 #                 \-> RED      the branch's own failure; reopened ONCE
 #                 \-> BLOCKED  needs the operator; never silently retried
 #

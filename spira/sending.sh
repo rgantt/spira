@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# sending.sh — the Sending: send finished work out properly. Reap the branch and the
+# sending.sh — the Sending: send finished work out properly. Delete the branch and the
 # worktree of every bead whose work has landed, and nothing else.
 #
-#   sending.sh                     one reaping pass (what the sentinel runs)
+#   sending.sh                     one sending pass (what the sentinel runs)
 #   sending.sh --dry-run           print each branch's disposition, change nothing
-#   sending.sh <bead-id>           reap exactly one bead's branch and worktree
+#   sending.sh <bead-id>           send exactly one bead's branch and worktree
 #   sending.sh --status-from <f>   read `id<TAB>status` from a file instead of bd (tests)
 #
 # WHAT THIS REPLACES
@@ -56,7 +56,7 @@
 #
 # The second reading is what a squashing repository needs, and it is not a relaxation. A
 # squash lands the diff as one new commit the branch is not in the history of, so ancestry
-# alone keeps that branch forever; and a branch that is never reaped is re-examined on every
+# alone keeps that branch forever; and a branch that is never sent is re-examined on every
 # pass, where the landing worker's rebase conflicts against changes already on the base and
 # reopens the finished bead. Nothing about that repeats differently, so it repeats until
 # someone deletes the ref by hand.
@@ -73,7 +73,7 @@ set -uo pipefail
 # repository by the sweep below; nothing here may read it before then.
 WORKTREES="$SPIRA_RUN/worktree"
 REPO=""
-# THE REPOSITORY'S NAME, ALONGSIDE ITS PATH. A REAPED line names a branch, and a branch name
+# THE REPOSITORY'S NAME, ALONGSIDE ITS PATH. A SENT line names a branch, and a branch name
 # alone is ambiguous across a harness that manages seven repositories: `spira/sp-mebw` exists
 # in exactly one of them, but nothing in the string says which, and the reader of the pane is
 # being asked to go and look. Set beside REPO in sweep_repo so the two cannot disagree.
@@ -106,22 +106,22 @@ say() { printf '%s\n' "$*"; }
 [ -n "$STATUS_FROM" ] && spira_status_seam "$STATUS_FROM"
 
 
-reaped=0; failed=0
+sent=0; failed=0
 LANDREF=""
 
 # --------------------------------------------------------------------------------------
-# reap <id> <branch> — remove the worktree, then the branch, then the remote branch, then
-# verify. Order matters: the branch cannot be deleted while a worktree holds it, which is
-# the entire bug this file exists for.
+# send_branch <id> <branch> — remove the worktree, then the branch, then the remote branch,
+# then verify. Order matters: the branch cannot be deleted while a worktree holds it, which
+# is the entire bug this file exists for.
 # --------------------------------------------------------------------------------------
-reap() {
+send_branch() {
     local id="$1" br="$2" w held
     # Re-check liveness immediately before acting. The sentinel summons aeons in the same
     # pass that lands branches, so the gap between deciding and doing is a real window. Both
     # witnesses again, not just the pidfile: this recheck used to ask only `holder_alive`,
     # which is the witness with the documented blind spot.
     if held="$(spira_holder_witnesses "$id")"; then
-        say "HELD   $id  $held (mid-reap)"; return 0
+        say "HELD   $id  $held (mid-send)"; return 0
     fi
 
     w="$(worktree_of "$br" "$REPO")"
@@ -161,8 +161,8 @@ reap() {
     # .runtime/spira/<id>.log to tell a bead an aeon worked from one a human closed by hand,
     # so deleting it here would silently disable the closed-but-not-landed check for exactly
     # the beads that check exists for.
-    reaped=$((reaped+1))
-    say "REAPED $id  $REPONAME $br"
+    sent=$((sent+1))
+    say "SENT $id  $REPONAME $br"
 }
 
 # ======================================================================================
@@ -216,7 +216,7 @@ sweep_repo() {
         # ANCESTRY, THEN CONTENT. A squashing repository lands the work as one new commit
         # the branch is not in the history of, so ancestry alone answers "unlanded" forever
         # about a branch whose changes are all on the base — and a branch that is never
-        # reaped is re-examined on every pass, which is how one merged bead was reopened
+        # sent is re-examined on every pass, which is how one merged bead was reopened
         # three times in thirteen minutes. content_landed asks whether merging this branch
         # would change anything; it is exact, local, and answers NO on a conflict, so it can
         # never authorise deleting a ref that still carries work.
@@ -239,24 +239,24 @@ if not d: sys.exit(1)
 sys.exit(0 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
                   for x in (d[0].get("dependencies") or [])) else 1)' 2>/dev/null; then
                 if [ "$DRY" = 1 ]; then
-                    say "WOULD  $id  reap superseded branch $br$( [ -n "$(worktree_of "$br" "$REPO")" ] && printf ' and its worktree')"
+                    say "WOULD  $id  send superseded branch $br$( [ -n "$(worktree_of "$br" "$REPO")" ] && printf ' and its worktree')"
                     continue
                 fi
-                reap "$id" "$br"
+                send_branch "$id" "$br"
                 continue
             fi
             n="$(git -C "$REPO" rev-list --count "$LANDREF..$br" 2>/dev/null || echo '?')"
             say "KEEP   $id  unlanded — $n commit(s) not in $LANDREF"; continue
         fi
         if [ "$DRY" = 1 ]; then
-            say "WOULD  $id  reap branch $br$( [ -n "$(worktree_of "$br" "$REPO")" ] && printf ' and its worktree')"
+            say "WOULD  $id  send branch $br$( [ -n "$(worktree_of "$br" "$REPO")" ] && printf ' and its worktree')"
             continue
         fi
-        reap "$id" "$br"
+        send_branch "$id" "$br"
     done
 
     # ----------------------------------------------------------------------------------
-    # PASS 2 — orphaned worktrees. A worktree outlives its branch whenever a reap is
+    # PASS 2 — orphaned worktrees. A worktree outlives its branch whenever a send is
     # interrupted between the two deletions, and an orphan is not inert: aeon.sh reuses any
     # directory that already looks like a worktree, so the next aeon for that bead would be
     # handed a checkout of a branch that no longer exists.
@@ -297,8 +297,8 @@ for line in sys.stdin:
         spira_destroy_worktree "$id" "$w" "$REPO" "orphan: branch $br is gone" || {
             say "FAILED $id  orphaned worktree $w was not removed — see $SPIRA_REAPLOG"
             failed=$((failed+1)); continue; }
-        reaped=$((reaped+1))
-        say "REAPED $id  $REPONAME $br  orphaned worktree (branch was already gone)"
+        sent=$((sent+1))
+        say "SENT $id  $REPONAME $br  orphaned worktree (branch was already gone)"
     done < <(git -C "$REPO" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
 
     # Registrations whose directory a human already deleted. Harmless, but they accumulate
@@ -335,5 +335,5 @@ for repo_name in $(spira_repos); do
     sweep_repo "$repo_name"
 done
 
-[ "$DRY" = 1 ] || log "sending: $reaped reaped, $failed failed"
+[ "$DRY" = 1 ] || log "sending: $sent sent, $failed failed"
 [ "$failed" -eq 0 ]

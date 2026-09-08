@@ -100,18 +100,18 @@ read -r s h k f <<< "$(printf '2026-09-07T01:00:00Z spira: state: pass\n2026-09-
 is "the per-pass summary alone counts nothing" "0" "$f"
 
 # ---------------------------------------------------------------------------------------
-# SENT HAS THE SAME DEFECT AND THE SAME FIX. A branch re-reaped across passes is one sending.
+# SENT HAS THE SAME DEFECT AND THE SAME FIX. A branch re-sent across passes is one sending.
 # ---------------------------------------------------------------------------------------
 fixture_resent() {
     for i in 1 2 3; do
         printf '2026-09-07T0%d:00:00Z spira: state: pass\n' "$i"
-        printf 'REAPED sp-abc  branch and worktree\n'
+        printf 'SENT sp-abc  branch and worktree\n'
     done
     printf '2026-09-07T05:00:00Z spira: state: pass\n'
-    printf 'REAPED sp-xyz  branch and worktree\n'
+    printf 'SENT sp-xyz  branch and worktree\n'
 }
 read -r s h k f <<< "$(fixture_resent | run_fixture)"
-is "a branch reaped on three passes is ONE sending" "2" "$s"
+is "a branch sent on three passes is ONE sending" "2" "$s"
 
 # ---------------------------------------------------------------------------------------
 # HELD/KEPT ALREADY COUNTED BRANCHES. Asserted here so a future edit to this function cannot
