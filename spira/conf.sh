@@ -440,9 +440,11 @@ spira_conf_defaults() {
     # request is the simple choice and it is the right one only while it stays cheap; this is
     # the number that says when it has stopped being. Over it the request is refused rather
     # than served late, because a refusal that quietly degrades to stale data is a signal
-    # nobody ever sees. The shipped value is a measured p95 plus the tail a busy box adds —
-    # raise it on slower hardware, and treat having had to as the finding it is.
-    : "${SPIRA_LOOM_BUDGET_MS:=500}"
+    # nobody ever sees. The shipped value is a measured p95 INSIDE the CPUQuota=20% fence
+    # the unit sets — an unfenced calibration is not a calibration. If you change CPUQuota,
+    # re-measure and update this number to match; 500ms was the original unfenced p95 and it
+    # broke every request once the fence landed.
+    : "${SPIRA_LOOM_BUDGET_MS:=1500}"
     # How long a parsed snapshot is held, in seconds. This bounds the cost by TIME rather
     # than by viewer, so ten open tabs cost one query instead of ten. It is a cache and not a
     # background job: nothing runs when nobody is looking, and 0 disables it.

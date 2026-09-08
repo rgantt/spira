@@ -43,7 +43,7 @@ const APP_JS: &str = include_str!("../static/app.js");
 /// The defaults the CODE carries. Each one is also a key in the harness's configuration file
 /// with the same default, and a suite asserts the two agree — a constant that drifts from the
 /// key meant to control it is worse than no key, because the operator believes they set it.
-pub const DEFAULT_BUDGET_MS: u64 = 500;
+pub const DEFAULT_BUDGET_MS: u64 = 1500;
 pub const DEFAULT_CACHE_S: u64 = 15;
 pub const DEFAULT_ADDR: &str = "127.0.0.1:8788";
 
