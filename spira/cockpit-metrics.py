@@ -53,6 +53,7 @@ first version of the town collector returned 0 from its exception handler, so a 
 parser displayed as "all clear" and displaced the suspicion that would have prompted a
 look.
 """
+import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -246,11 +247,126 @@ def sending_metrics(lines, since):
     }
 
 
+def self_metrics(sent_lines, ledger_lines, self_since, now):
+    """Short-window SELF metrics: what is repeating now, and regression tripwires.
+
+    THREE SIGNALS, each actionable on its own:
+
+    REPEATING ACTs — an ACT text that appears in consecutive passes ending at the most
+    recent pass within the window. A run of 2+ qualifies. The duration covers the span
+    from the run's first pass to its last, so "× 3 (6m)" is three passes two minutes apart.
+    Only runs that extend to the final pass count: a burst that stopped before the last
+    pass is not "repeating now".
+
+    died-at-birth — aeons with a 'born' entry but no 'awake' within the window. Zero is the
+    correct value for a healthy system; any non-zero count gets an alert with the timestamp
+    of the last occurrence.
+
+    stalled passes — passes meeting CHECK 8's precondition (open work, nothing ready, nothing
+    running) within the window. Same logic: zero is healthy, non-zero is an alert.
+
+    The window is SPIRA_SELF_WINDOW minutes (default 60). A 24h burst outside the window
+    produces SP_SELF_REPEATING_N=0 and no alert rows.
+    """
+    # --- repeating ACTs ---
+    # Parse every pass in the short window. Each pass is (timestamp, [act_text, ...]).
+    # We exclude NOT_AN_EVENT here for the same reason sentinel_metrics does: a summon is
+    # legitimately once per pass, and counting it as a false repeat would always fire.
+    passes = []       # list of (ts, [act_text, ...])
+    starved_tss = []  # timestamps of stalled passes within the window
+    cur_pass = None   # most recent in-window pass being accumulated
+
+    for line in sent_lines:
+        m = PASS_RE.match(line)
+        if m:
+            ts = parse_ts(m.group(1))
+            if ts is None or ts < self_since:
+                cur_pass = None
+                continue
+            cur_pass = (ts, [])
+            passes.append(cur_pass)
+            sm = STARVED_RE.search(line)
+            if sm:
+                o, r, ip = (int(x) for x in sm.groups())
+                if o > 0 and r == 0 and ip == 0:
+                    starved_tss.append(ts)
+            continue
+        m = ACT_RE.match(line)
+        if m and cur_pass is not None:
+            text = m.group(2).strip()
+            if not any(r.match(text) for r in NOT_AN_EVENT):
+                cur_pass[1].append(text)
+
+    out = {}
+    n = len(passes)
+    repeating = []  # list of (run_len, dur_m, act_text)
+
+    if n >= 2:
+        # For each ACT text present in the last pass, count backwards: how many consecutive
+        # final passes also had this text? A run of 2+ means it is repeating right now.
+        last_acts = set(passes[-1][1])
+        for act_text in last_acts:
+            run_len = 0
+            run_first_ts = passes[-1][0]
+            for i in range(n - 1, -1, -1):
+                if act_text in passes[i][1]:
+                    run_len += 1
+                    run_first_ts = passes[i][0]
+                else:
+                    break
+            if run_len >= 2:
+                dur_s = (passes[-1][0] - run_first_ts).total_seconds()
+                dur_m = max(1, int(dur_s / 60))
+                repeating.append((run_len, dur_m, act_text))
+
+    repeating.sort(key=lambda x: -x[0])
+    out["SP_SELF_REPEATING_N"] = len(repeating)
+    for i, (run_len, dur_m, act_text) in enumerate(repeating):
+        out["SP_SELF_REPEATING%d" % i] = "%s \xd7 %d passes (%dm)" % (act_text, run_len, dur_m)
+
+    # --- stalled passes ---
+    out["SP_SELF_STARVED_W"] = len(starved_tss)
+    if starved_tss:
+        ago_m = max(0, int((now - max(starved_tss)).total_seconds() / 60))
+        out["SP_SELF_STARVED_LAST"] = "%dm ago" % ago_m
+    else:
+        out["SP_SELF_STARVED_LAST"] = "-"
+
+    # --- died-at-birth ---
+    # Track 'born' events in the window. An aeon with a 'born' but no subsequent 'awake'
+    # before the scan ends is stillborn within the window. We iterate forward so that an
+    # 'awake' later in the file removes the matching 'born' from consideration.
+    born_map = {}   # aeon name -> born_ts
+    for line in ledger_lines:
+        m = LEDGER_RE.match(line)
+        if not m:
+            continue
+        ts = parse_ts(m.group(1))
+        if ts is None or ts < self_since:
+            continue
+        event, name = m.group(2), m.group(3)
+        if event == "born":
+            born_map[name] = ts
+        elif event == "awake":
+            born_map.pop(name, None)
+
+    stillborn_tss = list(born_map.values())
+    out["SP_SELF_STILLBORN_W"] = len(stillborn_tss)
+    if stillborn_tss:
+        ago_m = max(0, int((now - max(stillborn_tss)).total_seconds() / 60))
+        out["SP_SELF_STILLBORN_LAST"] = "%dm ago" % ago_m
+    else:
+        out["SP_SELF_STILLBORN_LAST"] = "-"
+
+    return out
+
+
 def main():
     if len(sys.argv) < 3:
         sys.exit("usage: cockpit-metrics.py <sentinel.log> <aeon-ledger.log> [hours]")
     hours = float(sys.argv[3]) if len(sys.argv) > 3 else 24.0
-    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(hours=hours)
 
     out = {}
     for path, fn, keys in (
@@ -267,6 +383,17 @@ def main():
         except Exception:
             # A probe that fails says so. It never says 0.
             out.update({k: "?" for k in keys})
+
+    # Short-window SELF metrics. SPIRA_SELF_WINDOW is in minutes (default 60); the window
+    # is independent of the history window above so it stays narrow enough to show "now".
+    self_win_min = float(os.environ.get("SPIRA_SELF_WINDOW", "60"))
+    self_since = now - timedelta(minutes=self_win_min)
+    try:
+        out.update(self_metrics(read(sys.argv[1]), read(sys.argv[2]), self_since, now))
+    except Exception:
+        for k in ("SP_SELF_REPEATING_N", "SP_SELF_STILLBORN_W", "SP_SELF_STILLBORN_LAST",
+                  "SP_SELF_STARVED_W", "SP_SELF_STARVED_LAST"):
+            out[k] = "?"
 
     out["SP_WINDOW_HOURS"] = ("%g" % hours)
     for k in sorted(out):

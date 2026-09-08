@@ -1075,7 +1075,22 @@ standing_lines() {
     printf '        %scost%s %s solo · %s with another gate overlapping %s(median)%s\n' \
         "$C_DIM" "$C_RST" "$solo" "$conc" "$C_DIM" "$C_RST"
 
-    # HEALTH — the harness watching itself, plus the machine it runs on.
+    # HEALTH — the harness watching itself.
+    #
+    # THREE INDEPENDENT SIGNALS. Each is rendered only when it has something actionable to say:
+    #
+    # REPEATING: an ACT text that appeared in consecutive passes ending at the most recent one
+    # within SPIRA_SELF_WINDOW (default 60 min). A 24h burst that stopped before the window
+    # produces nothing here — "repeating now" means the last pass also had the act. Nothing
+    # repeating → no SELF row (law-alerts-must-be-actionable; the same rule that moved the
+    # #ryan list: a row that always reads the same becomes wallpaper).
+    #
+    # BIRTH / STALL: regression tripwires for two fixed bugs. 0 is their correct value and a
+    # row that always reads 0 is wallpaper. They appear only when non-zero within the window,
+    # in the BAD colour, with the count and the last occurrence time.
+    #
+    # JUDGE: passes since the judgement tier fired — always shown, because "never fired" and
+    # "fired 40 passes ago" look identical from outside and mean opposite things.
     local judge="${SP_SINCE_JUDGEMENT:-?}" judge_str
     case "$judge" in
         '?')      judge_str="${C_BAD}${C_B}?${C_RST}" ;;
@@ -1083,14 +1098,44 @@ standing_lines() {
         'NEVER'*) judge_str="${C_BAD}${C_B}${judge}${C_RST}" ;;
         *)        judge_str="${C_DIM}${judge} passes ago${C_RST}" ;;
     esac
-    printf ' %sSELF%s   %sactions it had to repeat%s %s%s%s %s(%s in %s passes)%s\n' \
-        "$C_DIM" "$C_RST" \
-        "$C_DIM" "$C_RST" "$( [ "${SP_FALSE_ACTS:-?}" = 0 ] && printf '%s' "$C_OK" || printf '%s' "$C_WARN" )" \
-        "${SP_FALSE_ACTS:-?}" "$C_RST" \
-        "$C_DIM" "${SP_FALSE_PER_PASS:-?}" "${SP_PASSES:-?}" "$C_RST"
-    printf '        %sstalled passes%s %s%s%s · %sdied at birth%s %s\n' \
-        "$C_DIM" "$C_RST" "$( [ "${SP_STARVED_PASSES:-0}" = 0 ] && printf '%s' "$C_OK" || printf '%s' "$C_WARN")" "${SP_STARVED_PASSES:-?}" "$C_RST" \
-        "$C_DIM" "$C_RST" "${SP_AEON_STILLBORN:-?}"
+
+    # REPEATING rows: one per distinct active repeating pattern.
+    local srep="${SP_SELF_REPEATING_N:-0}" srep_i=0
+    while [ "$srep_i" -lt "${srep:-0}" ] 2>/dev/null; do
+        eval "local srtxt=\${SP_SELF_REPEATING${srep_i}:-}"
+        if [ -n "$srtxt" ]; then
+            fit "$srtxt" $(( COLS - 20 ))
+            if [ "$srep_i" -eq 0 ]; then
+                printf ' %sSELF%s   %s%sREPEATING%s  %s%s%s\n' \
+                    "$C_DIM" "$C_RST" "$C_BAD" "$C_B" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
+            else
+                printf '        %s%sREPEATING%s  %s%s%s\n' \
+                    "$C_BAD" "$C_B" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
+            fi
+        fi
+        srep_i=$(( srep_i + 1 ))
+    done
+
+    # BIRTH alert: aeons that died at birth within the short window.
+    local sb="${SP_SELF_STILLBORN_W:-0}"
+    if [ "$sb" != "?" ] && [ "$sb" -gt 0 ] 2>/dev/null; then
+        printf ' %sBIRTH%s  %s%s%s%s died at birth%s %s· last %s%s\n' \
+            "$C_BAD" "$C_RST" \
+            "$C_BAD" "$C_B" "$sb" "$C_RST" \
+            "$C_DIM" "$C_RST" "${SP_SELF_STILLBORN_LAST:-?}" "$C_RST"
+    fi
+
+    # STALL alert: stalled passes (open work, nothing ready, nothing running) in the window.
+    local sv="${SP_SELF_STARVED_W:-0}"
+    if [ "$sv" != "?" ] && [ "$sv" -gt 0 ] 2>/dev/null; then
+        printf ' %sSTALL%s  %s%s%s%s stalled passes%s %s· last %s%s\n' \
+            "$C_BAD" "$C_RST" \
+            "$C_BAD" "$C_B" "$sv" "$C_RST" \
+            "$C_DIM" "$C_RST" "${SP_SELF_STARVED_LAST:-?}" "$C_RST"
+    fi
+
+    # JUDGE: always shown. Distinguishes "never fired" from "fired 40 passes ago".
+    printf ' %sSELF%s   %sjudgement%s %s\n' "$C_DIM" "$C_RST" "$C_DIM" "$C_RST" "$judge_str"
     printf ' %sBOX%s    %sdisk%s / %s  %sworkspaces%s %s  %scpu%s %s%% idle  %sload%s %s\n' \
         "$C_DIM" "$C_RST" \
         "$C_DIM" "$C_RST" "$(num "${SP_DISK_ROOT_PCT:-?}" 85 '%')" \

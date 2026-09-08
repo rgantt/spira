@@ -76,6 +76,7 @@ SPIRA_SUITES_PRIORITY SPIRA_SUITES_STALE
 SPIRA_PROD
 SPIRA_REVIEWER_MODEL SPIRA_REVIEWER_VERDICTS SPIRA_REVIEWER_TIMEOUT SPIRA_REVIEWER_DIFF_LIMIT
 SPIRA_REVIEW_LABEL
+SPIRA_SELF_WINDOW
 "
 
 # --------------------------------------------------------------------------------------
@@ -633,6 +634,12 @@ spira_conf_defaults() {
     # THE LABEL APPLIED TO FINDING BEADS. The deployment controller (sp-gsmx.5) and the
     # groomer query on this label to find open findings for a release unit.
     : "${SPIRA_REVIEW_LABEL:=review-finding}"
+
+    # SELF-MONITORING WINDOW: how many minutes back cockpit-metrics.py looks when deciding
+    # what is "repeating now" and whether a stillborn or stall alert is in force. Narrow
+    # enough to suppress a burst that ended hours ago; wide enough to cover the ~2-minute
+    # sentinel cadence across a meaningful run of passes.
+    : "${SPIRA_SELF_WINDOW:=60}"
 
     # THE MAP FALLS BACK TO THE EXAMPLE, and that is what makes a clean clone runnable at
     # all. The real map is one operator's inventory of checkouts and does not ship; the

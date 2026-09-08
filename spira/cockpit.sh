@@ -1003,10 +1003,13 @@ for i in awaiting_ids:
            done; }
 
     # ---- the four numbers this build got wrong -----------------------------------------
+    SPIRA_SELF_WINDOW="${SPIRA_SELF_WINDOW:-60}" \
     python3 "$HERE/cockpit-metrics.py" \
         "$SPIRA_RUN/sentinel.log" "$SPIRA_RUN/aeon-ledger.log" "$WINDOW_HOURS" 2>/dev/null \
       || { for k in SP_PASSES SP_ACTS SP_FALSE_ACTS SP_FALSE_PER_PASS SP_SINCE_JUDGEMENT \
-                    SP_AEON_BORN SP_AEON_LIVED SP_AEON_STILLBORN SP_AEON_WORKED; do
+                    SP_AEON_BORN SP_AEON_LIVED SP_AEON_STILLBORN SP_AEON_WORKED \
+                    SP_SELF_REPEATING_N SP_SELF_STILLBORN_W SP_SELF_STILLBORN_LAST \
+                    SP_SELF_STARVED_W SP_SELF_STARVED_LAST; do
                echo "$k=?"
            done; }
 
