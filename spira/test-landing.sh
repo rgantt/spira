@@ -36,7 +36,7 @@
 # the pass this suite can reach, and reaping a branch from inside it reproduces the real
 # sequence exactly rather than approximating it.
 #
-# covers: spira/landing.sh spira/lib.sh spira/incident.sh
+# covers: spira/landing.sh spira/lib.sh spira/incident.sh spira/skew.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
@@ -71,7 +71,7 @@ mkdir -p "$RUN/worktree" "$SH"
 # it (law-prefer-the-real-dependency). What landing.sh owns is the KEY it hands over; what
 # the intake owns is finding the open bead under it, and both have to hold for the count to
 # stay at one.
-cp "$HERE/landing.sh" "$HERE/lib.sh" "$HERE/conf.sh" "$HERE/incident.sh" "$SH/"
+cp "$HERE/landing.sh" "$HERE/lib.sh" "$HERE/conf.sh" "$HERE/incident.sh" "$HERE/skew.sh" "$SH/"
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SH/$1"; chmod +x "$SH/$1"; }
 stub confine.sh 'exit 0'
 
@@ -634,6 +634,91 @@ drop_branch sp-stalered
 
 # Restore the full gate stub for any future tests.
 cp "$TMP/gate-full.sh" "$SH/gate.sh"
+
+# --------------------------------------------------------------------------------------
+# THE CHECKOUT REFRESH — unconditional, not only when a branch merged this pass.
+#
+# Three properties: an untracked file does not block it; a declined refresh names the
+# condition; and a base that moved with no branch landing is picked up within one pass.
+# --------------------------------------------------------------------------------------
+echo
+
+# Advance origin/main by one commit WITHOUT going through $REPO, so $REPO stays behind.
+# Uses git plumbing directly on the bare remote, which avoids push/pull conflicts from
+# prior test state — the failure a commit-push-reset sequence was producing.
+advance_base() {
+    local prev tree tip
+    prev="$(git -C "$REMOTE" rev-parse HEAD)"
+    tree="$(git -C "$REMOTE" rev-parse HEAD^{tree})"
+    tip="$(git -C "$REMOTE" commit-tree -p "$prev" -m "base moved" "$tree")"
+    git -C "$REMOTE" update-ref refs/heads/main "$tip"
+}
+checkout_current() { git -C "$REPO" rev-parse HEAD 2>/dev/null; }
+
+# Reset $REPO to a clean state on main, matching origin/main. Each test below starts from
+# a known-clean position so prior state cannot leak across cases.
+reset_repo() {
+    git -C "$REPO" checkout -q main 2>/dev/null || true
+    git -C "$REPO" reset -q --hard origin/main 2>/dev/null || true
+    git -C "$REPO" clean -qfd 2>/dev/null || true
+}
+
+# AN UNTRACKED FILE DOES NOT BLOCK THE REFRESH. The old check used `status --porcelain`
+# without --untracked-files=no, so a single untracked directory refused the fast-forward.
+seed; reset_repo; advance_base
+before="$(checkout_current)"
+mkdir -p "$REPO/untracked-notes"
+printf 'notes\n' > "$REPO/untracked-notes/scratch.txt"
+out="$(landing)"
+after="$(checkout_current)"
+rm -rf "$REPO/untracked-notes"
+[ "$before" != "$after" ] \
+    && ok "an untracked file does not block the refresh" \
+    || bad "an untracked file does not block the refresh" "checkout did not move"
+want "and the refresh is reported" "skew: refreshed to" "$out"
+
+# A MODIFIED TRACKED FILE STILL BLOCKS, and the decline NAMES what blocked it. The fixture
+# starts with only an empty commit and no tracked files, so create one on origin first.
+seed; reset_repo
+printf 'clean\n' > "$REPO/tracked.txt"
+git -C "$REPO" add tracked.txt
+git -C "$REPO" commit -q -m "add tracked file"
+git -C "$REPO" push -q origin main
+git -C "$REPO" fetch -q origin
+advance_base
+printf 'dirty\n' >> "$REPO/tracked.txt"
+before="$(checkout_current)"
+out="$(landing)"
+after="$(checkout_current)"
+git -C "$REPO" checkout -q -- . 2>/dev/null
+[ "$before" = "$after" ] \
+    && ok "a modified tracked file blocks the refresh" \
+    || bad "a modified tracked file blocks the refresh" "checkout moved anyway"
+want "and the decline names the condition" "tracked files are modified" "$out"
+
+# A BASE THAT MOVED WITH NO BRANCH LANDING IS PICKED UP WITHIN ONE PASS.
+# No spira/* branches at all — the old code returned early and never reached the refresh.
+seed; reset_repo; advance_base
+before="$(checkout_current)"
+out="$(landing)"
+after="$(checkout_current)"
+[ "$before" != "$after" ] \
+    && ok "a base that moved with no branch landing is picked up" \
+    || bad "a base that moved with no branch landing is picked up" "checkout did not move"
+want "and the refresh is reported" "skew: refreshed to" "$out"
+
+# A CHECKOUT NOT ON THE BASE BRANCH DECLINES AND SAYS WHY.
+seed; reset_repo; advance_base
+git -C "$REPO" checkout -q -b detour 2>/dev/null
+before="$(checkout_current)"
+out="$(landing)"
+after="$(checkout_current)"
+git -C "$REPO" checkout -q main 2>/dev/null
+git -C "$REPO" branch -q -D detour 2>/dev/null
+[ "$before" = "$after" ] \
+    && ok "a checkout not on the base branch is not clobbered" \
+    || bad "a checkout not on the base branch is not clobbered" "checkout moved anyway"
+want "and the decline names the branch" "not main" "$out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

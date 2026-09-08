@@ -3,6 +3,7 @@
 # skew.sh — is the harness that RUNS the harness that LANDED?
 #
 #   skew.sh check                          audit this box; escalate on divergence
+#   skew.sh refresh [repo]                 fast-forward the checkout to its base ref
 #   skew.sh copies                         every mapped repository carrying a harness copy
 #   skew.sh foreign <repo> <base> <ref>    may this branch land? — the landing gate's fence
 #
@@ -30,8 +31,11 @@
 #   COPY     another mapped repository carries a second harness. Work aimed at the harness
 #            can land there, pass everything, and never run.
 #
-# THE OFFENCE IS REPORTED, NOT REPAIRED. A pull here would fast-forward a tree that a session
-# may be working in, and deleting somebody's second copy is not a check's decision to make.
+# `check` REPORTS; `refresh` REPAIRS — but only by fast-forward, and only when the checkout is
+# clean and on the base branch. A dirty tree or a detached HEAD is never clobbered, and a
+# non-fast-forward is always refused; the worst a refresh can do is advance a clean checkout
+# that was already on the right branch. Deleting somebody's second copy is not a check's
+# decision to make.
 #
 # EXIT   0  checked, and the copy in force is the code that landed
 #        1  checked, and it is not — the finding is on stdout and has been escalated
@@ -265,9 +269,54 @@ escalate() {
         --evidence "$findings" >/dev/null 2>&1
 }
 
+# =======================================================================================
+# refresh — fast-forward a checkout to its base ref.
+#
+# Called unconditionally by the landing pass, so a base ref that moved by ANY route — a
+# branch merged, a push from another box, a PR merged on GitHub, a hand-landing — is picked
+# up within one pass rather than waiting for `check` to escalate it an hour later.
+#
+# THE GUARDS ARE THE WHOLE POINT. ff-only, clean-tracked-tree, and on-the-base-branch: any
+# violation means something a mechanical advance must not override. A declined refresh names
+# which condition refused it, because a refresh that stopped happening is indistinguishable
+# in the log from one with nothing to do — the silence that cost eight hours on landing.sh.
+#
+# TRACKED FILES ONLY. An operator's untracked notes beside the code are their own business;
+# a MODIFIED tracked file is code in force that is on no branch. This is the same check as
+# `check` above, and the two must agree — --untracked-files=no in both.
+# =======================================================================================
+refresh() {
+    local repo="${1:-$SPIRA_REPO}" base base_branch remote behind dirty current
+    [ -e "$repo/.git" ] || {
+        echo "skew: refresh: $repo is not a git checkout"; return 1; }
+    base="$(spira_landref "$repo")" || {
+        echo "skew: refresh: cannot resolve the ref $repo lands on"; return 1; }
+    base_branch="$(ref_branch "$base")"
+    remote="$(ref_remote "$base" 2>/dev/null)" || remote=""
+    [ -n "$remote" ] && git -C "$repo" fetch -q "$remote" 2>/dev/null
+
+    behind="$(git -C "$repo" rev-list --count "HEAD..$base" 2>/dev/null || echo 0)"
+    [ "${behind:-0}" -gt 0 ] || return 0
+
+    dirty="$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null)"
+    if [ -n "$dirty" ]; then
+        echo "skew: refresh declined — tracked files are modified"; return 1; fi
+
+    current="$(git -C "$repo" branch --show-current 2>/dev/null)"
+    if [ "$current" != "$base_branch" ]; then
+        echo "skew: refresh declined — checkout is on ${current:-a detached HEAD}, not $base_branch"; return 1; fi
+
+    if ! git -C "$repo" merge --ff-only -q "$base" 2>/dev/null; then
+        echo "skew: refresh declined — cannot fast-forward to $base"; return 1; fi
+
+    echo "skew: refreshed to $base ($behind commit(s))"
+    return 0
+}
+
 case "${1:-check}" in
     check)   check ;;
+    refresh) shift; refresh "$@" ;;
     copies)  copies || { echo "skew: no mapped repository carries a harness — the map or the matcher is wrong" >&2; exit 3; } ;;
     foreign) shift; foreign "$@" ;;
-    *)       sed -n '3,7p' "$0" >&2; exit 2 ;;
+    *)       sed -n '3,8p' "$0" >&2; exit 2 ;;
 esac

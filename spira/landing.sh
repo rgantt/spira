@@ -1053,32 +1053,11 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
                 # CHECK 2 false-action bug arriving by a second route.
                 progress "landed $br"
                 # RECORDED BEFORE ANYTHING ELSE THIS BRANCH DOES. Everything after this line
-                # — advancing the checkout, the reap — can fail or be interrupted, and the
-                # one fact that must survive is that this commit is now on the base. Written
-                # after the push rather than before, so a push that never landed can never
-                # leave a memory saying it did (law-closed-is-not-landed, one layer in).
+                # — the sweep, the reap — can fail or be interrupted, and the one fact that
+                # must survive is that this commit is now on the base. Written after the push
+                # rather than before, so a push that never landed can never leave a memory
+                # saying it did (law-closed-is-not-landed, one layer in).
                 land_mark "$id" LANDED "$tip" "$name"
-                # ADVANCE THE CHECKOUT HUMANS READ. (the operator, accepting sp-wud's own
-                # stated default.) Landing pushes the base branch from the .landing worktree and nothing
-                # ever pulled the home checkout, so the shared checkout stayed at whatever the last
-                # human left — and every hand-run script and interactive session there read a past
-                # state. It cost three wrong readings in one day, including one where I reported a
-                # landed fix as missing because I was grepping a stale file.
-                #
-                # --ff-only, and only when clean and on the base branch: this must never clobber an
-                # interactive session's work. Silence when it declines is correct; the next pass
-                # tries again.
-                #
-                # THE REPOSITORY BEING LANDED, not $REPO. This said $REPO — the HOME checkout —
-                # inside a function that runs once per repository, so landing a branch in any
-                # other repository would have fast-forwarded brain instead of the one that
-                # just moved. It is only ever reached in `push` mode, which today is brain
-                # alone, which is exactly why it could sit here looking correct.
-                if [ -z "$(git -C "$repo" status --porcelain 2>/dev/null)" ] \
-                   && [ "$(git -C "$repo" branch --show-current 2>/dev/null)" = "$base_branch" ]; then
-                    git -C "$repo" merge --ff-only -q "$base" 2>/dev/null \
-                        && log "fast-forwarded $name's checkout to $base"
-                fi
                 # THE BASE HAS MOVED, SO EVERY SURVIVOR IS NOW BEHIND IT. Last, because
                 # everything above is about the branch that just landed and must not be
                 # delayed by other branches' rebases; and unset first, so this branch is not
@@ -1110,6 +1089,26 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
 # author was asking a read-only question.
 for repo_name in $(spira_repos); do
     land_repo "$repo_name"
+done
+
+# ======================================================================================
+# ADVANCE THE CHECKOUT HUMANS READ — UNCONDITIONALLY, not only when a branch merged this
+# pass. Landing pushes the base branch from a worktree and nothing else pulls the home
+# checkout, so the shared checkout stays behind until something advances it. That used to
+# happen inside the branch loop, which means it only ran when a branch landed. A base ref
+# that moved by any other route — a push from another box, a PR merged on GitHub, a hand-
+# landing — was never picked up; skew.sh noticed an hour later and escalated rather than
+# repairing. Now it is one pass behind at most.
+#
+# ONLY PUSH-MODE REPOS HAVE A CHECKOUT TO ADVANCE. A pr-mode repository's checkout is not
+# where work lands; GitHub advances its base when a PR merges.
+# ======================================================================================
+for repo_name in $(spira_repos); do
+    _rfsh_repo="$(repo_root "$repo_name" 2>/dev/null)" || continue
+    [ -e "$_rfsh_repo/.git" ] || continue
+    [ "$(repo_land "$repo_name" 2>/dev/null)" = push ] || continue
+    _rfsh_out="$("$SPIRA_HOME/skew.sh" refresh "$_rfsh_repo" 2>&1)" || true
+    [ -n "${_rfsh_out:-}" ] && log "$_rfsh_out"
 done
 
 # The sweep's counters are appended only when it did something. A clause that reads
