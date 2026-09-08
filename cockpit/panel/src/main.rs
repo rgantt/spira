@@ -16,6 +16,7 @@
 //!     d           act — close / dismiss / mark read / acknowledge, one keypress, no prompt
 //!     D           the same, but prompt for a reason (not in ALERTS — see below)
 //!     ⏎           decide (decisions) / comment (FYI, ALERTS)
+//!     L           in FYI: enact — compose a statute from this insight and cite it
 //!     s           in ALERTS: silence this condition for an hour
 //!     h           in FYI and ALERTS: show the history; d there undoes
 //!     r           force a sync            esc  cancel input
@@ -45,7 +46,7 @@ mod store;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal;
-use model::{act, comment, Act, Item, View};
+use model::{act, comment, enact, Act, Item, View};
 use render::{frame, Frame};
 use std::io::{stdout, Write};
 use std::sync::{Arc, Mutex};
@@ -87,6 +88,11 @@ struct App {
     unhide: Arc<Mutex<Vec<String>>>,
     /// Writes still in flight, so the footer can say so rather than looking idle.
     inflight: Arc<Mutex<usize>>,
+    /// A compose line the statute book would not take, kept so `L` can hand it back.
+    ///
+    /// Losing ~70 words to a refusal is not an error message, it is retyping. Stashed on a
+    /// refusal AND on `esc`, cleared when a statute is enacted.
+    draft: Arc<Mutex<Option<String>>>,
     /// The FYI view is showing what has already been dismissed.
     ///
     /// AN INSIGHT MUST BE ABLE TO LEAVE THE PANE (the operator, verbatim: *"responding to an
@@ -409,6 +415,85 @@ impl App {
         self.sel = 0;
     }
 
+    /// Promote the selected insight into a statute.
+    ///
+    /// THE COMPOSE STEP IS THE FEATURE. An insight is longer than a statute by construction —
+    /// it is a finding, with its evidence — and `rule.sh` refuses anything over 130 words, so
+    /// the body cannot be piped through. It has to be rewritten with the source in view, and
+    /// it is: the input row sits under the detail strip, which is still showing the insight
+    /// being promoted.
+    ///
+    /// OFF THE UI THREAD like every other write, and more so. `rule.sh` shells out to
+    /// `bd remember` and then runs the wiki synthesis, which rewrites the statute book as a
+    /// page — seconds, not the fraction `bd update` costs. A pane frozen for that would be
+    /// felt on the one key that takes a paragraph of typing to reach.
+    fn do_enact(&mut self, input: &str) {
+        let Some(it) = self.current() else { return };
+        let (slug, text) = match model::parse_enact(input) {
+            Ok(v) => v,
+            Err(e) => {
+                // Refused BEFORE anything was written, so nothing is hidden and nothing is
+                // lost: the draft goes back in the pocket and the error says which key
+                // returns it.
+                *self.draft.lock().unwrap() = Some(input.to_string());
+                self.flash = format!("FAILED: {e} — L restores what you typed");
+                return;
+            }
+        };
+        self.pending.push((it.id.clone(), store::Expect::Archived(true)));
+        self.pending_rev = self.pending_rev.wrapping_add(1);
+        self.flash = format!("enacting law-{}…", slug.trim_start_matches("law-"));
+
+        let (errors, inflight, shared, unhide, draft) = (
+            Arc::clone(&self.errors),
+            Arc::clone(&self.inflight),
+            Arc::clone(&self.shared),
+            Arc::clone(&self.unhide),
+            Arc::clone(&self.draft),
+        );
+        let raw = input.to_string();
+        *inflight.lock().unwrap() += 1;
+        thread::spawn(move || {
+            match enact(&it, &slug, &text) {
+                Err(e) => {
+                    // The refusal verbatim — the word count and what to do about it — plus
+                    // the row back and the text kept. A statute lost to a length limit
+                    // nobody was shown is the "silently losing the input" this replaces.
+                    errors.lock().unwrap().push(format!("{}: {e}", it.id));
+                    unhide.lock().unwrap().push(it.id.clone());
+                    *draft.lock().unwrap() = Some(raw);
+                }
+                Ok(()) => *draft.lock().unwrap() = None,
+            }
+            *inflight.lock().unwrap() -= 1;
+            store::refresh(&shared);
+        });
+
+        let n = self.items().map(|v| v.len()).unwrap_or(0);
+        self.sel = self.sel.min(n.saturating_sub(1));
+    }
+
+    /// Move a failed write's message into the flash, where it STAYS.
+    ///
+    /// It used to be popped inside the render and shown on that one frame. Every frame after
+    /// it lost the message again — and a failure is invariably followed by another frame,
+    /// because the same failure path also puts the row back and re-syncs the store. So the
+    /// pane showed `FAILED: …` for one repaint and then went back to whatever the flash was:
+    /// a footer actively saying the write was in flight, over a write that had already been
+    /// refused. Measured while testing the >130-word refusal end to end, where a poll every
+    /// 500 ms never once caught it.
+    ///
+    /// As a flash it persists until the next keypress clears it, which is the same lifetime
+    /// every other thing the footer says has, and the footer already renders one starting
+    /// with FAILED in the alert colour.
+    fn drain_errors(&mut self) {
+        let mut errs = self.errors.lock().unwrap();
+        if let Some(e) = errs.pop() {
+            self.flash = format!("FAILED: {e}");
+            errs.clear(); // the newest failure is the one to answer
+        }
+    }
+
     fn do_comment(&mut self, text: &str) {
         let Some(it) = self.current() else { return };
         self.flash = format!("commented on {}", it.id);
@@ -476,6 +561,7 @@ fn main() {
         errors: Arc::new(Mutex::new(Vec::new())),
         unhide: Arc::new(Mutex::new(Vec::new())),
         inflight: Arc::new(Mutex::new(0)),
+        draft: Arc::new(Mutex::new(None)),
         reading: false,
         scroll: Scroll::new(),
         detail_scroll: Scroll::new(),
@@ -550,15 +636,10 @@ fn main() {
             let s = app.shared.lock().unwrap();
             (s.age(), s.refreshing)
         };
-        // A failed background write outranks whatever the flash was saying.
-        let err = app.errors.lock().unwrap().pop();
-        let flash_owned;
-        let flash: &str = if let Some(e) = &err {
-            flash_owned = format!("FAILED: {e}");
-            &flash_owned
-        } else {
-            &app.flash
-        };
+        // The flash already carries any failure: `drain_errors` moves it there, so it
+        // survives the repaints that follow a failed write instead of being consumed by the
+        // first of them.
+        let flash: &str = &app.flash;
         let busy = *app.inflight.lock().unwrap() > 0;
         // BORROW the derived lists; never clone them to render. `items()` hands back an
         // owned Vec<Item>, and an Item carries the full description and the whole comment
@@ -631,6 +712,9 @@ fn main() {
             .unwrap_or((100, 16));
         // Drop optimistic hides the store has confirmed, before deciding what to draw.
         app.prune();
+        // Move any failure from the background thread into the flash, where it persists
+        // until the next keypress instead of being consumed by the first repaint.
+        app.drain_errors();
 
         // DO NOT PAINT WHILE INPUT IS STILL QUEUED.
         //
@@ -692,6 +776,7 @@ fn main() {
                     if !v.is_empty() {
                         match m.as_str() {
                             "comment" => app.do_comment(&v),
+                            "enact" => app.do_enact(&v),
                             // decide and reason both close; the text is the record.
                             _ => app.do_act(&v, Act::Primary),
                         }
@@ -700,6 +785,14 @@ fn main() {
                     app.buf.clear();
                 }
                 KeyCode::Esc => {
+                    // ESC KEEPS A STATUTE. Cancelling a one-line verdict costs a retype;
+                    // cancelling a paragraph written with the insight in view costs the
+                    // paragraph, and a fat-fingered esc would then be the most expensive key
+                    // in the pane. `L` hands it straight back.
+                    if m == "enact" && !app.buf.trim().is_empty() {
+                        *app.draft.lock().unwrap() = Some(app.buf.clone());
+                        app.flash = "draft kept — L to resume".into();
+                    }
                     app.mode = None;
                     app.buf.clear();
                 }
@@ -735,6 +828,15 @@ fn main() {
                 KeyCode::Enter if app.view == View::Insights || app.view == View::Alerts => {
                     app.mode = Some("comment".into());
                     app.buf.clear();
+                    app.reading = false;
+                    app.scroll.reset();
+                }
+                // THE THIRD ANSWER, from the surface where a long insight is actually read.
+                // Leaving the reader is what puts the insight back in the detail strip, so
+                // it is still on screen while the statute is written from it.
+                KeyCode::Char('L') if app.view == View::Insights => {
+                    app.mode = Some("enact".into());
+                    app.buf = app.draft.lock().unwrap().clone().unwrap_or_default();
                     app.reading = false;
                     app.scroll.reset();
                 }
@@ -854,6 +956,16 @@ fn main() {
             KeyCode::Char('c') if n > 0 && app.view != View::Notifications => {
                 app.mode = Some("comment".into());
                 app.buf.clear();
+            }
+            // `L` — ENACT. THE FYI VIEW ONLY, and the guard is the view rather than the
+            // item: `L` in DECISIONS or NOTIFICATIONS does nothing, because a statute cites
+            // the case that produced it and neither of those is one.
+            //
+            // The draft comes back if there is one, so a refusal — over 130 words, almost
+            // always — is edited rather than retyped.
+            KeyCode::Char('L') if n > 0 && app.view == View::Insights => {
+                app.mode = Some("enact".into());
+                app.buf = app.draft.lock().unwrap().clone().unwrap_or_default();
             }
             // `a` ACCEPTS THE RECOMMENDED DEFAULT, with no typing.
             //

@@ -395,6 +395,18 @@ fn labels(r: &Value) -> Vec<&str> {
         .unwrap_or_default()
 }
 
+/// The statute a promoted insight was enacted as, read off its `enacted:` label.
+///
+/// One label, one law: an insight promoted twice is a mistake worth seeing rather than a
+/// list to render, so the FIRST is taken and the row shows it.
+fn enacted(labels: &[&str]) -> Option<String> {
+    labels
+        .iter()
+        .find_map(|l| l.strip_prefix(crate::model::ENACTED))
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+}
+
 /// The recommended default, lifted from the description. An ask without one makes the operator
 /// decide from scratch, so when it exists it belongs on screen.
 fn lead(desc: &str) -> String {
@@ -557,6 +569,7 @@ fn alerts(s: &Snapshot, dismissed: bool, now: i64) -> Result<Vec<Item>, String> 
                 // cutting a new one, so `created_at` is when the condition was first true and
                 // the age on the row is how long it has been going unfixed.
                 when: r["created_at"].as_str().unwrap_or("").to_string(),
+                enacted: None,
                 thread: oldest_first(
                     s.threads
                         .get(r["id"].as_str().unwrap_or(""))
@@ -814,6 +827,7 @@ pub fn view_items(
                         body: if badge == "insight" { fyi_body(desc) } else { desc.to_string() },
                         badge: badge.to_string(),
                         when: r["created_at"].as_str().unwrap_or("").to_string(),
+                        enacted: enacted(&l),
                         thread: oldest_first(
                             s.threads
                                 .get(r["id"].as_str().unwrap_or(""))

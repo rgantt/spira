@@ -331,6 +331,25 @@ fn section(it: &Item) -> &'static str {
     }
 }
 
+/// The statute this insight became, or nothing.
+///
+/// It reads as a citation rather than as a status — `enacted: law-closed-is-not-landed` is
+/// addressable: it is the exact argument `rule.sh show` takes, so the rule can be read from
+/// the case in one step. Shaped like the `default:` line because it plays the same part: the
+/// one thing about this item worth seeing before its body.
+fn enacted_line(it: &Item, w: usize) -> Option<String> {
+    let key = it.enacted.as_ref()?;
+    Some(format!(
+        " {}{}enacted:{} {}{}{}",
+        BOLD,
+        ACC,
+        RST,
+        TXT,
+        clip(key, w.saturating_sub(12)),
+        RST
+    ))
+}
+
 /// The comment thread, oldest first, ready to place above the body.
 ///
 /// ORDER: THE THREAD COMES FIRST, THE ORIGINAL ASK BENEATH IT. (the operator, verbatim: *"i
@@ -422,6 +441,7 @@ pub fn reader(
     for l in wrap(&it.title, w.saturating_sub(2)) {
         body.push(format!(" {}{}{}{}", BOLD, TXT, l, RST));
     }
+    body.extend(enacted_line(it, w));
     body.push(String::new());
     // THE THREAD, ABOVE THE ASK. This is the conversation, and it belongs where the decision
     // is read — not in a chat transcript the operator would have to go and find, and not under a
@@ -464,7 +484,11 @@ pub fn reader(
     // ⏎ actually does here, and on a notification it names nothing because ⏎ does nothing.
     let enter = match view {
         View::Decisions => format!(" · {}⏎{} decide", KEY, BAR),
-        View::Insights => format!(" · {}⏎{} comment", KEY, BAR),
+        // `L` is offered wherever it is bound, and it is bound here: the reader is where a
+        // long insight is actually read, so it is where the question "should this be law?"
+        // is answered. A key that works but is advertised on only one of two surfaces is
+        // one nobody finds.
+        View::Insights => format!(" · {}⏎{} comment · {}L{} enact", KEY, BAR, KEY, BAR),
         // An alert takes a comment and never a verdict. There is nothing to decide here:
         // the condition clears when it clears.
         View::Alerts => format!(" · {}⏎{} comment", KEY, BAR),
@@ -533,6 +557,7 @@ pub fn detail_lines(it: &Item, w: usize) -> Vec<String> {
     for l in wrap(&it.title, w.saturating_sub(3)) {
         d.push(format!(" {}{}{}{}", BOLD, TXT, l, RST));
     }
+    d.extend(enacted_line(it, w));
     if !it.lead.is_empty() {
         for (n, l) in wrap(&it.lead, w.saturating_sub(12)).iter().enumerate() {
             d.push(format!(
@@ -621,6 +646,7 @@ pub fn input_label(mode: Option<&str>) -> Option<&'static str> {
     mode.map(|m| match m {
         "comment" => "comment",
         "decide" => "verdict",
+        "enact" => "statute",
         _ => "reason",
     })
 }
@@ -810,9 +836,26 @@ pub fn frame(f: &Frame) -> Vec<String> {
         } else {
             it.title.clone()
         };
-        let title = clip(&title, f.w.saturating_sub(12));
+        // § — THIS ONE BECAME LAW, and a dismissed one did not.
+        //
+        // Before this the two were the same row: `d` and a promotion both ended with
+        // `archived` and nothing else, so the feeder for the statute book could not be read
+        // back — you could not tell a finding that had been shrugged off from one that is now
+        // a rule every agent obeys, and a finding filed a SECOND time could not be recognised
+        // as the re-violation that is the ladder's promotion trigger.
+        //
+        // The column is reserved for the whole FYI view rather than only for the rows that
+        // have one, so the titles stay aligned and the mark is scannable down the edge
+        // instead of shifting every line it appears on. It costs nothing in the other two
+        // views, which have no citation to carry.
+        let law = match (f.view, it.enacted.is_some()) {
+            (View::Insights, true) => " §",
+            (View::Insights, false) => "  ",
+            _ => "",
+        };
+        let title = clip(&title, f.w.saturating_sub(12 + strip_len(law)));
         out.push(if cur {
-            let line = format!(" {} {} {} {}", marker, when, turn, title);
+            let line = format!(" {} {} {}{} {}", marker, when, turn, law, title);
             format!(
                 "{}{}{}{}",
                 SEL,
@@ -831,8 +874,8 @@ pub fn frame(f: &Frame) -> Vec<String> {
                 _ => MUT,
             };
             format!(
-                " {} {}{}{} {}{}{} {}{}{}",
-                marker, MUT, when, RST, tc, turn, RST, TXT, title, RST
+                " {} {}{}{} {}{}{}{}{}{} {}{}{}",
+                marker, MUT, when, RST, tc, turn, RST, ACC, law, RST, TXT, title, RST
             )
         });
     }
@@ -969,8 +1012,14 @@ fn footer(f: &Frame, pos: usize, total: usize) -> String {
         // made the view read as a queue of asks. `h` is the retrieval half of dismissal: an
         // insight that leaves the pane has to be findable, or dismissing it is a deletion and
         // they will hesitate over every one.
+        // AND `L enact`, the third answer. `d` says this does not generalise and `⏎` keeps
+        // the thread; neither can say "this is law now", which is what an insight most often
+        // turns out to be — four of the nine live ones were already doctrine, each promoted
+        // by hand and then filed as though it had been shrugged off.
         View::Insights => s.push_str(&format!(
-            " · {}⏎{} comment · {}h{} {}",
+            " · {}⏎{} comment · {}L{} enact · {}h{} {}",
+            KEY,
+            BAR,
             KEY,
             BAR,
             KEY,
@@ -1024,6 +1073,7 @@ mod tests {
             body: body.into(),
             badge: "question".into(),
             when: "2026-09-05T10:06:00Z".into(),
+            enacted: None,
             thread: Vec::new(),
             labels: Vec::new(),
         }
@@ -1048,6 +1098,13 @@ mod tests {
     fn insight(title: &str, body: &str) -> Item {
         let mut it = item(title, body);
         it.badge = "insight".into();
+        it
+    }
+
+    /// An insight that was promoted — the case, and the statute it produced.
+    fn enacted_insight(title: &str, body: &str, law: &str) -> Item {
+        let mut it = insight(title, body);
+        it.enacted = Some(law.into());
         it
     }
 
@@ -1922,6 +1979,98 @@ three")]);
         assert_eq!(iso(NOW), "2026-09-05T16:20:00Z");
         // The one this exists for: a silence deadline an hour out.
         assert_eq!(iso(NOW + 3600), "2026-09-05T17:20:00Z");
+    }
+
+    // ── promotion: an enacted insight is not a dismissed one ──────────────────────────
+
+    /// The acceptance criterion, on the surface it is read from: a promoted insight and a
+    /// dismissed one must not render the same. They differed by nothing at all before —
+    /// both carried `archived` and were filed side by side under `h`.
+    #[test]
+    fn a_promoted_row_is_visibly_not_a_dismissed_one() {
+        let promoted = vec![enacted_insight("closed over a red PR", "b", "law-closed-is-not-landed")];
+        let plain = vec![insight("closed over a red PR", "b")];
+        let (a, b) = (Ok(promoted), Ok(plain));
+        let one = text(&frame(&fyi_frame(&a, true)));
+        let two = text(&frame(&fyi_frame(&b, true)));
+        assert!(one[1].contains('§'), "a promoted row carries the mark: {:?}", one[1]);
+        assert!(!two[1].contains('§'), "a dismissed row does not: {:?}", two[1]);
+    }
+
+    /// And the citation itself is on screen, addressable — `rule.sh show` takes exactly the
+    /// string rendered, so the rule can be read from the case in one step.
+    #[test]
+    fn the_citation_names_the_statute_on_both_surfaces() {
+        let it = enacted_insight("t", "body", "law-closed-is-not-landed");
+        let items = Ok(vec![it.clone()]);
+        let strip = text(&frame(&fyi_frame(&items, true))).join("\n");
+        assert!(strip.contains("enacted: law-closed-is-not-landed"), "{strip}");
+        let (lines, _) = reader(&it, View::Insights, NOW, 0, 107, 19);
+        let read = text(&lines).join("\n");
+        assert!(read.contains("enacted: law-closed-is-not-landed"), "{read}");
+    }
+
+    /// The mark is FYI's alone. A decision is not a case for a statute, so the column it
+    /// would cost is not spent there.
+    #[test]
+    fn the_mark_never_appears_outside_fyi() {
+        let mut it = enacted_insight("t", "b", "law-x");
+        it.badge = "question".into();
+        let items = Ok(vec![it]);
+        for view in [View::Decisions, View::Notifications] {
+            let mut f = a_frame(&items, 107, 19);
+            f.view = view;
+            assert!(!text(&frame(&f))[1].contains('§'));
+        }
+    }
+
+    /// An advertised key that does nothing is how a footer stops being believed — and an
+    /// unadvertised one is never found at all.
+    #[test]
+    fn both_footers_offer_the_key_in_fyi_and_nowhere_else() {
+        let items = Ok(vec![insight("t", "b")]);
+        let list = text(&frame(&fyi_frame(&items, false)));
+        assert!(list.last().unwrap().contains("L enact"), "{:?}", list.last());
+        let (lines, _) = reader(&insight("t", "b"), View::Insights, NOW, 0, 107, 19);
+        assert!(text(&lines).last().unwrap().contains("L enact"));
+
+        let d = Ok(vec![item("t", "b")]);
+        let plain = text(&frame(&a_frame(&d, 107, 19)));
+        assert!(!plain.last().unwrap().contains("L enact"));
+        let (lines, _) = reader(&item("t", "b"), View::Decisions, NOW, 0, 107, 19);
+        assert!(!text(&lines).last().unwrap().contains("L enact"));
+    }
+
+    /// The compose row names what is being typed. "reason" over a statute would be the same
+    /// class of lie as `⏎ decide` over an insight.
+    #[test]
+    fn the_input_row_says_statute() {
+        let items = Ok(vec![insight("t", "b")]);
+        let mut f = fyi_frame(&items, false);
+        f.mode = Some("enact");
+        f.buf = "closed-is-not-landed: Close a bead when it landed.";
+        let rows = text(&frame(&f));
+        let input = rows.iter().find(|l| l.contains('▸')).expect("an input row");
+        assert!(input.contains("statute"), "{input}");
+        assert!(input.contains("closed-is-not-landed"), "{input}");
+    }
+
+    /// A STATUTE IS LONGER THAN THE PANE. The multi-row input keeps the caret on screen by
+    /// wrapping; no row may exceed the pane width.
+    #[test]
+    fn a_long_statute_keeps_its_caret_on_screen() {
+        let long = format!("slug: {}", "word ".repeat(60));
+        let items = Ok(vec![insight("t", "b")]);
+        let mut f = fyi_frame(&items, false);
+        f.mode = Some("enact");
+        f.buf = &long;
+        let rows = frame(&f);
+        for l in &rows {
+            assert!(strip_len(l) <= 107, "row wider than the pane: {}", strip_len(l));
+        }
+        // The caret block must appear somewhere in the input rows.
+        let has_caret = rows.iter().any(|l| text(&[l.clone()]).first().map(|t| t.contains('█')).unwrap_or(false));
+        assert!(has_caret, "the caret must survive in a long buffer");
     }
 
 }

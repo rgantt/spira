@@ -253,6 +253,14 @@ pub struct Item {
     /// why this column beat the id to the list in the first place; the id, and the absolute
     /// timestamp with it, live on the rule below. See `render::age_since`.
     pub when: String,
+    /// The statute this insight was promoted into, `law-<slug>`, or None.
+    ///
+    /// Read off the `enacted:` label. It is what makes the link resolve in BOTH directions:
+    /// from a statute back to the case that produced it, and from a finding filed a second
+    /// time forward to the rule it already violated — which is the ladder's promotion
+    /// trigger, and was undetectable while a promoted insight and a shrugged-off one carried
+    /// the same `archived` label and nothing else.
+    pub enacted: Option<String>,
     /// The comment thread, oldest first: (author, ISO time, text).
     ///
     /// The thread IS the conversation. the operator: "the conversation in the beads pane is already
@@ -451,6 +459,164 @@ pub fn act(
     }
 }
 
+// ── promotion: an insight becomes a statute ────────────────────────────────────────────
+//
+// AN INSIGHT IS A CANDIDATE LAW. It is what was learned during the
+// work that might carry over — doctrine or a ruling, though not usually couched that way —
+// so the implicit question on an FYI row is not "do you want to act on this?" but "should
+// this be law?", and that is answerable three ways while the view offered two.
+//
+// The pipeline already ran; it simply left no trace. Four of the nine live insights were
+// already doctrine — the disk box with the dead alert channel became
+// law-absence-needs-a-positive-control, a bead closed over a red PR with the statute already
+// in force was a RE-violation, which is the ladder's promotion trigger — and every one was
+// promoted by hand and then archived with the same label as an insight shrugged off as
+// noise. So the feeder for a forty-statute book had no surface, and a statute could not point
+// back at the case that produced it, which is exactly what CLAUDE.md asks of one.
+
+/// The label prefix a promoted insight carries: `enacted:law-<slug>`.
+///
+/// `store` reads it onto `Item::enacted` and the row renders differently for it, so a
+/// promoted finding is visibly distinct from a dismissed one on the surface Ryan reads.
+pub const ENACTED: &str = "enacted:";
+
+/// Split the compose line into `(slug, statute)`.
+///
+/// ONE INPUT, `slug: statute`, split on the FIRST colon — the mode row already exists for
+/// `decide` and `comment`, and a two-step prompt would have been a second piece of state to
+/// hold across a keypress for a separator this cheap. A colon inside the statute is safe
+/// because the slug cannot contain one.
+///
+/// It refuses rather than guesses. A slug is `[a-z0-9-]`, which is what `rule.sh` will turn
+/// into a memory key every agent reads; anything else — a missing colon, capitals, a space —
+/// would otherwise reach the statute book as a key nobody can address, and the caller keeps
+/// the draft so the text typed is never the thing that is lost.
+///
+/// The `law-` prefix is left on if it was typed: `rule.sh` strips and re-adds it, so both
+/// `closed-is-not-landed` and `law-closed-is-not-landed` name the same statute.
+pub fn parse_enact(input: &str) -> Result<(String, String), String> {
+    let (slug, text) = input
+        .split_once(':')
+        .ok_or("no slug — type  <slug>: <statute>")?;
+    let (slug, text) = (slug.trim(), text.trim());
+    if slug.is_empty() {
+        return Err("empty slug — type  <slug>: <statute>".into());
+    }
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(format!("slug '{slug}' is not lower-case-kebab"));
+    }
+    if text.is_empty() {
+        return Err("no statute text after the slug".into());
+    }
+    Ok((slug.to_string(), text.to_string()))
+}
+
+/// Where `rule.sh` is, found rather than known.
+///
+/// NO HARDCODED PATH — a harness that names one operator's checkout is unbuildable for
+/// anyone else, which is the whole reason `spira.conf` exists. `SPIRA_RULE` overrides for a
+/// fixture; otherwise the binary walks up from itself, because this panel lives at
+/// `cockpit/panel/target/*/panel` and the script at `rule.sh` — an ancestor
+/// of wherever the binary was built, debug or release.
+///
+/// It fails loudly when there is none. Guessing a path here would run some other tree's
+/// `rule.sh` against a statute book Ryan is not reading.
+fn rule_sh() -> Result<String, String> {
+    if let Ok(p) = std::env::var("SPIRA_RULE") {
+        if !p.is_empty() {
+            return Ok(p);
+        }
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate myself: {e}"))?;
+    for anc in exe.ancestors() {
+        let c = anc.join("rule.sh");
+        if c.is_file() {
+            return Ok(c.to_string_lossy().to_string());
+        }
+    }
+    Err("rule.sh not found above this binary — set SPIRA_RULE".into())
+}
+
+/// Run a command for its exit status, keeping the END of stderr.
+///
+/// `run` keeps only the FIRST line, which is right for `bd`, whose failures are one line.
+/// `rule.sh`'s refusal is three — the word count, then where the case history belongs — and
+/// the whole point of surfacing it is that Ryan can read why his text was rejected.
+///
+/// THE TAIL, NOT THE HEAD, and that is not a preference. `rule.sh` sources the shared config,
+/// which prints a warning per unknown key in the operator's `spira.conf` before doing
+/// anything at all — four of them here. Joined from the front, those four filled the footer
+/// and pushed the word count off the end of a 107-column row: a refusal that reached the pane
+/// and still could not be read is the same failure as one that never arrived. A program's
+/// complaint about its own input is the last thing it says; preamble is the first.
+///
+/// Three lines, because that is what the refusal is, collapsed to one row because the footer
+/// is one row.
+fn run_verbose(cmd: &str, args: &[&str]) -> Result<(), String> {
+    let mut c = Command::new(cmd);
+    c.args(args).env("PATH", crate::store::child_path());
+    match c.output() {
+        Err(e) => Err(format!("{cmd}: {e}")),
+        Ok(o) if !o.status.success() => {
+            let all = String::from_utf8_lossy(&o.stderr);
+            let lines: Vec<&str> = all
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect();
+            let err = lines[lines.len().saturating_sub(3)..].join(" ");
+            Err(if err.is_empty() {
+                format!("{cmd}: failed with no message")
+            } else {
+                err
+            })
+        }
+        Ok(_) => Ok(()),
+    }
+}
+
+/// Promote an insight: write the statute, then cite the case on the insight.
+///
+/// THE CITATION IS THE POINT, not the convenience of enacting from the pane. `rule.sh` was
+/// always one command away; what did not exist was the back-link, so a re-filed finding could
+/// not be told from a first one and a statute carried no history.
+///
+/// NO WORD-COUNT CHECK HERE. `rule.sh` refuses anything over 130 words and wants ~70, and a
+/// second copy of that number in a second language is a limit that drifts — the two would
+/// disagree the first time one moved. The refusal is surfaced verbatim instead, so the pane
+/// says what the statute book said.
+///
+/// `archived` goes on with the citation, because enacting IS the strongest form of reading
+/// it: the row leaves the live list and `h` shows it, alongside the ones merely dismissed
+/// but no longer confusable with them.
+///
+/// The two writes are ordered and NOT atomic, so the failure between them is reported for
+/// what it is. A statute that exists with no citation on its case is a real state, and
+/// saying "failed" without saying that would send Ryan to re-enact a law already in force.
+pub fn enact(item: &Item, slug: &str, text: &str) -> Result<(), String> {
+    let rule = rule_sh()?;
+    run_verbose(&rule, &["enact", slug, text])?;
+    let key = format!("{ENACTED}law-{}", slug.trim_start_matches("law-"));
+    let db = crate::store::db();
+    run(
+        "bd",
+        &[
+            "-C",
+            &db,
+            "update",
+            &item.id,
+            "--add-label",
+            &key,
+            "--add-label",
+            ARCHIVED,
+        ],
+    )
+    .map_err(|e| format!("enacted law-{slug} but could not label {}: {e}", item.id))
+}
+
 /// A comment is never a completion. Replying used to mark things done, which once recorded
 /// the operator's clarifying question as the evidence that the work was finished.
 pub fn comment(view: View, item: &Item, text: &str) -> Result<(), String> {
@@ -486,6 +652,7 @@ mod tests {
             body: "no completed pass in 40m".into(),
             badge: "alert".into(),
             when: "2026-09-05T10:00:00Z".into(),
+            enacted: None,
             thread: Vec::new(),
             labels: labels.iter().map(|s| s.to_string()).collect(),
         }
@@ -545,5 +712,39 @@ mod tests {
         assert!(!silenced(&junk, 1_788_625_200));
         // And it is still nameable, so `d` in the history can take the bad label off.
         assert!(silence_label(&junk).is_some());
+    }
+
+    #[test]
+    fn a_compose_line_splits_on_the_first_colon() {
+        let (slug, text) = parse_enact("closed-is-not-landed: Close a bead when it LANDED: verify with merge-base.").unwrap();
+        assert_eq!(slug, "closed-is-not-landed");
+        assert_eq!(text, "Close a bead when it LANDED: verify with merge-base.");
+    }
+
+    /// The `law-` prefix is `rule.sh`'s to add, and it strips one that is already there —
+    /// so typing it must not produce `law-law-`.
+    #[test]
+    fn a_typed_law_prefix_is_not_doubled() {
+        let (slug, _) = parse_enact("law-foo: some statute").unwrap();
+        assert_eq!(format!("{ENACTED}law-{}", slug.trim_start_matches("law-")), "enacted:law-foo");
+    }
+
+    /// Every refusal names what to type. An input rejected with no instruction is the same
+    /// dead end as a key that does nothing.
+    #[test]
+    fn a_malformed_line_is_refused_rather_than_guessed() {
+        for bad in ["no colon here", " : text", "Not Kebab: text", "slug:   "] {
+            let e = parse_enact(bad).unwrap_err();
+            assert!(!e.is_empty(), "{bad} must be refused with a reason");
+        }
+        assert!(parse_enact("no colon here").unwrap_err().contains("<slug>"));
+    }
+
+    /// A statute is ~70 words and the pane must not hold a second opinion about the limit:
+    /// a long body parses fine here and is refused by `rule.sh`, which owns the number.
+    #[test]
+    fn the_word_limit_is_not_enforced_here() {
+        let long = format!("slug: {}", "word ".repeat(300));
+        assert!(parse_enact(&long).is_ok());
     }
 }
