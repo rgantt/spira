@@ -53,8 +53,14 @@ verdict() {              # verdict <status> <reason> [message...]
     [ -n "$msg" ] && printf '%s\n' "$msg" >&2
     # The machine-readable line. Anchored and single, so a caller matches the whole shape
     # rather than grepping prose that a reword would silently change.
-    printf 'gate: VERDICT=%s reason=%s branch=%s repo=%s\n' \
-        "$(spira_gate_outcome "$st")" "$reason" "$BR" "${REPO_NAME:-?}" >&2
+    #
+    # IT CARRIES THE SUITE BECAUSE THE CALLER HAS TO KEY ON SOMETHING. A BASE_FAIL is filed
+    # by the landing pass as one incident against the repository, deduped on an external ref,
+    # and a ref built from prose is a ref that changes the day somebody rewords a message —
+    # at which point one broken base files a fresh bead every pass instead of bumping one.
+    # `-` when the repository's gate named nothing identifiable, which is a stable key too.
+    printf 'gate: VERDICT=%s reason=%s branch=%s repo=%s suite=%s\n' \
+        "$(spira_gate_outcome "$st")" "$reason" "$BR" "${REPO_NAME:-?}" "${GATE_SUITE:--}" >&2
     # THE EXIT TRAP IS DISARMED FIRST. It exists to meter the ways out that do not come
     # through here — a `set -e` death, a signal — and if it survived this call every verdict
     # would be metered twice, the second time with the status of whatever ran last inside the

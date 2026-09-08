@@ -36,7 +36,7 @@
 # the pass this suite can reach, and reaping a branch from inside it reproduces the real
 # sequence exactly rather than approximating it.
 #
-# covers: spira/landing.sh spira/lib.sh
+# covers: spira/landing.sh spira/lib.sh spira/incident.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
@@ -54,6 +54,7 @@ testdb_up landing || { echo "test-landing: could not build a fixture database"; 
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 
 REPO="$TMP/repo"; RUN="$TMP/run"; REMOTE="$TMP/remote.git"; SH="$TMP/spira"
+REPONAME=fixture-repo
 git init -q --bare -b main "$REMOTE"
 git init -q -b main "$REPO"
 git -C "$REPO" commit -q --allow-empty -m base
@@ -64,7 +65,13 @@ mkdir -p "$RUN/worktree" "$SH"
 
 # conf.sh travels with lib.sh — lib.sh refuses to run without it, and a harness that copies
 # one and not the other fails at source time, which reads as landing being broken.
-cp "$HERE/landing.sh" "$HERE/lib.sh" "$HERE/conf.sh" "$SH/"
+# incident.sh IS THE REAL ONE, not a stub. The claim under test is "one incident, however
+# many branches and however many passes", and that dedupe is incident.sh's dedupe on the
+# external ref — a stub would reproduce the surface remembered here and prove nothing about
+# it (law-prefer-the-real-dependency). What landing.sh owns is the KEY it hands over; what
+# the intake owns is finding the open bead under it, and both have to hold for the count to
+# stay at one.
+cp "$HERE/landing.sh" "$HERE/lib.sh" "$HERE/conf.sh" "$HERE/incident.sh" "$SH/"
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SH/$1"; chmod +x "$SH/$1"; }
 stub confine.sh 'exit 0'
 
@@ -106,8 +113,19 @@ landing() {
     # SPIRA_REPO_MAP EXPLICITLY and nothing else inherited: a pass that falls back reads the
     # repositories the operator has registered and counts THEIR branches, so a suite
     # asserting about one fixture branch would be asserting about a box.
+    # AND THE ESCALATION CHANNEL IS PINNED SHUT. Two paths out of this pass reach the
+    # operator — the repeated-NO_VERDICT ask and the intake's Sin escalation — and both
+    # resolve their command from configuration. Left unpinned a suite inherits whatever this
+    # box has installed there and puts a fixture's verdict in a real pane
+    # (law-gates-run-in-a-clean-environment).
+    # SPIRA_HOME_REPO IS PINNED, AND TO A NON-DEFAULT. conf.sh only derives it when it is
+    # unset, so an aeon session that exports it hands this pass the name of a real repository
+    # — and the incident below is labelled `repo:<name>`, so the suite would file a fixture's
+    # finding against somebody's actual checkout and then assert against whatever leaked.
     SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
+    SPIRA_HOME_REPO="$REPONAME" \
     SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GH="$SH/gh" \
+    SPIRA_NOTIFY="$TMP/no-such-ask.sh" SPIRA_ASK="$TMP/no-such-ask.sh" \
         bash "$SH/landing.sh" 2>&1
 }
 notes_of() { B show "$1" 2>/dev/null; }
@@ -263,6 +281,85 @@ is     "and its bead stays closed"                         closed "$(status_of s
 want   "and the retry says it could not attempt a rebase"  "the retry could not attempt a rebase of spira/sp-raced" "$out"
 want   "naming the reason rather than a file list"         "(no-branch)" "$out"
 drop_branch sp-raced
+
+# --------------------------------------------------------------------------------------
+# A BASE THAT FAILS ITS OWN GATE: THE BRANCH IS HELD, THE REPOSITORY IS CHARGED
+#
+# The gate has said "it fails against the base too — this branch did not cause it" since
+# BASE_FAIL existed, and the pass already declines to reopen on it. What it did with that
+# sentence afterwards was nothing: a log line saying the next pass would take it, said again
+# every two minutes, while every branch of the repository sat behind a red nobody owned.
+#
+# So three properties, and the third is what makes the first two worth anything. The branch
+# is held rather than reopened; ONE incident is filed however many branches are behind the
+# same red and however many passes go by; and the held branch lands on the pass after the
+# base is green, which is the whole reason holding is the right answer rather than refusing.
+#
+# The gate stub speaks BASE_FAIL's protocol — status 76 and the anchored VERDICT line with
+# its suite — because that line is the contract landing.sh reads, and reading it from prose
+# is the thing the bead forbids.
+# --------------------------------------------------------------------------------------
+echo
+BASE_SUITE=test-fx-base.sh
+stub gate.sh '
+echo "gate: the fixture repository gate failed: '"$BASE_SUITE"' FAILED" >&2
+echo "gate: it fails against origin/main too — this branch did not cause it." >&2
+echo "gate: VERDICT=BASE_FAIL reason=base-red branch=$1 repo=${2:-?} suite='"$BASE_SUITE"'" >&2
+exit 76'
+
+# Every open bead in the builder partition for this repository — by LABEL, not by the dedupe
+# ref, so a second filing under a DIFFERENT ref is counted rather than hidden. Counting the
+# ref alone would report "still one" against exactly the bug this case is written for.
+incidents() {
+    B list --status open,in_progress --limit 0 --label "spira,plan,repo:$REPONAME" --json 2>/dev/null \
+      | python3 -c '
+import json, sys
+try: d = json.load(sys.stdin)
+except Exception: raise SystemExit(0)
+for i in (d if isinstance(d, list) else [d]): print(i["id"])'
+}
+n_lines() { printf '%s' "$1" | grep -c . || true; }
+
+seed; branch sp-held; branch sp-heldtoo
+out="$(landing)"
+want   "a base that fails its own gate holds the branch" \
+       "gate: held — the base fails its own gate" "$out"
+want   "and the hold names the suite the gate named"     "suite $BASE_SUITE" "$out"
+nowant "the bead is not reopened"                        "reopened sp-held" "$out"
+is     "and stays closed"                                closed "$(status_of sp-held)"
+nowant "nor is the second branch behind the same red"    "reopened sp-heldtoo" "$out"
+nowant "and nothing is landed on a withheld verdict"     "landed spira/sp-held" "$out"
+
+inc="$(incidents)"
+is "one incident is filed for the repository" 1 "$(n_lines "$inc")"
+inc_id="$(printf '%s\n' "$inc" | head -1)"
+if [ -n "$inc_id" ]; then
+    shown="$(B show "$inc_id" 2>&1)"
+    want "it names the failing suite"                  "$BASE_SUITE" "$shown"
+    want "and the repository whose base is red"        "$REPONAME" "$shown"
+    want "and says no bead was reopened or charged"    "no attempt charged" "$shown"
+    want "and carries the gate's own output"           "this branch did not cause it" "$shown"
+    labels="$(B label list "$inc_id" 2>&1)"
+    want "it lands in the builders partition"          "plan" "$labels"
+    want "labelled with the repository"                "repo:$REPONAME" "$labels"
+fi
+
+# THE SECOND PASS IS THE IDEMPOTENCE. Nothing is reseeded: the same two branches meet the
+# same red, and a pass that filed per branch or per pass would have four beads by now.
+out2="$(landing)"
+is   "a second pass files no second incident"  1 "$(n_lines "$(incidents)")"
+want "it bumps a recurrence on the first"      "sp-recur-2" "$(B label list "$inc_id" 2>&1)"
+want "and holds the branch again"              "gate: held — the base fails its own gate" "$out2"
+is   "with the bead still closed"              closed "$(status_of sp-held)"
+
+# AND THE HOLD IS A HOLD, NOT A LOSS. Holding is only the right answer if the work still
+# lands once the base is fixed; without this the case above is equally satisfied by a pass
+# that quietly dropped the branch on the floor.
+stub gate.sh 'echo "gate: VERDICT=PASS reason=stub branch=$1 repo=${2:-?} suite=-" >&2; exit 0'
+out3="$(landing)"
+want "a held branch lands on the pass after the base is green" "landed spira/sp-held" "$out3"
+want "and so does the one behind it"                           "landed spira/sp-heldtoo" "$out3"
+drop_branch sp-held; drop_branch sp-heldtoo
 
 # --------------------------------------------------------------------------------------
 # THE CLASSIFICATION BOTH GUARDS REST ON. rebase_branch returns 1 four ways and only one of

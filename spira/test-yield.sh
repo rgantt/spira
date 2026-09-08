@@ -171,6 +171,13 @@ map_gate "$ALWAYS"
 branch spira/sp-innocent innocent.txt
 rungate spira/sp-innocent > "$TMP/innocent.out" 2>&1; rc=$?
 is "the gate refuses it as BASE_FAIL, not FAIL" 76 "$rc"
+# AND THE VERDICT LINE CARRIES THE SUITE, because the landing pass keys an incident on it.
+# A BASE_FAIL holds every branch of the repository and is filed as one bead against it,
+# deduped on repository-plus-suite; read from the prose instead, that key would change the
+# day somebody rewords a message and one broken base would file a fresh bead every pass.
+want "and its verdict line names the suite, not only its prose" \
+     "VERDICT=BASE_FAIL reason=base-red branch=spira/sp-innocent repo=repo suite=test-boxreader.sh" \
+     "$(cat "$TMP/innocent.out")"
 
 R="$(yield report)"
 is "it lands as a GATE FAULT on arrival" 1 "$(f "$R" YIELD_FAULT)"
@@ -188,8 +195,10 @@ want "the worst offender is named by its suite" "test-boxreader.sh" "$(f "$R" YI
 # somebody deletes.
 map_gate 'echo "everything is broken" >&2; false'
 branch spira/sp-anon anon.txt
-rungate spira/sp-anon >/dev/null 2>&1
+rungate spira/sp-anon > "$TMP/anon.out" 2>&1
 want "a red naming no suite records no suite" "suite=-" "$(cat "$YDIR"/*sp-anon* 2>/dev/null)"
+want "and its verdict line says so too, rather than omitting the field" \
+     "suite=-" "$(cat "$TMP/anon.out")"
 R="$(yield report)"
 want "and is attributed to the gate's reason instead" "base-red" "$(f "$R" YIELD_TOP_FAULT)"
 

@@ -251,6 +251,75 @@ land_mark() {            # land_mark <id> <state> <tip> [reason]
 # dropped (sp-idml). One line per bead, written where the transition happens, costs nothing
 # and is the input any answer to that will need.
 
+# =======================================================================================
+# A BASE THAT FAILS ITS OWN GATE IS THE REPOSITORY'S BUG, AND IT NEEDS AN OWNER
+# =======================================================================================
+# BASE_FAIL already costs the branch nothing — no reopen, no attempt. That is the half that
+# stops the harm; on its own it also means nothing is ever done about it. A repository whose
+# gate is red against its own base refuses EVERY branch of that repository, and the only
+# trace was a log line saying the next pass would take it, repeated every two minutes. The
+# reopens are gone; the silence that replaced them is the other half of the same defect.
+#
+# SO THE FINDING GETS AN IDENTITY: one bead, in the builder's partition, labelled with the
+# repository whose base is broken. Filed through incident.sh because that intake already
+# spools the payload before touching the database, dedupes on an external ref, bumps a
+# recurrence instead of filing a second, and escalates once past SIN_AT recurrences — none of
+# which is worth a second implementation, and the recurrence count is exactly the signal
+# wanted here: a base red for five passes is a base nobody is fixing.
+#
+# THE REF IS THE REPOSITORY AND THE SUITE, and deliberately not the branch or the bead. Five
+# branches blocked by one broken base are one incident, not five; that is the whole meaning
+# of "idempotent" here, and a ref carrying either identifier would file one bead per branch
+# per pass and rebuild the 300-copy queue the dedupe exists to prevent. The suite comes from
+# the gate's own VERDICT line rather than from its prose, so a reworded message cannot
+# silently split one incident into two.
+#
+# IT IS A DEFECT, NOT AN OUTAGE, so the labels are the builder's rather than Ops's: fixing a
+# red suite on a base means changing code, and Ops has eight minutes and a runbook.
+INC="${SPIRA_INCIDENT:-$SPIRA_HOME/incident.sh}"
+base_incident() {        # base_incident <repo> <suite> <reason> <branch> <base> <gate output>
+    local name="$1" suite="$2" reason="$3" br="$4" base="$5" out="$6" id named
+    if [ ! -r "$INC" ]; then
+        log "CHECK6 $name: no intake at $INC — the base's own red reaches nobody"
+        return 1
+    fi
+    # A gate that named no suite says so IN the bead. `-` alone reads as a formatting fault
+    # and sends whoever claims this looking for a field that was never filled in.
+    named="$suite"
+    [ "$named" = - ] && named="- (the gate named none; read its output below)"
+    # THE ID IS THE LAST LINE, NOT THE WHOLE OUTPUT. incident.sh logs through `tee`, so its
+    # progress lines share stdout with the id it returns and a bare capture takes both.
+    id="$(SPIRA_INCIDENT_TYPE=bug \
+          SPIRA_INCIDENT_PRIORITY=1 \
+          SPIRA_INCIDENT_ACTOR=landing \
+          SPIRA_INCIDENT_LABELS="spira,plan,repo:$name" \
+          SPIRA_INCIDENT_REF="basefail:$name:$suite" \
+          bash "$INC" file "$name's own gate fails against $base — nothing can land" - <<PAYLOAD
+$name's landing gate was run against $base itself and failed there, so every branch of
+this repository is refused for a condition no branch caused. No bead has been reopened and
+no attempt charged: the branches are held, and they land on the pass after this is fixed.
+
+  repository       $name
+  base             $base
+  failing suite    $named
+  gate verdict     BASE_FAIL (${reason:-base-red})
+  first noticed by $br, which is not at fault
+  reproduce        $SPIRA_HOME/gate.sh $base $name
+
+The dedupe key is the repository and the suite, so every other branch blocked by this same
+red bumps a recurrence on this bead rather than filing another one.
+
+--- the gate's own output -------------------------------------------------------------
+$(printf '%s\n' "$out" | tail -c 6000)
+PAYLOAD
+)" || { log "CHECK6 $name: the intake could not file the base's red — it stays spooled and drain will retry"; return 1; }
+    id="$(printf '%s' "$id" | tail -1 | tr -d '[:space:]')"
+    case "$id" in
+        "$SPIRA_ID_PREFIX"*) log "CHECK6 $name: the base's own red is $id (suite ${suite:--})" ;;
+        *) log "CHECK6 $name: the intake returned no bead id for the base's red — check $INC" ; return 1 ;;
+    esac
+}
+
 SUBMITTED="$SPIRA_RUN/submitted"
 submitted() {            # 0 if nothing more to do for this tip right now
     local id="$1" tip="$2" f="$SUBMITTED/$1" rec_tip rec_at rec_state
@@ -344,7 +413,7 @@ PRBODY
 land_repo() {
     local name="$1" repo br id st mode base land tip merged pushed nothing wedged attempt brs
     local bead_repo_name bead_repo_path gate_out base_branch base_remote bead_labels
-    local norebase was _ref _obj
+    local norebase was _ref _obj gate_suite basefail_filed=
     local -A enum_tip=()
     repo="$(repo_root "$name")" || { log "CHECK6 $name: no repo-map entry — skipped"; return 0; }
     [ -e "$repo/.git" ] || { log "CHECK6 $name: $repo is not a git checkout — skipped"; return 0; }
@@ -591,12 +660,25 @@ print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_hom
         #
         # `spira_gate_blames_branch` is the one place that decides, so the landing pass, the
         # sentinel and any future caller cannot drift apart on it.
+        #
+        # THREE ARMS BELOW, BECAUSE "NOT THE BRANCH'S FAULT" IS NOT ONE ANSWER. A BASE_FAIL
+        # has an owner — the repository whose gate is red against its own base — and it is
+        # filed as work for whoever can change that code. A NO_VERDICT has none: nobody can
+        # be handed a lock or a deadline, so it is counted and, if it keeps recurring, put in
+        # front of the operator. Only a FAIL reopens the bead.
         # ------------------------------------------------------------------------------
         gate_outcome="$(spira_gate_outcome "$gate_rc")"
         # The gate's own machine-readable line, when it produced one. Read anchored, so a
         # reword of the prose around it cannot quietly turn every verdict into "unknown".
         gate_reason="$(printf '%s' "$gate_out" \
             | sed -n 's/^gate: VERDICT=[A-Z_]* reason=\([^ ]*\).*$/\1/p' | tail -1)"
+        # The suite the repository's own gate named, for the incident's dedupe key. Read from
+        # the same anchored line and never from the prose around it: the key has to survive a
+        # reword, or one broken base files a fresh bead every pass. `-` when the gate named
+        # none, which is a stable key too.
+        gate_suite="$(printf '%s' "$gate_out" \
+            | sed -n 's/^gate: VERDICT=.* suite=\([^ ]*\).*$/\1/p' | tail -1)"
+        [ -n "$gate_suite" ] || gate_suite=-
 
         if [ "$gate_rc" -ne 0 ]; then
             # A VERDICT THAT BLAMES NOBODY IS RECORDED ON THE BEAD ANYWAY. The bead is where
@@ -606,9 +688,33 @@ print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_hom
             log "CHECK6 $id: gate $gate_outcome on $br in $name (${gate_reason:-unspecified})"
 
             land_mark "$id" GATED "$tip" "$gate_outcome:${gate_reason:-unspecified}"
+
+            # THE BASE'S OWN FAULT. Held, not reopened, not charged — and unlike a machinery
+            # fault this one has a determinate owner, so it is filed against the repository
+            # rather than escalated to the operator. The counter below is for a fault nobody
+            # can be handed; a red base can be handed to whoever can change the code.
+            #
+            # ONCE PER REPOSITORY PER PASS. The intake dedupes on the ref, so a second call
+            # would be correct and would still cost a database round trip and a recurrence
+            # note for every held branch — five held branches would read as five recurrences
+            # of a thing that happened once, and SIN_AT would escalate inside a single pass.
+            if [ "$gate_rc" = "$SPIRA_GATE_BASEFAIL" ]; then
+                # NOT `progress`. A held branch is not a movement of the DAG, and sending one
+                # across the seam would mute the judgement tier's only check on paralysis —
+                # which is precisely the condition a red base creates (see `act` above).
+                log "CHECK6 $id: gate: held — the base fails its own gate; $name's gate is red against $base too (suite $gate_suite)"
+                if [ "${basefail_filed:-}" != 1 ]; then
+                    basefail_filed=1
+                    base_incident "$name" "$gate_suite" "${gate_reason:-base-red}" \
+                                  "$br" "$base" "$gate_out"
+                fi
+                continue
+            fi
+
             if ! spira_gate_blames_branch "$gate_rc"; then
-                # NOT THE BRANCH'S FAULT: no reopen, no attempt, no note that reads as a
-                # rejection. The branch keeps its turn and the next pass takes it.
+                # NO_VERDICT — the machinery could not judge, and no one can be handed that:
+                # no reopen, no attempt, no note that reads as a rejection. The branch keeps
+                # its turn and the next pass takes it.
                 #
                 # BUT A MACHINERY FAULT THAT REPEATS IS AN ESCALATION, not a retry forever.
                 # Retrying forever is exactly what made today's livelock invisible — the pass
