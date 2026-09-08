@@ -115,6 +115,38 @@ else:
 PY
 }
 
+# Every spira-owned path must exist on the filesystem: a deletion that leaves its row
+# standing passes the staleness check undetected, which is how the rows this bead removes
+# survived the gate for three commits after the files were deleted.
+fscheck() {
+    REPO="$(cd "$HERE/.." && pwd -P)"
+    python3 - "$MANIFEST" "$REPO" <<'PY'
+import sys, os
+
+manifest, repo = sys.argv[1], sys.argv[2]
+rc = 0
+for line in open(manifest):
+    line = line.strip()
+    if not line or line.startswith("#") or "|" not in line:
+        continue
+    parts = [p.strip() for p in line.split("|", 2)]
+    if len(parts) != 3:
+        continue
+    owner, path_field, _ = parts
+    if owner != "spira":
+        continue
+    for p in path_field.split(","):
+        p = p.strip()
+        if " " in p:
+            continue  # prose, not a filesystem path
+        full = os.path.join(repo, p.rstrip("/"))
+        if not os.path.exists(full):
+            print(f"boundary: {p!r} is in the manifest but does not exist in the repository", file=sys.stderr)
+            rc = 1
+sys.exit(rc)
+PY
+}
+
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 BODY="$TMP/body.md"
 
@@ -141,6 +173,7 @@ write)
 check)
     render > "$BODY" || exit 1
     rc=0
+    fscheck || rc=1
     for f in "$README" "$WIKI"; do
         [ -f "$f" ] || continue
         cp "$f" "$TMP/copy"
