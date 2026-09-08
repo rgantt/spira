@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+#
+# test-cockpit-landed.sh — the worked/landed row is 24h, and never-landed means irrecoverable.
+#
+#   ./test-cockpit-landed.sh
+#
+# THE FAILURE THIS SUITE EXISTS FOR. The "of the N an aeon worked" row was all-time under a
+# "24h" header, so comparing it against the 24h closed/opened counts produced nonsense. And
+# "never landed" counted every closed bead whose id did not appear in a commit, including
+# ones whose branch was still present and queued to land — reporting a healthy landing queue
+# as data loss.
+#
+# THREE STATES, NOT TWO. A closed bead without a commit is awaiting landing if its branch is
+# still present, and never landed only when no commit AND no branch carries it. The latter is
+# the irrecoverable case the figure exists for, and a false alarm on the former displaces the
+# suspicion that would catch a real one (law-alerts-must-be-actionable).
+#
+# covers: spira/cockpit.sh cockpit/health.sh
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/testdb.sh"
+testdb_require cockpit-landed
+testdb_up cockpit-landed
+
+pass=0; fail=0
+ok()  { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
+bad() { fail=$((fail+1)); printf '  FAIL  %s: %s\n' "$1" "$2"; }
+is()     { [ "$2" = "$3" ] && ok "$1" || bad "$1" "wanted [$2] got [$3]"; }
+want()   { [[ "$3" == *"$2"* ]] && ok "$1" || bad "$1" "wanted [$2] in [$3]"; }
+nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3]"; }
+
+TMP="$(mktemp -d)"
+trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
+BASE_PATH="$PATH"
+BD_PATH="${SPIRA_PATH:-}"
+REAL_BD="$(PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" command -v bd)"
+[ -n "$REAL_BD" ] || { echo "SKIP cockpit-landed: no bd binary" >&2; exit 77; }
+
+REPO="$TMP/repo"
+git init -q "$REPO"                                    # hermetic-ok: throwaway fixture repo in $TMP
+git -C "$REPO" commit --allow-empty -m "init" -q       # hermetic-ok: seed commit for the fixture
+BASE_BR="$(git -C "$REPO" branch --show-current)"
+
+MAP="$TMP/repo-map"
+# Base left empty so spira_landref falls through to rung 4 (HEAD), which is the test
+# fixture's case: no remote, the local branch is the only truth there is.
+cat > "$MAP" <<MAP
+# name | path | land | base | format | gate
+work | $REPO | push | | |
+MAP
+RUN="$TMP/run"; mkdir -p "$RUN"
+
+# --- fixture: four closed beads, three within 24h, one outside ---
+# closed_at timestamps: "now" for the 24h cases, 48h ago for the old one.
+NOW_ISO="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+OLD_ISO="$(date -u -d '48 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
+
+testdb_seed <<JSONL
+{"id":"sp-land","title":"landed work","status":"closed","closed_at":"$NOW_ISO","labels":["spira","plan","repo:work"]}
+{"id":"sp-wait","title":"awaiting work","status":"closed","closed_at":"$NOW_ISO","labels":["spira","plan","repo:work"]}
+{"id":"sp-gone","title":"lost work","status":"closed","closed_at":"$NOW_ISO","labels":["spira","plan","repo:work"]}
+{"id":"sp-oldd","title":"old closed","status":"closed","closed_at":"$OLD_ISO","labels":["spira","plan","repo:work"]}
+JSONL
+
+# All four have aeon logs (the evidence a session ran).
+for _id in sp-land sp-wait sp-gone sp-oldd; do
+    touch "$RUN/$_id.log"
+done
+
+# sp-land: a commit on the base branch names it → landed.
+git -C "$REPO" checkout -q "$BASE_BR"
+git -C "$REPO" commit --allow-empty -m "sp-land fix" -q   # hermetic-ok: fixture commit
+
+# sp-wait: a branch exists but no commit on the base branch names it → awaiting landing.
+git -C "$REPO" checkout -q -b spira/sp-wait
+git -C "$REPO" commit --allow-empty -m "sp-wait work" -q   # hermetic-ok: fixture commit
+git -C "$REPO" checkout -q "$BASE_BR"
+
+# sp-gone: no commit anywhere, no branch → never landed (irrecoverable).
+# (nothing to do — the absence is the fixture)
+
+# sp-oldd: a commit names it on the base branch, but it was closed >24h ago.
+git -C "$REPO" commit --allow-empty -m "sp-oldd fix" -q   # hermetic-ok: fixture commit
+
+# ======================================================================================
+echo "closed-vs-landed — three-way classification and 24h scoping:"
+
+out="$(env -i PATH="$BASE_PATH" HOME="$TMP" LC_ALL=C.UTF-8 \
+    SPIRA_CONF="$TMP/no.conf" SPIRA_HOME="$HERE" \
+    SPIRA_REPO="$REPO" SPIRA_HOME_REPO=work \
+    SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_BD="$REAL_BD" \
+    SPIRA_REPO_MAP="$MAP" SPIRA_GOAL=sp-test SPIRA_FAYTHS=t \
+    SPIRA_PATH="$BD_PATH" \
+    bash "$HERE/cockpit.sh" once 2>/dev/null)"
+
+val() { printf '%s' "$out" | grep "^$1=" | head -1 | sed "s/^$1=//"; }
+
+# --- the 24h scoping: sp-oldd is excluded, so 3 beads not 4 ---
+is "SP_CLOSED is 24h-scoped" "3" "$(val SP_CLOSED)"
+
+# --- the three-way classification ---
+is "SP_LANDED counts committed work"              "1" "$(val SP_LANDED)"
+is "SP_AWAITING_LAND counts branch-present work"   "1" "$(val SP_AWAITING_LAND)"
+is "SP_UNLANDED counts irrecoverable only"         "1" "$(val SP_UNLANDED)"
+
+# --- positive control: the probe found something ---
+want "output contains SP_AT"             "SP_AT=" "$out"
+want "output contains SP_AWAITING_LAND"  "SP_AWAITING_LAND=" "$out"
+
+echo
+printf 'test-cockpit-landed: %d ok, %d fail\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

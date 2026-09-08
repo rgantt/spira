@@ -815,11 +815,6 @@ standing_lines() {
         "$fail_col" "${SP_SENT_FAILED:-?}" "$C_RST" "$C_DIM" "$C_RST"
 
     # 24H — throughput, and whether closing meant landing.
-    # TWO POPULATIONS, TWO LINES. "closed 27 ... landed 21 unlanded 0" read as six beads
-    # closed without landing. It was not: 27 is every bead closed in 24h INCLUDING ones
-    # closed by hand with no branch to land, while landed/unlanded count only beads an
-    # aeon worked, all-time. Same row, different denominators — the most misleading shape
-    # a dashboard can take, since both numbers were correct.
     printf ' %sBEADS%s  %s24h%s  closed %s · %sopened%s %s\n' \
         "$C_DIM" "$C_RST" "$C_DIM" "$C_RST" "${SP_CLOSED_24H:-?}" \
         "$C_DIM" "$C_RST" "${SP_OPENED_24H:-?}"
@@ -827,10 +822,14 @@ standing_lines() {
     # it — and on their own row they can be four kinds rather than however many fit.
     fit "${SP_CLOSED_KINDS:--}" $(( COLS - 8 ))
     printf '        %s%s%s\n' "$C_DIM" "$FIT" "$C_RST"
-    printf '        %sof the %s an aeon worked:%s %s landed · %s%s never landed%s\n' \
+    # THE ROW STATES ITS OWN WINDOW. Previously it inherited "24h" from the header while its
+    # population was all-time, so comparing it against the 24h closed/opened counts above
+    # produced nonsense — 59% of the row was outside its header's window.
+    printf '        %s24h worked %s:%s %s landed · %s%s awaiting%s · %s%s never landed%s\n' \
         "$C_DIM" "${SP_CLOSED:-?}" "$C_RST" "${SP_LANDED:-?}" \
+        "$C_DIM" "${SP_AWAITING_LAND:-0}" "$C_RST" \
         "$( [ "${SP_UNLANDED:-0}" = 0 ] && printf '%s' "$C_OK" || printf '%s' "$C_BAD$C_B")" "${SP_UNLANDED:-?}" "$C_RST"
-    printf '        %snever landed = closed, but no commit names it%s\n' "$C_DIM" "$C_RST"
+    printf '        %snever landed = closed, no commit names it, no branch carries it%s\n' "$C_DIM" "$C_RST"
 
     # GRAPH — the beads themselves, kept apart from sessions and asks so the counts cannot
     # be read as the same kind of thing.

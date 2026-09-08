@@ -594,35 +594,43 @@ print("SP_NEEDSOP=%d"  % sum(1 for i in work if i.get("status") != "closed" and 
     echo "SP_READY=$(count "${PLAN_READY_ARGS[@]}")"
 
     # ---- closed versus landed ----------------------------------------------------------
-    # law-closed-is-not-landed as a running total. A bead closed with no commit naming it
-    # unblocks its dependents on a lie, and everything downstream then builds on work that
-    # is not there.
+    # law-closed-is-not-landed as a 24h figure matching the header it sits under. The
+    # population is beads an aeon worked AND closed within the last 24 hours, so the row's
+    # window agrees with the throughput row above it. Previously this was all-time, which
+    # produced nonsense when compared against the 24h closed/opened counts on the same block.
     #
-    # THE POPULATION IS BEADS AN AEON WORKED, which is CHECK 5's population exactly: a
-    # `<id>.log` in the run directory is the evidence that a session ran. Beads closed by
-    # hand before the runner existed — sp-collapse-db and sp-freeze-mayor — have no commit
-    # naming them and never will, so counting them would pin this line at a permanent
-    # `2 unlanded` that is true, unactionable and therefore wallpaper, which is the failure
-    # law-alerts-must-be-actionable is about. Scoped this way the number is normally 0 and
-    # any other value is something to go and look at.
+    # A `<id>.log` in the run directory is the evidence that a session ran. The 24h filter
+    # uses the bead's closed_at timestamp.
     #
-    # ONE `git log`, then a membership test per id. A git invocation per closed bead is the
-    # shape that makes a collector too slow to run often.
-    local closed_ids subjects
+    # THREE STATES, NOT TWO. A closed bead with no commit naming it is not necessarily lost:
+    # if its branch still exists it is awaiting landing — a healthy, normally non-zero state.
+    # Only a bead with no commit AND no branch is irrecoverable (law-alerts-must-be-actionable).
+    #
+    # ONE `git log` plus ONE `for-each-ref` per repo, then membership tests per id.
+    local closed_ids subjects branches
     # THE BEAD'S REPOSITORY COMES OUT OF THE SAME QUERY AS ITS ID, because reading the wrong
     # repository's commit graph is wrong confidently in both directions: another repository's bead
     # that landed perfectly reads as unlanded in brain, and a panel that reports finished
     # work as lost is the same false alert as one that reports lost work as finished.
     closed_pairs="$(bdjson list --status closed --limit 0 --label spira,plan 2>/dev/null | python3 -c '
-import sys, json, os
+import sys, json, os, datetime
 run, home = sys.argv[1], sys.argv[2]
 try: d = json.load(sys.stdin)
 except Exception: raise SystemExit
+cut = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+def when(v):
+    try: return datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except Exception: return None
 for i in (d if isinstance(d, list) else [d]):
     if os.path.exists(os.path.join(run, i["id"] + ".log")):
-        repo = next((l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")), home)
-        print("%s %s" % (i["id"], repo))' "$SPIRA_RUN" "$(spira_home_repo)" 2>/dev/null)"
+        ts = when(i.get("closed_at") or i.get("updated_at"))
+        if ts and ts >= cut:
+            repo = next((l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")), home)
+            print("%s %s" % (i["id"], repo))' "$SPIRA_RUN" "$(spira_home_repo)" 2>/dev/null)"
     closed_ids="$(printf '%s\n' "$closed_pairs" | awk 'NF{print $1}')"
+    if [ -z "$closed_ids" ]; then
+        echo "SP_CLOSED=0"; echo "SP_LANDED=0"; echo "SP_AWAITING_LAND=0"; echo "SP_UNLANDED=0"
+    else
     # ONE FETCH PER REPOSITORY THAT ACTUALLY HAS A CLOSED BEAD IN IT, and none at all for the
     # rest. This runs on the collector loop; fetching every registered repository each pass
     # would be thousands of round trips a day to answer a question about repositories with no
@@ -637,6 +645,7 @@ for i in (d if isinstance(d, list) else [d]):
     # an unknown revision, so BOTH repositories contributed no subjects at all and every
     # closed bead in them counted as unlanded on the panel the operator reads.
     subjects=""
+    branches=""
     for _r in $(printf '%s\n' "$closed_pairs" | awk 'NF{print $2}' | sort -u); do
         _p="$(repo_root "$_r")" || continue
         [ -e "$_p/.git" ] || continue
@@ -645,22 +654,36 @@ for i in (d if isinstance(d, list) else [d]):
         # shellcheck disable=SC2086
         subjects="$subjects
 $(git -C "$_p" log --format='%s%n%b' -n 2000 $_refs 2>/dev/null)"
+        branches="$branches
+$(git -C "$_p" for-each-ref --format='%(refname:short)' 'refs/heads/spira/' 'refs/remotes/*/spira/' 2>/dev/null)"
     done
-    if [ -z "$closed_ids" ] || [ -z "$subjects" ]; then
-        echo "SP_CLOSED=?"; echo "SP_LANDED=?"; echo "SP_UNLANDED=?"
+    if [ -z "$subjects" ] && [ -z "$branches" ]; then
+        echo "SP_CLOSED=?"; echo "SP_LANDED=?"; echo "SP_AWAITING_LAND=?"; echo "SP_UNLANDED=?"
     else
-        printf '%s' "$subjects" | python3 -c '
+        printf '%s\n---\n%s' "$subjects" "$branches" | python3 -c '
 import sys, re
 ids = [i for i in sys.argv[1].split() if i]
-text = sys.stdin.read()
+raw = sys.stdin.read()
+parts = raw.split("\n---\n", 1)
+text = parts[0]
+br_lines = parts[1].split("\n") if len(parts) > 1 else []
 # Bounded on both sides, so `sp-ops` does not match a commit naming `sp-ops-sop`. The commit
 # subject is the only machine-checkable link between a closed bead and the commit graph
 # (law-aeon-commits-name-their-bead), which is worth matching exactly.
-landed = sum(1 for i in ids if re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(i), text))
-print("SP_CLOSED=%d"   % len(ids))
-print("SP_LANDED=%d"   % landed)
-print("SP_UNLANDED=%d" % (len(ids) - landed))
-' "$closed_ids" 2>/dev/null || { echo "SP_CLOSED=?"; echo "SP_LANDED=?"; echo "SP_UNLANDED=?"; }
+landed = awaiting = never = 0
+for i in ids:
+    if re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(i), text):
+        landed += 1
+    elif any(b.rstrip().endswith("/" + i) for b in br_lines if b.strip()):
+        awaiting += 1
+    else:
+        never += 1
+print("SP_CLOSED=%d"        % len(ids))
+print("SP_LANDED=%d"        % landed)
+print("SP_AWAITING_LAND=%d" % awaiting)
+print("SP_UNLANDED=%d"      % never)
+' "$closed_ids" 2>/dev/null || { echo "SP_CLOSED=?"; echo "SP_LANDED=?"; echo "SP_AWAITING_LAND=?"; echo "SP_UNLANDED=?"; }
+    fi
     fi
 
     # ---- live aeons --------------------------------------------------------------------
