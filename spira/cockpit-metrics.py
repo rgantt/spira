@@ -202,7 +202,12 @@ def sending_metrics(lines, since):
     # counted 240 times and the pane read "held 221" for 23 distinct branches. A number
     # that large invites the reader to think something is wrong; the truth was that the
     # same refusal was working, repeatedly.
-    sent = failed = 0
+    # EVERY ONE OF THESE IS A SET OF BRANCH IDS. held/kept were made sets when "held 221"
+    # turned out to be 23 branches; sent/failed were left as bare counters under that very
+    # comment and had the identical defect — the pane read "184 fiends" for TWO branches,
+    # sp-gate-rebuild (89 passes) and sp-supersede-key (4). A refusal that repeats every two
+    # minutes is the check working, not a backlog growing, and only a set can say so.
+    sent_ids, failed_ids = set(), set()
     held_ids, kept_ids = set(), set()
     # sending.sh's own output carries NO timestamp of its own — it is printed inside a pass
     # and captured verbatim. So attribute each line to the most recent timestamped line
@@ -217,20 +222,27 @@ def sending_metrics(lines, since):
             continue
         t = line.strip()
         if t.startswith("REAPED"):
-            sent += 1
+            parts = t.split()
+            if len(parts) > 1: sent_ids.add(parts[1])
         elif t.startswith("HELD"):
             parts = t.split()
             if len(parts) > 1: held_ids.add(parts[1])
         elif t.startswith("KEEP"):
             parts = t.split()
             if len(parts) > 1: kept_ids.add(parts[1])
-        elif t.startswith("FAILED") or "could not delete" in t:
-            failed += 1
+        # ONE EVENT, COUNTED ONCE. This used to also match sentinel.sh's own line, "sending
+        # reported a branch it could not delete" — which is a per-pass SUMMARY of this very
+        # output, emitted only when a FAILED line is already present in it. Counting both
+        # doubled every failure: 93 real refusals rendered as 186. A second layer reporting
+        # the same event is not a second observation of it.
+        elif t.startswith("FAILED"):
+            parts = t.split()
+            if len(parts) > 1: failed_ids.add(parts[1])
     return {
-        "SP_SENT": sent,
+        "SP_SENT": len(sent_ids),
         "SP_SENT_HELD": len(held_ids),
         "SP_SENT_KEPT": len(kept_ids),
-        "SP_SENT_FAILED": failed,
+        "SP_SENT_FAILED": len(failed_ids),
     }
 
 
