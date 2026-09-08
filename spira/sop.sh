@@ -106,7 +106,27 @@ set -uo pipefail
 # `synth` renders into the operator's wiki, which is the one thing here the harness must not
 # require. SPIRA_WIKI is empty on a clone that has no wiki, and `synth` says so and stops
 # rather than deriving a path that happens to resolve (rule 2 of the boundary).
-OUT="${SOP_PAGE:-${SPIRA_WIKI:+$SPIRA_WIKI/wiki/notes/standard-operating-procedures.md}}"
+#
+# But SPIRA_WIKI unconditionally is wrong when the caller is already standing in a WORKTREE
+# of it — an Ops aeon works in its own worktree of the wiki repo, and a worktree can commit
+# only its own tree. Writing into SPIRA_WIKI itself lands the regenerated page on the shared
+# checkout every other worktree hangs off, uncommitted, for the next `git add -A` anywhere in
+# it to sweep up. Resolve by GIT COMMON DIR, not by path name: every worktree of one
+# repository shares a common dir, and that is the one comparison a worktree at an arbitrary
+# path still passes — a bare `rev-parse --show-toplevel` would only agree by coincidence.
+_sop_wiki_worktree_root() {
+    local cwd_top cwd_git wiki_git
+    cwd_top="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+    cwd_git="$(git -C "$cwd_top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+    wiki_git="$(git -C "$SPIRA_WIKI" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+    [ "$cwd_git" = "$wiki_git" ] || return 1
+    printf '%s\n' "$cwd_top"
+}
+OUT="${SOP_PAGE:-}"
+if [ -z "$OUT" ] && [ -n "${SPIRA_WIKI:-}" ]; then
+    _sop_wiki_root="$(_sop_wiki_worktree_root || true)"
+    OUT="${_sop_wiki_root:-$SPIRA_WIKI}/wiki/notes/standard-operating-procedures.md"
+fi
 WORD_CAP="${SOP_WORD_CAP:-250}"
 
 # WHERE THE APPLICATIONS LEDGER LIVES. Under the runtime directory and so NOT a config key,
