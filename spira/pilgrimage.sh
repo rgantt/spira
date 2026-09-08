@@ -49,8 +49,11 @@ set -uo pipefail
 
 # AND-scoped: an epic must carry ALL of these labels to be in Spira's partition.
 SPIRA_EPIC_LABELS="${SPIRA_EPIC_LABELS:-spira}"
-# The human edge. Mail is dropped between agents but survives for human <-> agent, which
-# is the cockpit's queue; `ask.sh insight` is that queue's "record, not work" entry.
+# The human edge. A completed pilgrimage is an OUTCOME — what happened — so it is emitted as
+# `ask.sh note`, a closed `event` bead the panel's NOTIFICATIONS view reads. It used to be
+# emitted as `ask.sh insight`, and that was the defect: an insight is what was LEARNED and
+# might become law, and two announcements (sp-94h, hq-5enm) sat in that queue as outcomes
+# wearing an insight's label because there was only one bin.
 # An epic with no explicit watcher still notifies. `gt convoy watch` existed and almost
 # nothing ever called it, so completion stayed a capability rather than an event.
 # Subscription therefore defaults ON, and `unwatch <epic>` with no address is how you opt
@@ -129,7 +132,8 @@ deliver() {   # deliver <addr> <epic-id> <subject> <body>
     case "$addr" in
         "$SPIRA_OPERATOR_ACTOR"|operator|cockpit)
             [ "$DRY" = 1 ] && { log "  would notify $SPIRA_OPERATOR: $subject"; return 0; }
-            "$SPIRA_NOTIFY" insight "$subject" --why "$body" >/dev/null 2>&1
+            "$SPIRA_NOTIFY" note "$subject" --kind pilgrimage.complete \
+                --target "$id" --why "$body" >/dev/null 2>&1
             ;;
         bead:*)
             [ "$DRY" = 1 ] && { log "  would note ${addr#bead:}: $subject"; return 0; }

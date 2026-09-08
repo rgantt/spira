@@ -14,7 +14,7 @@
 # are waiting on a reply". The suite worked around it with a sleep 2 — the tell that the
 # ordering is the program's to establish and not the test's to arrange around.
 #
-# covers: cockpit/unanswered.sh
+# covers: cockpit/unanswered.sh cockpit/ask.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 COCKPIT="$(cd "$HERE/../cockpit" && pwd -P)"
@@ -93,6 +93,68 @@ want "COCKPIT_HUMAN reassigns whose turn it is" "sp-done2" "$out"
 nowant "and takes the default's threads off the list" "sp-rev" "$out"
 
 # ======================================================================================
+# ======================================================================================
+echo
+echo "ask.sh note — an outcome, which is not an insight and not an ask"
+
+testdb_reset
+ev() { "$BD" -C "$DB" list --all --limit 0 -t event --json 2>/dev/null | sed -n '/^[[{]/,$p'; }
+one() { ev | python3 -c 'import json,sys;r=json.load(sys.stdin);print((r[0] if r else {}).get(sys.argv[1]) or "")' "$1"; }
+
+out="$("$COCKPIT/ask.sh" note "sp-x landed on master" --kind bead.landed --target sp-x \
+        --why "the commit naming it is an ancestor of origin/master" 2>&1)"
+want "the verb reports the kind it recorded" "bead.landed" "$out"
+eq   "it is an event, not a task"        "event"        "$(one issue_type)"
+eq   "event_kind is set to the taxonomy" "bead.landed"  "$(one event_kind)"
+# CREATED CLOSED. An OPEN event is claimable work — that is trap 2 of sp-q7k — and the
+# harness reaps and retries anything that sits open with the plan's labels on it.
+eq   "and created closed, because it is a record" "closed" "$(one status)"
+eq   "carrying no labels at all"          "[]"          "$(ev | python3 -c 'import json,sys;r=json.load(sys.stdin);print(json.dumps((r[0] if r else {}).get("labels") or []))')"
+
+# THE LABEL THAT WOULD PUT IT IN THE WRONG QUEUE. `overseer` is what DECISIONS matches on,
+# so an event carrying it renders as a thing awaiting the operator; `insight` puts it straight
+# back in the bin this verb exists to empty.
+body="$(one description)"
+# The LABELS, not the whole row: `created_by` is `overseer` on everything this harness
+# writes, so a grep over the JSON would pass for the wrong reason and keep passing.
+labels="$(ev | python3 -c 'import json,sys;r=json.load(sys.stdin);print(",".join((r[0] if r else {}).get("labels") or []))')"
+nowant "an event is not labelled overseer" "overseer" ",$labels,"
+nowant "an event is not labelled insight"  "insight"  ",$labels,"
+# It must not read like an ask either — the framing the operator objected to was in the text.
+nowant "its body does not ask for a verdict" "Answer inline" "$body"
+nowant "nor tell them something is blocked"  "What is blocked" "$body"
+want   "it says nothing is owed"             "Nothing is owed" "$body"
+
+# AN EMITTED EVENT IS NOT CLAIMABLE. This is the property, checked through the sentinel's
+# own predicate rather than by reasoning about it: `bd ready` with the plan's labels.
+ready="$("$BD" -C "$DB" ready --limit 0 --exclude-type epic --label spira,plan \
+          --exclude-label spira-poison,needs-ryan --json 2>/dev/null | sed -n '/^[[{]/,$p')"
+nowant "an emitted event is not returned by the sentinel's ready predicate" \
+       "$(one id)" "${ready:-[]}"
+# ...and the check could have found something: a bead that IS claimable shows up in it.
+testdb_seed <<'JSONL'
+{"id":"sp-work","title":"real work","description":"d","status":"open","issue_type":"task","labels":["spira","plan"]}
+JSONL
+ready="$("$BD" -C "$DB" ready --limit 0 --exclude-type epic --label spira,plan \
+          --exclude-label spira-poison,needs-ryan --json 2>/dev/null | sed -n '/^[[{]/,$p')"
+want "and that predicate does return claimable work, so its silence means something" \
+     "sp-work" "${ready:-[]}"
+
+# THE TAXONOMY IS VALIDATED, NOT TRUSTED. Free text in event_kind is what makes the panel's
+# badge unreadable, and `event_kind` is varchar(32) — a longer one is truncated by the
+# database rather than reported by the tool.
+out="$("$COCKPIT/ask.sh" note "a thing" --kind "Pilgrimage Complete!" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok "a free-text kind is refused" || bad "a free-text kind is refused" "$out"
+out="$("$COCKPIT/ask.sh" note "a thing" --kind "$(printf 'a%.0s' $(seq 40))" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok "a kind longer than the column is refused" \
+                || bad "a kind longer than the column is refused" "$out"
+eq "and neither wrote a bead" "1" "$(ev | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))')"
+
+out="$("$COCKPIT/ask.sh" list events 2>&1)"
+want "the events view lists it by kind" "bead.landed" "$out"
+nowant "and the insights view does not" "bead.landed" "$("$COCKPIT/ask.sh" list insights 2>&1)"
+nowant "nor the needs-you view"         "bead.landed" "$("$COCKPIT/ask.sh" list 2>&1)"
+
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -92,6 +92,11 @@ fi
 # rebuilt on epic beads; pilgrimage.sh holds the detection, the watcher list and the manual
 # entry points (`pilgrimage.sh list|watch|unwatch`).
 #
+# The announcement the operator sees is an EVENT — a closed `event` bead of kind
+# `pilgrimage.complete`, emitted through `ask.sh note`. Machinery writes outcomes, never
+# insights: an insight is what an agent LEARNED and might become law, and mixing outcomes
+# into that queue is how the one bin that survived a refresh filled with completion notices.
+#
 # Generalised past $SPIRA_GOAL deliberately. The goal epic is only one pilgrimage, and a
 # harness that can announce exactly one of them announces nothing the moment a second
 # design is in flight — which is the state Gas Town was in with six convoys open.

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
-# ask — put a question, decision or insight in front of the operator, stored as a bead.
+# ask — put a question, decision, insight or event in front of the operator, stored as a bead.
 #
 #   ask.sh add "<question>"        [--why "<what is blocked>"] [--default "<what I'd do>"]
 #   ask.sh decide "<the choice>"   [--why ...] [--default ...]
 #   ask.sh insight "<what was learned>" [--why "<why it matters>"]
-#   ask.sh list [needs-you|insights|all]
+#   ask.sh note "<what happened>" --kind <event.kind> [--why ...] [--target <bead>]
+#   ask.sh list [needs-you|insights|events|all]
 #   ask.sh answered <bead-id> "<verdict>"
 #   ask.sh drop <bead-id> "<reason>"
 #
@@ -18,10 +19,20 @@
 # and comments, and one store rather than two. (The operator, verbatim: "the current data
 # model is guaranteeing sync issues and data loss".)
 #
-# THE THREE KINDS, AND THE TYPES THAT ACTUALLY EXIST
+# THE FOUR KINDS, AND THE TYPES THAT ACTUALLY EXIST
 #   question  -> type `decision`, label $SPIRA_ASK_LABEL  open; the close reason IS the verdict
 #   decision  -> type `decision`, label $SPIRA_ASK_LABEL  open; the close reason IS the verdict
 #   insight   -> type `task`,     label insight      created CLOSED — there is nothing to do
+#   note      -> type `event`,    NO labels at all   created CLOSED — an outcome, not work
+#
+# AN EVENT AND AN INSIGHT ARE DIFFERENT THINGS, and conflating them is what this verb exists
+# to end. An EVENT is an outcome: what happened, written by the
+# machinery, read and moved on from, with no thread. An INSIGHT is what was LEARNED during
+# the work and might carry over — candidate law, doctrine or ruling — written by an agent.
+# With only one bin, the machinery used the other one: three of the fourteen beads labelled
+# `insight` were `PILGRIMAGE COMPLETE — <bead>: <title>` emitted by pilgrimage.sh (sp-94h,
+# hq-5enm, sp-fv9, all now retyped). Those are outcomes wearing an insight's label, and they
+# crowd out the thing the insights view is for.
 #
 # beads validates issue_type against a fixed set: task, bug, epic, feature, chore, decision,
 # spike, rig, event. `question`, `insight`, `note` and `idea` are NOT types, whatever
@@ -79,19 +90,26 @@ compose() { # kind why default evidence
     local kind="$1" why="$2" dflt="$3" ev="${4:-}" body=""
     [ -n "$dflt" ] && body="${body}**Default — what I would do:** ${dflt}"$'\n\n'
     if [ -n "$why" ]; then
-        if [ "$kind" = insight ]; then
-            body="${body}**Why it matters:** ${why}"$'\n\n'
-        else
-            body="${body}**What is blocked:** ${why}"$'\n\n'
-        fi
+        case "$kind" in
+            # Nothing is blocked by an outcome — that is what makes it an outcome. Saying so
+            # is the same defect as the insight that opened with "**What is blocked:**".
+            event)   body="${body}**Detail:** ${why}"$'\n\n' ;;
+            insight) body="${body}**Why it matters:** ${why}"$'\n\n' ;;
+            *)       body="${body}**What is blocked:** ${why}"$'\n\n' ;;
+        esac
     fi
     # THE EVIDENCE TRAVELS WITH THE ASK. (the operator, verbatim: "with a failure like this,
     # i want to see the log itself in the decision pane. i don't know what's being asked of
     # me here!") An escalation naming a path they cannot open from the pane is a problem report
     # wearing a decision's clothes: they must go find the facts before they can even tell what is
     # being asked, which is the work the escalation existed to do for them.
-    [ -n "$ev" ] && body="${body}**Evidence**"$'\n'"\`\`\`"$'\n'"${ev}"$'\n'"\`\`\`"$'\n\n' 
-    if [ "$kind" = insight ]; then
+    [ -n "$ev" ] && body="${body}**Evidence**"$'\n'"\`\`\`"$'\n'"${ev}"$'\n'"\`\`\`"$'\n\n'
+    if [ "$kind" = event ]; then
+        # An event has no thread and nothing is owed, so it says neither how to answer it nor
+        # how to dismiss it — it is read and moved on from. Saying anything else here is how
+        # every insight ever recorded came to open with "**What is blocked:**".
+        body="${body}_An outcome, recorded by the machinery. Nothing is owed and there is no thread._"
+    elif [ "$kind" = insight ]; then
         body="${body}_Recorded by the brain session. Nothing is owed — this is a record, not a_"$'\n'
         body="${body}_request. Press \`d\` in the cockpit pane to dismiss it; \`h\` brings it back._"
     else
@@ -103,11 +121,40 @@ compose() { # kind why default evidence
 
 create() { # type text why default labels
     local type="$1" text="$2" why="$3" dflt="$4" labels="$5" out id kind=ask
+    local prio=1; local -a extra=()
     : "${EV:=}"
+    if [ "$type" = event ]; then
+        kind=event
+        # P2, not P1. An event is a firehose and it is created closed, so its priority is
+        # inert — but a stream of P1 rows is what every count of "urgent" reads off.
+        prio=2
+        # THE TAXONOMY IS THE POINT, so the kind is validated rather than trusted. Free text
+        # here makes the panel's badge unreadable, and `event_kind` is varchar(32) — a longer
+        # one is the database's problem to report, at write time, silently.
+        case "${KIND:-}" in
+            "") echo "ask: an event needs --kind (e.g. pilgrimage.complete, bead.landed, note)" >&2; return 1 ;;
+            *[!a-z0-9.]*|.*|*.|*..*) echo "ask: --kind '$KIND' is not a taxonomy — use lowercase dotted segments, e.g. bead.landed" >&2; return 1 ;;
+        esac
+        [ "${#KIND}" -le 32 ] || { echo "ask: --kind '$KIND' is ${#KIND} chars; event_kind holds 32" >&2; return 1; }
+        extra+=(--event-category "$KIND")
+        [ -n "${TARGET:-}" ] && extra+=(--event-target "$TARGET")
+        # A FENCE, because these labels are what every OTHER reader keys on. `overseer` is
+        # what DECISIONS matches, so an event carrying it lands in the queue of things
+        # awaiting the operator; `insight` puts it back in the bin this verb exists to empty;
+        # and `spira`/`plan` on an event that ever reaches `bd ready` makes it claimable work
+        # by an aeon. The emitters pass no labels at all, so this only ever fires on a new one.
+        local bad
+        for bad in overseer needs-ryan insight spira plan; do
+            case ",$labels," in *",$bad,"*)
+                echo "ask: refusing to label an event '$bad' — that label is how another reader claims or queues it" >&2
+                return 1 ;;
+            esac
+        done
+    fi
     # The kind is read off the labels rather than passed separately: the labels are already
     # what every reader — the pane, `ask.sh list`, watch-answers.sh — uses to tell an insight
     # from an ask, and a second source for the same fact is a second thing to get out of step.
-    case ",$labels," in *,insight,*) kind=insight ;; esac
+    [ "$kind" = ask ] && case ",$labels," in *,insight,*) kind=insight ;; esac
     # THE ID COMES FROM `--json`, NEVER FROM A GREP OVER THE HUMAN OUTPUT.
     #
     # `bd create` prepends an advisory when a title looks like test data, and that advisory
@@ -120,8 +167,9 @@ create() { # type text why default labels
     # "sp-pane-insights-fyi" yielded `sp-pane`, and the `bd delete` that followed removed the
     # sp-pane EPIC, its three labels and all seven of its dependency edges. Restored from
     # Dolt history; nothing about the command said it had addressed the wrong bead.
-    out=$(bdt create --title "$text" --type "$type" -p 1 \
-            --labels "$labels" -d "$(compose "$kind" "$why" "$dflt" "$EV")" --json 2>&1)
+    out=$(bdt create --title "$text" --type "$type" -p "$prio" \
+            --labels "$labels" -d "$(compose "$kind" "$why" "$dflt" "$EV")" \
+            ${extra+"${extra[@]}"} --json 2>&1)
     id=$(python3 -c '
 import json, re, sys
 t = sys.stdin.read()
@@ -143,12 +191,17 @@ for line in t.splitlines():
     printf '%s' "$id"
 }
 
-parse_opts() { # sets WHY / DFLT from remaining args
-    WHY=""; DFLT=""; EV=""
+parse_opts() { # sets WHY / DFLT / KIND / TARGET from remaining args
+    WHY=""; DFLT=""; EV=""; KIND=""; TARGET=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --why)     WHY="${2:-}"; shift 2 ;;
             --default) DFLT="${2:-}"; shift 2 ;;
+            # An event only. --kind is the taxonomy the panel renders as the badge, and
+            # --target the bead the outcome happened TO, kept in the row's own `target`
+            # column rather than spelled into the title, so a reader can filter on it.
+            --kind)    KIND="${2:-}"; shift 2 ;;
+            --target)  TARGET="${2:-}"; shift 2 ;;
             # --evidence carries the facts themselves; --evidence-file reads them from a
             # file, which is the usual case because the facts are normally a log tail.
             --evidence) EV="${2:-}"; shift 2 ;;
@@ -186,6 +239,23 @@ insight|learned)
     id=$(create task "$text" "$WHY" "" "insight,overseer") || exit 1
     bdt close "$id" --reason "recorded" >/dev/null 2>&1
     echo "insight [$id] $text"
+    ;;
+
+note|event)
+    # AN OUTCOME, NOT AN ASK AND NOT AN INSIGHT. Landings, reclaims, CI verdicts and completed
+    # pilgrimages had nowhere durable to go: they flashed on the health pane's RECENT line for
+    # one repaint and scrolled away, so the only bin that survived a refresh was the insights
+    # queue — and the machinery used it.
+    #
+    # Created then immediately closed, for the same reason an insight is, and one more: an
+    # OPEN event carrying the plan's labels is claimable by an aeon. It carries no labels at
+    # all, so `bd ready --label spira,plan` cannot see it even before it is closed.
+    shift; text="${1:?usage: ask.sh note \"<what happened>\" --kind <event.kind> [--why ...] [--target <bead>]}"; shift || true
+    parse_opts "$@"
+    : "${KIND:=note}"
+    id=$(create event "$text" "$WHY" "" "") || exit 1
+    bdt close "$id" --reason "recorded" >/dev/null 2>&1
+    echo "event [$id] $KIND: $text"
     ;;
 
 promote)
@@ -267,13 +337,18 @@ rows = rows if isinstance(rows, list) else rows.get("issues", [])
 def lab(r): return set(r.get("labels") or [])
 def kind(r):
     l = lab(r)
+    if r.get("issue_type") == "event": return r.get("event_kind") or "event"
     if "insight" in l: return "insight"
     if "ask-decision" in l: return "decision"
     if "ask-task" in l: return "task"
     if "ask-question" in l: return "question"
     return r.get("issue_type") or "?"
 mine = [r for r in rows if "overseer" in lab(r)]
-if view in ("insights", "insight"):
+if view in ("events", "event"):
+    # NOT filtered through `mine`: an event carries no labels at all, by design, so
+    # `overseer` is exactly what it must not have. The type IS the filter here.
+    sel = [r for r in rows if r.get("issue_type") == "event" and "archived" not in lab(r)]
+elif view in ("insights", "insight"):
     # Archived insights have been read and dismissed; they stay in `all`, not here.
     sel = [r for r in mine if "insight" in lab(r) and "archived" not in lab(r)]
 elif view == "all":
@@ -282,10 +357,10 @@ else:
     sel = [r for r in mine if "insight" not in lab(r) and r.get("status") == "open"]
 sel.sort(key=lambda r: r.get("created_at") or "", reverse=True)
 for r in sel[:40]:
-    print("  [%s] %-8s %-9s %s" % (r["id"], kind(r), r.get("status"), (r.get("title") or "")[:76]))
+    print("  [%s] %-19s %-9s %s" % (r["id"], kind(r), r.get("status"), (r.get("title") or "")[:76]))
 print()
 print("  %d %s" % (len(sel), view))' "${2:-needs-you}"
     ;;
 
-*) sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+*) sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
