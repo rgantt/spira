@@ -30,11 +30,11 @@ REPO="$TMP/repo"
 git init -q --bare -b main "$REMOTE"
 git init -q -b main "$REPO"
 printf 'initial content\n' > "$REPO/f.txt"
-GIT_AUTHOR_NAME=op GIT_AUTHOR_EMAIL="op@operator.example" \
-GIT_COMMITTER_NAME=op GIT_COMMITTER_EMAIL="op@operator.example" \
+GIT_AUTHOR_NAME=op GIT_AUTHOR_EMAIL="op@example.com" \
+GIT_COMMITTER_NAME=op GIT_COMMITTER_EMAIL="op@example.com" \
 git -C "$REPO" add -A
-GIT_AUTHOR_NAME=op GIT_AUTHOR_EMAIL="op@operator.example" \
-GIT_COMMITTER_NAME=op GIT_COMMITTER_EMAIL="op@operator.example" \
+GIT_AUTHOR_NAME=op GIT_AUTHOR_EMAIL="op@example.com" \
+GIT_COMMITTER_NAME=op GIT_COMMITTER_EMAIL="op@example.com" \
 git -C "$REPO" commit -q -m "initial"
 git -C "$REPO" remote add origin "$REMOTE"
 git -C "$REPO" push -q origin main
@@ -84,7 +84,7 @@ want "aeon on base branch: names the override" "--no-verify" "$out"
 # ---------------------------------------------------------------------------------------
 # NEGATIVE CONTROL 1 — operator identity on base branch must be allowed through.
 # ---------------------------------------------------------------------------------------
-rc=0; run_guard "op@operator.example" "$REPO" || rc=$?
+rc=0; run_guard "op@example.com" "$REPO" || rc=$?
 is "operator on base branch: guard exits 0" 0 "$rc"
 
 # ---------------------------------------------------------------------------------------
@@ -144,11 +144,11 @@ esac
 # After an operator commit on top, the aeon is no longer the tip. Check should be clean.
 # ---------------------------------------------------------------------------------------
 printf 'operator restores order\n' >> "$REPO/f.txt"
-GIT_AUTHOR_NAME=op GIT_AUTHOR_EMAIL="op@operator.example" \
-GIT_COMMITTER_NAME=op GIT_COMMITTER_EMAIL="op@operator.example" \
+GIT_AUTHOR_NAME=op GIT_AUTHOR_EMAIL="op@example.com" \
+GIT_COMMITTER_NAME=op GIT_COMMITTER_EMAIL="op@example.com" \
 git -C "$REPO" add -A
-GIT_AUTHOR_NAME=op GIT_AUTHOR_EMAIL="op@operator.example" \
-GIT_COMMITTER_NAME=op GIT_COMMITTER_EMAIL="op@operator.example" \
+GIT_AUTHOR_NAME=op GIT_AUTHOR_EMAIL="op@example.com" \
+GIT_COMMITTER_NAME=op GIT_COMMITTER_EMAIL="op@example.com" \
 git -C "$REPO" commit -q -m "chore: operator commit restoring a clean tip"
 git -C "$REPO" push -q origin main
 
