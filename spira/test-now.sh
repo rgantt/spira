@@ -477,6 +477,71 @@ if [ -z "$badcols" ]; then
 else
     fail=$((fail+1)); printf '  FAIL  a section label is misaligned:\n%s\n' "$badcols"
 fi
+
+echo
+echo "model substitution — FAYTH_MODEL beside the trace MODEL, flagged when they differ"
+
+# THE FIXTURE HAS A MISMATCH BETWEEN FAYTH_MODEL AND MODEL. The fayth declared opus 4.6 but
+# the trace says sonnet 4.6 ran — a provider substitution. The NOW row must show a ⚠ marker
+# so the operator can see the discrepancy without reading the raw trace.
+#
+# THE POSITIVE CONTROL COMES FIRST. A fixture whose NOW row never renders passes this check
+# silently regardless of the marker — the same trap the WIN alignment check hit. SP_AEON_N=1
+# with all required fields guarantees the row is there; the presence assertion proves it.
+{ printf 'SP_AEON_N=1\nSP_AEON0_NAME=valefor\nSP_AEON0_FAYTH=builder\nSP_AEON0_BEAD=sp-sub\n'
+  printf 'SP_AEON0_MIN=5\nSP_AEON0_TURNS=10\nSP_AEON0_CTX=50000\nSP_AEON0_FILES=3\n'
+  printf 'SP_AEON0_QUIET=30\nSP_AEON0_ACT=Bash cargo test\n'
+  printf 'SP_AEON0_MODEL=claude-sonnet-4-6\n'
+  printf 'SP_AEON0_FAYTH_MODEL=claude-opus-4-6\n'
+  printf 'SP_AEON0_TITLE=substitution bead\nSP_NEXT_N=0\nSP_AWAITING_N=0\n'; } | snap
+sub="$(pane 0)"
+# THE ROW MUST RENDER BEFORE WE CHECK ITS CONTENTS. A grep against an absent row would
+# silently pass against the bug (law-absence-needs-a-positive-control).
+is_n "the NOW row renders (positive control)" 1 \
+     "$(printf '%s\n' "$sub" | grep -c '^ NOW ')"
+if grep -qF '⚠' <<< "$sub"; then
+    pass=$((pass+1)); printf '  ok    a model substitution renders the ⚠ marker\n'
+else
+    fail=$((fail+1)); printf '  FAIL  a model substitution produced no ⚠ marker:\n%s\n' "$sub"
+fi
+# THE DECLARED MODEL MUST APPEAR TOO, not just the marker. The marker alone says "these
+# differ" but not which was requested; the operator needs both to understand what happened.
+if grep -qF 'opus 4.6' <<< "$sub"; then
+    pass=$((pass+1)); printf '  ok    the declared FAYTH_MODEL (opus 4.6) appears beside the marker\n'
+else
+    fail=$((fail+1)); printf '  FAIL  the declared FAYTH_MODEL (opus 4.6) was not rendered:\n%s\n' "$sub"
+fi
+
+# NO MARKER WHEN THE MODELS MATCH. The normal case must be silent so the marker is meaningful
+# only when there is something to flag.
+{ printf 'SP_AEON_N=1\nSP_AEON0_NAME=valefor\nSP_AEON0_FAYTH=builder\nSP_AEON0_BEAD=sp-ok\n'
+  printf 'SP_AEON0_MIN=5\nSP_AEON0_TURNS=10\nSP_AEON0_CTX=50000\nSP_AEON0_FILES=3\n'
+  printf 'SP_AEON0_QUIET=30\nSP_AEON0_ACT=Bash cargo test\n'
+  printf 'SP_AEON0_MODEL=claude-opus-4-6\n'
+  printf 'SP_AEON0_FAYTH_MODEL=claude-opus-4-6\n'
+  printf 'SP_AEON0_TITLE=normal bead\nSP_NEXT_N=0\nSP_AWAITING_N=0\n'; } | snap
+match="$(pane 0)"
+if grep -qF '⚠' <<< "$match"; then
+    fail=$((fail+1)); printf '  FAIL  matching models still rendered the ⚠ marker:\n%s\n' "$match"
+else
+    pass=$((pass+1)); printf '  ok    no marker when trace MODEL and FAYTH_MODEL match\n'
+fi
+
+# UNREADABLE FAYTH_MODEL DOES NOT PRODUCE A MARKER. A ? means the collector could not read
+# the fayth file; folding it into a mismatch would flag every aeon whose fayth is unknown.
+{ printf 'SP_AEON_N=1\nSP_AEON0_NAME=valefor\nSP_AEON0_FAYTH=builder\nSP_AEON0_BEAD=sp-unk\n'
+  printf 'SP_AEON0_MIN=5\nSP_AEON0_TURNS=10\nSP_AEON0_CTX=50000\nSP_AEON0_FILES=3\n'
+  printf 'SP_AEON0_QUIET=30\nSP_AEON0_ACT=Bash cargo test\n'
+  printf 'SP_AEON0_MODEL=claude-sonnet-4-6\n'
+  printf 'SP_AEON0_FAYTH_MODEL=?\n'
+  printf 'SP_AEON0_TITLE=unknown fayth model\nSP_NEXT_N=0\nSP_AWAITING_N=0\n'; } | snap
+unk="$(pane 0)"
+if grep -qF '⚠' <<< "$unk"; then
+    fail=$((fail+1)); printf '  FAIL  an unreadable FAYTH_MODEL (?) rendered the ⚠ marker:\n%s\n' "$unk"
+else
+    pass=$((pass+1)); printf '  ok    no marker when FAYTH_MODEL is ? (unreadable)\n'
+fi
+
 fi
 
 # ---------------------------------------------------------------------------------------

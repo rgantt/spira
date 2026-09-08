@@ -157,6 +157,14 @@ print("%s\t%s\t%s" % (i.get("priority"), partition,
         echo "SP_AEON${i}_TITLE=${title:-?}"
         echo "SP_AEON${i}_NAME=${name:-?}"
         echo "SP_AEON${i}_FAYTH=${fay:-?}"
+        # FAYTH_MODEL is what this aeon was summoned with — the model the fayth file declared.
+        # The trace's own MODEL is what actually ran; the two differ when a provider substitutes
+        # silently without error. Reading the chamber file rather than the aeon's environment lets
+        # the collector emit it without a second pass over the trace. `?` when the file cannot be
+        # read, never empty (law-absence-needs-a-positive-control).
+        local _fayth_mdl
+        _fayth_mdl="$(sed -n 's/^FAYTH_MODEL=//p' "$HERE/chamber/$fay.fayth" 2>/dev/null | head -1)"
+        echo "SP_AEON${i}_FAYTH_MODEL=${_fayth_mdl:-?}"
         echo "SP_AEON${i}_BEAD=${bead:-?}"
         echo "SP_AEON${i}_MIN=$(( ${secs:-0} / 60 ))"
         # HOW HEALTHY THE SESSION IS, not merely that it exists. TURNS CTX TOOLS FILES QUIET

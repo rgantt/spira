@@ -545,6 +545,7 @@ now_section() {
         # would have prompted a look (law-absence-needs-a-positive-control).
         eval "local tn=\${SP_AEON${i}_TURNS:-?} cx=\${SP_AEON${i}_CTX:-?}"
         eval "local md=\${SP_AEON${i}_MODEL:-?}"
+        eval "local fm=\${SP_AEON${i}_FAYTH_MODEL:-?}"
         eval "local fl=\${SP_AEON${i}_FILES:-?} qt=\${SP_AEON${i}_QUIET:-?}"
         eval "local sd=\${SP_AEON${i}_SAID:-}"
         # WHO, then WHAT, then the live action — one question per line. Crammed onto
@@ -564,7 +565,19 @@ now_section() {
         # exactly when it matters — a fayth edited mid-flight leaves the running session on
         # the model it was summoned with — and a pane sourcing the file would relabel live
         # work at the moment somebody is looking (law-long-lived-processes-pin-their-config).
-        fit "the $fy on $(model_short "$md") · ${mn}m · $tn turns · ctx $(tok "$cx") · $fl files" \
+        #
+        # FAYTH_MODEL IS THE DECLARED MODEL — what the persona file says to request. When the
+        # trace MODEL and FAYTH_MODEL both resolve to real values but differ, a provider
+        # substitution occurred silently: the summon ran a different model than was asked for.
+        # The marker ⚠ followed by the declared model makes the mismatch visible so the
+        # operator can see which model actually ran. An unreadable value renders `?` — it is
+        # never folded into a match (law-absence-needs-a-positive-control).
+        local model_disp
+        model_disp="$(model_short "$md")"
+        if [ "$md" != "?" ] && [ "$md" != "-" ] && [ "$fm" != "?" ] && [ "$fm" != "-" ] && [ "$md" != "$fm" ]; then
+            model_disp="$model_disp ⚠$(model_short "$fm")"
+        fi
+        fit "the $fy on $model_disp · ${mn}m · $tn turns · ctx $(tok "$cx") · $fl files" \
             $(( COLS - 9 - ${#nm} ))
         printf ' %s%s%s    %s%s%s %s%s%s\n' \
             "$C_DIM" "$([ "$i" = 0 ] && printf 'NOW' || printf '   ')" "$C_RST" \
