@@ -243,12 +243,84 @@ ${estart[$u]}"
     return 0
 }
 
+# wr_sigterm <pid> — factored out so tests can redefine it without shimming a builtin.
+wr_sigterm() { kill -TERM "$1" 2>/dev/null || true; }
+
+# Where to look for process information. Tests override this to a scratch tree.
+WR_PROC_ROOT="${WR_PROC_ROOT:-/proc}"
+
+# wr_reap_orphans [dry] — terminate any watch-answers.sh or `watchd.sh tail` process whose
+# cgroup is not under spira-watch@.
+#
+# WHY /proc, NOT pgrep -f. pgrep -f matches the CALLER's command line: a script whose body
+# contains the pattern it searches finds itself among the results, and the signal it sends
+# ends the sweep. That trap fired live during the 2026-09-08 hand sweep and reported one
+# survivor that was the enumerating shell itself. Reading /proc/$pid/cmdline is the kernel's
+# own argv; skipping $$ is the only remaining self-match to guard against.
+#
+# WHY CGROUP, NOT FIRST-ARRIVAL. An flock (sp-21hk) would have given the lock to whichever
+# process arrived first — an 8-hour-old orphan takes it and shuts the supervised unit out.
+# Cgroup membership selects on who OWNS the process, not who arrived first: a process inside
+# spira-watch@ is there because systemd put it there, and this path cannot touch it.
+#
+# COST. One grep across all /proc/*/cmdline files, then one tr and one cgroup read per
+# candidate. Candidates are usually zero or one. Kept separate from wr_pass so the staleness
+# check's two-exec invariant stays exact and measurable independently.
+wr_reap_orphans() {
+    local dry="${1:-}"
+
+    # One scan across every cmdline in proc — the grep exec is the price of this whole pass
+    # in the common case of no candidates.
+    local -a candidates=()
+    while IFS= read -r f; do
+        candidates+=("${f%/cmdline}")
+    done < <(grep -ral 'watch-answers\.sh\|watchd\.sh' \
+                 "$WR_PROC_ROOT"/[0-9]*/cmdline 2>/dev/null)
+
+    [ "${#candidates[@]}" -gt 0 ] || return 0
+
+    local dir pid argv
+    for dir in "${candidates[@]}"; do
+        pid="${dir##*/}"
+        [ "$pid" = "$$" ] && continue   # never signal ourselves
+
+        # Confirm the verb. For watchd.sh, only `tail` invocations are targets; `exec` is the
+        # supervised daemon verb, and the cgroup guard below would protect those processes
+        # anyway — this is belt and braces.
+        argv="$(tr '\0' ' ' 2>/dev/null < "$dir/cmdline")" || continue
+        case "$argv" in
+            *watch-answers.sh*) : ;;
+            *watchd.sh*)
+                case "$argv" in *" tail "*) : ;; *) continue ;; esac ;;
+            *) continue ;;
+        esac
+
+        # THE GUARD. A process inside spira-watch@ is supervised; this path must never touch
+        # it. Cgroup membership is what systemd writes and nothing else can write it.
+        grep -q 'spira-watch@' "$dir/cgroup" 2>/dev/null && continue
+
+        if [ -n "$dry" ]; then
+            printf '%s would reap orphan pid %s: %s\n' "$(wr_stamp)" "$pid" "$argv"
+            continue
+        fi
+        printf '%s reaping orphan pid %s: %s\n' "$(wr_stamp)" "$pid" "$argv"
+        wr_sigterm "$pid"
+    done
+    return 0
+}
+
 # Sourceable. When this file is sourced — by a test, or by anything that wants the pass as a
 # function — it defines and does not act.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     case "${1:-run}" in
-        run)            wr_pass ;;
-        --dry-run|-n)   wr_pass dry ;;
+        run)
+            wr_pass; _wr_rc=$?
+            wr_reap_orphans
+            exit $_wr_rc ;;
+        --dry-run|-n)
+            wr_pass dry; _wr_rc=$?
+            wr_reap_orphans dry
+            exit $_wr_rc ;;
         *) echo "usage: watch-refresh.sh [--dry-run]" >&2; exit 2 ;;
     esac
 fi

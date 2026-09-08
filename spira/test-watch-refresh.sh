@@ -350,19 +350,96 @@ printf 'cron|log|/tmp/x.log\n' > "$MANNONE"
 read -r p f < "$TMP/subshell-counts"; pass="$p"; fail="$f"
 
 echo
+echo "orphan reaping — watchers outside spira-watch@ are terminated"
+# A fake /proc tree lets us test the reaper without touching real processes or real cgroups.
+# PIDs are arbitrary integers; the reaper only reads files, it never signals real pids here
+# because wr_sigterm is redefined inside runreap to append to a log instead.
+FAKEPROC="$TMP/proc"
+REAP_ACT="$TMP/reap_acted"
+REAP_OUT="$TMP/reap_out"
+REAP_ERR="$TMP/reap_err"
+
+SUPERVISED_PID=10001    # in spira-watch@ cgroup — must never be signalled
+ORPHAN_PID=10002        # NOT in spira-watch@, running watch-answers.sh
+TAIL_PID=10003          # NOT in spira-watch@, running watchd.sh tail
+
+mkdir -p "$FAKEPROC/$SUPERVISED_PID" "$FAKEPROC/$ORPHAN_PID" "$FAKEPROC/$TAIL_PID"
+
+# supervised: systemd put it in spira-watch@answers.service
+printf 'bash\0%s\0' "$COCKPIT/watch-answers.sh" > "$FAKEPROC/$SUPERVISED_PID/cmdline"
+printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/spira-watch@answers.service\n' \
+    > "$FAKEPROC/$SUPERVISED_PID/cgroup"
+
+# orphan watch-answers.sh: started by hand, outside any spira-watch@ unit
+printf 'bash\0%s\0' "$COCKPIT/watch-answers.sh" > "$FAKEPROC/$ORPHAN_PID/cmdline"
+printf '0::/user.slice/user-1000.slice/user@1000.service/\n' \
+    > "$FAKEPROC/$ORPHAN_PID/cgroup"
+
+# orphan tail: watchd.sh tail from a dead session
+printf 'bash\0%s\0tail\0answers\0' "$CLONE/spira/watchd.sh" > "$FAKEPROC/$TAIL_PID/cmdline"
+printf '0::/user.slice/user-1000.slice/user@1000.service/\n' \
+    > "$FAKEPROC/$TAIL_PID/cgroup"
+
+# runreap [dry] — runs wr_reap_orphans against the fake proc tree. wr_sigterm is redefined
+# to log the pid it would signal rather than sending a real signal.
+runreap() {
+    : > "$REAP_ACT"
+    env -i HOME="$TMP/home" PATH="$PATH" SPIRA_CONF="$CONF" SPIRA_WATCHERS="$MAN" \
+        WR_PROC_ROOT="$FAKEPROC" WR_REAP_ACT="$REAP_ACT" \
+        bash -c '
+            . "'"$CLONE"'/spira/watch-refresh.sh"
+            wr_sigterm() { echo "$1" >> "$WR_REAP_ACT"; }
+            wr_reap_orphans "$1"
+        ' _ "${1:-}" > "$REAP_OUT" 2>"$REAP_ERR"
+}
+reap_acted() { tr '\n' ' ' < "$REAP_ACT"; }
+
+# THE TWO HALVES: orphan is gone, supervised unit survives.
+runreap; rc=$?
+is "reap pass exits clean"                                    "0" "$rc"
+has "the orphan watch-answers.sh is terminated"               "$(reap_acted)" "$ORPHAN_PID"
+has "the orphan tail is terminated"                           "$(reap_acted)" "$TAIL_PID"
+hasnt "the supervised unit is NOT terminated"                 "$(reap_acted)" "$SUPERVISED_PID"
+
+echo
+echo "orphan reaping — dry-run says what it would do and sends no signal"
+runreap dry; rc=$?
+is "--dry-run exits clean"                    "0" "$rc"
+is "and sends no signal"                      "" "$(reap_acted)"
+has "but says what it would do"               "$(cat "$REAP_OUT")" "would reap orphan pid"
+has "naming the orphan pid in the output"     "$(cat "$REAP_OUT")" "$ORPHAN_PID"
+hasnt "and not mentioning the supervised pid" "$(cat "$REAP_OUT")" "$SUPERVISED_PID"
+
+echo
+echo "orphan reaping — watchd exec invocations are not targets (verb check)"
+# watchd.sh exec is the supervised daemon verb; even outside spira-watch@ it is not reaped
+# because the pattern only matches `tail`. (In practice the exec processes ARE in spira-watch@
+# — the cgroup guard covers them — but this is the belt.)
+mkdir -p "$FAKEPROC/10004"
+printf 'bash\0%s\0exec\0answers\0' "$CLONE/spira/watchd.sh" > "$FAKEPROC/10004/cmdline"
+printf '0::/user.slice/user-1000.slice/user@1000.service/\n' > "$FAKEPROC/10004/cgroup"
+runreap
+hasnt "watchd exec is not a reap target even outside spira-watch@" "$(reap_acted)" "10004"
+
+echo
 echo "the entry point, run as systemd runs it"
 # Everything above calls the pass as a function. This is the one that proves the file is
 # also a program, and that sourcing it — which is how watch-refresh.sh reads the manifest —
 # still leaves watchd.sh silent rather than running its own dispatcher.
+# WR_PROC_ROOT is set to an empty directory so the orphan reaper (now part of the entry
+# point) does not scan the real /proc of the test runner.
+EMPTYPROC="$TMP/empty-proc"; mkdir -p "$EMPTYPROC"
 reset_mtimes; fresh_show; touch -d "@$NEWER" "$COCKPIT/watch-answers.sh"; : > "$ACT"
 out="$(env -i HOME="$TMP/home" PATH="$SHIM:$PATH" SPIRA_CONF="$CONF" SPIRA_WATCHERS="$MAN" \
       SPIRA_PATH="$SHIM" WR_EXECLOG="$EXECLOG" WR_ACT="$ACT" WR_SHOW="$SHOW" \
+      WR_PROC_ROOT="$EMPTYPROC" \
       bash "$CLONE/spira/watch-refresh.sh" 2>&1)"; rc=$?
 is "it runs"                       "0" "$rc"
 has "and restarts the stale unit"  "$(acted)" "restart spira-watch@answers.service"
 hasnt "and sourcing watchd.sh printed no manifest of its own" "$out" "|daemon|"
 out="$(env -i HOME="$TMP/home" PATH="$SHIM:$PATH" SPIRA_CONF="$CONF" SPIRA_WATCHERS="$MAN" \
       SPIRA_PATH="$SHIM" WR_EXECLOG="$EXECLOG" WR_ACT="$ACT" WR_SHOW="$SHOW" \
+      WR_PROC_ROOT="$EMPTYPROC" \
       bash "$CLONE/spira/watch-refresh.sh" --nonsense 2>&1)"; rc=$?
 is "an argument it does not know is refused" "2" "$rc"
 has "with a usage line"                      "$out" "usage: watch-refresh.sh"
