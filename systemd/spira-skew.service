@@ -13,7 +13,7 @@ Type=oneshot
 # copy the service manager actually runs, so the check reports on ITSELF. A unit pointed at
 # some other checkout would answer about a tree nothing executes, which is the fault it
 # exists to find.
-ExecStart=@SPIRA_PROD@/skew.sh check
+ExecStart=@SPIRA_PROD@/skew.sh check --escalate
 # DIVERGENCE IS NOT A UNIT FAILURE. skew.sh exits 1 when it found something and has already
 # put the decision in front of the operator; leaving the unit red on top of that is a second
 # alert for one condition, and a unit permanently red is one whose next genuine failure

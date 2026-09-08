@@ -2,7 +2,7 @@
 #
 # skew.sh — is the harness that RUNS the harness that LANDED?
 #
-#   skew.sh check                          audit this box; escalate on divergence
+#   skew.sh check [--escalate]             audit this box; escalate on divergence (only with --escalate)
 #   skew.sh units                          are the installed units what the templates render?
 #   skew.sh refresh [repo]                 fast-forward the checkout to its base ref
 #   skew.sh copies                         every mapped repository carrying a harness copy
@@ -41,7 +41,7 @@
 # decision to make.
 #
 # EXIT   0  checked, and the copy in force is the code that landed
-#        1  checked, and it is not — the finding is on stdout and has been escalated
+#        1  checked, and it is not — the finding is on stdout; with --escalate it has been escalated
 #        3  could not check — said out loud, never a silent pass
 #              (law-absence-needs-a-positive-control)
 set -uo pipefail
@@ -156,9 +156,22 @@ copies() {
 
 # =======================================================================================
 # check — the standing audit.
+#
+# Read-only by default: it reports findings to stdout and exits 0/1/3 but does NOT file an
+# ask. Escalation is behind --escalate, which only the timer unit passes. A read that writes
+# as a side effect was the fault: two hand inspections filed duplicate asks (sp-624f).
 # =======================================================================================
 check() {
+    local do_escalate=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --escalate) do_escalate=1; shift ;;
+            *) echo "skew: unknown flag: $1" >&2; return 1 ;;
+        esac
+    done
+
     local findings="" hard=0 base remote behind dirty control c_name c_path c_dir c_kind
+    local cond_behind=0 cond_dirty=0 cond_copy=0 cond_stale=0
 
     # THE POSITIVE CONTROL, FIRST AND UNCONDITIONALLY. Every finding below is an absence
     # claim resting on one matcher, and a matcher that has stopped matching reports a clean
@@ -190,7 +203,7 @@ check() {
         fi
         behind="$(git -C "$SPIRA_REPO" rev-list --count "HEAD..$base" 2>/dev/null || echo 0)"
         if [ "${behind:-0}" -gt 0 ]; then
-            hard=1
+            hard=1; cond_behind=1
             findings="${findings}BEHIND $SPIRA_REPO is $behind commit(s) behind $base
 $(git -C "$SPIRA_REPO" log --oneline --no-decorate -20 "HEAD..$base" 2>/dev/null | sed 's/^/    /')
 "
@@ -205,7 +218,7 @@ $(git -C "$SPIRA_REPO" log --oneline --no-decorate -20 "HEAD..$base" 2>/dev/null
     # business; a MODIFIED tracked file is code in force that is on no branch anywhere.
     dirty="$(git -C "$SPIRA_REPO" status --porcelain --untracked-files=no 2>/dev/null)"
     if [ -n "$dirty" ]; then
-        hard=1
+        hard=1; cond_dirty=1
         findings="${findings}DIRTY $SPIRA_REPO carries modifications that are on no branch
 $(printf '%s\n' "$dirty" | head -20 | sed 's/^/    /')
 "
@@ -232,7 +245,7 @@ $drop_files"
     # ---------------------------------------------------------------- COPY
     while read -r c_name c_path c_dir c_kind; do
         [ "${c_kind:-}" = second ] || continue
-        hard=1
+        hard=1; cond_copy=1
         findings="${findings}COPY repo:$c_name carries a second harness at $c_path/$c_dir
     Work aimed at the harness can land there, pass its gate, and never run.
 "
@@ -253,7 +266,7 @@ $drop_files"
     else
         stale_out="$(bash "$installer" --diff 2>&1)"; stale_rc=$?
         if [ "$stale_rc" != 0 ]; then
-            hard=1
+            hard=1; cond_stale=1
             findings="${findings}STALE installed systemd units differ from what this checkout renders
 $(printf '%s\n' "$stale_out" | head -40 | sed 's/^/    /')
     Re-run $installer to bring the installed units into line with the templates.
@@ -276,26 +289,37 @@ $(printf '%s\n' "$stale_out" | head -40 | sed 's/^/    /')
         echo "skew: the check could not complete — this is not a clean verdict" >&2
         return 3
     fi
-    escalate "$findings"
+    if [ "$do_escalate" = 1 ]; then
+        # Fingerprint the CONDITION (which finding types are present), not the findings text.
+        # Measurements in the findings text — commit count, file list — change every pass while
+        # the condition stays constant, which produced a new ask every hour as the repo fell
+        # further behind (sp-624f). The condition key is versioned so a stamp written by the
+        # old scheme (a bare cksum) cannot match and causes one re-escalation on upgrade.
+        local condition_key="v2:BEHIND=${cond_behind} DIRTY=${cond_dirty} COPY=${cond_copy} STALE=${cond_stale}"
+        escalate "$condition_key" "$findings"
+    fi
     return 1
 }
 
 # =======================================================================================
-# escalate — once per distinct state, not once per pass.
+# escalate — once per distinct CONDITION, not once per pass.
 #
-# Keyed on a fingerprint of the findings rather than on a clock. The condition persists until
-# somebody acts on it, and an hourly repetition of a decision already in front of the
-# operator is the noise that teaches them to scroll past the one that matters
-# (law-alerts-must-be-actionable). A CHANGE in the findings is new information and does ask
-# again.
+# Keyed on which finding TYPES are present (BEHIND/DIRTY/COPY/STALE yes/no), not on the
+# findings text. The text carries measurements — commits behind, file list — that drift every
+# pass while the condition stays constant, which produced a new ask every hour as the repo
+# fell further behind (sp-624f). The condition key is versioned (v2:) so a stamp written by
+# the old scheme (a bare cksum number) cannot match and causes one re-escalation on upgrade.
 # =======================================================================================
 escalate() {
-    local findings="$1" stamp="$SPIRA_RUN/skew.escalated" fp prev=""
-    fp="$(printf '%s' "$findings" | cksum | tr -d ' ')"
+    local condition_key="$1" findings="$2"
+    local stamp="$SPIRA_RUN/skew.escalated" prev=""
     [ -f "$stamp" ] && prev="$(cat "$stamp" 2>/dev/null)"
-    [ "$fp" = "$prev" ] && return 0
+    # A stamp without the v2: prefix was written by the old fingerprint scheme; treat it as
+    # absent rather than matching — one re-escalation on upgrade is correct.
+    [[ "${prev:-}" = v2:* ]] || prev=""
+    [ "$condition_key" = "$prev" ] && return 0
     mkdir -p "$SPIRA_RUN" 2>/dev/null
-    printf '%s' "$fp" > "$stamp"
+    printf '%s' "$condition_key" > "$stamp"
 
     # Stdout goes to skew.log under the service unit. Stderr does too (both streams are
     # captured), but everything below writes to stdout so the delivery path is explicit and
@@ -395,7 +419,7 @@ units() {
 }
 
 case "${1:-check}" in
-    check)   check ;;
+    check)   [ "${1:-}" = check ] && shift; check "$@" ;;
     units)   units ;;
     refresh) shift; refresh "$@" ;;
     copies)  copies || { echo "skew: no mapped repository carries a harness — the map or the matcher is wrong" >&2; exit 3; } ;;
