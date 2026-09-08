@@ -191,6 +191,21 @@ out = re.sub(r"@([A-Z_]+)@", lambda x: m.get(x.group(1), x.group(0)), text)
 # only a placeholder that render replaces at install time.
 if watcher_name:
     out = out.replace("%i", watcher_name)
+# For spira-*.timer templates: rewrite Unit=spira-<svc>.service to the
+# instance-suffixed name. inst_name renames the timer FILE by appending
+# SPIRA_INSTANCE, but the explicit Unit= line in the template names the service
+# without that suffix — which defeats the file rename and points the installed
+# timer at the legacy plain-named service instead. A multiline sub on the parsed
+# output is used rather than a template placeholder so the template stays
+# readable without knowing the instance name.
+_tname = os.path.basename(sys.argv[1])
+if _tname.startswith("spira-") and _tname.endswith(".timer"):
+    out = re.sub(
+        r"^(Unit=spira-[A-Za-z0-9_-]+)\.service$",
+        r"\g<1>-" + m["SPIRA_INSTANCE"] + ".service",
+        out,
+        flags=re.MULTILINE,
+    )
 left = sorted(set(re.findall(r"@([A-Z_]+)@", out)))
 if left:
     sys.stderr.write("install: %s has placeholders nothing fills: %s\n"
@@ -450,6 +465,16 @@ _migrate_legacy() {
         systemctl --user disable --now "$old" 2>/dev/null \
             && { printf 'migrated  %s (disabled; superseded by %s)\n' \
                      "$old" "$(inst_watch_name "$_wn")"; disabled=$((disabled+1)); }
+        # Before per-instance naming, watchers were started via the spira-watch@.service
+        # systemd template, so running units were named spira-watch@<name>.service (with @),
+        # not spira-watch-<name>.service (with hyphen). The hyphen form was never what ran;
+        # both forms must be retired to avoid a surviving instance that holds the work the
+        # new per-instance unit tries to start — which produces a crash-looping new unit
+        # racing a still-running old one.
+        old_at="spira-watch@${_wn}.service"
+        systemctl --user disable --now "$old_at" 2>/dev/null \
+            && { printf 'migrated  %s (disabled; superseded by %s)\n' \
+                     "$old_at" "$(inst_watch_name "$_wn")"; disabled=$((disabled+1)); }
     done
     [ "$disabled" -gt 0 ] && \
         printf 'install: migrated %d legacy unit(s) to per-instance naming\n' "$disabled"

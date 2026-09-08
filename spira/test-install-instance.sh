@@ -242,8 +242,12 @@ want    "watcher install: installed spira-watch-testview-test.service" \
         "installed spira-watch-testview-test.service" "$watcher_out"
 want    "watcher install: enabled spira-watch-testview-test.service" \
         "spira-watch-testview-test.service" "$watcher_log"
-nowant  "watcher install: no @-template name in systemctl log" \
-        "spira-watch@testview" "$watcher_log"
+# Migration now correctly disables the old spira-watch@<name>.service form, so
+# @ CAN appear in a disable call. What must not appear is @ in an enable or
+# restart call — those must use the per-instance plain-name form.
+nowant  "watcher install: no @-template name in enable/restart calls" \
+        "spira-watch@testview" \
+        "$(grep -E ' enable | restart ' "$MOCK_LOG" || true)"
 [ -f "$DEST/spira-watch-testview-test.service" ] \
     && ok "watcher install: unit file written to DEST" \
     || bad "watcher install: unit file missing from DEST" ""
