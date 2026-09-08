@@ -40,7 +40,19 @@
 # It fails CLOSED, and a check that could not run is not a pass.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-cd "${SPIRA_GATE_REPO:-.}" 2>/dev/null || cd .
+# IT JUDGES THE TREE IT IS PART OF, and it finds that tree from its own path. This read
+# `cd "${SPIRA_GATE_REPO:-.}"`, and the gate sets SPIRA_GATE_REPO to the INSTALLED CHECKOUT
+# while extracting the branch to a scratch worktree and running the command there — so this
+# line stepped out of the tree under trial and ran the installed copy's suites instead. Every
+# branch was therefore judged against the code already in force, which is the one failure a
+# gate must not have: it passes work it never looked at, and the landing pass acts on the
+# pass. A branch that only edits existing files sails through on the installed copy's green.
+# It surfaced only when a branch ADDED a suite, which the installed copy did not have.
+#
+# Self-located rather than configured, because where the harness IS is a fact about where
+# this script sits and never a setting (law-a-split-repoints-nothing). The fence readability
+# checks below are the identity check on the result, and they fail closed.
+cd "$HERE/.." 2>/dev/null || { printf 'gate: cannot reach the tree holding %s\n' "$0" >&2; exit 1; }
 
 rc=0
 say() { printf 'gate: %s\n' "$*" >&2; }

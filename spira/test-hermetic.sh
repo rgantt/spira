@@ -191,5 +191,45 @@ want "while the same call without it is refused" "systemctl" \
 want "the gate names this fence" "spira/hermetic.sh" "$(cat "$HERE/gate-spira.sh")"
 is   "and it is executable"      "0" "$([ -x "$HERE/hermetic.sh" ]; echo $?)"
 
+# ---------------------------------------------------------------------------------------
+# AND IT JUDGES THE TREE UNDER TRIAL, NOT THE INSTALLED COPY. The gate extracts a branch to a
+# scratch worktree and runs this command there, while also exporting SPIRA_GATE_REPO — which
+# is the INSTALLED checkout. gate-spira.sh used to cd to it, stepping out of the tree it was
+# judging and running the code already in force. Every branch then passed on the installed
+# copy's green, which is the one failure a gate must not have: it passes work it never looked
+# at, and the landing pass acts on the pass. It hid until a branch ADDED a file, because a
+# branch that only edits existing ones is invisible to it.
+#
+# DRIVEN, NOT GREPPED. The fences are the first thing the gate does and they exit on the
+# spot, so each side answers in milliseconds without reaching the suites — and a marker
+# printed by one tree's fence is proof of which tree it stood in.
+# ---------------------------------------------------------------------------------------
+plant() {                # plant <root> <marker> — a tree whose fences announce which one it is
+    mkdir -p "$1/spira"
+    cp "$HERE/gate-spira.sh" "$1/spira/"
+    # EVERY fence the gate insists on, because it refuses a tree missing one before it runs
+    # anything — which is correct, and which silently made an earlier version of this fixture
+    # answer "neither marker" to both sides.
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$1/spira/exclude.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$1/spira/hermetic.sh"
+    # inventory.sh is the one that speaks: it runs after exclude.sh and before the suites, and
+    # the gate prints its output and stops there.
+    printf '#!/usr/bin/env bash\necho %s\nexit 1\n' "$2" > "$1/spira/inventory.sh"
+}
+plant "$TMP/under-trial" MARKER-UNDER-TRIAL
+plant "$TMP/installed"   MARKER-INSTALLED
+
+# THE CONTROL FIRST: the installed side must be able to produce its own marker, or "we did not
+# see it" is a claim about a fixture that could never have spoken
+# (law-absence-needs-a-positive-control).
+want "the installed tree can announce itself" "MARKER-INSTALLED" \
+     "$(cd "$TMP/installed" && env -i PATH="$PATH" HOME="$TMP" TERM=dumb \
+        bash spira/gate-spira.sh 2>&1)"
+
+out="$(cd "$TMP/under-trial" && env -i PATH="$PATH" HOME="$TMP" TERM=dumb \
+       SPIRA_GATE_REPO="$TMP/installed" bash spira/gate-spira.sh 2>&1)"
+want   "the gate judges the tree it was run in"      "MARKER-UNDER-TRIAL" "$out"
+nowant "and not the checkout SPIRA_GATE_REPO names"  "MARKER-INSTALLED"   "$out"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
