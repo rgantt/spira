@@ -507,40 +507,74 @@ trap cleanup EXIT INT TERM
 #
 # What the timeout was actually guarding is real but narrower: an unconditional heartbeat
 # proves the PROCESS is alive, not that WORK is happening, so a wedged session would beat
-# forever and hold its lease. So the heartbeat is conditional. It fires only when something
-# observably moved — CPU consumed by the session, the worktree touched, or the log grown —
-# and when nothing has moved for STALL_BEATS consecutive checks it stops beating. The lease
-# then expires on its own and `bd reclaim` returns the bead, which is the substrate's own
-# recovery path rather than a second mechanism competing with it.
+# forever and hold its lease. So the heartbeat is conditional — but not on log file growth.
 #
-# Waiting on CI is not stalling: polling burns CPU and writes output, so a `gh run watch`
-# keeps the beat alive.
+# LOG GROWTH IS NOT THE SIGNAL. The CLI emits a tool_progress heartbeat every ~30s while the
+# model is blocked on a single tool call, and every heartbeat is a line in the log. So a
+# fully blocked aeon's log grows steadily, and a size check cannot tell it from one doing
+# real work. Measured: an aeon sat 510s inside a single `tail --pid` while the size check
+# and the lease both reported it healthy.
+#
+# THE SIGNAL THAT WORKS is elapsed_time_seconds on the trailing heartbeat — time since the
+# model last ACTED — qualified by whether the blocked command's process subtree has started
+# anything. The qualification matters: a gate run measured 776s cold, and blocked is not
+# stuck. A flock wait for the test fixture is a legitimate queue, not a stall.
 STALL_BEATS="${FAYTH_STALL_BEATS:-10}"   # x heartbeat interval; 10 x 120s = 20 min idle
 (
-    prev=""; idle=0; grants=0
+    idle=0; grants=0
     while sleep "${FAYTH_HEARTBEAT_SECONDS:-120}"; do
-        # THE TRACE IS THE SIGNAL. stream-json appends an event per message and per tool
-        # call, so a log that has stopped growing is a session that has stopped acting —
-        # which is exactly the question, and a far better answer than CPU ticks (a session
-        # blocked on an API read burns none) or worktree mtimes (a session can think for
-        # minutes without touching a file).
-        now="$(stat -c %s "$LOGF" 2>/dev/null || echo 0)"
-        if [ "$now" = "$prev" ]; then idle=$((idle+1)); else idle=0; fi
-        prev="$now"
-        if [ "$idle" -ge "$STALL_BEATS" ]; then
-            # SILENCE IS NOT THE SAME AS STUCK. A session blocked on `gh run watch` emits
-            # nothing for the whole of a CI run, and killing it there would reopen a bead
-            # whose work was minutes from landing. Ask what it was last doing before taking
-            # its lease away: pattern first, a small model only if the pattern has no
-            # answer. Each reprieve is granted once and re-earned, so a genuinely stuck
-            # session cannot buy silence indefinitely — and the reprieves are capped.
-            if [ "$grants" -lt "${FAYTH_STALL_GRANTS:-6}" ] && still_waiting "$LOGF"; then
-                grants=$((grants+1))
+        read -r model_idle model_state < <(heartbeat_model_idle "$LOGF")
+
+        case "$model_state" in
+            acting)
+                # The model produced output within the last log line — clearly working.
                 idle=0
-                log "$FAYTH: $BEAD_ID quiet but waiting on \"$(trace_last "$LOGF" | cut -c1-70)\" — extending ($grants/${FAYTH_STALL_GRANTS:-6})"
-                continue
+                ;;
+            blocked)
+                # The model is blocked on a tool call. "Blocked" is not "stuck": check
+                # whether the command's process subtree started anything recently. A subtree
+                # whose youngest member is newer than two minutes is still doing real work.
+                # The heartbeat's own subtree (sleep, etc.) is excluded so it cannot keep
+                # itself alive.
+                _youngest="$(youngest_in_subtree "$$" "$BASHPID")"
+                _now="$(date +%s)"
+                if [ "$_youngest" -gt 0 ] && [ $((_now - _youngest)) -lt 120 ]; then
+                    idle=0
+                else
+                    idle=$((idle+1))
+                fi
+                ;;
+            silent)
+                # Trace mark written, no model output yet. Normal startup takes seconds;
+                # 300s of silence is a summon that went nowhere.
+                [ "${model_idle:-0}" -lt 300 ] && idle=0 || idle=$((idle+1))
+                ;;
+            *)
+                idle=$((idle+1))
+                ;;
+        esac
+
+        if [ "$idle" -ge "$STALL_BEATS" ]; then
+            if [ "$grants" -lt "${FAYTH_STALL_GRANTS:-6}" ]; then
+                # A flock is a legitimate queue wait for the test fixture. A heartbeat that
+                # calls it stuck gets something killed that should not be.
+                if subtree_has_flock "$$"; then
+                    grants=$((grants+1))
+                    idle=0
+                    log "$FAYTH: $BEAD_ID blocked on a flock — extending ($grants/${FAYTH_STALL_GRANTS:-6})"
+                    continue
+                fi
+                # SILENCE IS NOT THE SAME AS STUCK. A session blocked on `gh run watch`
+                # emits nothing for the whole of a CI run, and killing it there would reopen
+                # a bead whose work was minutes from landing.
+                if still_waiting "$LOGF"; then
+                    grants=$((grants+1))
+                    idle=0
+                    log "$FAYTH: $BEAD_ID quiet but waiting on \"$(trace_last "$LOGF" | cut -c1-70)\" — extending ($grants/${FAYTH_STALL_GRANTS:-6})"
+                    continue
+                fi
             fi
-            log "$FAYTH: $BEAD_ID shows no progress for $((idle * ${FAYTH_HEARTBEAT_SECONDS:-120} / 60))m and is not waiting on anything — releasing the lease to the reaper"
+            log "$FAYTH: $BEAD_ID model idle ${model_idle:-?}s, no work for $((idle * ${FAYTH_HEARTBEAT_SECONDS:-120} / 60))m — releasing the lease to the reaper"
             exit 0
         fi
         bdq heartbeat "$BEAD_ID" >/dev/null 2>&1 || exit 0

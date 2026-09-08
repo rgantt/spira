@@ -1467,6 +1467,101 @@ still_waiting() {
     return 1
 }
 
+# --------------------------------------------------------------------------------------
+# heartbeat_model_idle <logfile> -> "idle_s state"
+#
+# THE SIGNAL THAT TELLS BLOCKED FROM STUCK. The stream-json trace grows whenever anything
+# happens, including tool_progress heartbeats that the CLI emits every ~30s while the model
+# is blocked on a single tool call. So log file size is evidence the PROCESS is alive, not
+# that WORK is happening — a fully blocked aeon's log grows steadily, and a size check
+# cannot tell it from one doing real work.
+#
+# elapsed_time_seconds on the trailing heartbeat is the discriminating fact: it is exactly
+# how long since the model last ACTED, carried by the event itself rather than inferred
+# from outside.
+#
+#   idle_s:  seconds since the model last acted (0 if it just acted, -1 if unreadable)
+#   state:   "acting"  — the trailing log line is a model action
+#            "blocked" — the trailing log line is a tool_progress heartbeat
+#            "silent"  — trace mark only, no model output yet
+#            "?"       — the line could not be parsed
+# --------------------------------------------------------------------------------------
+heartbeat_model_idle() {
+    local f="$1"
+    [ -r "$f" ] || { echo "-1 ?"; return; }
+    tail -1 "$f" 2>/dev/null | python3 -c '
+import sys, json, time, re, calendar
+line = sys.stdin.readline().strip()
+if not line:
+    print("-1 ?"); raise SystemExit
+if line.startswith("=== spira attempt"):
+    m = re.search(r"at=(\S+Z)", line)
+    born = calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ")) if m else 0
+    print(int(time.time()) - born if born else 0, "silent")
+    raise SystemExit
+try:
+    d = json.loads(line)
+except Exception:
+    print("-1 ?"); raise SystemExit
+if d.get("type") == "tool_progress" and d.get("heartbeat"):
+    print(d.get("elapsed_time_seconds", 0), "blocked")
+else:
+    print(0, "acting")
+' 2>/dev/null || echo "-1 ?"
+}
+
+# --------------------------------------------------------------------------------------
+# youngest_in_subtree <root_pid> [exclude_pid] -> epoch of the youngest process in
+# root_pid's subtree, excluding the subtree rooted at exclude_pid. 0 if none found.
+#
+# argv from /proc, never pgrep -f: the pattern is a substring of the caller's own command
+# line, and pgrep matching it killed the shell that invoked it once already.
+# --------------------------------------------------------------------------------------
+youngest_in_subtree() {
+    local root="$1" exclude="${2:-0}" newest=0
+    local p pid st cur hops hit excl
+    for p in /proc/[0-9]*/stat; do
+        pid="${p%%/stat}"; pid="${pid##*/}"
+        [ "$pid" = "$exclude" ] && continue
+        cur="$pid"; hops=0; hit=0; excl=0
+        while [ "$hops" -lt 40 ]; do
+            [ "$cur" = "$root" ] && { hit=1; break; }
+            [ "$cur" = "$exclude" ] && { excl=1; break; }
+            [ "$cur" = "1" ] || [ -z "$cur" ] && break
+            cur=$(awk '{print $4}' "/proc/$cur/stat" 2>/dev/null) || break
+            hops=$((hops+1))
+        done
+        [ "$hit" = 1 ] && [ "$excl" = 0 ] || continue
+        st=$(stat -c %Y "/proc/$pid" 2>/dev/null) || continue
+        [ "$st" -gt "$newest" ] && newest="$st"
+    done
+    echo "$newest"
+}
+
+# --------------------------------------------------------------------------------------
+# subtree_has_flock <root_pid> -> 0 if a `flock` process exists in root_pid's subtree.
+#
+# A flock is a legitimate queue wait — typically for the shared test fixture — and a
+# heartbeat that calls it stuck gets something killed that should not be.
+# --------------------------------------------------------------------------------------
+subtree_has_flock() {
+    local root="$1"
+    local p pid cur hops hit comm
+    for p in /proc/[0-9]*/comm; do
+        comm="$(cat "$p" 2>/dev/null)" || continue
+        [ "$comm" = "flock" ] || continue
+        pid="${p%%/comm}"; pid="${pid##*/}"
+        cur="$pid"; hops=0; hit=0
+        while [ "$hops" -lt 40 ]; do
+            [ "$cur" = "$root" ] && { hit=1; break; }
+            [ "$cur" = "1" ] || [ -z "$cur" ] && break
+            cur=$(awk '{print $4}' "/proc/$cur/stat" 2>/dev/null) || break
+            hops=$((hops+1))
+        done
+        [ "$hit" = 1 ] && return 0
+    done
+    return 1
+}
 
 # --------------------------------------------------------------------------------------
 # trace_tail <logfile> [n] -> the last n human-readable moments of a session.
