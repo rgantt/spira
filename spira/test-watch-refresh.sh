@@ -351,7 +351,7 @@ printf 'cron|log|/tmp/x.log\n' > "$MANNONE"
 read -r p f < "$TMP/subshell-counts"; pass="$p"; fail="$f"
 
 echo
-echo "orphan reaping — watchers outside spira-watch@ are terminated"
+echo "orphan reaping — watchers outside any spira-watch unit are terminated"
 # A fake /proc tree lets us test the reaper without touching real processes or real cgroups.
 # PIDs are arbitrary integers; the reaper only reads files, it never signals real pids here
 # because wr_sigterm is redefined inside runreap to append to a log instead.
@@ -360,18 +360,27 @@ REAP_ACT="$TMP/reap_acted"
 REAP_OUT="$TMP/reap_out"
 REAP_ERR="$TMP/reap_err"
 
-SUPERVISED_PID=10001    # in spira-watch@ cgroup — must never be signalled
-ORPHAN_PID=10002        # NOT in spira-watch@, running watch-answers.sh
-TAIL_PID=10003          # NOT in spira-watch@, running watchd.sh tail
+SUPERVISED_PID=10001    # in spira-watch@answers.service cgroup — must never be signalled
+PROD_PID=10005          # in spira-watch-answers-prod.service cgroup — equally supervised
+ORPHAN_PID=10002        # NOT in any spira-watch unit, running watch-answers.sh
+TAIL_PID=10003          # NOT in any spira-watch unit, running watchd.sh tail
 
-mkdir -p "$FAKEPROC/$SUPERVISED_PID" "$FAKEPROC/$ORPHAN_PID" "$FAKEPROC/$TAIL_PID"
+mkdir -p "$FAKEPROC/$SUPERVISED_PID" "$FAKEPROC/$PROD_PID" \
+         "$FAKEPROC/$ORPHAN_PID" "$FAKEPROC/$TAIL_PID"
 
-# supervised: systemd put it in spira-watch@answers.service
+# supervised: systemd put it in spira-watch@answers.service (template instance)
 printf 'bash\0%s\0' "$COCKPIT/watch-answers.sh" > "$FAKEPROC/$SUPERVISED_PID/cmdline"
 printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/spira-watch@answers.service\n' \
     > "$FAKEPROC/$SUPERVISED_PID/cgroup"
 
-# orphan watch-answers.sh: started by hand, outside any spira-watch@ unit
+# supervised: non-template unit — spira-watch-answers-prod.service, cgroup has no `@`.
+# This is the case the old spira-watch@ guard missed: the cgroup carries the unit name
+# literally, so it contains spira-watch but not spira-watch@.
+printf 'bash\0%s\0' "$COCKPIT/watch-answers.sh" > "$FAKEPROC/$PROD_PID/cmdline"
+printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/spira-watch-answers-prod.service\n' \
+    > "$FAKEPROC/$PROD_PID/cgroup"
+
+# orphan watch-answers.sh: started by hand, outside any spira-watch unit
 printf 'bash\0%s\0' "$COCKPIT/watch-answers.sh" > "$FAKEPROC/$ORPHAN_PID/cmdline"
 printf '0::/user.slice/user-1000.slice/user@1000.service/\n' \
     > "$FAKEPROC/$ORPHAN_PID/cgroup"
@@ -395,15 +404,19 @@ runreap() {
 }
 reap_acted() { tr '\n' ' ' < "$REAP_ACT"; }
 
-# THE THREE CASES: orphaned daemon is gone, supervised unit and session tail both survive.
-# THE SESSION TAIL IS THE ACCEPTANCE CRITERION FOR sp-fcom: a tail outside spira-watch@
-# must not be reaped — it is a reader the SessionStart hook just told the session to open,
-# and killing it severs that channel (seen failing against code before this fix).
+# THE FOUR CASES: orphaned daemon is gone; template unit, non-template unit, and session tail
+# all survive. THE SESSION TAIL IS THE ACCEPTANCE CRITERION FOR sp-fcom: a tail outside
+# any spira-watch unit must not be reaped — it is a reader the SessionStart hook just told
+# the session to open, and killing it severs that channel (seen failing against code before
+# this fix). THE NON-TEMPLATE UNIT IS THE ACCEPTANCE CRITERION FOR sp-2bb8: a standalone
+# unit spira-watch-* has no `@` in its cgroup path and was reaped by the old guard, which
+# checked only for spira-watch@.
 runreap; rc=$?
 is "reap pass exits clean"                                    "0" "$rc"
 has "the orphan watch-answers.sh is terminated"               "$(reap_acted)" "$ORPHAN_PID"
 hasnt "a session tail is NOT terminated (it is a reader)"     "$(reap_acted)" "$TAIL_PID"
-hasnt "the supervised unit is NOT terminated"                 "$(reap_acted)" "$SUPERVISED_PID"
+hasnt "the template supervised unit is NOT terminated"        "$(reap_acted)" "$SUPERVISED_PID"
+hasnt "a non-template supervised unit is NOT terminated"      "$(reap_acted)" "$PROD_PID"
 
 echo
 echo "orphan reaping — dry-run says what it would do and sends no signal"
@@ -413,19 +426,21 @@ is "and sends no signal"                      "" "$(reap_acted)"
 has "but says what it would do"               "$(cat "$REAP_OUT")" "would reap orphan pid"
 has "naming the orphan pid in the output"     "$(cat "$REAP_OUT")" "$ORPHAN_PID"
 hasnt "and not mentioning the supervised pid" "$(cat "$REAP_OUT")" "$SUPERVISED_PID"
+hasnt "and not mentioning the non-template supervised pid" "$(cat "$REAP_OUT")" "$PROD_PID"
 hasnt "and not mentioning the session tail"   "$(cat "$REAP_OUT")" "$TAIL_PID"
 
 echo
-echo "orphan reaping — watchd exec outside spira-watch@ is a target; tail never is"
-# watchd.sh exec is the supervised daemon verb. In practice exec processes ARE in spira-watch@
-# (systemd puts them there), so the cgroup guard covers them — the verb check is belt-and-braces.
+echo "orphan reaping — watchd exec outside any spira-watch unit is a target; tail never is"
+# watchd.sh exec is the supervised daemon verb. In practice exec processes ARE in spira-watch
+# cgroups (systemd puts them there), so the cgroup guard covers them — the verb check is
+# belt-and-braces.
 # tail is a reader that a session opens via Monitor; it is never a reap target regardless of
 # cgroup (law-bind-the-actor: the reaper must not sever a channel it told the session to open).
 mkdir -p "$FAKEPROC/10004"
 printf 'bash\0%s\0exec\0answers\0' "$CLONE/spira/watchd.sh" > "$FAKEPROC/10004/cmdline"
 printf '0::/user.slice/user-1000.slice/user@1000.service/\n' > "$FAKEPROC/10004/cgroup"
 runreap
-has "watchd exec outside spira-watch@ IS a reap target" "$(reap_acted)" "10004"
+has "watchd exec outside any spira-watch unit IS a reap target" "$(reap_acted)" "10004"
 
 echo
 echo "the entry point, run as systemd runs it"

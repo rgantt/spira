@@ -297,9 +297,13 @@ wr_reap_orphans() {
             *) continue ;;
         esac
 
-        # THE GUARD. A process inside spira-watch@ is supervised; this path must never touch
-        # it. Cgroup membership is what systemd writes and nothing else can write it.
-        grep -q 'spira-watch@' "$dir/cgroup" 2>/dev/null && continue
+        # THE GUARD. A process inside any spira-watch unit is supervised; this path must never
+        # touch it. Cgroup membership is what systemd writes and nothing else can write it.
+        # The pattern is `spira-watch`, not `spira-watch@`: a non-template unit such as
+        # `spira-watch-answers-prod.service` is equally supervised and its cgroup carries the
+        # unit name without an `@` — the narrower pattern matched template instances only and
+        # SIGTERMd the non-template unit on every pass.
+        grep -q 'spira-watch' "$dir/cgroup" 2>/dev/null && continue
 
         if [ -n "$dry" ]; then
             printf '%s would reap orphan pid %s: %s\n' "$(wr_stamp)" "$pid" "$argv"
