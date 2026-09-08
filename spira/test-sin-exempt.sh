@@ -87,9 +87,17 @@ for i in $(seq 1 "$SIN_AT"); do
     file_incident "$ref" "$title" "payload $i" SPIRA_SIN_AT="$SIN_AT" >/dev/null
 done
 
-# Find the bead by its external ref.
-bid="$(B list --status open --limit 0 --label spira,incident --external-ref "$ref" --json 2>/dev/null \
-    | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d if isinstance(d,list) else [d]; print(d[0]["id"] if d else "")' 2>/dev/null)"
+# Find the bead by its external ref.  --external-ref is dev-build only; filter in Python.
+bid="$(B list --status open --limit 0 --label spira,incident --json 2>/dev/null \
+    | python3 -c '
+import json,sys
+target=sys.argv[1]
+try: d=json.load(sys.stdin)
+except: sys.exit(0)
+d=d if isinstance(d,list) else [d]
+for i in d:
+    if i.get("external_ref")==target: print(i["id"]); break
+' "$ref" 2>/dev/null)"
 [ -n "$bid" ] && ok "the bead was created" || bad "the bead was created" "no bead found for ref $ref"
 
 if [ -n "$bid" ]; then
@@ -112,8 +120,16 @@ for i in $(seq 1 "$SIN_AT"); do
     file_incident "$ref" "$title" "payload $i" SPIRA_SIN_AT="$SIN_AT" SPIRA_SIN_EXEMPT=1 >/dev/null
 done
 
-bid="$(B list --status open --limit 0 --label spira,incident --external-ref "$ref" --json 2>/dev/null \
-    | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d if isinstance(d,list) else [d]; print(d[0]["id"] if d else "")' 2>/dev/null)"
+bid="$(B list --status open --limit 0 --label spira,incident --json 2>/dev/null \
+    | python3 -c '
+import json,sys
+target=sys.argv[1]
+try: d=json.load(sys.stdin)
+except: sys.exit(0)
+d=d if isinstance(d,list) else [d]
+for i in d:
+    if i.get("external_ref")==target: print(i["id"]); break
+' "$ref" 2>/dev/null)"
 [ -n "$bid" ] && ok "the exempt bead was created" || bad "the exempt bead was created" "no bead found for ref $ref"
 
 if [ -n "$bid" ]; then

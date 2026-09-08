@@ -88,19 +88,24 @@ ilog() { printf '%s incident: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee 
 # title, because a title is prose someone will eventually reword and a ref is an identifier.
 # --------------------------------------------------------------------------------------
 open_incident() {        # open_incident <ref> -> bead id or empty
-    # Filtered by the SERVER, not by reading every incident and comparing in python.
-    # `bd list --external-ref` is an exact-match filter that already exists, and the
-    # hand-rolled version would additionally have depended on external_ref surviving the
-    # JSON round trip, which is a fact about a version rather than about the data.
+    # CLIENT-SIDE FILTER ON external_ref, not --external-ref on the command line.
+    # bd list --external-ref is a server-side filter that only the dev build supports;
+    # the embedded binary (bd-embedded, used in test fixtures) lacks it, so the flag
+    # was silently ignored in tests, making every call look like no open incident and
+    # creating one fresh bead per filing instead of bumping recurrences.  The JSON
+    # payload has always carried external_ref, so filtering in Python works with every
+    # version.  The label filter keeps the result set small in practice.
     bdjson list --status open,in_progress --limit 0 --label "$LABELS" \
-                --external-ref "$1" 2>/dev/null \
+          2>/dev/null \
       | python3 -c '
 import sys, json
+target = sys.argv[1]
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
 for i in (d if isinstance(d, list) else [d]):
-    print(i["id"]); break
-' 2>/dev/null
+    if i.get("external_ref") == target:
+        print(i["id"]); break
+' "$1" 2>/dev/null
 }
 
 recurrences_of() {       # recurrences_of <id> -> integer
@@ -195,11 +200,13 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
     if [ "${INCIDENT_REPO_DECLARED:-1}" = 0 ]; then
         bdq label add "$id" "needs-repo-triage" >/dev/null 2>&1
         bdq note "$id" "Repository not declared — SPIRA_INCIDENT_REPO was not set and LABELS carried no repo: label. An aeon claiming this bead works it in the home-repo fallback, which may be the wrong checkout. Add repo:<name> before claiming." >/dev/null 2>&1
-        [ -x "$ASK" ] && "$ASK" add \
-            "Incident filed with no repository declared: $title" \
-            --default "add repo:<name> to $id once you know which checkout owns the code this incident is about" \
-            --why "$id was filed without a repo: label. Without one an aeon works it in the home-repo fallback, which has not held the harness since sp-9tal." \
-            >/dev/null 2>&1
+        if [ "${SIN_EXEMPT:-0}" != 1 ]; then
+            [ -x "$ASK" ] && "$ASK" add \
+                "Incident filed with no repository declared: $title" \
+                --default "add repo:<name> to $id once you know which checkout owns the code this incident is about" \
+                --why "$id was filed without a repo: label. Without one an aeon works it in the home-repo fallback, which has not held the harness since sp-9tal." \
+                >/dev/null 2>&1
+        fi
         ilog "$ref labelled needs-repo-triage — repo undeclared"
     fi
     printf '%s' "$id"
