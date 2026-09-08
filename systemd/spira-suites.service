@@ -1,0 +1,21 @@
+[Unit]
+Description=Spira suites — run the timed suite set the landing gate does not cover
+Documentation=file://@SPIRA_HOME@/suites.sh
+
+[Service]
+Type=oneshot
+ExecStart=@SPIRA_HOME@/suites.sh run
+# CPU-fenced like every other loop on this box (law-fence-loops-on-shared-hardware).
+CPUQuota=40%
+Nice=10
+# The pass budgets itself to SPIRA_SUITES_BUDGET (420s default) and stops picking up new
+# suites past that; this must stay comfortably above the budget so a slow suite already
+# running when the budget expires is not killed mid-run (law-bound-the-rare-path).
+TimeoutStartSec=900
+Environment=SPIRA_HOME=@SPIRA_HOME@
+Environment=SPIRA_RUN=@SPIRA_RUN@
+StandardOutput=append:@SPIRA_RUN@/suites.log
+StandardError=append:@SPIRA_RUN@/suites.log
+
+[Install]
+WantedBy=default.target

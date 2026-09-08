@@ -34,6 +34,7 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
        concierge.service concierge.timer
        beads-push.service beads-push.timer
        spira-archive.service spira-archive.timer
+       spira-suites.service spira-suites.timer
        )
 # Only these get enabled. The .service behind a .timer is started BY the timer; enabling it
 # as well would also run it once at boot, outside the schedule.
@@ -41,6 +42,7 @@ ENABLE=(cockpit-ensure.timer concierge.timer spira-watch-refresh.timer
         beads-push.timer spira-sentinel.timer spira-ops.timer spira-watchtower.timer spira-skew.timer
         spira-archive.timer
         spira-archivist.timer spira-watch-notify.timer
+        spira-suites.timer
         spira-cockpit.service)
 
 # dolt-beads.service supervises the Dolt server itself, which is only this harness's business
