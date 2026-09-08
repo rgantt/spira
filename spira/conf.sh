@@ -65,7 +65,7 @@ COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_VIEW SPIRA_VIEW_SESSION
 SPIRA_ALERT_GLOB
-SPIRA_FAYTHS SPIRA_MAX_AEONS SPIRA_LANES
+SPIRA_FAYTHS SPIRA_MAX_AEONS SPIRA_LANES SPIRA_QA_DEPTH
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
 SPIRA_ARCHIVE
 SPIRA_ARCHIVIST_EVERY SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
@@ -393,10 +393,26 @@ spira_conf_defaults() {
     # makes it declared configuration rather than a property implied by FAYTH_ROLE=party.
     # A new lane is added here and given a name; fayths join it with FAYTH_LANE=<name>.
     # The ops and groomer lanes are declared by default because ops.fayth and groomer.fayth
-    # ship using them. A lane fayth still functions if its lane name is absent from this list
-    # (the mechanism is FAYTH_LANE set, not membership here), but the declaration makes it
-    # visible to operators reading SPIRA_LANES for the list of scheduled partitions.
-    : "${SPIRA_LANES:=ops groomer}"
+    # ship using them. The qa lane is declared alongside them because qa.fayth ships using it.
+    # A lane fayth still functions if its lane name is absent from this list (the mechanism is
+    # FAYTH_LANE set, not membership here), but the declaration makes it visible to operators
+    # reading SPIRA_LANES for the list of scheduled partitions.
+    : "${SPIRA_LANES:=ops groomer qa}"
+    # DEPTH OF THE QA SWEEP — controls how wide the periodic QA pass looks.
+    # Three settings, each a strict superset of the one before it:
+    #
+    #   scars    released defects and incidents only — the default. One pass over a small,
+    #            authoritative set: every defect that got through is a candidate assertion.
+    #
+    #   modules  the above, plus modules ranked by how often they appear in a reopen or
+    #            an incident. Bounded by the ranking rather than exhaustive.
+    #
+    #   wide     the above, plus changed code that no assertion touches, and unasserted
+    #            end-to-end properties. The expensive setting; expect noise, which is the
+    #            point — discrimination is Ryan's to adjust by moving this slider.
+    #
+    # This is a configured operator choice, never a judgement in a brief.
+    : "${SPIRA_QA_DEPTH:=scars}"
     # ---- THE READ SURFACE OVER THE LIVE GRAPH ------------------------------------------
     # Where Loom listens. Localhost is the default because a bead carries internal working
     # notes and the operator's own judgement, so the address it is reachable at is a

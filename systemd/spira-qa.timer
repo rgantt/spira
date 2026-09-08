@@ -1,0 +1,18 @@
+[Unit]
+Description=Summon a QA aeon to sweep the scar record every six hours
+
+[Timer]
+# SIX HOURS. The scar record grows by at most a few entries per day; sweeping more often
+# would re-examine the same entries and spend model capacity on confirmation rather than
+# discovery. qa.fayth's FAYTH_TIMEOUT_SECONDS is 3600 (one hour), well under this interval,
+# so one sweep finishes before the next is due.
+#
+# THIS FILE IS THE ONLY PLACE THE CADENCE IS WRITTEN. qa.fayth's comment references it;
+# nothing reads a SPIRA_QA_EVERY key, because none exists.
+OnBootSec=30min
+OnUnitActiveSec=6h
+AccuracySec=5min
+Unit=spira-qa.service
+
+[Install]
+WantedBy=timers.target
