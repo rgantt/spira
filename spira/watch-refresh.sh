@@ -284,14 +284,16 @@ wr_reap_orphans() {
         pid="${dir##*/}"
         [ "$pid" = "$$" ] && continue   # never signal ourselves
 
-        # Confirm the verb. For watchd.sh, only `tail` invocations are targets; `exec` is the
-        # supervised daemon verb, and the cgroup guard below would protect those processes
-        # anyway — this is belt and braces.
+        # Confirm the verb. For watchd.sh, `tail` is a reader that a session opens via
+        # Monitor — killing it severs the channel the SessionStart hook just told the session
+        # to open (law-bind-the-actor). Only `exec` (the supervised daemon verb) should ever
+        # be a reap target; in practice exec processes are inside spira-watch@ anyway, so
+        # the cgroup guard below would protect them too — this is belt-and-braces.
         argv="$(tr '\0' ' ' 2>/dev/null < "$dir/cmdline")" || continue
         case "$argv" in
             *watch-answers.sh*) : ;;
             *watchd.sh*)
-                case "$argv" in *" tail "*) : ;; *) continue ;; esac ;;
+                case "$argv" in *" tail "*) continue ;; esac ;;
             *) continue ;;
         esac
 

@@ -376,7 +376,7 @@ printf 'bash\0%s\0' "$COCKPIT/watch-answers.sh" > "$FAKEPROC/$ORPHAN_PID/cmdline
 printf '0::/user.slice/user-1000.slice/user@1000.service/\n' \
     > "$FAKEPROC/$ORPHAN_PID/cgroup"
 
-# orphan tail: watchd.sh tail from a dead session
+# session tail: watchd.sh tail answers opened by a live session's Monitor — must survive
 printf 'bash\0%s\0tail\0answers\0' "$CLONE/spira/watchd.sh" > "$FAKEPROC/$TAIL_PID/cmdline"
 printf '0::/user.slice/user-1000.slice/user@1000.service/\n' \
     > "$FAKEPROC/$TAIL_PID/cgroup"
@@ -395,11 +395,14 @@ runreap() {
 }
 reap_acted() { tr '\n' ' ' < "$REAP_ACT"; }
 
-# THE TWO HALVES: orphan is gone, supervised unit survives.
+# THE THREE CASES: orphaned daemon is gone, supervised unit and session tail both survive.
+# THE SESSION TAIL IS THE ACCEPTANCE CRITERION FOR sp-fcom: a tail outside spira-watch@
+# must not be reaped — it is a reader the SessionStart hook just told the session to open,
+# and killing it severs that channel (seen failing against code before this fix).
 runreap; rc=$?
 is "reap pass exits clean"                                    "0" "$rc"
 has "the orphan watch-answers.sh is terminated"               "$(reap_acted)" "$ORPHAN_PID"
-has "the orphan tail is terminated"                           "$(reap_acted)" "$TAIL_PID"
+hasnt "a session tail is NOT terminated (it is a reader)"     "$(reap_acted)" "$TAIL_PID"
 hasnt "the supervised unit is NOT terminated"                 "$(reap_acted)" "$SUPERVISED_PID"
 
 echo
@@ -410,17 +413,19 @@ is "and sends no signal"                      "" "$(reap_acted)"
 has "but says what it would do"               "$(cat "$REAP_OUT")" "would reap orphan pid"
 has "naming the orphan pid in the output"     "$(cat "$REAP_OUT")" "$ORPHAN_PID"
 hasnt "and not mentioning the supervised pid" "$(cat "$REAP_OUT")" "$SUPERVISED_PID"
+hasnt "and not mentioning the session tail"   "$(cat "$REAP_OUT")" "$TAIL_PID"
 
 echo
-echo "orphan reaping — watchd exec invocations are not targets (verb check)"
-# watchd.sh exec is the supervised daemon verb; even outside spira-watch@ it is not reaped
-# because the pattern only matches `tail`. (In practice the exec processes ARE in spira-watch@
-# — the cgroup guard covers them — but this is the belt.)
+echo "orphan reaping — watchd exec outside spira-watch@ is a target; tail never is"
+# watchd.sh exec is the supervised daemon verb. In practice exec processes ARE in spira-watch@
+# (systemd puts them there), so the cgroup guard covers them — the verb check is belt-and-braces.
+# tail is a reader that a session opens via Monitor; it is never a reap target regardless of
+# cgroup (law-bind-the-actor: the reaper must not sever a channel it told the session to open).
 mkdir -p "$FAKEPROC/10004"
 printf 'bash\0%s\0exec\0answers\0' "$CLONE/spira/watchd.sh" > "$FAKEPROC/10004/cmdline"
 printf '0::/user.slice/user-1000.slice/user@1000.service/\n' > "$FAKEPROC/10004/cgroup"
 runreap
-hasnt "watchd exec is not a reap target even outside spira-watch@" "$(reap_acted)" "10004"
+has "watchd exec outside spira-watch@ IS a reap target" "$(reap_acted)" "10004"
 
 echo
 echo "the entry point, run as systemd runs it"
