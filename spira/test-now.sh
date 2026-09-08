@@ -437,6 +437,46 @@ for w in 70 96; do
         fail=$((fail+1)); printf '  FAIL  a row ran past %s columns:\n%s\n' "$w" "$over"
     fi
 done
+
+# EVERY SECTION STARTS ITS CONTENT AT COLUMN 9, and this is the assertion that says so. The
+# label is written as a literal in each section, padded by hand, so the padding is 25 chances
+# to be off by one — and WIN was, printing ` WIN   5h` where its own second row printed
+# `        7d`, so the two figures a reader compares stood in different columns. The operator
+# found it by eye. Read off the RENDERED frame rather than the source: what matters is where
+# the character lands, not how the format string was spelled.
+label_cols() { python3 -c '
+import sys, re
+bad = []
+for l in sys.stdin.read().splitlines():
+    m = re.match(r" ([A-Z][A-Z0-9]*)( +)(\S)", l)
+    if not m:
+        continue
+    col = m.start(3) + 1
+    if col != 9:
+        bad.append("    %s starts at column %d, not 9: %s" % (m.group(1), col, l))
+print("\n".join(bad))
+'; }
+# ITS OWN FIXTURE, AND THE REASON IS THE FIRST VERSION OF THIS CASE PASSING AGAINST THE BUG.
+# WIN is printed by tokens_section AFTER an early return that fires when SP_CTX_NOW is not a
+# number — which every fixture above leaves unset — so the frame the assertion read had no WIN
+# row in it at all and reported the misalignment absent. A check that cannot see the thing it
+# checks reports exactly what a passing check reports. SP_CTX_NOW is what carries it past that
+# return, and the presence assertion below is the positive control that says so.
+{
+    printf 'SP_AEON_N=0\nSP_NEXT_N=0\nSP_AWAITING_N=0\n'
+    printf 'SP_CTX_NOW=120000\nSP_CTX_TURNS=40\nSP_CTX_NEXT=warn\nSP_CTX_HEADROOM=50000\n'
+    printf 'SP_RATELIM_5H_PCT=42\nSP_RATELIM_7D_PCT=13\n'
+    printf 'SP_RATELIM_5H_MIN=90\nSP_RATELIM_7D_MIN=4000\n'
+} | snap
+frame="$(pane 44 96)"
+is_n "the WIN row renders, so the alignment case has something to read" 1 \
+     "$(printf '%s\n' "$frame" | grep -c '^ WIN ')"
+badcols="$(printf '%s\n' "$frame" | label_cols)"
+if [ -z "$badcols" ]; then
+    pass=$((pass+1)); printf '  ok    every section label starts its content at column 9\n'
+else
+    fail=$((fail+1)); printf '  FAIL  a section label is misaligned:\n%s\n' "$badcols"
+fi
 fi
 
 # ---------------------------------------------------------------------------------------

@@ -469,7 +469,11 @@ tokens_section() {
     [ "${cage:-0}" -ge 900 ] 2>/dev/null \
         && age_sfx=" ${C_DIM}($(( cage / 60 ))m ago)${C_RST}"
 
-    printf ' %sWIN%s   5h %s%s%%%s  %sreset %s%s%s%s\n' \
+    # FOUR SPACES, NOT THREE. Every section on this pane starts its content at column 9 —
+    # ` RECENT ` and `        ` alike — and this row started it at 8, so the 5h figure sat one
+    # column left of the 7d figure directly beneath it in the one place the two are read
+    # against each other. test-now.sh now asserts the column for every label.
+    printf ' %sWIN%s    5h %s%s%%%s  %sreset %s%s%s%s\n' \
         "$C_DIM" "$C_RST" \
         "$c5" "${p5:-?}" "$C_RST" \
         "$C_DIM" "$DUR5" "$C_RST" \
