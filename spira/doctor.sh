@@ -178,6 +178,25 @@ else WARN "attention panel not built at $SPIRA_PANEL" \
     || FAIL "no escalation path at $SPIRA_NOTIFY" \
             "An ask that reaches nobody is worse than an unanswered question
         (law-answers-need-a-delivery-path). Set SPIRA_NOTIFY in ${CONF:-spira.conf}."
+# THE VIEW FOLLOWER is optional — empty means no follower — but WHEN SET, it must exist and
+# be executable, or a manifest row silently renders as `off` while the operator believes it is
+# configured. The contract: `<prog> watch` loops forever (the unit starts it), `<prog> status`
+# prints `want: <session>` (the health assertion reads it).
+if [ -n "$SPIRA_VIEW" ]; then
+    if [ -x "$SPIRA_VIEW" ]; then
+        OK "view follower at $SPIRA_VIEW"
+        if out="$("$SPIRA_VIEW" status 2>&1)" && printf '%s\n' "$out" | grep -q '^want:'; then
+            OK "view follower answers status — ${out%%$'\n'*}"
+        else
+            WARN "view follower exists but 'status' does not print 'want:'" \
+                 "The health assertion will read it as degraded.
+        Run: $SPIRA_VIEW status"
+        fi
+    else
+        WARN "SPIRA_VIEW is set but $SPIRA_VIEW is not executable" \
+             "The manifest's ?view row will render as 'off'. Set SPIRA_VIEW in ${CONF:-spira.conf}."
+    fi
+fi
 
 echo
 echo "the status line"
