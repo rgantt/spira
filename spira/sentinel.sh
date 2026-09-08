@@ -355,7 +355,7 @@ while IFS=$'\t' read -r id r_name superseded dropped; do
         subj_base="${subj_refs%% *}"
         # shellcheck disable=SC2086
         [ -n "$subj_refs" ] \
-            && subjects="$(git -C "$r_path" log --format='%s%n%b' -n 400 $subj_refs 2>/dev/null)" \
+            && subjects="$(git -C "$r_path" log --format='%s%n%b' -n "${SPIRA_VERDICT_WINDOW:-400}" $subj_refs 2>/dev/null)" \
             || subjects=""
     fi
     # CANNOT TELL IS NOT "NOT LANDED". Reading an unresolvable base as "no commit names it"

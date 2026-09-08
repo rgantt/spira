@@ -1722,7 +1722,7 @@ landed() {
     # MATCH, because grep -q closes the pipe first — so the check inverts exactly when it
     # succeeds. It reopened finished work once before this was understood.
     # shellcheck disable=SC2086
-    subjects="$(git -C "$repo" log --format='%s%n%b' -n 400 $refs 2>/dev/null)"
+    subjects="$(git -C "$repo" log --format='%s%n%b' -n "${SPIRA_VERDICT_WINDOW:-400}" $refs 2>/dev/null)"
     grep -qF "$id" <<< "$subjects"
 }
 

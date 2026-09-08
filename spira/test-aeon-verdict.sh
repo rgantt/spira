@@ -136,6 +136,50 @@ nowant "and no reopen note is written"       "Closed is not landed" "$(notes sp-
 
 # ======================================================================================
 echo
+echo "commit on base but past the branch-walk depth — left closed via landing refs (sp-fzfw):"
+# ======================================================================================
+# THE DEFECT THIS REPRODUCES. aeon.sh walked -n 50 against the BRANCH only; the sentinel
+# walks -n SPIRA_VERDICT_WINDOW against spira_landrefs (base refs). When the branch
+# carries leftover commits from a previous attempt, the branch tip is those commits plus
+# the base history: the bead's commit on the base sits deeper from the branch tip than
+# from the base tip. With window=5 the branch walk (prev3,prev2,prev1,tip,tip-1) misses
+# the bead commit at depth 6; the landing-refs walk (tip,tip-1,bead,seed) finds it at 3.
+#
+# Setup: land the bead commit on origin/main, then add 2 more commits so the bead sits
+# at depth 3 from origin/main. Create the branch with 3 "previous attempt" commits on top
+# of origin/main: branch-walk depth to bead = 3 (prev) + 3 (base before bead) = 6.
+testdb_reset; seed sp-vd-deep
+printf 'sp-vd-deep\n' >> "$REPO/f"
+git -C "$REPO" add f
+git -C "$REPO" commit -qm "sp-vd-deep — the work"
+git -C "$REPO" push -q origin main 2>/dev/null
+printf 'post1\n' >> "$REPO/f"; git -C "$REPO" commit -qam "post 1"
+git -C "$REPO" push -q origin main 2>/dev/null
+printf 'post2\n' >> "$REPO/f"; git -C "$REPO" commit -qam "post 2"
+git -C "$REPO" push -q origin main 2>/dev/null
+git -C "$REPO" checkout -q -b spira/sp-vd-deep
+printf 'prev1\n' >> "$REPO/f"; git -C "$REPO" commit -qam "prev 1"
+printf 'prev2\n' >> "$REPO/f"; git -C "$REPO" commit -qam "prev 2"
+printf 'prev3\n' >> "$REPO/f"; git -C "$REPO" commit -qam "prev 3"
+git -C "$REPO" checkout -q main
+export SPIRA_VERDICT_WINDOW=5
+shim 0 close; run_aeon
+is     "bead stays closed (commit found via landing refs)" closed "$(field sp-vd-deep status)"
+want   "committed=yes is recorded"                         "committed=yes" "$(cat "$TMP/out")"
+nowant "no reopen triggered"                               "REOPENED"      "$(cat "$TMP/out")"
+
+echo
+echo "no commit anywhere — still reopened with the configurable window (sp-fzfw):"
+# THE OTHER HALF (law-absence-needs-a-positive-control). The landing-refs walk must not
+# suppress a legitimate reopen: a bead with no commit anywhere is still reopened.
+testdb_reset; seed sp-vd-nocommit
+shim 0 close; run_aeon
+is   "bead is open again (no commit found)"    open "$(field sp-vd-nocommit status)"
+want "REOPENED is still reported"              "REOPENED — closed with nothing committed" "$(cat "$TMP/out")"
+unset SPIRA_VERDICT_WINDOW
+
+# ======================================================================================
+echo
 echo "a persona with a wall is told when it is killed, in the brief the model receives:"
 # ======================================================================================
 # THE DEFECT THIS REPRODUCES. A persona that declares FAYTH_TIMEOUT_SECONDS is killed on a

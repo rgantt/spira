@@ -1128,7 +1128,7 @@ log "$FAYTH: $BEAD_ID session exited rc=$rc"
 
 # ---- verdict -------------------------------------------------------------------------
 # Closed is not landed. The aeon may have closed the bead; that claim is only believed if
-# a commit on its branch actually names the bead id.
+# a commit on its branch or on the landing refs actually names the bead id.
 # ONE `bd show`, TWO FACTS — the status AND whether the bead was superseded. Status alone
 # cannot judge the close, because A SUPERSEDED BEAD WILL NEVER HAVE A COMMIT NAMING IT: its
 # work was carried onto the successor's branch and landed under the successor's id. Reopening
@@ -1156,8 +1156,37 @@ st="${verdict%% *}"; superseded="${verdict##* }"
 # pipeline's status, so a MATCH reads as a failure. This exact line reported "closed with
 # nothing committed" about sp-epic-complete, whose commit was already on the branch, and
 # reopened finished work. Capture first, match second.
-subjects="$(git -C "$REPO" log --format='%s%n%b' -n 50 "$BRANCH" 2>/dev/null)"
-if grep -qF "$BEAD_ID" <<< "$subjects"; then committed=yes; else committed=no; fi
+#
+# CHECK THE BRANCH, THEN THE LANDING REFS. Two earlier defects in this check:
+#
+#   1. The branch was checked with -n 50 while the sentinel's CHECK5 walks the same question
+#      with -n 400 (SPIRA_VERDICT_WINDOW). A bead whose commit sits 51+ commits back on the
+#      base was missed by aeon.sh and correctly seen by CHECK5, so aeon.sh reopened what
+#      CHECK5 left alone and the bead cycled. sp-jll: landed 113 commits behind origin/main,
+#      every subsequent session spent rediscovering that the work was done.
+#
+#   2. The branch was checked, not the landing refs. When a branch carries leftover commits
+#      from a previous attempt (rebased onto the new base), the branch tip is those commits +
+#      the base history: the bead's commit on the base appears deeper from the branch tip than
+#      from the base tip, and a bounded walk can find it via the base but not the branch. The
+#      sentinel walks spira_landrefs, not the branch, and the two must not disagree.
+#
+# Walk the branch first (covers commits from the CURRENT session not yet on the base),
+# then the landing refs (covers commits already on the base). The window is the same in
+# both — SPIRA_VERDICT_WINDOW — to match sentinel CHECK5 and landed() in lib.sh.
+subjects="$(git -C "$REPO" log --format='%s%n%b' -n "${SPIRA_VERDICT_WINDOW:-400}" "$BRANCH" 2>/dev/null)"
+if grep -qF "$BEAD_ID" <<< "$subjects"; then
+    committed=yes
+else
+    _land_refs="$(spira_landrefs "$REPO" 2>/dev/null)" || _land_refs=""
+    if [ -n "$_land_refs" ]; then
+        # shellcheck disable=SC2086
+        _land_subjects="$(git -C "$REPO" log --format='%s%n%b' -n "${SPIRA_VERDICT_WINDOW:-400}" $_land_refs 2>/dev/null)"
+        if grep -qF "$BEAD_ID" <<< "$_land_subjects"; then committed=yes; else committed=no; fi
+    else
+        committed=no
+    fi
+fi
 log "$FAYTH: $BEAD_ID status=$st committed=$committed superseded=$superseded"
 
 if [ "$st" = "closed" ] && [ "$committed" = "no" ] && [ "$superseded" != 1 ]; then

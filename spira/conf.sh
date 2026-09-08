@@ -57,7 +57,7 @@ SPIRA_ACTIONABLE SPIRA_ID_PREFIX SPIRA_HEALTH_TIMEOUT SPIRA_ANSWER_STATE SPIRA_N
 SPIRA_CLIENT_SETTINGS SPIRA_HOOK_LINES
 SPIRA_COCKPIT SPIRA_COCKPIT_TRACE_LINES SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL
 SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
-SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE SPIRA_VERDICT_TTL SPIRA_REBASE_ESCALATE_AT
+SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE SPIRA_VERDICT_TTL SPIRA_REBASE_ESCALATE_AT SPIRA_VERDICT_WINDOW
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S
 SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
@@ -361,6 +361,13 @@ spira_conf_defaults() {
     # cycles the machinery while an aeon session is spent on every turn. At this threshold the
     # landing pass labels the bead needs-operator and asks rather than reopening again.
     : "${SPIRA_REBASE_ESCALATE_AT:=3}"
+    # HOW MANY COMMITS BACK aeon.sh AND sentinel CHECK5 WALK when asking "is there a commit
+    # that names this bead?" The bound must be the same in both places: aeon.sh walks the
+    # branch (and the landing refs when the branch walk finds nothing); the sentinel walks
+    # the landing refs directly. If the two use different values they give different answers
+    # about a bead whose commit landed many sessions ago. 400 is large enough to span an
+    # active repository's daily output many times over, cheap enough to run on every bead.
+    : "${SPIRA_VERDICT_WINDOW:=400}"
     # HOW MANY AEONS MAY RUN AT ONCE, ACROSS EVERY PERSONA. Until 2026-09-07 this key was
     # validated, documented and read by nothing: each persona had a private cap and no pool
     # coordinated them, so the box's real ceiling was whatever the caps happened to sum to.
