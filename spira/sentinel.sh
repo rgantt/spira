@@ -385,7 +385,7 @@ while IFS=$'\t' read -r id r_name superseded dropped; do
         # where the aeon exited before reaching that check — in which case no attempt
         # has been charged yet and this is genuinely a failed attempt at the work.
         n="$(bump_attempt "$id" "closed-not-landed")"
-        bead_reopen "$id" "Reopened by sentinel: closed, but no commit on ${subj_base:-the base} or on spira/$id names it in $r_name. Closed is not landed; attempt $n charged toward the poison threshold."
+        bead_reopen "$id" "Reopened by sentinel: closed, but no commit on ${subj_base:-the base} or on spira/$id names it in $r_name. Closed is not landed; attempt $n charged toward the poison threshold. If this bead was closed because another bead did the work, record it with: bd supersede $id --with <successor> — a close reason alone is not read by this check."
         progress "reopened $id — closed without landing (attempt $n)"
     fi
 done < <(

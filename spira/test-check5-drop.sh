@@ -129,6 +129,14 @@ want "the pass says so" "reopened sp-bare" "$out"
 # The aeon's own post-session check handles the case where the aeon detected the
 # missing commit; sentinel CHECK 5 is the safety net that charges when the aeon did not.
 want "and an attempt is charged" "sp-attempt-1" "$(labels_of sp-bare)"
+# THE REOPEN NOTE NAMES THE REMEDY. A superseded close is the normal end of a duplicate,
+# and the note is the only thing the next person reads — without the hint the loop is:
+# close, watch it reopen, close again, disbelieve the database (sp-da6k).
+note_text="$(B show sp-bare --json 2>/dev/null | python3 -c '
+import json, sys
+d = json.load(sys.stdin); d = d if isinstance(d, list) else [d]
+print(d[0].get("notes") or "")' 2>/dev/null)"
+want "and the reopen note names bd supersede as the remedy" "bd supersede" "$note_text"
 
 echo
 echo "a dropped bead survives CHECK 5:"
