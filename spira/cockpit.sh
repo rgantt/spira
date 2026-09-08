@@ -967,6 +967,9 @@ for i in awaiting_ids:
     # ---- fiends ------------------------------------------------------------------------
     strand_keys
 
+    # ---- SOP: which runbooks never fire, and which do not hold -------------------------
+    sop_keys
+
     # ---- TOKENS: what the account is spending, and which half is spending it ------------
     # The rate limit is the binding constraint on everything else on this pane — when the
     # account is out of capacity no aeon can be summoned, no bead can move, and every other
@@ -1117,6 +1120,93 @@ print("SP_STRAND_OTHER=%s" % (",".join(rest) or "none"))
     echo "SP_STRAND_GHOST=?"; echo "SP_STRAND_OTHER=?"
 }
 
+# The SOP shelf metrics, broken out so a suite can drive the exact code the collector
+# runs — the same reason strand_keys is a function and not inlined.
+#
+# SP_SOP_NEVER_FIRED: SOPs on the shelf with no entry at all in the applications ledger.
+# Candidates for retirement, but only after a human has checked: an SOP for a rare disaster
+# is exactly the one that never fires and is the costliest to lose. REPORTED ONLY; never
+# auto-retired here.
+#
+# SP_SOP_RECURRED: distinct SOP slugs where check=pass and held=no inside the window — the
+# runbook applied and its fix did NOT hold. This is the single most informative signal on the
+# shelf, and it is the one no session has ever seen before because nothing recorded it.
+#
+# A FAILED PROBE RENDERS `?`, NEVER 0 (law-absence-needs-a-positive-control). An unreadable
+# shelf is indistinguishable from an empty one from the outside; conflating them here would
+# make a database outage look like a shelf with nothing on it — and render 0 never-fired
+# while every SOP on the shelf has in fact never been exercised.
+sop_keys() {
+    local _sop_ledger="${SPIRA_SOP_LEDGER:-$SPIRA_RUN/sop/applied.jsonl}"
+    local _sop_raw
+    # The empty STRING means the query FAILED, not that the shelf is bare: `bd memories --json`
+    # prints nothing on failure and `{}` on an honest empty shelf. Conflating them would let a
+    # database outage erase the never-fired count and make a broken probe read as all-clear.
+    _sop_raw="$(bdjson memories 2>/dev/null)"
+    if [ -z "${_sop_raw//[[:space:]]/}" ]; then
+        echo "SP_SOP_NEVER_FIRED=?"
+        echo "SP_SOP_RECURRED=?"
+        return
+    fi
+    printf '%s\n' "$_sop_raw" | python3 -c '
+import sys, json, os
+from datetime import datetime, timedelta, timezone
+
+ledger_path = sys.argv[1]
+window_h = float(sys.argv[2]) if len(sys.argv) > 2 else 24.0
+since = datetime.now(timezone.utc) - timedelta(hours=window_h)
+
+try:
+    shelf = json.load(sys.stdin)
+    sop_keys = {k for k, v in shelf.items() if isinstance(v, str) and k.startswith("sop-")}
+except Exception:
+    print("SP_SOP_NEVER_FIRED=?")
+    print("SP_SOP_RECURRED=?")
+    raise SystemExit
+
+ledger_sops = set()
+recurred_sops = set()
+
+# A MISSING LEDGER IS A VALID STATE, NOT AN ERROR: no SOP has ever been applied, so every
+# SOP on the shelf is never-fired. An UNREADABLE ledger (present but cannot be opened)
+# is the failure case and renders `?`.
+if os.path.exists(ledger_path):
+    try:
+        with open(ledger_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                k = r.get("sop", "")
+                if not k:
+                    continue
+                ledger_sops.add(k)
+                if r.get("check") == "pass" and r.get("held") == "no":
+                    try:
+                        ts = datetime.strptime(
+                            r.get("ts", ""), "%Y-%m-%dT%H:%M:%SZ"
+                        ).replace(tzinfo=timezone.utc)
+                        if ts >= since:
+                            recurred_sops.add(k)
+                    except Exception:
+                        pass
+    except Exception:
+        print("SP_SOP_NEVER_FIRED=?")
+        print("SP_SOP_RECURRED=?")
+        raise SystemExit
+
+print("SP_SOP_NEVER_FIRED=%d" % len(sop_keys - ledger_sops))
+print("SP_SOP_RECURRED=%d" % len(recurred_sops))
+' "$_sop_ledger" "$WINDOW_HOURS" 2>/dev/null || {
+        echo "SP_SOP_NEVER_FIRED=?"
+        echo "SP_SOP_RECURRED=?"
+    }
+}
+
 write_snapshot() {
     local tmp="$SPIRA_RUN/.cockpit.$$"
     local writer_unit="${INVOCATION_ID:+spira-cockpit.service}"
@@ -1172,5 +1262,10 @@ loop)
 strands)
     strand_keys
     ;;
-*) echo "usage: cockpit.sh [once|loop|history|strands]" >&2; exit 1 ;;
+# The SOP shelf keys alone, taking no other reading. This is the seam the suite drives:
+# it is the same function probe calls, so what is tested is what runs.
+sops)
+    sop_keys
+    ;;
+*) echo "usage: cockpit.sh [once|loop|history|strands|sops]" >&2; exit 1 ;;
 esac
