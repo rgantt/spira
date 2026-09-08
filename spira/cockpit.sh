@@ -660,13 +660,13 @@ $(git -C "$_p" for-each-ref --format='%(refname:short)' 'refs/heads/spira/' 'ref
     if [ -z "$subjects" ] && [ -z "$branches" ]; then
         echo "SP_CLOSED=?"; echo "SP_LANDED=?"; echo "SP_AWAITING_LAND=?"; echo "SP_UNLANDED=?"
     else
-        printf '%s\n---\n%s' "$subjects" "$branches" | python3 -c '
+        # Subjects on stdin, branches as argv[2]. A `---` line in a commit body would split a
+        # stdin separator, and commit messages do contain freeform text.
+        printf '%s' "$subjects" | python3 -c '
 import sys, re
 ids = [i for i in sys.argv[1].split() if i]
-raw = sys.stdin.read()
-parts = raw.split("\n---\n", 1)
-text = parts[0]
-br_lines = parts[1].split("\n") if len(parts) > 1 else []
+br_lines = sys.argv[2].split("\n") if len(sys.argv) > 2 and sys.argv[2] else []
+text = sys.stdin.read()
 # Bounded on both sides, so `sp-ops` does not match a commit naming `sp-ops-sop`. The commit
 # subject is the only machine-checkable link between a closed bead and the commit graph
 # (law-aeon-commits-name-their-bead), which is worth matching exactly.
@@ -682,7 +682,7 @@ print("SP_CLOSED=%d"        % len(ids))
 print("SP_LANDED=%d"        % landed)
 print("SP_AWAITING_LAND=%d" % awaiting)
 print("SP_UNLANDED=%d"      % never)
-' "$closed_ids" 2>/dev/null || { echo "SP_CLOSED=?"; echo "SP_LANDED=?"; echo "SP_AWAITING_LAND=?"; echo "SP_UNLANDED=?"; }
+' "$closed_ids" "$branches" 2>/dev/null || { echo "SP_CLOSED=?"; echo "SP_LANDED=?"; echo "SP_AWAITING_LAND=?"; echo "SP_UNLANDED=?"; }
     fi
     fi
 
