@@ -295,6 +295,15 @@ cmd_run() {
             [ -n "${next_cursor:-}" ] || next_cursor="$s"
             continue
         fi
+        # Skip before starting if the last known runtime exceeds what is left; starting anyway
+        # produces rc=124 on a killed process, which reads as a test failure rather than a
+        # budget constraint.
+        last_secs="$(record_read "$s" | awk '{print $3}' | grep -E '^[0-9]+$' || echo 0)"
+        if [ "$last_secs" -gt 30 ] && [ "$left" -lt "$last_secs" ]; then
+            unreached="$unreached $s"
+            next_cursor="${next_cursor:-$s}"
+            continue
+        fi
         slice="$PER_SUITE"; [ "$left" -lt "$slice" ] && slice="$left"
         t0="$(date +%s)"
         out="$(timeout "$slice" bash "$HERE/$s" 2>&1)"; rc=$?

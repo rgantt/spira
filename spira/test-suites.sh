@@ -323,6 +323,43 @@ rm -f "$SH/test-fx-slow.sh" "$STATE/cursor"
 
 # ======================================================================================
 echo
+echo "a suite whose last runtime exceeds the remaining budget is skipped, not timed out:"
+# ======================================================================================
+# POSITIVE CONTROL FIRST. A suite with no prior result is not pre-skipped — it falls
+# through to the normal timeout path. Without this, a check that skipped everything
+# would pass the budget-skip case just as well.
+plant test-fx-budgetcheck.sh <<'S'
+#!/usr/bin/env bash
+# covers: spira/nothing.sh
+echo "  ok    budgetcheck suite ran (positive-control pass)"
+S
+rm -f "$STATE/test-fx-budgetcheck.sh.result"
+BUDGET=40
+sut run >/dev/null
+BUDGET=120
+# A suite that ran writes a result file; one that was pre-skipped does not. The main
+# pass output does not print the suite's stdout on success, so the result file is the
+# signal that the suite actually executed.
+[ -e "$STATE/test-fx-budgetcheck.sh.result" ] \
+    && ok "a suite with no prior result is not pre-skipped — result file was written" \
+    || bad "a suite with no prior result is not pre-skipped" "no result file written"
+
+# Now seed a result claiming 60s. The guard fires when last_secs(60) > 30
+# and left(~40) < last_secs(60): suite is added to unreached, never started.
+printf 'ok %s 60 -\n' "$(date +%s)" > "$STATE/test-fx-budgetcheck.sh.result"
+BUDGET=40
+out_bc="$(sut run)"
+BUDGET=120
+want   "a suite whose prior runtime exceeds the remaining budget is not reached" \
+       "not reached" "$out_bc"
+want   "and the suite appears in the unreached list" \
+       "test-fx-budgetcheck.sh" "$out_bc"
+nowant "and it does not appear as TIMEOUT"   "TIMEOUT"          "$out_bc"
+nowant "and the suite body did not execute"  "budgetcheck suite ran" "$out_bc"
+rm -f "$SH/test-fx-budgetcheck.sh" "$STATE/test-fx-budgetcheck.sh.result"
+
+# ======================================================================================
+echo
 echo "an unreadable gate list is refused, never guessed:"
 # ======================================================================================
 # Reading it as "the gate runs nothing" would put every gated suite into the timed pass and
