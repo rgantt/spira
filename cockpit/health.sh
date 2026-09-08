@@ -753,12 +753,17 @@ standing_lines() {
 
     # GRAPH — the beads themselves, kept apart from sessions and asks so the counts cannot
     # be read as the same kind of thing.
-    printf '        %sopen%s %s · %sready%s %s · %sworking%s %s · %spoison%s %s%s%s · %sstranded%s %s\n' \
+    # STRANDED IS THE GHOST COUNT, NOT THE LEDGER SIZE. strands.json holds every disposition
+    # strand.sh classifies and only `ghost` is a claimed bead whose holder is gone; the size
+    # rendered under that name made a childless epic read as a dead worker. The ledger total
+    # stays alongside in parentheses, because it is context rather than an alarm.
+    printf '        %sopen%s %s · %sready%s %s · %sworking%s %s · %spoison%s %s%s%s · %sstranded%s %s %s(ledger %s)%s\n' \
         "$C_DIM" "$C_RST" "${SP_OPEN:-?}" \
         "$C_DIM" "$C_RST" "${SP_READY:-?}" \
         "$C_DIM" "$C_RST" "${SP_INPROG:-?}" \
         "$C_DIM" "$C_RST" "$( [ "${SP_POISON:-0}" = 0 ] && printf '%s' "$C_OK" || printf '%s' "$C_BAD$C_B")" "${SP_POISON:-?}" "$C_RST" \
-        "$C_DIM" "$C_RST" "${SP_STRANDS:-?}"
+        "$C_DIM" "$C_RST" "${SP_STRAND_GHOST:-?}" \
+        "$C_DIM" "${SP_STRANDS:-?}" "$C_RST"
 
     # GATE — is the check between work and its landings buying anything? The pane already
     # instruments what the harness COSTS; this is the only line that says whether one of its

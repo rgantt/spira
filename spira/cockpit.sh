@@ -625,20 +625,7 @@ print("SP_UNLANDED=%d" % (len(ids) - landed))
     fi
 
     # ---- fiends ------------------------------------------------------------------------
-    if [ -f "$SPIRA_RUN/strands.json" ]; then
-        python3 -c '
-import sys, json
-try: d = json.load(open(sys.argv[1]))
-except Exception: print("SP_STRANDS=?"); print("SP_STRANDS_ESCALATED=?"); raise SystemExit
-print("SP_STRANDS=%d" % len(d))
-print("SP_STRANDS_ESCALATED=%d" % sum(1 for v in d.values() if v.get("escalated")))
-' "$SPIRA_RUN/strands.json" 2>/dev/null \
-          || { echo "SP_STRANDS=?"; echo "SP_STRANDS_ESCALATED=?"; }
-    else
-        # No file is not the same claim as no strands: strand.sh writes it on its first
-        # pass, so its absence means the detector has not run, which is a different fault.
-        echo "SP_STRANDS=?"; echo "SP_STRANDS_ESCALATED=?"
-    fi
+    strand_keys
 
     # ---- TOKENS: what the account is spending, and which half is spending it ------------
     # The rate limit is the binding constraint on everything else on this pane — when the
@@ -740,6 +727,56 @@ append_history() {
     fi
 }
 
+# The strand ledger, BROKEN OUT BY KIND. strands.json holds every disposition strand.sh
+# classifies — ghost, empty, starved, stuck, cycle and the rest — and only `ghost` is the
+# labelled failure of a claimed bead whose holder is gone. Reporting its SIZE under that
+# one member's name is law-alerts-must-be-actionable in miniature: a childless epic and a
+# dead worker counted identically, so a sweep spent four commands hunting for a holder that
+# had never existed.
+#
+# THE KEY IS SPLIT FROM THE RIGHT. It is `<partition>:<kind>:<id>`, and a partition is a
+# label list that may itself contain a colon; an id may not. Splitting from the left reads
+# the partition as the kind on exactly the entries that are hardest to reason about.
+#
+# Emitted as its own seam so a suite can drive the classifier the collector actually runs
+# rather than a copy of it, the same way `history` exposes append_history.
+strand_keys() {
+    local f="$SPIRA_RUN/strands.json"
+    # No file is not the same claim as no strands: strand.sh writes it on its first pass,
+    # so its absence means the detector has not run, which is a different fault.
+    if [ -f "$f" ]; then
+        python3 -c '
+import sys, json
+KEYS = ("SP_STRANDS", "SP_STRANDS_ESCALATED", "SP_STRAND_GHOST", "SP_STRAND_OTHER")
+try: d = json.load(open(sys.argv[1]))
+except Exception:
+    for k in KEYS: print("%s=?" % k)
+    raise SystemExit
+counts, bad = {}, 0
+for k in d:
+    part = k.rsplit(":", 2)
+    if len(part) != 3 or not part[1]:
+        bad += 1
+        continue
+    counts[part[1]] = counts.get(part[1], 0) + 1
+print("SP_STRANDS=%d" % len(d))
+print("SP_STRANDS_ESCALATED=%d" % sum(1 for v in d.values() if v.get("escalated")))
+# AN UNREADABLE KEY MAKES THE GHOST COUNT UNKNOWN, NEVER ZERO (law-absence-needs-a-positive-
+# control). The entry that could not be classified may well be a ghost, and a confident 0
+# there is precisely the reading that stops anybody looking.
+print("SP_STRAND_GHOST=%s" % ("?" if bad else counts.get("ghost", 0)))
+rest = ["%s=%d" % (k, counts[k]) for k in sorted(counts) if k != "ghost"]
+if bad: rest.append("unclassified=%d" % bad)
+# COMMA-SEPARATED, NEVER SPACES. A renderer `source`s the snapshot, and while write_snapshot
+# quotes what it writes, this same function is read directly by the suite and by anything
+# that evals a bare line.
+print("SP_STRAND_OTHER=%s" % (",".join(rest) or "none"))
+' "$f" 2>/dev/null && return 0
+    fi
+    echo "SP_STRANDS=?"; echo "SP_STRANDS_ESCALATED=?"
+    echo "SP_STRAND_GHOST=?"; echo "SP_STRAND_OTHER=?"
+}
+
 write_snapshot() {
     local tmp="$SPIRA_RUN/.cockpit.$$"
     probe 2>/dev/null | python3 -c '
@@ -782,5 +819,10 @@ history)
 loop)
     while :; do write_snapshot; sleep "$INTERVAL"; done
     ;;
-*) echo "usage: cockpit.sh [once|loop|history]" >&2; exit 1 ;;
+# The strand ledger's keys alone, taking no other reading. This is the seam the suite drives:
+# it is the same function probe calls, so what is tested is what runs.
+strands)
+    strand_keys
+    ;;
+*) echo "usage: cockpit.sh [once|loop|history|strands]" >&2; exit 1 ;;
 esac

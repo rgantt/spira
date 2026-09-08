@@ -38,7 +38,7 @@
 # shipped six-hour window would pass just as well if the code had the literal written in,
 # which is the thing the key exists to prevent.
 #
-# covers: spira/watchtower.sh spira/landing.sh
+# covers: spira/watchtower.sh spira/landing.sh spira/cockpit.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
@@ -230,6 +230,93 @@ nowant "and its wait is not reported" "999" "$line"
 fresh
 line="$(gate_field "$(wt)")"
 is "a missing gate.log renders ?" "?" "${line%% *}"
+
+# ======================================================================================
+echo
+echo "the strand ledger is reported by class, not by size:"
+# ======================================================================================
+# strands.json holds EVERY disposition strand.sh classifies — ghost, empty, starved, stuck,
+# cycle — and only `ghost` is the labelled failure of a claimed bead whose holder is gone.
+# The watchtower rendered the ledger's SIZE under that name, so a childless epic reported as
+# a dead worker and a sweep spent four commands hunting for a holder that never existed.
+#
+# THE FIXTURE GOES THROUGH THE REAL COLLECTOR (law-prefer-the-real-dependency). The classifier
+# under test is `cockpit.sh strands`, the same function probe calls, and its output IS the
+# snapshot the renderer then reads — so the seam between the two programs is exercised rather
+# than imagined. Writing a cockpit.env by hand here would assert against whichever key names
+# the test author remembered, which is exactly the drift the split was made to stop.
+ledger() {               # ledger <json> -> the collector's keys for that ledger
+    mkdir -p "$TMP/run"
+    printf '%s' "$1" > "$TMP/run/strands.json"
+    env -i PATH="$PATH" HOME="$TMP" SPIRA_CONF=/nonexistent SPIRA_RUN="$TMP/run" \
+        bash "$HERE/cockpit.sh" strands 2>/dev/null
+}
+key() {                  # key <keys> <name> -> its value
+    printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1
+}
+render() {               # render <json> -> the watchtower snapshot over that ledger
+    local keys; keys="$(ledger "$1")"
+    printf '%s\n' "$keys" > "$TMP/run/cockpit.env"
+    wt
+}
+
+# THE POSITIVE CONTROL FIRST: a ghost really is counted as a ghost, and reaches the pane. If
+# this ever goes quiet, every assertion below is a matcher that finds nothing being read as
+# a system with nothing wrong (law-absence-needs-a-positive-control).
+k="$(ledger '{"spira,plan:ghost:sp-a":{},"spira,plan:ghost:sp-b":{}}')"
+is "two ghosts count as two"        "2" "$(key "$k" SP_STRAND_GHOST)"
+is "and nothing else is reported"   "none" "$(key "$k" SP_STRAND_OTHER)"
+want "and the pane says so" "stranded (claimed, nobody home)     2" \
+     "$(render '{"spira,plan:ghost:sp-a":{},"spira,plan:ghost:sp-b":{}}')"
+
+# THE INCIDENT ITSELF. One childless epic: nobody claimed it, no lease expired, no worker
+# died. The ledger has one entry and the ghost count is zero, and it is the zero that is the
+# whole point — reverting the renderer to the ledger size fails here and nowhere else.
+INCIDENT='{"spira,plan:empty:sp-jj88":{"first":1788811865,"acted":0,"escalated":1788812834}}'
+k="$(ledger "$INCIDENT")"
+is "an empty epic is not a ghost"   "0" "$(key "$k" SP_STRAND_GHOST)"
+is "it is reported as its own class" "empty=1" "$(key "$k" SP_STRAND_OTHER)"
+is "the ledger still has one entry"  "1" "$(key "$k" SP_STRANDS)"
+snap="$(render "$INCIDENT")"
+want "the pane reports no dead holder" "stranded (claimed, nobody home)     0" "$snap"
+want "and names the class it does hold" "strand ledger, other classes        empty=1" "$snap"
+
+# Every class is named and counted, ghost kept apart from the rest.
+k="$(ledger '{"p:ghost:sp-a":{},"p:empty:sp-b":{},"p:empty:sp-c":{},"p:stuck:sp-d":{}}')"
+is "ghosts are counted alone"       "1" "$(key "$k" SP_STRAND_GHOST)"
+is "the other classes are itemised" "empty=2,stuck=1" "$(key "$k" SP_STRAND_OTHER)"
+
+# THE KEY IS SPLIT FROM THE RIGHT. A partition is a label list and may carry a colon; an id
+# may not. Splitting from the left reads the partition as the kind, and does it on precisely
+# the entries hardest to reason about.
+k="$(ledger '{"spira:plan,extra:ghost:sp-a":{}}')"
+is "a partition containing a colon still classifies" "1" "$(key "$k" SP_STRAND_GHOST)"
+
+# AN UNREADABLE ENTRY IS `?`, NEVER 0. The key that could not be classified may itself be a
+# ghost, and a confident zero is the reading that stops anybody looking.
+k="$(ledger '{"bogus":{},"p:ghost:sp-a":{}}')"
+is   "an unclassifiable key makes the ghost count unknown" "?" "$(key "$k" SP_STRAND_GHOST)"
+want "and is itself reported, not dropped" "unclassified=1" "$(key "$k" SP_STRAND_OTHER)"
+is   "while the ledger size is still known" "2" "$(key "$k" SP_STRANDS)"
+
+# A ledger that will not parse, and no ledger at all, are both unread rather than empty:
+# strand.sh writes the file on its first pass, so its absence means the detector has not run.
+k="$(ledger 'not json at all')"
+is "an unparsable ledger renders ?" "?" "$(key "$k" SP_STRAND_GHOST)"
+rm -f "$TMP/run/strands.json"
+k="$(env -i PATH="$PATH" HOME="$TMP" SPIRA_CONF=/nonexistent SPIRA_RUN="$TMP/run" \
+        bash "$HERE/cockpit.sh" strands 2>/dev/null)"
+is "a missing ledger renders ?"     "?" "$(key "$k" SP_STRAND_GHOST)"
+
+# A SNAPSHOT FROM A COLLECTOR PREDATING THE SPLIT RENDERS `?`. The two halves are briefly
+# skewed during any rollout, and the pane must say it could not read the field rather than
+# report a zero nobody measured.
+fresh
+printf "SP_STRANDS=7\n" > "$TMP/run/cockpit.env"
+snap="$(wt)"
+want "an old snapshot is unread, not clear" "stranded (claimed, nobody home)     ?" "$snap"
+nowant "and its total is not shown as ghosts" "nobody home)     7" "$snap"
+fresh
 
 # ======================================================================================
 echo

@@ -241,6 +241,15 @@ if [ -r "$SUITES" ]; then
     [ -n "$suites_block" ] || suites_block="  (unreadable — suites.sh status produced nothing)"
 fi
 
+# THE STRAND LEDGER IS TWO LINES, NOT ONE. strands.json holds every disposition strand.sh
+# classifies, and only `ghost` is the labelled failure this line names — a claimed bead whose
+# holder is gone. This rendered the ledger's SIZE under that name, so a childless epic read
+# as a dead worker and a sweep spent four commands hunting for a holder that never existed.
+# The collector does the classifying (cockpit.sh strand_keys); this only renders it.
+#
+# A SNAPSHOT WRITTEN BY A COLLECTOR PREDATING THAT SPLIT RENDERS `?`, WHICH IS CORRECT: `g`
+# reports an absent key as unread, and during a rollout the two halves are briefly skewed.
+# `?` says this pass could not read it. A 0 would say there are none, which nobody checked.
 snapshot() {
 cat <<EOF
 ## Spira pipeline, $(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -274,7 +283,8 @@ reading \`?\` is one this pass COULD NOT READ — never treat it as a zero.
   beads in progress                   $(g SP_INPROG)
   ready to claim                      $(g SP_READY)
   poisoned                            $(g SP_POISON)
-  stranded (claimed, nobody home)     $(g SP_STRANDS)
+  stranded (claimed, nobody home)     $(g SP_STRAND_GHOST)
+  strand ledger, other classes        $(g SP_STRAND_OTHER)
   account capacity paused             $(g SP_CAPACITY_PAUSED)
 
 ### The graph
