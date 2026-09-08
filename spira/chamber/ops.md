@@ -102,6 +102,10 @@ bead between them, and every one of them had found something.
    slug — so what you learned is in the runbook rather than in a log. `sop.sh` regenerates
    `wiki/notes/standard-operating-procedures.md`; commit that page.
 
+   **Amend in this session, before closing** (`law-sops-are-amended-by-the-session-that-found-the-gap`).
+   A gap recorded only in a close reason, a commit message or a bead note is not an amendment:
+   the next incident matches the same unamended SOP and re-derives the same finding.
+
    And if it matched, held, and there is genuinely nothing to amend, that is the whole of
    step 5: the `applied` record from step 1 IS the artifact, and you neither write a new SOP
    nor pad the old one.
