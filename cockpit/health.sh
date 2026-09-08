@@ -408,6 +408,76 @@ tokens_section() {
                && note="${note:+$note  }${C_DIM}idle $(( SP_CTX_AGE / 60 ))m${C_RST}" ;;
     esac
     [ -n "$note" ] && printf '        %s\n' "$note"
+
+    # RATE LIMIT WINDOWS. The two windows that end a working day when full, now visible before
+    # that happens. SP_RATELIM_5H_PCT / _7D_PCT are 0–100 integers from the newest
+    # rate_limit_event across live aeon traces. SP_RATELIM_*_MIN is minutes until reset.
+    # SP_RATELIM_*_ETA is seconds to full from the last hour's slope ('-' resets first,
+    # '?' no slope). SP_RATELIM_AGE is seconds since the newest trace reading.
+    #
+    # A MISSING READING RENDERS '?', NOT 0. A window shown at 0% is the best possible news;
+    # a broken probe must never produce that reading (law-absence-needs-a-positive-control).
+    #
+    # COLOUR BANDS match ctx-meter.sh: green < 70%, yellow 70–90%, red ≥ 90%.
+    local p5="${SP_RATELIM_5H_PCT:-?}" p7="${SP_RATELIM_7D_PCT:-?}"
+    local m5="${SP_RATELIM_5H_MIN:-?}" m7="${SP_RATELIM_7D_MIN:-?}"
+    local e5="${SP_RATELIM_5H_ETA:-?}" e7="${SP_RATELIM_7D_ETA:-?}"
+    local cage="${SP_RATELIM_AGE:-?}"
+
+    # Colour for each window
+    local c5="$C_OK" c7="$C_OK"
+    [ "${p5:-0}" -ge 90 ] 2>/dev/null && c5="${C_BAD}${C_B}" || \
+    [ "${p5:-0}" -ge 70 ] 2>/dev/null && c5="$C_WARN"
+    [ "${p7:-0}" -ge 90 ] 2>/dev/null && c7="${C_BAD}${C_B}" || \
+    [ "${p7:-0}" -ge 70 ] 2>/dev/null && c7="$C_WARN"
+
+    # Minutes → human-readable duration. Pure-bash, no subshell.
+    local DUR5 DUR7
+    _dur_m() {  # _dur_m <minutes> <varname>
+        local _m="$1" _v="$2"
+        case "$_m" in ''|'?'|*[!0-9]*) printf -v "$_v" '%s' "${_m:-?}"; return ;; esac
+        if   [ "$_m" -eq 0 ];    then printf -v "$_v" '0m'
+        elif [ "$_m" -lt 60 ];   then printf -v "$_v" '%dm' "$_m"
+        elif [ "$_m" -lt 1440 ]; then printf -v "$_v" '%dh%dm' $(( _m / 60 )) $(( _m % 60 ))
+        else printf -v "$_v" '%dd%dh' $(( _m / 1440 )) $(( _m % 1440 / 60 )); fi
+    }
+    _dur_m "$m5" DUR5; _dur_m "$m7" DUR7
+
+    # ETA suffix for each window (empty when not projectable)
+    local eta5_sfx="" eta7_sfx=""
+    case "$e5" in
+        '-'|'?'|'') ;;
+        '0') eta5_sfx=" ${C_BAD}${C_B}FULL${C_RST}" ;;
+        *[!0-9]*) ;;
+        *)  local _em5=$(( e5 / 60 ))
+            local _ed5
+            _dur_m "$_em5" _ed5
+            eta5_sfx=" ${C_DIM}→full ${_ed5}${C_RST}" ;;
+    esac
+    case "$e7" in
+        '-'|'?'|'') ;;
+        '0') eta7_sfx=" ${C_BAD}${C_B}FULL${C_RST}" ;;
+        *[!0-9]*) ;;
+        *)  local _em7=$(( e7 / 60 ))
+            local _ed7
+            _dur_m "$_em7" _ed7
+            eta7_sfx=" ${C_DIM}→full ${_ed7}${C_RST}" ;;
+    esac
+
+    # Stale-reading note: if the newest trace sample is more than 15 minutes old, say so.
+    local age_sfx=""
+    [ "${cage:-0}" -ge 900 ] 2>/dev/null \
+        && age_sfx=" ${C_DIM}($(( cage / 60 ))m ago)${C_RST}"
+
+    printf ' %sWIN%s   5h %s%s%%%s  %sreset %s%s%s%s\n' \
+        "$C_DIM" "$C_RST" \
+        "$c5" "${p5:-?}" "$C_RST" \
+        "$C_DIM" "$DUR5" "$C_RST" \
+        "$eta5_sfx" "$age_sfx"
+    printf '        7d %s%s%%%s  %sreset %s%s%s\n' \
+        "$c7" "${p7:-?}" "$C_RST" \
+        "$C_DIM" "$DUR7" "$C_RST" \
+        "$eta7_sfx"
     return 0
 }
 

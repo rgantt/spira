@@ -1009,6 +1009,9 @@ for i in awaiting_ids:
                     SP_AEON_BORN SP_AEON_LIVED SP_AEON_STILLBORN SP_AEON_WORKED; do
                echo "$k=?"
            done; }
+
+    # ---- RATE LIMIT WINDOWS: utilisation from live aeon traces ---------------------------
+    ratelim_keys
 }
 
 # THE SERIES, because a gauge cannot answer "over time". The question the token meter exists
@@ -1028,7 +1031,7 @@ for i in awaiting_ids:
 # every reader downstream.
 HIST="$SPIRA_RUN/cockpit-history.csv"
 HISTORY_MAX="${SPIRA_COCKPIT_HISTORY_MAX:-20160}"   # 14 days at the default 60s cadence
-HIST_COLS="ts,tok_win,tok_aeon_win,tok_sess_win,tok_aeon_turns,tok_sess_turns,ctx_now"
+HIST_COLS="ts,tok_win,tok_aeon_win,tok_sess_win,tok_aeon_turns,tok_sess_turns,ctx_now,ratelim_5h,ratelim_7d"
 
 append_history() {
     # Read back the file just written rather than the probe's own output: the snapshot is what
@@ -1044,10 +1047,10 @@ append_history() {
         set +u
         # shellcheck disable=SC1090
         . "$SNAP" 2>/dev/null
-        printf '%s,%s,%s,%s,%s,%s,%s' \
+        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s' \
             "${SP_AT:-$(date +%s)}" "${SP_TOK_WIN:-?}" "${SP_TOK_AEON_WIN:-?}" \
             "${SP_TOK_SESS_WIN:-?}" "${SP_TOK_AEON_TURNS:-?}" "${SP_TOK_SESS_TURNS:-?}" \
-            "${SP_CTX_NOW:-?}"
+            "${SP_CTX_NOW:-?}" "${SP_RATELIM_5H:-?}" "${SP_RATELIM_7D:-?}"
     )"
     # A CHANGED COLUMN SET ROTATES THE FILE RATHER THAN APPENDING A SECOND HEADER. Every reader
     # takes line one as the header, so a header written into the middle is parsed as data and
@@ -1068,6 +1071,185 @@ append_history() {
         { head -1 "$HIST"; tail -n "$HISTORY_MAX" "$HIST"; } > "$HIST.tmp" \
             && mv -f "$HIST.tmp" "$HIST"
     fi
+}
+
+# The two rate-limit windows, read from the newest rate_limit_event across live aeon traces.
+#
+# WHY TRACES AND NOT THE HOOK. ctx-meter.sh maintains limits.samples from the status-line
+# hook, which fires only when the operator's interactive session is speaking. Aeons run
+# throughout the day and their traces record rate_limit_event on every API call — so even
+# with nobody at the keyboard, the most recent utilisation reading is in whatever trace was
+# written last. That reading is what says "the account is approaching full while the operator
+# is offline." On 2026-09-06 the five-hour window hit 1.0 three times with nothing on the
+# dashboard to warn of it.
+#
+# THE READING IS FROM THE LAST ~128KB OF THE NEWEST LOG. rate_limit_events fire on every
+# API call and are dense in any active session, so the tail reliably holds a recent one
+# without reading the whole file. At 30 files maximum, with most already in the VFS cache,
+# this costs one seek-and-read per file.
+#
+# THE SLOPE IS FROM THE HISTORY CSV, not from consecutive trace events. A slope from two
+# adjacent events is the per-turn rate on those two turns — dominated by quantisation noise.
+# The collector's history at its 60s interval is already smoothed, and a slope from an hour
+# of that history is the signal that says "the account will be full in N minutes".
+#
+# A MISSING OR UNREADABLE TRACE RENDERS `?`, NEVER 0. A window shown at 0% is the best
+# possible news; a failed probe must never produce it (law-absence-needs-a-positive-control).
+#
+# Emitted as its own seam so a suite can drive the same code the collector runs.
+ratelim_keys() {
+    # THE SCRIPT ARRIVES ON FD 3, NOT STDIN. `python3 - <<PY` reads the heredoc as data too:
+    # the redirect wins, the args are discarded, and the script then fails to parse its inputs.
+    # `python3 /dev/fd/3 arg1 arg2 3<<PY` keeps stdin free and passes args normally.
+    python3 /dev/fd/3 "$SPIRA_RUN" "$HIST" 3<<'PY' 2>/dev/null && return 0
+import sys, json, os, glob, time
+
+run, hist = sys.argv[1], sys.argv[2]
+now = int(time.time())
+
+KEYS = ["SP_RATELIM_5H", "SP_RATELIM_7D", "SP_RATELIM_5H_PCT", "SP_RATELIM_7D_PCT",
+        "SP_RATELIM_5H_MIN", "SP_RATELIM_7D_MIN", "SP_RATELIM_5H_ETA", "SP_RATELIM_7D_ETA",
+        "SP_RATELIM_AGE"]
+
+TAIL = 131072  # 128 KB — enough for many rate_limit_event occurrences
+
+# NEWEST LOG FIRST. rate_limit_event data in a log that was written last is the most current
+# reading of the account-wide windows; earlier logs may predate a window reset and their
+# resetsAt would be in the past.
+try:
+    logs = sorted(glob.glob(os.path.join(run, "*.log")),
+                  key=lambda f: os.path.getmtime(f), reverse=True)
+except Exception:
+    for k in KEYS: print(f"{k}=?")
+    raise SystemExit(1)
+
+five_h = seven_d = None
+file_mtime = None
+
+for lf in logs[:30]:
+    try:
+        mtime = int(os.path.getmtime(lf))
+    except OSError:
+        continue
+    try:
+        with open(lf, "rb") as fh:
+            size = fh.seek(0, 2)
+            fh.seek(max(0, size - TAIL))
+            chunk = fh.read()
+    except OSError:
+        continue
+    # LAST OCCURRENCE IN THE FILE IS THE NEWEST. Scanning forward and keeping `last` gives
+    # the most recent rate_limit_event in the tail without reversing a potentially large list.
+    last = None
+    for line in chunk.decode("utf-8", errors="replace").splitlines():
+        if '"rate_limit_event"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if d.get("type") != "rate_limit_event":
+            continue
+        rl = d.get("rate_limit_info") or {}
+        uw = rl.get("unifiedWindows") or {}
+        if uw.get("five_hour") or uw.get("seven_day"):
+            last = (uw.get("five_hour"), uw.get("seven_day"), mtime)
+    if last:
+        five_h, seven_d, file_mtime = last
+        break
+
+if five_h is None and seven_d is None:
+    for k in KEYS: print(f"{k}=?")
+    raise SystemExit(0)
+
+# Extract validated utilization (0.0–1.0) and resetsAt (epoch seconds) from one window dict.
+def win_vals(w):
+    if not isinstance(w, dict): return None, None
+    u = w.get("utilization")
+    r = w.get("resetsAt")
+    if isinstance(u, bool) or not isinstance(u, (int, float)): return None, None
+    if isinstance(r, bool) or not isinstance(r, (int, float)): return None, None
+    if not 0 <= float(u) <= 1: return None, None
+    return float(u), int(r)
+
+util_5h, reset_5h = win_vals(five_h) if five_h else (None, None)
+util_7d, reset_7d = win_vals(seven_d) if seven_d else (None, None)
+
+def mins_to(epoch):
+    if epoch is None: return "?"
+    return str(max(0, (epoch - now) // 60))
+
+# ETA from the last hour of history. Returns seconds-to-full as a string, '-' (resets first),
+# '?' (no slope), or '0' (already full). TWO FILE OPENS, not one: DictReader reads the
+# header in the first pass; we look up the column index and re-read only the data rows we
+# need. This avoids loading the whole file at once when the series is long.
+def eta_from_history(col_name, current_util, reset_epoch):
+    if current_util is None: return "?"
+    if current_util >= 1.0: return "0"
+    try:
+        with open(hist) as f:
+            header = f.readline().strip().split(",")
+        try:
+            col_idx = header.index(col_name)
+        except ValueError:
+            return "?"  # column does not exist yet; happens on the first pass after upgrade
+        rows = []
+        hour_ago = now - 3600
+        with open(hist) as f:
+            f.readline()  # skip header
+            for line in f:
+                parts = line.strip().split(",")
+                if len(parts) <= col_idx: continue
+                try:
+                    ts = int(parts[0])
+                    val_s = parts[col_idx]
+                    if val_s in ("?", "-", ""): continue
+                    val = float(val_s)
+                    if ts >= hour_ago: rows.append((ts, val))
+                except Exception: continue
+    except Exception:
+        return "?"
+    if len(rows) < 2: return "?"
+    rows.sort()
+    span = rows[-1][0] - rows[0][0]
+    move = rows[-1][1] - rows[0][1]
+    # MINIMUM SPAN AND MINIMUM MOVE, matching ctx-meter.sh's LIM_MIN_SPAN / LIM_MIN_MOVE.
+    # Below either floor the slope is noise: a single quantisation step of 0.01 across 600s
+    # is already a 0.06%/h rate, and one below 0.02 total move in an hour is unmeasurable.
+    if span < 600 or move < 0.02: return "?"
+    slope = move / span  # utilization per second
+    if slope <= 0: return "?"
+    eta_secs = int((1.0 - current_util) / slope)
+    # THE RESET WINS. A window that fills in 2h but resets in 45m needs no remediation;
+    # showing a fill ETA for it would be misleading.
+    if reset_epoch is not None:
+        secs_to_reset = max(0, reset_epoch - now)
+        if secs_to_reset < eta_secs: return "-"
+    return str(eta_secs)
+
+eta_5h = eta_from_history("ratelim_5h", util_5h, reset_5h)
+eta_7d = eta_from_history("ratelim_7d", util_7d, reset_7d)
+
+def fmt_util(u): return "%.3f" % u if u is not None else "?"
+def fmt_pct(u):
+    if u is None: return "?"
+    return str(int(round(u * 100)))
+
+print(f"SP_RATELIM_5H={fmt_util(util_5h)}")
+print(f"SP_RATELIM_7D={fmt_util(util_7d)}")
+print(f"SP_RATELIM_5H_PCT={fmt_pct(util_5h)}")
+print(f"SP_RATELIM_7D_PCT={fmt_pct(util_7d)}")
+print(f"SP_RATELIM_5H_MIN={mins_to(reset_5h)}")
+print(f"SP_RATELIM_7D_MIN={mins_to(reset_7d)}")
+print(f"SP_RATELIM_5H_ETA={eta_5h}")
+print(f"SP_RATELIM_7D_ETA={eta_7d}")
+print(f"SP_RATELIM_AGE={now - file_mtime if file_mtime is not None else '?'}")
+PY
+    for _k in SP_RATELIM_5H SP_RATELIM_7D SP_RATELIM_5H_PCT SP_RATELIM_7D_PCT \
+              SP_RATELIM_5H_MIN SP_RATELIM_7D_MIN SP_RATELIM_5H_ETA SP_RATELIM_7D_ETA \
+              SP_RATELIM_AGE; do
+        echo "$_k=?"
+    done
 }
 
 # The strand ledger, BROKEN OUT BY KIND. strands.json holds every disposition strand.sh
@@ -1307,5 +1489,10 @@ strands)
 sops)
     sop_keys
     ;;
-*) echo "usage: cockpit.sh [once|loop|history|strands|sops]" >&2; exit 1 ;;
+# The rate-limit window keys alone, taking no other reading. This is the seam the suite
+# drives: it is the same function probe calls, so what is tested is what runs.
+ratelim)
+    ratelim_keys
+    ;;
+*) echo "usage: cockpit.sh [once|loop|history|strands|sops|ratelim]" >&2; exit 1 ;;
 esac

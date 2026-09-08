@@ -78,6 +78,55 @@ loop_out="$(env -i PATH="$BASE_PATH" HOME="$TMP" LC_ALL=C.UTF-8 \
 want "loop mode prints refusal" "not the supervised process" "$loop_out"
 
 # ======================================================================================
+# RATE LIMIT WINDOWS — the ratelim seam.
+#
+# THE POSITIVE CONTROL IS FIRST. A check that only tests absence is indistinguishable from
+# one pointed at the wrong thing; proving it fires on a known input first means a silent
+# failure in the absence case is "found nothing" rather than "looked nowhere"
+# (law-absence-needs-a-positive-control).
+echo
+echo "ratelim: with a prepared trace:"
+
+# A minimal stream-json trace holding one rate_limit_event with unifiedWindows.
+# utilization 0.27 for five_hour, 0.21 for seven_day. resetsAt is far in the future
+# so the minutes-to-reset will be a large positive integer rather than 0.
+cat > "$RUN/sp-ratelim-test.log" <<'TRACE'
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":9999999999,"unifiedWindows":{"five_hour":{"utilization":0.27,"resetsAt":9999999999},"seven_day":{"utilization":0.21,"resetsAt":9999999999}}}}
+TRACE
+
+rl_out="$(env -i PATH="$BASE_PATH" HOME="$TMP" LC_ALL=C.UTF-8 \
+    SPIRA_CONF="$TMP/no.conf" SPIRA_HOME="$HERE" SPIRA_REPO="$TMP" \
+    SPIRA_RUN="$RUN" SPIRA_DB="$TMP/nodb" \
+    SPIRA_REPO_MAP="$TMP/no-map" SPIRA_GOAL=sp-test SPIRA_FAYTHS=t \
+    bash "$HERE/cockpit.sh" ratelim 2>/dev/null)"
+
+want  "five_hour utilisation present"        "SP_RATELIM_5H="     "$rl_out"
+want  "seven_day utilisation present"        "SP_RATELIM_7D="     "$rl_out"
+want  "five_hour percentage present"         "SP_RATELIM_5H_PCT=" "$rl_out"
+want  "five_hour percentage is 27"           "SP_RATELIM_5H_PCT=27" "$rl_out"
+want  "seven_day percentage is 21"           "SP_RATELIM_7D_PCT=21" "$rl_out"
+want  "minutes to 5h reset is a number"      "SP_RATELIM_5H_MIN=" "$rl_out"
+want  "minutes to 7d reset is a number"      "SP_RATELIM_7D_MIN=" "$rl_out"
+want  "age key present"                      "SP_RATELIM_AGE="    "$rl_out"
+nowant "no '?' for 5h pct when trace exists" "SP_RATELIM_5H_PCT=?" "$rl_out"
+nowant "no '?' for 7d pct when trace exists" "SP_RATELIM_7D_PCT=?" "$rl_out"
+
+# ======================================================================================
+echo
+echo "ratelim: without a trace (empty run dir):"
+
+EMPTY_RUN="$TMP/empty-run"; mkdir -p "$EMPTY_RUN"
+rl_empty="$(env -i PATH="$BASE_PATH" HOME="$TMP" LC_ALL=C.UTF-8 \
+    SPIRA_CONF="$TMP/no.conf" SPIRA_HOME="$HERE" SPIRA_REPO="$TMP" \
+    SPIRA_RUN="$EMPTY_RUN" SPIRA_DB="$TMP/nodb" \
+    SPIRA_REPO_MAP="$TMP/no-map" SPIRA_GOAL=sp-test SPIRA_FAYTHS=t \
+    bash "$HERE/cockpit.sh" ratelim 2>/dev/null)"
+
+want "SP_RATELIM_5H is '?'" "SP_RATELIM_5H=?" "$rl_empty"
+want "SP_RATELIM_7D is '?'" "SP_RATELIM_7D=?" "$rl_empty"
+want "SP_RATELIM_5H_PCT is '?'" "SP_RATELIM_5H_PCT=?" "$rl_empty"
+
+# ======================================================================================
 echo
 printf 'test-cockpit: %d ok, %d fail\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
