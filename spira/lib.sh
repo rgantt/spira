@@ -1970,10 +1970,17 @@ subtree_has_flock() {
     local p pid cur hops hit comm parent
     # Same ppid-map optimization as youngest_in_subtree:
     # build the entire map with ONE awk pass, walk ancestry via array lookups.
+    # PARSE AFTER THE COMM, NOT BY FIELD NUMBER, to handle processes with spaces in comm.
     declare -A ppid
     while IFS=' ' read -r pid parent; do
         ppid["$pid"]="$parent"
-    done < <(awk '{print $1, $4}' /proc/*/stat 2>/dev/null)
+    done < <(awk '{ n = match($0, /^[0-9]+ \(/); if (!n) next
+                    close_paren = 0
+                    for (i = length($0); i > 0; i--) if (substr($0, i, 1) == ")") { close_paren = i; break }
+                    if (!close_paren) next
+                    rest = substr($0, close_paren + 2)      # "state ppid ..."
+                    split(rest, a, " ")
+                    print $1, a[2] }' /proc/*/stat 2>/dev/null)
     for p in /proc/[0-9]*/comm; do
         comm="$(cat "$p" 2>/dev/null)" || continue
         [ "$comm" = "flock" ] || continue
