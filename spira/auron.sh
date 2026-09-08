@@ -134,10 +134,12 @@ NOW="$(date +%s)"
 # ======================================================================================
 declare -A S_STATE S_SEEN S_UNSEEN S_SINCE S_FIRST S_FLAPS S_BEAD S_REFRESHED
 FIRST_RUN=0
+PROBE_ID=""    # id of the write-probe bead; re-derived if missing, persisted in state
 if [ -r "$STATE" ]; then
     while IFS=$'\t' read -r k a b c d e f g h; do
         case "$k" in
             '#first_run') FIRST_RUN="${a:-0}"; continue ;;
+            '#probe_id')  PROBE_ID="${a:-}"; continue ;;
             ''|'#'*)      continue ;;
         esac
         S_STATE[$k]="${a:-clear}";  S_SEEN[$k]="${b:-0}";      S_UNSEEN[$k]="${c:-0}"
@@ -153,6 +155,7 @@ fi
 state_save() {
     local tmp="$STATE.tmp.$$" k
     { printf '#first_run\t%s\n' "$FIRST_RUN"
+      printf '#probe_id\t%s\n' "$PROBE_ID"
       for k in "${!S_STATE[@]}"; do
           printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$k" \
               "${S_STATE[$k]}" "${S_SEEN[$k]}" "${S_UNSEEN[$k]}" "${S_SINCE[$k]}" \
@@ -190,15 +193,64 @@ if [ -n "${SPIRA_EXPORTER:-}" ]; then
     fi
 fi
 
-# THE ALERT QUERY IS ALSO THE REACHABILITY PROBE, and deliberately so. Auron needs the
-# open and closed alert beads on every run anyway — that is how one bead per cause is
-# enforced across a lost state file — so asking a second, separate "is the database up"
+# THE ALERT QUERY IS ALSO THE READ PROBE, and deliberately so. Auron needs the open and
+# closed alert beads on every run anyway — that is how one bead per cause is enforced
+# across a lost state file — so asking a second, separate "is the database readable"
 # question would be a second thing to get out of step with the first. An empty list is
 # trustworthy only because this same call is what proved the database could answer.
 alerts_raw="$(bdq list --all --limit 0 --label alert --json 2>/dev/null | json_only)"
 db_reachable=1; db_error=""
 if [ -z "$alerts_raw" ]; then
     db_reachable=0; db_error="bd list --label alert returned nothing parseable within ${BD_TIMEOUT}s"
+fi
+
+# THE WRITE PROBE. db_reachable proves the READ path is up, not the write path. When
+# writes fail but reads do not — for example when a schema-cursor rollback leaves the
+# binary seeing pending migrations that a remote-backed database will not auto-apply —
+# bd list returns normally while every alert_write silently fails. That failure was
+# invisible until something was already firing (law-measure-the-outcome applied to the
+# watchdog itself). This probe exercises the write path unconditionally on every pass,
+# so a broken write path is seen on the very next cycle rather than only at alert time.
+#
+# The probe bead is updated, not created-and-deleted, because creation churns the graph
+# and the database is mirrored to git. A bead Auron already owns costs one row update
+# per pass and leaves no debris. PROBE_ID is persisted in the state file; a failed
+# update clears it so the next pass re-derives and retries via create.
+db_write_ok="?"    # unknown until attempted; ? published in the heartbeat if read failed
+if [ "$db_reachable" = 1 ]; then
+    # Re-derive PROBE_ID if the state lost it (first pass, state cleared, prior failure).
+    if [ -z "$PROBE_ID" ]; then
+        PROBE_ID="$(bdq list --all --limit 1 --label auron:probe --json 2>/dev/null \
+                    | json_only | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: d = []
+items = d if isinstance(d, list) else ([d] if d else [])
+print((items[0] if items else {}).get("id", ""))' 2>/dev/null)"
+    fi
+    if [ -z "$PROBE_ID" ]; then
+        # No probe bead yet: CREATE it. The create is itself the write probe for this pass.
+        probe_out="$(bdq create --title "Auron write probe" --type event -p 0 \
+                       --labels "auron:probe,overseer" \
+                       --body "write-path probe — updated on every Auron pass" \
+                       --json 2>&1)"
+        PROBE_ID="$(printf '%s' "$probe_out" | python3 -c '
+import sys, json
+t = sys.stdin.read(); i = t.find("{")
+if i >= 0:
+    try: print(json.loads(t[i:])["id"])
+    except Exception: pass' 2>/dev/null)"
+        db_write_ok="$([ -n "$PROBE_ID" ] && echo 1 || echo 0)"
+    else
+        # Probe bead exists: UPDATE its body with the current timestamp.
+        if bdq update "$PROBE_ID" --body "$(date +%s)" >/dev/null 2>&1; then
+            db_write_ok=1
+        else
+            # Clear PROBE_ID. A failed update could mean the bead was deleted or writes
+            # are broken; the next pass will try to create and discover which.
+            PROBE_ID=""; db_write_ok=0
+        fi
+    fi
 fi
 
 # key -> id and key -> status, from the labels. Never from a title and never from a grep
@@ -299,8 +351,10 @@ for line in sys.stdin:
 
 if [ "$REPORT" = 1 ]; then
     if [ -z "${firing_keys// /}" ]; then
-        printf 'auron: nothing firing (sentinel timer %s, database %s)\n' \
-            "$sentinel_timer" "$([ "$db_reachable" = 1 ] && echo reachable || echo UNREACHABLE)"
+        printf 'auron: nothing firing (sentinel timer %s, db read: %s write: %s)\n' \
+            "$sentinel_timer" \
+            "$([ "$db_reachable" = 1 ] && echo ok || echo UNREACHABLE)" \
+            "$(case "$db_write_ok" in 1) echo ok ;; 0) echo FAILED ;; *) echo unknown ;; esac)"
     else
         for k in $firing_keys; do
             printf '\n=== %s ===\n%s\n\n%s\n' "$k" "${F_TITLE[$k]}" "$(evidence_of "$k")"
@@ -454,9 +508,9 @@ done
 # there is never a stale second source of truth standing beside a working first one.
 # ======================================================================================
 fallback=0
-if [ "$db_reachable" = 0 ] || [ "$beads_ok" = 0 ]; then
+if [ "$db_reachable" = 0 ] || [ "$beads_ok" = 0 ] || [ "$db_write_ok" = 0 ]; then
     fallback=1
-    printf '%s' "$firing_json" | NOW="$NOW" DBOK="$db_reachable" python3 -c '
+    printf '%s' "$firing_json" | NOW="$NOW" DBOK="$db_reachable" WROK="$db_write_ok" python3 -c '
 import sys, os, json
 alerts = []
 for line in sys.stdin:
@@ -464,13 +518,17 @@ for line in sys.stdin:
     if line:
         try: alerts.append(json.loads(line))
         except Exception: pass
-json.dump({"at": int(os.environ["NOW"]), "db_reachable": os.environ["DBOK"] == "1",
+db_read = os.environ["DBOK"] == "1"
+db_write_raw = os.environ["WROK"]
+db_write = True if db_write_raw == "1" else (False if db_write_raw == "0" else None)
+json.dump({"at": int(os.environ["NOW"]), "db_reachable": db_read,
+           "db_write_ok": db_write,
            "why": "beads could not be written; this file is Auron'"'"'s secondary channel",
            "alerts": alerts}, sys.stdout, indent=1, sort_keys=True)
 sys.stdout.write("\n")' > "$FALLBACK.tmp.$$" 2>/dev/null \
         && mv -f "$FALLBACK.tmp.$$" "$FALLBACK" \
         || rm -f "$FALLBACK.tmp.$$"
-    log "AURON wrote the fallback channel — beads could not be written"
+    log "AURON wrote the fallback channel — db_read=$([ "$db_reachable" = 1 ] && echo ok || echo DOWN) db_write=$db_write_ok"
 else
     rm -f "$FALLBACK" 2>/dev/null
 fi
@@ -483,13 +541,18 @@ state_save
 # of this file and marks it stale rather than omitting it.
 # ======================================================================================
 n_firing=0; for k in $firing_keys; do n_firing=$((n_firing+1)); done
+# SP_AURON_DB_WRITE uses the probe result directly: ok, down, or ? when unprobed.
+# A probe that could not run renders ? — never ok (which would hide a failure) and
+# never 0 (which would look like a metric rather than an unknown).
+db_write_status="$(case "$db_write_ok" in 1) echo ok ;; 0) echo down ;; *) echo '?' ;; esac)"
 {
-    printf 'SP_AURON_AT=%s\n'       "$NOW"
-    printf 'SP_AURON_FIRING=%s\n'   "$n_firing"
-    printf "SP_AURON_KEYS='%s'\n"   "$(printf '%s' "${firing_keys# }" | tr ' ' ',')"
-    printf 'SP_AURON_DB=%s\n'       "$([ "$db_reachable" = 1 ] && echo ok || echo down)"
-    printf 'SP_AURON_FALLBACK=%s\n' "$fallback"
-    printf 'SP_AURON_ACTED=%s\n'    "$acted"
+    printf 'SP_AURON_AT=%s\n'          "$NOW"
+    printf 'SP_AURON_FIRING=%s\n'      "$n_firing"
+    printf "SP_AURON_KEYS='%s'\n"      "$(printf '%s' "${firing_keys# }" | tr ' ' ',')"
+    printf 'SP_AURON_DB_READ=%s\n'     "$([ "$db_reachable" = 1 ] && echo ok || echo down)"
+    printf 'SP_AURON_DB_WRITE=%s\n'    "$db_write_status"
+    printf 'SP_AURON_FALLBACK=%s\n'    "$fallback"
+    printf 'SP_AURON_ACTED=%s\n'       "$acted"
 } > "$STATUS.tmp.$$" 2>/dev/null && mv -f "$STATUS.tmp.$$" "$STATUS"
 
-log "auron: $n_firing firing [${firing_keys# }], $acted change(s), database $([ "$db_reachable" = 1 ] && echo ok || echo DOWN)"
+log "auron: $n_firing firing [${firing_keys# }], $acted change(s), db_read=$([ "$db_reachable" = 1 ] && echo ok || echo DOWN) db_write=$db_write_status"

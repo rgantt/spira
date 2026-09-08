@@ -429,14 +429,79 @@ print("%s %s" % (d["db_reachable"], ",".join(sorted(a["key"] for a in d["alerts"
     "$RUN/auron.alerts.json" 2>/dev/null)"
 case "$fb" in "False "*db-unreachable*) ok "the fallback carries the alerts and says the database is down" ;;
     *) bad "fallback content" "got [$fb]" ;; esac
-grep -q 'SP_AURON_DB=down' "$RUN/auron.status" \
+grep -q 'SP_AURON_DB_READ=down' "$RUN/auron.status" \
     && ok "the heartbeat is written even when the database is down" \
-    || bad "heartbeat under failure" "SP_AURON_DB is not down in $RUN/auron.status"
+    || bad "heartbeat under failure" "SP_AURON_DB_READ is not down in $RUN/auron.status"
 
 auron >/dev/null
 [ -e "$RUN/auron.alerts.json" ] \
     && bad "fallback removal" "the fallback file survived the database coming back — two sources of truth" \
     || ok "the fallback file is removed once beads answers again"
+
+echo
+echo "auron.sh — write probe detects a write-only database failure:"
+
+# Build a write-fail shim. The seam SPIRA_BD exists for exactly this: a bd that fails
+# in a way the real embedded database cannot be asked to reproduce on demand (the write-
+# only failure that happens when a schema cursor is rolled back). The shim delegates
+# reads to the real binary; writes return error. This isolates the write path without
+# modelling bd's surface — reads still go through the real engine.
+WRITE_FAIL_BD="$TMP/write-fail-bd"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf '# Passes reads through to the real embedded binary; fails writes.\n'
+    printf '# Simulates a schema-cursor write failure (reads ok, writes refused).\n'
+    printf 'case "${3:-}" in\n'
+    printf '    list|show) exec %q "$@" ;;\n' "$TESTDB_BD"
+    printf '    *) printf "write-fail-bd: write refused (simulating schema-skew write failure)\\n" >&2; exit 1 ;;\n'
+    printf 'esac\n'
+} > "$WRITE_FAIL_BD"
+chmod +x "$WRITE_FAIL_BD"
+
+# A healthy loop — no conditions firing. With a working database, the write probe
+# creates its bead and publishes SP_AURON_DB_WRITE=ok.
+heal; rm -f "$RUN/auron.state"   # clear state so probe starts fresh
+SPIRA_BD="$TESTDB_BD" auron >/dev/null
+grep -q 'SP_AURON_DB_WRITE=ok' "$RUN/auron.status" \
+    && ok "write probe: healthy database shows write ok" \
+    || bad "write probe baseline" "SP_AURON_DB_WRITE is not ok before the fault"
+grep -q 'SP_AURON_DB_READ=ok' "$RUN/auron.status" \
+    && ok "write probe: read path also ok at baseline" \
+    || bad "write probe baseline read" "SP_AURON_DB_READ is not ok before the fault"
+[ ! -e "$RUN/auron.alerts.json" ] \
+    && ok "write probe: no fallback file when writes are healthy" \
+    || bad "write probe baseline fallback" "fallback file exists when it should not"
+
+# Now switch to the write-fail shim. Reads succeed, writes fail.
+# The write probe detects the failure and the fallback file appears.
+rm -f "$RUN/auron.state"   # clear state so probe tries to create (which will fail)
+SPIRA_BD="$WRITE_FAIL_BD" auron >/dev/null
+grep -q 'SP_AURON_DB_READ=ok' "$RUN/auron.status" \
+    && ok "write probe: read path still shows ok during write-only failure" \
+    || bad "write probe read during fault" "SP_AURON_DB_READ is not ok with writes broken"
+grep -q 'SP_AURON_DB_WRITE=down' "$RUN/auron.status" \
+    && ok "write probe: SP_AURON_DB_WRITE=down when writes fail" \
+    || bad "write probe fault" "SP_AURON_DB_WRITE is not down with writes broken"
+[ -r "$RUN/auron.alerts.json" ] \
+    && ok "write probe: fallback file written when write path fails" \
+    || bad "write probe fallback" "no fallback file when write probe failed"
+# Reads are fine so db_reachable=1; the fallback reflects write failure, not read failure.
+fb_write="$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d.get("db_reachable"), d.get("db_write_ok"))' "$RUN/auron.alerts.json" 2>/dev/null)"
+[ "$fb_write" = "True False" ] \
+    && ok "write probe: fallback carries db_reachable=True and db_write_ok=False" \
+    || bad "write probe fallback content" "got [$fb_write]"
+
+# Restore the healthy database. The fallback file is removed and writes are ok again.
+SPIRA_BD="$TESTDB_BD" auron >/dev/null
+grep -q 'SP_AURON_DB_WRITE=ok' "$RUN/auron.status" \
+    && ok "write probe: write ok restored after the fault clears" \
+    || bad "write probe restore" "SP_AURON_DB_WRITE is not ok after restoring the database"
+[ ! -e "$RUN/auron.alerts.json" ] \
+    && ok "write probe: fallback file removed once writes succeed again" \
+    || bad "write probe fallback removal" "fallback file survived the database recovering"
 
 testdb_drop >/dev/null 2>&1
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
