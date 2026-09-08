@@ -11,7 +11,12 @@
 # POSITIVE CONTROL FIRST (law-absence-needs-a-positive-control). The bad-label case
 # is tested before the clean-map case, confirming the check fires on a known offender.
 #
-# defect: sp-f9vu
+# The test also runs against the shipped repo-map.example (not just the fixture) to
+# prove the check reads whatever file SPIRA_REPO_MAP names. A check backed by a
+# hardcoded list would accept the fixture's names while refusing example-map names
+# like "home" — making that section fail and revealing the drift (sp-s42p).
+#
+# defect: sp-f9vu sp-s42p
 # covers: spira/lib.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -91,6 +96,38 @@ echo "error message names ALL valid keys:"
 out5="$(run_check "repo:unknown" || true)"
 want "all keys: spira present"  "spira"   "$out5"
 want "all keys: widget present" "widget"  "$out5"
+
+# ==========================================================================
+echo
+echo "using the shipped repo-map.example — proves the check reads the file:"
+# ==========================================================================
+# A check backed by a hardcoded list of names (rather than reading the map)
+# would accept the fixture's names (spira, widget) while refusing a name like
+# "home" that only appears in repo-map.example, making this section fail and
+# revealing the drift. The fixture tests the mechanism; this section proves
+# the mechanism reads whatever file SPIRA_REPO_MAP names.
+
+EXAMPLE_MAP="$HERE/repo-map.example"
+example_first="$(awk 'BEGIN{FS="|"} /^[[:space:]]*#/{next}
+    NF>1 { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); if ($1!="") { print $1; exit } }' \
+    "$EXAMPLE_MAP")"
+
+run_example() {   # run_example <labels>
+    env -i PATH="$PATH" HOME="$TMP" \
+        SPIRA_HOME="$HERE" SPIRA_REPO="$TMP/norepo" SPIRA_DB="$TMP/nodb" \
+        SPIRA_REPO_MAP="$EXAMPLE_MAP" SPIRA_BD="$STUB_BD" BD_TIMEOUT=10 \
+        bash -c '. "$1/lib.sh"; bdq create title --labels "$2"' \
+            -- "$HERE" "$1" 2>&1
+}
+
+out_ex1="$(run_example "repo:$example_first" 2>&1)" || true
+nowant "example map: first entry ($example_first) accepted"   "is not in the repo map"  "$out_ex1"
+want   "example map: first entry reaches bd"                  "bd-called"               "$out_ex1"
+
+out_ex2="$(run_example "repo:definitely-not-a-repo" 2>&1)" || true
+want   "example map: absent name is refused"         "is not in the repo map"  "$out_ex2"
+nowant "example map: bd not called for absent"       "bd-called"               "$out_ex2"
+want   "example map: refusal names a valid key"      "$example_first"          "$out_ex2"
 
 echo
 printf '  %d passed, %d failed\n' "$pass" "$fail"
