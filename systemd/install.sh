@@ -184,7 +184,19 @@ systemctl --user daemon-reload
 # variable after having written every unit and before enabling any of them.
 loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
 
-for u in "${ENABLE[@]}"; do systemctl --user enable --now "$u" && echo "enabled   $u"; done
+# IF THE WORLD IS HALTED, install the units but leave them stopped. A routine install
+# restarting the loop is the worst shape: the operator believes the world is down, every
+# surface agrees, and it is running. An explicit world.sh start is how a halt is lifted.
+if [ -f "$SPIRA_RUN/world.halted" ]; then
+    printf '\ninstall: world is HALTED (%s)\n' "$(head -1 "$SPIRA_RUN/world.halted")"
+    printf 'install: reason: %s\n' "$(sed -n 2p "$SPIRA_RUN/world.halted")"
+    printf 'install: units installed but NOT started — run world.sh start to lift the halt\n\n'
+    for u in "${ENABLE[@]}"; do
+        systemctl --user enable "$u" 2>/dev/null && printf 'enabled   %s (stopped — world is halted)\n' "$u"
+    done
+else
+    for u in "${ENABLE[@]}"; do systemctl --user enable --now "$u" && echo "enabled   $u"; done
+fi
 
 # AND THE ONE PIECE OF WIRING THAT IS NOT A UNIT. The session hook is registered in the coding
 # agent client's own settings file, outside every checkout, so installing the harness is the

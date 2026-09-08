@@ -128,11 +128,32 @@ stop)
             n=$((n+1))
         fi
     done
-    # A COUNT THAT DISAGREES WITH THE PROCESS TABLE IS THE BUG, NOT THE ANSWER. Anything
-    # still running that no pidfile claims is reported rather than passed over in silence.
-    stray="$(live_aeons | grep -c . || true)"
+    # RE-READ PIDFILES now — after the timers are stopped — to resolve each surviving process
+    # to a bead. An aeon spawned between the timer stop and the first scan may have written
+    # its pidfile by this point; it is not an orphan, it is a late starter the first pass
+    # missed. A warning that fires on a routine race is one nobody reads on the day it is real.
+    stray=0
+    while IFS=' ' read -r apid aunit; do
+        bead_for_pid=""
+        for pf in "$SPIRA_RUN"/aeon-*.pid; do
+            [ -e "$pf" ] || continue
+            pp="$(cat "$pf" 2>/dev/null)" || continue
+            if [ "$pp" = "$apid" ]; then
+                bb="$(basename "$pf" .pid)"; bb="${bb#aeon-}"; bb="${bb#*-}"
+                bead_for_pid="$bb"
+                break
+            fi
+        done
+        if [ -n "$bead_for_pid" ]; then
+            printf '  WARNING: %s (pid %s) — named by a pidfile but slay did not stop it; run: slay.sh %s\n' \
+                "$bead_for_pid" "$apid" "$bead_for_pid"
+        else
+            printf '  WARNING: pid %s (%s) — no pidfile names it; could not resolve to a bead — inspect /proc/%s/cmdline before killing\n' \
+                "$apid" "${aunit:--}" "$apid"
+        fi
+        stray=$((stray+1))
+    done < <(live_aeons)
     [ "$n" = 0 ] && [ "$stray" = 0 ] && echo "  no live aeons"
-    [ "$stray" != 0 ] && printf '  WARNING: %s aeon process(es) still running that no pidfile names — inspect /proc before killing\n' "$stray"
 
     mkdir -p "$SPIRA_RUN"
     { date -u '+%Y-%m-%dT%H:%M:%SZ'; printf 'why: %s\n' "${why:-unstated}"; } > "$STAMP"
