@@ -746,12 +746,15 @@ while IFS="$(printf '\t')" read -r id park_repo park_at; do
     [ -n "$state" ] || continue
     case "$state" in
         *FAILURE*|*TIMED_OUT*|*ERROR*|*CANCELLED*)
-            # RED: hand it back to an aeon, at the top of the queue. The failure is the
-            # work now, and the bead already carries the branch that produced it.
+            # RED: the park is over; hand the bead back to the queue at its own priority.
+            # Priority is deliberately left alone — CI failure says the work is needed
+            # again, not that it is more important than it was. A trivial bead that fails
+            # repeatedly must not outrank genuine P0 work just because it is loud. Being
+            # picked up again requires being READY, which clearing the park label achieves
+            # on its own. The branch and its commits are already recorded on this bead.
             bdq label remove "$id" "$SPIRA_CI_LABEL" >/dev/null 2>&1
-            bdq update "$id" -p 0 >/dev/null 2>&1
-            bdq note "$id" "CI failed on $br. Cleared $SPIRA_CI_LABEL and raised to P0 so an aeon resumes it — the branch and its commits are recorded on this bead." >/dev/null 2>&1
-            progress "CI red on $id — handed back to the queue at P0"
+            bdq note "$id" "CI failed on $br. Cleared $SPIRA_CI_LABEL; the bead returns to the queue at its own priority — the branch and its commits are recorded on this bead." >/dev/null 2>&1
+            progress "CI red on $id — handed back to the queue at its own priority"
             ;;
         *PENDING*|*IN_PROGRESS*|*QUEUED*|*" null"*)
             : ;;   # still running; leave it parked, and say nothing

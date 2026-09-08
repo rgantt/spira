@@ -274,6 +274,44 @@ B close sp-pk-push --reason done >/dev/null 2>&1
 sweep 600 >/dev/null
 is "a closed bead's park is left where it is" parked "$(parked sp-pk-push)"
 
+# ======================================================================================
+# RED CI RESULT. When a PR's CI comes back red, the bead must be claimable again —
+# that is what the sweep is FOR — but its priority must be left alone. Priority
+# expresses how much the work MATTERS; CI failure expresses how loudly it is FAILING.
+# Those are unrelated. A trivial bead that fails repeatedly must not outrank genuine
+# high-priority work just because it is noisy.
+#
+# THE PAIR. A P2 bead; CI red. Assert the park is stripped AND the priority is
+# unchanged. Without the priority half, a sweep that still promoted to P0 would pass
+# on the unparked assertion alone. Without the unparked half, the priority assertion
+# would pass against a sweep that simply did nothing at all
+# (law-absence-needs-a-positive-control).
+# ======================================================================================
+echo
+echo "CI red — bead returns at its own priority:"
+
+priority_of() {
+    B show "$1" --json 2>/dev/null | sed -n '/^[[{]/,$p' | python3 -c '
+import json,sys
+d=json.load(sys.stdin); d=d if isinstance(d,list) else [d]
+p=d[0].get("priority"); print(p if p is not None else "")' 2>/dev/null
+}
+
+GH_STATE="OPEN MERGEABLE FAILURE"
+testdb_reset
+testdb_seed <<JSONL
+{"id":"sp-goal","title":"goal","status":"open","issue_type":"epic","labels":["spira","plan"]}
+{"id":"sp-pk-red","title":"parked on a red run","status":"open","issue_type":"task","priority":2,"labels":["spira","plan","repo:alpha","awaiting-ci"]}
+JSONL
+is "the bead starts at P2"             2      "$(priority_of sp-pk-red)"
+is "and is parked"                     parked "$(parked sp-pk-red)"
+out="$(sweep 600)"
+is "a red CI result unparks the bead"  unparked "$(parked sp-pk-red)"
+is "and the priority is unchanged at P2" 2     "$(priority_of sp-pk-red)"
+want   "the pass mentions the bead"                 "sp-pk-red" "$out"
+want   "the bead note records the sweep acted"      "Cleared awaiting-ci" "$(notes sp-pk-red)"
+nowant "and the note makes no claim about priority" "P0" "$(notes sp-pk-red)"
+
 
 # ======================================================================================
 # THE BRIEF, generated per land mode.
