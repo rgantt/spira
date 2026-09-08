@@ -228,5 +228,41 @@ planted="$(offends "$PLANT")"
 want 'the fence names a git -C $land rebase'  "one.sh" "$planted"
 want 'and a cd $land followed by git rebase'  "two.sh" "$planted"
 
+# --------------------------------------------------------------------------------------
+# NO FETCH IN THE LANDING PATH WRITES FETCH_HEAD. Concurrent landing passes share the
+# same .git object store, so concurrent git-fetch calls race to write .git/FETCH_HEAD.
+# Under FETCH_HEAD lock contention a fetch can fail silently (2>/dev/null swallows it),
+# leaving local remote-tracking refs stale. A stale origin/main makes content_landed
+# return false when the content IS already there; the landing worktree's checkout then
+# picks up the current (newer) ref, the merge is a no-op, the push says "Everything
+# up-to-date" and exits 0 — merged=1 and pushed=1 both land, and "landed" fires with no
+# new commit on the base. --no-write-fetch-head removes the FETCH_HEAD write entirely,
+# eliminating the lock; the no-op merge guard above closes the remaining window.
+# --------------------------------------------------------------------------------------
+bare_fetch_in() {        # bare_fetch_in <dir> -> "<file>: <hit>" lines, comments stripped
+    local d="$1" f hit out=""
+    for f in "$d/landing.sh" "$d/skew.sh"; do
+        [ -e "$f" ] || continue
+        # Strip comments before grepping so a commented-out example does not trigger.
+        hit="$(sed 's/#.*//' "$f" | grep -nE '\bgit\b.*\bfetch\b' | grep -vE -- '--no-write-fetch-head' || true)"
+        [ -n "$hit" ] && out="$out$(basename "$f"): $hit
+"
+    done
+    printf '%s' "$out"
+}
+is "every fetch in the landing path uses --no-write-fetch-head" "" "$(bare_fetch_in "$HERE")"
+
+# THE FENCE'S OWN POSITIVE CONTROL. A grep that reports a clean result looks identical
+# whether the pattern matched nothing or it could not have matched — the silence has to
+# be earned. Plant one offender of each shape and require both to be named.
+PLANT2="$TMP/plant2"; mkdir -p "$PLANT2"
+printf '#!/usr/bin/env bash\ngit -C "$repo" fetch -q "$remote" 2>/dev/null\n' \
+    > "$PLANT2/landing.sh"
+printf '#!/usr/bin/env bash\ngit -C "$repo" fetch -q "$remote" 2>/dev/null\n' \
+    > "$PLANT2/skew.sh"
+planted2="$(bare_fetch_in "$PLANT2")"
+want 'the fence catches a bare fetch in landing.sh' "landing.sh" "$planted2"
+want 'and a bare fetch in skew.sh'                  "skew.sh"    "$planted2"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

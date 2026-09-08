@@ -684,7 +684,7 @@ land_repo() {
         return 0; }
     base_branch="$(ref_branch "$base")"
     base_remote="$(ref_remote "$base")" || base_remote=""
-    [ -n "$base_remote" ] && git -C "$repo" fetch -q "$base_remote" 2>/dev/null
+    [ -n "$base_remote" ] && git -C "$repo" fetch -q --no-write-fetch-head "$base_remote" 2>/dev/null
     land="$SPIRA_RUN/worktree/.landing.$(basename "$repo")"
     if [ "$mode" = push ]; then
         if [ ! -e "$land/.git" ]; then
@@ -1167,15 +1167,28 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
                 # not a branch that conflicts — same reason as the guard above, and the same
                 # cost if it is allowed to fall through to the merge.
                 git -C "$land" checkout -q -B landing "$base" 2>/dev/null || { wedged=1; break; }
+                _pre_merge="$(git -C "$land" rev-parse HEAD 2>/dev/null)"
                 if ! git -C "$land" merge --no-edit -q -m "spira: land $id" "$br" 2>/dev/null; then
                     git -C "$land" merge --abort 2>/dev/null
                     merged=0; break
+                fi
+                # A MERGE THAT DOES NOT MOVE HEAD IS A NO-OP. This happens when the base
+                # advanced between our content_landed check and this merge — a concurrent
+                # fetch updated origin/main in the shared object store and the checkout
+                # picked up the new base, which already contains the branch's content. The
+                # push then says "Everything up-to-date" and exits 0, so merged=1 and
+                # pushed=1 both land — and "landed" fires with no new commit on the base
+                # (sp-tkrn, sp-x2yr). The --no-write-fetch-head flag on the fetches
+                # narrows the race window by eliminating FETCH_HEAD lock contention; this
+                # guard closes it by refusing to call a no-op push a landing.
+                if [ "$(git -C "$land" rev-parse HEAD 2>/dev/null)" = "$_pre_merge" ]; then
+                    merged=0; nothing=1; break
                 fi
                 merged=1
                 if git -C "$land" push -q "$base_remote" "landing:$base_branch" 2>/dev/null; then pushed=1; break; fi
                 # Rejected: someone else advanced the base between our fetch and our push.
                 # Fetch it, replay the BRANCH onto it, and build the landing again from there.
-                git -C "$repo" fetch -q "$base_remote" 2>/dev/null
+                git -C "$repo" fetch -q --no-write-fetch-head "$base_remote" 2>/dev/null
                 log "landing: push rejected, $base moved — retry $attempt"
                 # THE SAME RULE ON THE RETRY PATH. This arm falls through to "branch
                 # conflicts with $base", so a ref reaped between the losing push and the

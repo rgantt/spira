@@ -181,7 +181,7 @@ check() {
         remote="$(ref_remote "$base" 2>/dev/null)" || remote=""
         if [ -n "$remote" ]; then
             timeout "${SPIRA_SKEW_FETCH_TIMEOUT:-60}" \
-                git -C "$SPIRA_REPO" fetch -q "$remote" 2>/dev/null || {
+                git -C "$SPIRA_REPO" fetch -q --no-write-fetch-head "$remote" 2>/dev/null || {
                 # A fetch that failed is not a pass. It can still prove divergence — a ref
                 # already ahead stays ahead — but it cannot prove the absence of any, so a
                 # clean answer below is downgraded to "could not check".
@@ -319,7 +319,7 @@ refresh() {
         echo "skew: refresh: cannot resolve the ref $repo lands on"; return 1; }
     base_branch="$(ref_branch "$base")"
     remote="$(ref_remote "$base" 2>/dev/null)" || remote=""
-    [ -n "$remote" ] && git -C "$repo" fetch -q "$remote" 2>/dev/null
+    [ -n "$remote" ] && git -C "$repo" fetch -q --no-write-fetch-head "$remote" 2>/dev/null
 
     behind="$(git -C "$repo" rev-list --count "HEAD..$base" 2>/dev/null || echo 0)"
     [ "${behind:-0}" -gt 0 ] || return 0
