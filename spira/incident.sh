@@ -107,11 +107,34 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
         # on the crossing, never again — a second page buries the first.
         if [ "$n" -ge "$SIN_AT" ] && ! bdq label list "$id" 2>/dev/null | grep -q '\bsin\b'; then
             bdq label add "$id" sin >/dev/null 2>&1
+            # THE ASK IS BUILT FROM THE BEAD, NEVER FROM $ref. $ref is a dedupe slug
+            # ("incident:Spira-sweep-----is-the-pipeline-moving-"), so an ask titled with it
+            # reaches the operator as a mangled identifier with no subject. He answers in a
+            # tmux pane and cannot open a bead from it, so a default of "go read $id" asks
+            # him to do the work the escalation existed to do
+            # (law-escalations-carry-their-evidence, law-escalations-lead-with-the-bead).
+            local age evf first secs
+            # Elapsed beats a bare count: "5 times" says nothing about whether that is an
+            # hour of noise or a fortnight of it. Guarded, because a date this cannot parse
+            # must cost the phrase and not the ask.
+            age=""
+            first="$(bdq show "$id" --json 2>/dev/null \
+                | grep -m1 -oE '"created"[^,]*' \
+                | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:]+' || true)"
+            if [ -n "$first" ]; then
+                secs=$(( $(date -u +%s) - $(date -u -d "$first" +%s 2>/dev/null || echo 0) ))
+                [ "$secs" -gt 0 ] && age=" over $(( secs / 3600 ))h $(( (secs % 3600) / 60 ))m"
+            fi
+            # The vital signs are at the HEAD of the payload and --evidence-file keeps the
+            # TAIL, so hand it a head-trimmed copy rather than the whole body.
+            evf="$(mktemp)"; head -c 2000 "$pf" > "$evf" 2>/dev/null || true
             [ -x "$ASK" ] && "$ASK" add \
-                "$ref has failed $n times and Ops has not broken the cycle — change the fix or mute the alert?" \
-                --default "read $id, then either write an SOP that actually fixes it or retire the alert" \
-                --why "every recurrence pages you and files nothing new; the alert is now noise" \
+                "$title — recurred $n times$age with no fix holding. Mute it, or keep paging?" \
+                --default "mute this alert and leave $id open for Ops to work unpaged; keep paging only if you want a decision on every recurrence" \
+                --why "$id is \"$title\". It has fired $n times$age and each recurrence pages you while filing nothing new. Its current vital signs are below — if they show nothing you must act on, muting is the right answer." \
+                --evidence-file "$evf" \
                 >/dev/null 2>&1
+            rm -f "$evf"
             ilog "$ref is a SIN at $n recurrences — escalated once"
         fi
         printf '%s' "$id"
