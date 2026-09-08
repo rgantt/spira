@@ -328,7 +328,7 @@ done
 # reading the wrong repository's graph gives the wrong answer confidently in both directions:
 # a bead for repository A reads as never landed in repository B, so this check would reopen finished
 # work on every pass. One query, both facts.
-while IFS=$'\t' read -r id r_name superseded dropped; do
+while IFS=$'\t' read -r id r_name superseded dropped nopayload; do
     [ -n "$id" ] || continue
     # Only beads an aeon worked — anything closed by hand has its own evidence.
     [ -f "$SPIRA_RUN/$id.log" ] || continue
@@ -350,6 +350,13 @@ while IFS=$'\t' read -r id r_name superseded dropped; do
     # at 00:18:52, poison label intact, so no aeon would claim it and nothing would ever
     # land it. A permanent zombie reached by a check that was right about every other bead.
     [ "$dropped" = 1 ] && continue
+    # A BEAD MARKED no-payload HAS NO COMMIT AND NEVER WILL. It is a bead whose deliverable
+    # is the bead itself — a report, a test result, a diagnosis — written into the bead's
+    # close reason rather than into the repository. The landing pass rebases before merging,
+    # and a rebase drops empty commits, so nothing on the base will ever name it. The aeon
+    # sets this label when it closes such a bead; CHECK 5 honours it here so the signal is
+    # not simply the branch that the reaper correctly removes.
+    [ "${nopayload:-0}" = 1 ] && continue
     r_path="$(repo_root "${r_name:-}")" || {
         log "CHECK5 $id: repo:$r_name is not in repo-map — cannot say whether it landed"
         continue; }
@@ -365,7 +372,7 @@ while IFS=$'\t' read -r id r_name superseded dropped; do
         subj_base="${subj_refs%% *}"
         # shellcheck disable=SC2086
         [ -n "$subj_refs" ] \
-            && subjects="$(git -C "$r_path" log --format='%s%n%b' -n "${SPIRA_VERDICT_WINDOW:-400}" $subj_refs 2>/dev/null)" \
+            && subjects="$(git -C "$r_path" log --format='%s' -n "${SPIRA_VERDICT_WINDOW:-400}" $subj_refs 2>/dev/null)" \
             || subjects=""
     fi
     # CANNOT TELL IS NOT "NOT LANDED". Reading an unresolvable base as "no commit names it"
@@ -420,7 +427,11 @@ for i in (d if isinstance(d, list) else [d]):
     # Fourth column: dropped by the operator, carried as a label because "dropped" is not a
     # relation between beads the way supersession is — there is no second bead to point at.
     drop = 1 if "spira-dropped" in (i.get("labels") or []) else 0
-    print("%s\t%s\t%s\t%s" % (i["id"], repo, sup, drop))' "$home_repo" 2>/dev/null
+    # Fifth column: no-payload — bead whose deliverable is the bead itself (a report, a
+    # diagnosis, a test result). The landing pass rebases and drops empty commits, so nothing
+    # on the base will ever name it. The aeon sets this label on close; CHECK 5 honours it.
+    nopayload = 1 if "no-payload" in (i.get("labels") or []) else 0
+    print("%s\t%s\t%s\t%s\t%s" % (i["id"], repo, sup, drop, nopayload))' "$home_repo" 2>/dev/null
     done <<< "$PARTITIONS" |
     # Sorted on the REPOSITORY column first, because the loop above caches one `git log`
     # walk per repository and re-walks whenever the repository changes between rows; `-u`
