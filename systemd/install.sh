@@ -275,6 +275,82 @@ if [ "$_install_mode" = "--diff" ]; then
     exit "$rc"
 fi
 
+# REFUSE IF THE CHECKOUT IS NOT ON ITS LANDREF OR IS BEHIND IT. Running install.sh from an
+# aeon's feature branch silently ships units whose ExecStart paths are inside that branch's
+# worktree, not the operator checkout; running it behind the landref means the templates it
+# renders predate work that has already landed. skew.sh sees and reports BEHIND, but its own
+# escalation used to recommend "Re-run install.sh" — so a behind checkout was recommending
+# itself as the remedy. This fence is Rung 4 closing that loop. (sp-mlcd)
+#
+# THREE OF SEVEN REPOSITORIES HERE USE master, NOT main. The repo map carries a declared
+# base column for exactly this; the git fallback (origin/HEAD) handles everything else.
+# lib.sh carries spira_landref but also runs spira_containment_check at source time, which
+# rejects synthetic paths used in tests. The landref is resolved here inline — the same
+# logic spira_landref uses, without that side effect.
+# SPIRA_INSTALL_FORCE is the named override — the same variable the live-aeons fence below
+# uses; one override covers both pre-install refusals.
+_install_landref() {    # -> the landref for SPIRA_REPO, or non-zero if it cannot be found
+    local name base ref remotes remote
+    # 1 — Declared in the repo map. The `base` column exists only in the six-field row shape
+    #     (added after the five-field shape that predates it). A missing map or a missing
+    #     entry falls through to the git path below.
+    name="$(basename "${SPIRA_REPO:-}")"
+    if [ -f "${SPIRA_REPO_MAP:-}" ] && [ -n "$name" ]; then
+        base="$(awk -v want="$name" 'BEGIN{FS="|"} /^[ \t]*#/{next}
+            { n=$1; gsub(/^[ \t]+|[ \t]+$/,"",n)
+              if (n != want || NF < 6) next
+              v=$4; gsub(/^[ \t]+|[ \t]+$/,"",v); if (v != "") {print v; exit} }
+            ' "$SPIRA_REPO_MAP" 2>/dev/null)"
+        if [ -n "$base" ] && git -C "$SPIRA_REPO" rev-parse --verify -q "$base" >/dev/null 2>&1; then
+            printf '%s' "$base"; return 0
+        fi
+    fi
+    # 2 — The remote's cached default (set once by 'git remote set-head origin -a').
+    ref="$(git -C "$SPIRA_REPO" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"
+    if [ -n "$ref" ] && git -C "$SPIRA_REPO" rev-parse --verify -q "$ref" >/dev/null 2>&1; then
+        printf '%s' "$ref"; return 0
+    fi
+    # 3 — Ask the remote; caches the result so the check runs once per repo.
+    remotes="$(git -C "$SPIRA_REPO" remote 2>/dev/null)"
+    if grep -qx "origin" <<< "$remotes" 2>/dev/null; then remote="origin"
+    elif [ "$(printf '%s\n' "$remotes" | wc -l)" = "1" ] && [ -n "$remotes" ]; then remote="$remotes"
+    else remote=""; fi
+    if [ -n "$remote" ]; then
+        git -C "$SPIRA_REPO" remote set-head "$remote" -a >/dev/null 2>&1 || true
+        ref="$(git -C "$SPIRA_REPO" symbolic-ref -q --short "refs/remotes/$remote/HEAD" 2>/dev/null)"
+        if [ -n "$ref" ] && git -C "$SPIRA_REPO" rev-parse --verify -q "$ref" >/dev/null 2>&1; then
+            printf '%s' "$ref"; return 0
+        fi
+    fi
+    return 1
+}
+
+_check_landref_current() {
+    local cur base behind base_short
+    cur="$(git -C "$SPIRA_REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)" || cur=""
+    base="$(_install_landref)" || {
+        printf 'install: cannot resolve landref for %s\n' "$SPIRA_REPO" >&2
+        printf 'install: update origin/HEAD (git remote set-head origin -a) or set SPIRA_INSTALL_FORCE=1 to skip.\n' >&2
+        return 1
+    }
+    # Strip the remote prefix (origin/main → main) for the branch-name comparison.
+    base_short="${base##*/}"
+    if [ "$cur" != "$base_short" ]; then
+        printf 'install: refusing — checkout is on branch %s, not the landref (%s)\n' \
+            "$cur" "$base_short" >&2
+        printf 'install: switch to %s first, or set SPIRA_INSTALL_FORCE=1 to override.\n' \
+            "$base_short" >&2
+        return 1
+    fi
+    behind="$(git -C "$SPIRA_REPO" rev-list --count "HEAD..$base" 2>/dev/null || echo 0)"
+    if [ "${behind:-0}" -gt 0 ]; then
+        printf 'install: refusing — checkout is %d commit(s) behind %s\n' "$behind" "$base" >&2
+        printf 'install:   git -C %s pull --rebase\n' "$SPIRA_REPO" >&2
+        printf 'install: or set SPIRA_INSTALL_FORCE=1 to override.\n' >&2
+        return 1
+    fi
+}
+
 # REFUSE IF ANOTHER INSTALLED INSTANCE SHARES A CRITICAL PATH. A shared SPIRA_RUN
 # lets a test reaper delete production worktrees; a shared SPIRA_DB makes test aeons
 # file real beads. Checked before any directory is created or unit written, so a
@@ -333,6 +409,10 @@ _check_path_collisions() {
     return "$collision"
 }
 _check_path_collisions || exit 1
+
+if [ -z "${SPIRA_INSTALL_FORCE:-}" ]; then
+    _check_landref_current || exit 1
+fi
 
 mkdir -p "$DEST"
 

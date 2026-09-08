@@ -42,6 +42,31 @@ echo "test-install-instance.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 # ---------------------------------------------------------------------------
+# Fake git repo for SPIRA_REPO. The landref check refuses when the checkout is
+# not on its landref. REAL_REPO is on the aeon's working branch, so tests that
+# clear MOCK_FORCE (to exercise the aeon guard) would hit the landref check
+# first. FAKE_REPO is on main with origin/HEAD set, so the landref check passes
+# and the aeon isolation test can focus on per-instance guard behaviour.
+# ---------------------------------------------------------------------------
+FAKE_ORIGIN="$TMP/origin.git"
+FAKE_REPO="$TMP/repo"
+git init -q --bare -b main "$FAKE_ORIGIN" 2>/dev/null
+git init -q -b main "$FAKE_REPO" 2>/dev/null
+git -C "$FAKE_REPO" config user.email t@t
+git -C "$FAKE_REPO" config user.name test
+printf 'seed\n' > "$FAKE_REPO/f"
+git -C "$FAKE_REPO" add f
+git -C "$FAKE_REPO" commit -qm "seed" 2>/dev/null
+git -C "$FAKE_REPO" remote add origin "$FAKE_ORIGIN"
+git -C "$FAKE_REPO" push -q origin main 2>/dev/null
+git -C "$FAKE_REPO" fetch -q origin 2>/dev/null
+git -C "$FAKE_REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+for _s in concierge.sh beads-push.sh; do
+    [ -f "$REAL_REPO/$_s" ] && ln -sf "$REAL_REPO/$_s" "$FAKE_REPO/$_s"
+done
+unset _s
+
+# ---------------------------------------------------------------------------
 # Fixture: minimal harness tree (same pattern as the other install tests).
 # ---------------------------------------------------------------------------
 FIXTURE="$TMP/harness"
@@ -119,7 +144,7 @@ inst() {
         "SPIRA_RUN=$SPIRA_RUN_DIR" \
         "SPIRA_HOME=$HERE" \
         "SPIRA_PROD=$HERE" \
-        "SPIRA_REPO=$REAL_REPO" \
+        "SPIRA_REPO=$FAKE_REPO" \
         "SPIRA_COCKPIT=$REAL_COCKPIT" \
         "MOCK_LOG=$MOCK_LOG" \
         "MOCK_AEONS=${MOCK_AEONS:-}" \

@@ -91,6 +91,7 @@ inst() {
         "SPIRA_REPO=$REAL_REPO" \
         "SPIRA_COCKPIT=$REAL_COCKPIT" \
         "MOCK_LOG=$MOCK_LOG" \
+        SPIRA_INSTALL_FORCE=1 \
         bash "$FIXTURE/systemd/install.sh" "$@" 2>&1
 }
 

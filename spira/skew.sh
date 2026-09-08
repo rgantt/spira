@@ -351,7 +351,7 @@ escalate() {
     local notify_out notify_rc
     notify_out="$("$SPIRA_NOTIFY" add \
         "The Spira copy in force is not the code that landed" \
-        --default "pull $SPIRA_REPO onto its base ref; wait for any live aeons to finish (install.sh refuses while spira-aeon-*.service units are active — pass SPIRA_INSTALL_FORCE=1 to override), then re-run $installer; if a second harness is named below, delete that copy so the repository it sits in carries none" \
+        --default "pull $SPIRA_REPO onto its base ref; install.sh now also refuses when the checkout is behind — wait for any live aeons to finish (install.sh refuses while spira-aeon-*.service units are active too), then re-run $installer; pass SPIRA_INSTALL_FORCE=1 to override both refusals; if a second harness is named below, delete that copy so the repository it sits in carries none" \
         --why "beads can be closed, gated and merged while the behaviour they changed never takes effect — the tree that was edited is self-consistent, so nothing downstream reports a fault" \
         --evidence "$findings" 2>&1)"; notify_rc=$?
 
