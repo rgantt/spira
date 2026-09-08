@@ -119,7 +119,7 @@ If answering the question needs a credential, an account or a console only the o
 holds — or turns on a product decision about what something IS or what a number MEANS —
 post the decision the moment you know it, rather than leaving it in the bead to be found:
 
-    .claude/cockpit/ask.sh add "<the question>" --default "<what you would do>" \
+    {{ASK}} add "<the question>" --default "<what you would do>" \
         --why "<what is blocked>" --evidence "<the facts>"
 
 An escalation is a decision request, not a problem report: the decision as a question with a

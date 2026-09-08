@@ -97,6 +97,40 @@ for f in "$HERE"/chamber/*.md; do
     is "every placeholder in $n.md is substituted by $(basename "$filler")" "" "$(unfilled "$f" "$filler")"
 done
 
+# EVERY COMMAND A BRIEF NAMES MUST EXIST. The placeholder check above proves the TEMPLATE
+# mechanism works; it says nothing about what the filled-in text points AT. On 2026-09-08 all
+# four briefs passed it while naming eight commands under `.claude/` — a path that had not
+# existed in either repository since the harness split out of brain (sp-9tal). Every Ops
+# session was told to match an SOP, write an SOP, file a bead and escalate using programs
+# that were not there, so step 1 of its loop failed before it began and the closing rule
+# could not be obeyed at all. A green suite reported none of it.
+#
+# So: render each brief the way its filler does, then check that the first word of every
+# fenced/indented command line that looks like a path resolves to a real executable.
+# law-absence-needs-a-positive-control — the control is the deliberately broken path below.
+for f in "$HERE"/chamber/*.md; do
+    n="$(basename "$f" .md)"
+    missing=""
+    while read -r cand; do
+        [ -n "$cand" ] || continue
+        [ -x "$cand" ] || missing="$missing $cand"
+    done < <(
+        sed -e "s|{{SOP}}|$HERE/sop.sh|g" -e "s|{{INCIDENT}}|$HERE/incident.sh|g" \
+            -e "s|{{ASK}}|${SPIRA_NOTIFY:-$SPIRA_COCKPIT/ask.sh}|g" "$f" |
+        grep -oE '(^|[`( ])/[A-Za-z0-9_./-]+\.sh' | tr -d '`( ' | sort -u
+    )
+    is "every command $n.md names exists and is executable" "" "$missing"
+done
+
+# The control: a brief naming a path that is not there must FAIL the check above.
+probe="$(mktemp)"; printf 'run it:\n\n    /nonexistent/definitely-not-here.sh list\n' > "$probe"
+probe_missing=""
+while read -r cand; do [ -n "$cand" ] && [ ! -x "$cand" ] && probe_missing="$probe_missing $cand"; done < <(
+    grep -oE '(^|[`( ])/[A-Za-z0-9_./-]+\.sh' "$probe" | tr -d '`( ' | sort -u)
+[ -n "$probe_missing" ] && ok "the command check can see a path that does not exist" \
+    || bad "the command check can see a path that does not exist" "it saw nothing"
+rm -f "$probe"
+
 # The fayth is a shell fragment that gets SOURCED into the summoning process. A syntax error
 # in it is not a persona that misbehaves, it is a harness that dies mid-summon.
 for f in "$HERE"/chamber/*.fayth; do

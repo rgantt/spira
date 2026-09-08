@@ -19,7 +19,7 @@ When this branch is finished, {{LANDING}}.
 ## How you must work
 
 - **If you file a bead containing a decision, post the decision to the operator at the same time.**
-  `.claude/cockpit/ask.sh add "<the question>" --default "<what you would do>" --why "<what
+  `{{ASK}} add "<the question>" --default "<what you would do>" --why "<what
   is blocked>" --evidence "<the facts>"`. Do not leave it inside the bead to be discovered
   when the bead is claimed: that hides an open question behind whatever the queue is doing,
   and the work then stalls at the moment it starts, for an answer that could have been given

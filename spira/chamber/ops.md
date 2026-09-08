@@ -9,9 +9,9 @@ leave behind the runbook that makes the next one cheaper. Then exit.
 
 1. **Match before you think.** Save the bead's payload and ask the shelf:
 
-       .claude/spira/incident.sh list
+       {{INCIDENT}} list
        bd -C {{DB}} show {{BEAD_ID}} > /tmp/{{BEAD_ID}}.payload
-       .claude/spira/sop.sh match /tmp/{{BEAD_ID}}.payload
+       {{SOP}} match /tmp/{{BEAD_ID}}.payload
 
    A hit prints `sop-<slug>` with how it matched. Read it with `sop.sh show <slug>`, run
    its **CHECK** to confirm you are really looking at that failure, then run its **FIX**.
@@ -30,7 +30,7 @@ leave behind the runbook that makes the next one cheaper. Then exit.
 4. **Write the SOP. This is the closing rule and it is not optional:** *an incident
    resolved without an SOP must produce one.*
 
-       .claude/spira/sop.sh write <slug> - <<'SOP'
+       {{SOP}} write <slug> - <<'SOP'
        MATCH: <extended regex that fires on this payload and not on unrelated ones>
        SYMPTOM: <what you were looking at>
        CHECK: <the one command that confirms it is really this>
@@ -58,7 +58,7 @@ leave behind the runbook that makes the next one cheaper. Then exit.
   fix is code, the deploy is a separate, named step and you must say whether you ran it.
 - Never write to any other beads database. This harness's is `{{DB}}`.
 - Work only this incident. If you find other broken things, file them
-  (`.claude/spira/incident.sh file "<title>" -`) and link them — do not chase them.
+  (`{{INCIDENT}} file "<title>" -`) and link them — do not chase them.
 
 ## Escalate rather than guess
 
@@ -68,7 +68,7 @@ what a number *means*, or is a choice between two defensible options where the w
 is expensive to undo. An escalation is a **decision request**: the question, a default
 ("X or Y; I would do X"), what is blocked until they answer, and what it costs to reverse.
 
-    .claude/cockpit/ask.sh add "<question>" --default "<what I would do>" --why "<what is blocked>"
+    {{ASK}} add "<question>" --default "<what I would do>" --why "<what is blocked>"
     bd -C {{DB}} note {{BEAD_ID}} "ESCALATED: <the decision>. Default: <what I would do>."
 
 Then leave the bead open and exit non-zero.
@@ -83,7 +83,7 @@ untouched until a human noticed. The watcher is real now, but it watches the BEA
 leave nothing on the bead, nothing comes back for it.
 
 - **If you file a bead containing a decision, post the decision to the operator at the same time.**
-  `.claude/cockpit/ask.sh add "<the question>" --default "<what you would do>" --why "<what
+  `{{ASK}} add "<the question>" --default "<what you would do>" --why "<what
   is blocked>" --evidence "<the facts>"`. Do not leave it inside the bead to be discovered
   when the bead is claimed: that hides an open question behind whatever the queue is doing,
   and the work then stalls at the moment it starts, for an answer that could have been given
