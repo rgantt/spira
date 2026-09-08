@@ -397,6 +397,26 @@ unread_row() {   # unread_row <label> <what could not be read>
         "$C_DIM" "$1" "$C_RST" "$C_BAD" "$C_B" "$C_RST" "$C_DIM" "$2" "$C_RST"
 }
 
+# model_short <id> -> a name that fits a third-width pane: claude-opus-4-6 -> opus 4.6.
+#
+# THE UNKNOWNS PASS STRAIGHT THROUGH. `?` means the collector could not read the trace and `-`
+# means the trace held no init event; neither is turned into a plausible model name, because a
+# pane that invents one is worse than a pane that admits it does not know
+# (law-absence-needs-a-positive-control). Anything this does not recognise is printed as it
+# came, so a new model id shows up ugly rather than silently as something else.
+model_short() {
+    case "${1:-?}" in
+        ""|"?"|"-") printf '%s' "${1:-?}" ;;
+        # THE DATE STAMP COMES OFF FIRST. `claude-haiku-4-5-20251001` otherwise matches the
+        # version rule on its last two groups and renders "haiku-4 5.20251001", which reads as
+        # a version number nobody has. A dated id is the normal shape for a pinned model, so
+        # this is the common case rather than a curiosity.
+        claude-*)   printf '%s' "${1#claude-}" \
+                      | sed -E 's/-[0-9]{8}$//; s/-([0-9]+)-([0-9]+)$/ \1.\2/; s/-([0-9]+)$/ \1/' ;;
+        *)          printf '%s' "$1" ;;
+    esac
+}
+
 # NOW — who is working, on what, HOW THE SESSION IS DOING, and the last thing it said.
 #
 # FOUR ROWS PER AEON, because three of them answered "is it alive" and none answered "is it
@@ -427,6 +447,7 @@ now_section() {
         # rendering as "0 turns, 0 files" is an all-clear that displaces the suspicion which
         # would have prompted a look (law-absence-needs-a-positive-control).
         eval "local tn=\${SP_AEON${i}_TURNS:-?} cx=\${SP_AEON${i}_CTX:-?}"
+        eval "local md=\${SP_AEON${i}_MODEL:-?}"
         eval "local fl=\${SP_AEON${i}_FILES:-?} qt=\${SP_AEON${i}_QUIET:-?}"
         eval "local sd=\${SP_AEON${i}_SAID:-}"
         # WHO, then WHAT, then the live action — one question per line. Crammed onto
@@ -436,7 +457,17 @@ now_section() {
         # THE STATS SHARE THE NAME'S ROW because they describe the same thing the name does:
         # the session, not the bead. Only the tail is fitted — the name is the one field on
         # this row that must never be cut, since it is how two aeons are told apart.
-        fit "the $fy · ${mn}m · $tn turns · ctx $(tok "$cx") · $fl files" \
+        # THE MODEL, BECAUSE THE PERSONAE NO LONGER SHARE ONE. Ops runs Sonnet, the builders
+        # Opus 4.6, spike Opus 5, and a bead that went slowly or answered oddly is a different
+        # fact depending on which was behind it (per the operator, 2026-09-07). It sits on the
+        # NAME's row rather than the bead's because a model is a property of the SESSION, like
+        # the turns and the context beside it, and not of the work.
+        #
+        # IT IS READ FROM THE AEON'S OWN TRACE, never from the fayth file. The two disagree
+        # exactly when it matters — a fayth edited mid-flight leaves the running session on
+        # the model it was summoned with — and a pane sourcing the file would relabel live
+        # work at the moment somebody is looking (law-long-lived-processes-pin-their-config).
+        fit "the $fy on $(model_short "$md") · ${mn}m · $tn turns · ctx $(tok "$cx") · $fl files" \
             $(( COLS - 9 - ${#nm} ))
         printf ' %s%s%s    %s%s%s %s%s%s\n' \
             "$C_DIM" "$([ "$i" = 0 ] && printf 'NOW' || printf '   ')" "$C_RST" \

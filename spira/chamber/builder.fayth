@@ -23,7 +23,17 @@ FAYTH_MEMORY_PREFIXES="law-"
 # persona that can only ever work one of them, and every fayth here named the same
 # one. A bead with no `repo:` label is the home repo, which is what Spira's own plan
 # beads are.
-FAYTH_MODEL=claude-opus-5
+# OPUS 4.6 (per the operator, 2026-09-07). The builders are the party's DPS and hold their
+# slots for 45-90 minutes each, so they are where the five-hour window actually goes — and
+# that window, not CPU and not the slot count, is Spira's throughput ceiling. A cheaper model
+# in the seats that are occupied longest buys more finished beads per window than a wider
+# pool did: four slots was tried and returned to three ninety minutes later because a slot is
+# only throughput if the aeon in it can finish.
+#
+# VERIFIED, NOT ASSUMED: `claude --model claude-opus-4-6 -p ...` answers on this box. An id
+# the CLI rejects does not fail loudly here — every summon dies and the pool looks merely
+# idle, which is the shape of outage this harness is worst at noticing.
+FAYTH_MODEL=claude-opus-4-6
 # Three. Raised to four on 2026-09-07 and returned to three ninety minutes later, by the
 # operator, with the measurement that settles it: a slot is only throughput if the aeon in it
 # can finish, and right now it cannot. In the 46 minutes at four, twenty-two aeons were

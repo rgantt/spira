@@ -72,11 +72,18 @@ is_n "said is the last text block, sanitised to one line" \
 # that the pane SOURCES with no parser: the newline above would inject a line and the `=`
 # would make a bogus key, and every key after it would silently read as unset while the
 # collector looked healthy. Asserting the shape is not enough — the file has to source.
+#
+# THE KEYS ARE NAMED, NOT COUNTED. A bare count of 7 was the first version of this, and it
+# failed the day an eighth key was legitimately added — reporting "a pane cannot source this"
+# about output that sourced perfectly. A count cannot tell a NEW KEY from an INJECTED LINE,
+# which are the opposite of each other; the set can.
+WANT_KEYS='ACT CTX FILES MODEL QUIET SAID TOOLS TURNS'
+GOT_KEYS="$(sed -n 's/^\([A-Z_]*\)=.*/\1/p' <<< "$st" | sort | tr '\n' ' ' | sed 's/ $//')"
 if ( set -u; eval "$(sed 's/=\(.*\)$/='"'"'\1'"'"'/' <<< "$st")" ) 2>/dev/null \
-   && [ "$(grep -c . <<< "$st")" = 7 ]; then
-    pass=$((pass+1)); printf '  ok    seven keys, and every one of them sources cleanly\n'
+   && [ "$GOT_KEYS" = "$WANT_KEYS" ]; then
+    pass=$((pass+1)); printf '  ok    exactly the expected keys, and every one of them sources cleanly\n'
 else
-    fail=$((fail+1)); printf '  FAIL  trace_stats emitted something a pane cannot source:\n%s\n' "$st"
+    fail=$((fail+1)); printf '  FAIL  trace_stats emitted something a pane cannot source:\n    want keys [%s]\n    got  keys [%s]\n%s\n' "$WANT_KEYS" "$GOT_KEYS" "$st"
 fi
 
 # A TRACE THAT CANNOT BE READ AND ONE WITH NOTHING IN IT ARE DIFFERENT FACTS, and neither of
@@ -322,6 +329,42 @@ for w in 70 96; do
     fi
 done
 fi
+
+# ---------------------------------------------------------------------------------------
+# THE MODEL THE SESSION IS ACTUALLY RUNNING. The personae no longer share one — Ops is on
+# Sonnet, the builders on Opus 4.6 — so "which model produced this" stopped being a constant
+# and started being a fact the pane has to carry.
+#
+# IT COMES FROM THE TRACE, NOT THE FAYTH FILE, and the negative case is the one that matters:
+# a trace whose init names no model must render as `-`, never as whatever the fayth currently
+# says. Those two disagree exactly when somebody edits a fayth while an aeon is mid-flight,
+# which is the moment a wrong label would be believed.
+# ---------------------------------------------------------------------------------------
+is_n "an init with no model field is - , never a guess" "-" "$(field "$st" MODEL)"
+
+cat > "$TD/sp-model.log" <<'TRACE'
+{"type":"system","subtype":"init","session_id":"s1","model":"claude-opus-4-6"}
+{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":1},"content":[{"type":"text","text":"hi"}]}}
+TRACE
+is_n "the model is read from the init event" "claude-opus-4-6" \
+     "$(field "$(stats "$TD/sp-model.log")" MODEL)"
+
+# A TRACE THAT CANNOT BE READ AT ALL reports `?`, which is a different answer from `-`: one
+# says the init carried no model, the other says nothing could be read. Folding them would
+# make an unreadable trace indistinguishable from a readable one lacking a field
+# (law-absence-needs-a-positive-control).
+is_n "an unreadable trace is ? , not - and not a model" "?" \
+     "$(field "$(stats "$TD/nonexistent.log")" MODEL)"
+
+# model_short — what the pane actually prints. Extracted from the pane rather than
+# reimplemented, so this cannot pass against a copy that has drifted from the real one.
+eval "$(sed -n '/^model_short() {/,/^}/p' "$PANE")"
+is_n "a dated id keeps its version and loses its date" "haiku 4.5"  "$(model_short claude-haiku-4-5-20251001)"
+is_n "a two-part version reads as a version"           "opus 4.6"   "$(model_short claude-opus-4-6)"
+is_n "a one-part version keeps its single number"      "sonnet 5"   "$(model_short claude-sonnet-5)"
+is_n "an unknown id is printed as it came"             "weird-thing" "$(model_short weird-thing)"
+is_n "? passes straight through"                       "?"          "$(model_short '?')"
+is_n "- passes straight through"                       "-"          "$(model_short '-')"
 
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"

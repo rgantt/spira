@@ -52,7 +52,21 @@ FAYTH_SOP_REQUIRED=1
 # persona that can only ever work one of them, and every fayth here named the same
 # one. A bead with no `repo:` label is the home repo, which is what Spira's own plan
 # beads are.
-FAYTH_MODEL=claude-opus-5
+# SONNET, NOT OPUS (per the operator, 2026-09-07). Ops matches a runbook off the shelf and
+# either executes it or writes one — recognition and procedure, which is the shape Sonnet is
+# for. It is also the persona that runs most often: it wakes on every sweep whether or not
+# anything is wrong, and one such no-op sweep was measured at 1.8M cache-read tokens and
+# $2.23 to conclude the pipeline was fine. The account's five-hour window is Spira's real
+# throughput ceiling, so a persistent role spending it on routine confirmation takes capacity
+# from the builders (law-alerts-must-be-actionable, in its cost form).
+#
+# THE TRADE IS REAL AND ACCEPTED. The subtlest Ops session so far — the one that worked out
+# that a sweep's recurrence count measures ten-minute intervals rather than failed fixes —
+# was diagnosis, not procedure, and is the kind of pass this may do less well. That is why
+# the closing rule below is a mechanism rather than an instruction: an Ops session that
+# learns something must leave an SOP behind, so what a cheaper model works out once is on
+# the shelf for every session after it.
+FAYTH_MODEL=claude-sonnet-5
 FAYTH_MAX_CONCURRENT=1
 
 # A PARTY MEMBER, NOT AN AEON. Ops is Yuna: it travels with the party and is always around.
@@ -67,21 +81,29 @@ FAYTH_MAX_CONCURRENT=1
 FAYTH_ROLE=party
 
 # BOUNDED BY THE SWEEP INTERVAL, which is the number that actually constrains this persona.
-# watchtower.sh files a health sweep every SPIRA_WATCH_EVERY (10 minutes), so an Ops session
-# that can run for an hour — the default TIMEOUT_SECONDS is 3600 — would still be working the
-# 22:30 snapshot while the 22:40, 22:50 and 23:00 ones arrived behind it. Observed at six
-# minutes and climbing on the first live sweep. Sessions must not outlive the cadence that
-# produces their work.
+# A sweep arrives every `OnUnitActiveSec` in systemd/spira-watchtower.timer — THIRTY MINUTES,
+# and that timer is the only place the cadence is written; there is no SPIRA_WATCH_EVERY key
+# to read. An Ops session that can run for an hour, which is what the default
+# TIMEOUT_SECONDS of 3600 allows, would still be working one snapshot while the next arrived
+# behind it. Observed at six minutes and climbing on the first live sweep. Sessions must not
+# outlive the cadence that produces their work.
 #
 # EIGHT MINUTES, HARD. systemd kills the unit at TIMEOUT_SECONDS, so this is a wall rather
-# than a request. Two minutes of headroom under the ten, because a sweep that overruns by
-# thirty seconds still collides.
+# than a request.
+#
+# IT IS NOT RAISED TO MATCH THE WIDER INTERVAL, and that is the decision rather than an
+# oversight. A longer wall would only buy longer sessions, and a longer session is more spend
+# on the same routine confirmation — the opposite of why the cadence widened. The invariant
+# the pair has to satisfy is that a session ends before the next sweep arrives, and eight
+# under thirty satisfies it with room that ten never gave it.
 #
 # THE BOUND IS A FEATURE, not a compromise. An Ops aeon that cannot finish must write what it
 # found into the graph as beads and let the next sweep continue — which is what we want it
 # doing anyway. Findings held in a session that gets killed are lost; findings cut into beads
-# survive and are what the next aeon starts from. The lease matches, so a killed session's
-# bead is reclaimable promptly rather than sitting held for another 37 minutes.
+# survive and are what the next aeon starts from.
+#
+# THE LEASE MATCHES THE WALL, so a killed session's bead is reclaimable promptly rather than
+# sitting held while the next sweep waits on work nobody is doing.
 FAYTH_TIMEOUT_SECONDS=480
 FAYTH_LEASE_MINUTES=10
 FAYTH_HEARTBEAT_SECONDS=60

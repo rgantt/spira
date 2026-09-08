@@ -1343,7 +1343,7 @@ trace_stats() {
     local f="${1:-}" m
     m="$(stat -c %Y "$f" 2>/dev/null)"
     if [ ! -r "$f" ] || [ -z "$m" ]; then
-        printf 'TURNS=?\nCTX=?\nTOOLS=?\nFILES=?\nQUIET=?\nACT=?\nSAID=?\n'
+        printf 'TURNS=?\nCTX=?\nTOOLS=?\nFILES=?\nQUIET=?\nACT=?\nSAID=?\nMODEL=?\n'
         return 0
     fi
     # MTIME, NOT AN EVENT TIMESTAMP. stream-json events carry no wall clock of their own, and
@@ -1363,6 +1363,12 @@ def clean(s, n=96):
 
 seen, ids, files = False, set(), set()
 tools, ctx, act, said = 0, None, "", ""
+# THE MODEL THE AEON WAS ACTUALLY SUMMONED WITH, read from its own trace rather than from
+# the fayth file. Those two disagree exactly when it matters: a fayth edited while an aeon
+# is mid-flight leaves the running session on the model it started with
+# (law-long-lived-processes-pin-their-config), and a pane that read the file would relabel
+# live work the moment the config changed, which is the one moment somebody is looking.
+model = None
 EDITS = ("Edit", "Write", "NotebookEdit")
 
 for line in sys.stdin:
@@ -1373,6 +1379,11 @@ for line in sys.stdin:
         e = json.loads(line)
     except Exception:
         continue
+    # The init event carries it once, at the top of the attempt. Both shapes are accepted
+    # because the client has emitted it at the top level and under `message`, and a reader
+    # that knew only one would report `-` for a model that is plainly there.
+    if e.get("type") == "system" and e.get("subtype") == "init":
+        model = e.get("model") or (e.get("message") or {}).get("model") or model
     if e.get("type") != "assistant":
         continue
     seen = True
@@ -1408,6 +1419,7 @@ for line in sys.stdin:
             said = c["text"].strip().replace("\n", " ")[:200]
             act = said
 
+sys.stdout.write("MODEL=%s\n" % (clean(model, 32) if model else "-"))
 if not seen:
     for k in ("TURNS", "CTX", "TOOLS", "FILES", "ACT", "SAID"):
         sys.stdout.write("%s=-\n" % k)
