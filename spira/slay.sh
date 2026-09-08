@@ -199,7 +199,13 @@ if [ -n "$nuked" ]; then bdq label remove "$ID" "branch:$br" >/dev/null 2>&1 || 
 note="Slain by the operator: $WHY. Aeon ${name:-?}${pid:+ (pid $pid)} stopped${unit:+ via $unit}. ${nuked:-work kept}${saved:+; uncommitted changes salvaged to $saved}. No attempt charged."
 st="$(status_of)"
 case "$MODE" in
-    close)  if [ "$st" = closed ]; then
+    close)  # MARK THE DROP BEFORE CLOSING. An operator close means "this work is not going to
+            # happen", so no commit will ever name this bead — which is exactly the shape
+            # sentinel CHECK 5 reopens. Without this label the close is undone within two
+            # minutes and the bead returns as open work nobody will claim (sp-m56w, 00:18:52
+            # on 2026-09-08). Set it first: a close that sticks matters more than the label.
+            bdq label add "$ID" spira-dropped >/dev/null 2>&1 || say "bead: could not mark spira-dropped — the close may be reopened by CHECK 5"
+            if [ "$st" = closed ]; then
                 # Already closed — by the aeon before it was stopped, or by hand. The reason
                 # still belongs on the record; re-closing would fail and say nothing.
                 bdq note "$ID" "$REASON — $note" >/dev/null 2>&1

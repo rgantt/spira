@@ -279,7 +279,7 @@ done
 # reading the wrong repository's graph gives the wrong answer confidently in both directions:
 # a bead for repository A reads as never landed in repository B, so this check would reopen finished
 # work on every pass. One query, both facts.
-while IFS=$'\t' read -r id r_name superseded; do
+while IFS=$'\t' read -r id r_name superseded dropped; do
     [ -n "$id" ] || continue
     # Only beads an aeon worked — anything closed by hand has its own evidence.
     [ -f "$SPIRA_RUN/$id.log" ] || continue
@@ -294,6 +294,13 @@ while IFS=$'\t' read -r id r_name superseded; do
     # returned — the third time tonight a per-item call was made for something a bulk
     # query had in hand.
     [ "$superseded" = 1 ] && continue
+    # A BEAD THE OPERATOR DROPPED WILL NEVER HAVE A COMMIT NAMING IT EITHER, and that is
+    # equally correct: the verdict was "do not do this work", so no branch and no commit is
+    # ever coming. Without this, CHECK 5 reopens it every pass and the drop cannot stick —
+    # sp-m56w was closed on Ryan's verdict at 00:17 on 2026-09-08 and reopened by this check
+    # at 00:18:52, poison label intact, so no aeon would claim it and nothing would ever
+    # land it. A permanent zombie reached by a check that was right about every other bead.
+    [ "$dropped" = 1 ] && continue
     r_path="$(repo_root "${r_name:-}")" || {
         log "CHECK5 $id: repo:$r_name is not in repo-map — cannot say whether it landed"
         continue; }
@@ -352,7 +359,10 @@ for i in (d if isinstance(d, list) else [d]):
     # to use, because nothing here can tell which shape it was handed.
     sup = 1 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
                    for x in (i.get("dependencies") or [])) else 0
-    print("%s\t%s\t%s" % (i["id"], repo, sup))' "$home_repo" 2>/dev/null
+    # Fourth column: dropped by the operator, carried as a label because "dropped" is not a
+    # relation between beads the way supersession is — there is no second bead to point at.
+    drop = 1 if "spira-dropped" in (i.get("labels") or []) else 0
+    print("%s\t%s\t%s\t%s" % (i["id"], repo, sup, drop))' "$home_repo" 2>/dev/null
     done <<< "$PARTITIONS" |
     # Sorted on the REPOSITORY column first, because the loop above caches one `git log`
     # walk per repository and re-walks whenever the repository changes between rows; `-u`
