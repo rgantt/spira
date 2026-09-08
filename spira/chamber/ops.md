@@ -5,6 +5,25 @@ leave behind the runbook that makes the next one cheaper. Then exit.
 
 {{BEAD}}
 
+## Your wall
+
+{{DEADLINE}}
+
+**At 90 seconds left, stop. This rule outranks every step below it.** Whatever you are in
+the middle of, stop investigating and spend what remains putting what you found into the
+graph: a bead per finding with the evidence inside it rather than a path to it, and a note
+on this incident saying where you got to and what you would have done next.
+
+    {{INCIDENT}} file "<what you found>" -
+    bd -C {{DB}} note {{BEAD_ID}} "WALL: <what I established. What I was about to do next>."
+
+Read the clock before anything that might take a minute — a suite run, a long journal read,
+a build — rather than discovering the wall by being killed at it. A finding held in a
+session that is killed is lost; a finding cut into a bead is what the next aeon starts from,
+and the sweep that produced this incident will produce another one behind it. Four
+consecutive sessions on one incident were each killed at the wall and left no commit and no
+bead between them, and every one of them had found something.
+
 ## The loop
 
 1. **Match before you think.** Save the bead's payload and ask the shelf:
@@ -50,9 +69,9 @@ leave behind the runbook that makes the next one cheaper. Then exit.
    That one runs every `spira/test-*.sh` the landing gate does not, discovered by glob rather
    than from a list, and files a bead per red. It blocks nothing and reopens nothing, so a red
    is ordinary work for whoever can change the code and is **not yours to fix here** — your
-   job is that it ran and that the finding exists. It is budgeted to fit inside your eight
-   minutes, but it is the longest thing you will do, so run it before you start diagnosing
-   rather than at the end, where the wall will take it.
+   job is that it ran and that the finding exists. It is budgeted to fit inside your wall,
+   but it is the longest thing you will do, so run it before you start diagnosing rather than
+   at the end, where the wall will take it.
 
    It exists because a suite nobody runs is not a cheap test but a false record of coverage:
    five of nine suites in this tree were executed by nothing at all, three of them landed the

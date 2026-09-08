@@ -85,6 +85,20 @@ want   "the placeholder check can see an unfilled one" "{{NOWHERE}}" \
        "$(unfilled "$PLANT/planted.md" "$HERE/aeon.sh")"
 nowant "and does not accuse one that is filled"        "{{DB}}" \
        "$(unfilled "$PLANT/planted.md" "$HERE/aeon.sh")"
+
+# {{DEADLINE}} IS NAMED HERE rather than left to the loop below, because it is the one
+# placeholder that fails silently in both directions. Unfilled, the Ops aeon is told it dies
+# at the literal `{{DEADLINE}}`; dropped from the brief altogether, it is told nothing at all
+# and behaves exactly as it did before there was a deadline to see — four consecutive
+# sessions on one incident, each killed at the wall, no commit and no bead between them. The
+# loop below catches the first case for every brief; the pair here fixes it to this name and
+# the assertion further down requires the shipped Ops brief to carry it.
+: > "$PLANT/nofiller.sh"
+printf 'this session is killed at {{DEADLINE}}\n' > "$PLANT/deadline.md"
+want "an unfilled {{DEADLINE}} fails this suite" "{{DEADLINE}}" \
+     "$(unfilled "$PLANT/deadline.md" "$PLANT/nofiller.sh")"
+is   "and aeon.sh is a filler that fills it"     "" \
+     "$(unfilled "$PLANT/deadline.md" "$HERE/aeon.sh")"
 rm -rf "$PLANT"
 
 for f in "$HERE"/chamber/*.md; do
@@ -157,6 +171,33 @@ want "and that sources are kept verbatim"           "preserved verbatim"        
 want "and that a POC goes on a branch of its own"   "branch of its own"           "$brief"
 want "and that it must not leave a merge"           "must not leave a merge"      "$brief"
 want "and that its context is the bead, not a conversation" "ids rather than bodies" "$brief"
+
+# THE OPS BRIEF'S WALL, asserted here because Ops is the only persona killed on a clock and
+# the brief is the whole of the mechanism: drop these clauses and nothing anywhere fails,
+# while every Ops session goes back to spending its last minute on an investigation it will
+# not get to finish. The deadline itself is rendered by aeon.sh — that it reaches the model
+# as a real time rather than as braces is asserted in test-aeon-verdict.sh, against the
+# actual render.
+ops_brief="$(cat "$HERE/chamber/ops.md")"
+want "the ops brief tells the aeon when its session is killed" "{{DEADLINE}}" "$ops_brief"
+want "and makes the wrap-up a hard rule with a number in it" "At 90 seconds left, stop" "$ops_brief"
+want "and says the rule outranks the loop"     "outranks every step below it" "$ops_brief"
+want "and names where a finding goes instead"  "{{INCIDENT}} file"            "$ops_brief"
+# A LITERAL WALL IN THE PROSE IS A SECOND SOURCE OF TRUTH for a number that lives in
+# ops.fayth, and the brief is the copy nobody edits when the key changes.
+nowant "and does not restate the wall as a literal" "eight minutes" "$ops_brief"
+
+# ONLY OPS. A builder or a spike runs until its work is done — a clock cannot tell slow from
+# stuck, and killing on one charged an attempt toward poison for being legitimately long. So
+# a deadline in either of those briefs would render as "no wall-clock deadline" and a wrap-up
+# rule in them would be an instruction to hurry against nothing.
+for n in builder spike; do
+    nowant "the $n brief carries no deadline"      "{{DEADLINE}}" "$(cat "$HERE/chamber/$n.md")"
+    nowant "and the $n fayth declares no wall"     "FAYTH_TIMEOUT_SECONDS" \
+           "$(grep -v '^[[:space:]]*#' "$HERE/chamber/$n.fayth")"
+done
+want "while the ops fayth is the one that declares it" "FAYTH_TIMEOUT_SECONDS" \
+     "$(grep -v '^[[:space:]]*#' "$HERE/chamber/ops.fayth")"
 
 # The fayth's own fields. The predicate is built from the configured label rather than a
 # literal, which is the property that keeps the fayth, the brief and the fence agreeing.

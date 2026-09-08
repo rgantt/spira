@@ -134,6 +134,74 @@ want   "and says why it declined to act"     "NOT reopened — superseded" "$(ca
 nowant "so nothing is reopened"              "REOPENED"    "$(cat "$TMP/out")"
 nowant "and no reopen note is written"       "Closed is not landed" "$(notes sp-vd-3)"
 
+# ======================================================================================
+echo
+echo "a persona with a wall is told when it is killed, in the brief the model receives:"
+# ======================================================================================
+# THE DEFECT THIS REPRODUCES. A persona that declares FAYTH_TIMEOUT_SECONDS is killed on a
+# clock from outside, and its brief asks it, if it cannot finish, to leave what it found in
+# the graph rather than in a session that is about to end. It could not know when that was:
+# four consecutive sessions on one incident were each killed within a second of the wall and
+# left no commit and no bead between them. The wall is not the defect — it is what keeps a
+# session from outliving the sweep that produces its work. Not being able to see it is.
+#
+# ASSERTED AGAINST THE PROMPT THE SHIM RECEIVES, which is the only place the claim is
+# meaningful. A check on aeon.sh's source proves the token is mentioned; it cannot tell a
+# deadline that renders as a time from one that renders as the empty string, and the empty
+# string is what a brief with a `{{DEADLINE}}` in it silently becomes.
+printf 'work {{BEAD_ID}} in {{REPO}} on {{BRANCH}}\n{{DEADLINE}}\n{{PARK}}\n' \
+    > "$SPIRA_HOME/chamber/builder.md"
+walled_fayth() {                # walled_fayth [seconds] — rewrite the fayth, with or without a wall
+    { cat <<FAYTH
+FAYTH_NAME=builder
+FAYTH_LABELS="spira,plan"
+FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL"
+FAYTH_MAX_CONCURRENT=1
+FAYTH_HEARTBEAT_SECONDS=600
+FAYTH
+      [ -n "${1:-}" ] && printf 'FAYTH_TIMEOUT_SECONDS=%s\n' "$1"
+    } > "$SPIRA_HOME/chamber/builder.fayth"
+}
+
+# A NON-DEFAULT WALL. 480 is what the shipped Ops persona declares, so a deadline computed
+# from a literal written into aeon.sh would pass against it and fail against nothing.
+walled_fayth 300
+testdb_reset; seed sp-vd-4; shim 1 close; run_aeon
+prompt="$(cat "$TMP/prompt" 2>/dev/null)"
+now="$(date +%s)"
+nowant "no placeholder reaches the model" "{{" "$prompt"
+want   "the brief says the session is killed" "This session is killed at" "$prompt"
+
+# THE EPOCH IS THE PART THAT MATTERS: a clock time tells the aeon when it dies, the epoch is
+# what lets it ASK how long is left at any point in the session rather than estimate. It is
+# read back out of the prompt and required to fall inside the window the wall implies: after
+# now, because the session is still running, and no later than now plus the wall, which is
+# where a deadline anchored at the aeon's start can be and a fixed or fabricated one cannot.
+epoch="$(printf '%s' "$prompt" | grep -oE 'echo \$\(\( [0-9]+ ' | grep -oE '[0-9]+' | head -1)"
+if [ -n "$epoch" ] && [ "$epoch" -gt "$now" ] && [ "$epoch" -le $((now + 300)) ]; then
+    ok "and carries a readable epoch inside the window the wall implies"
+else
+    bad "and carries a readable epoch inside the window the wall implies" \
+        "got [$epoch], wanted between $now and $((now + 300))"
+fi
+left="$(printf '%s' "$prompt" | grep -oE '— [0-9]+ seconds from now' | grep -oE '[0-9]+' | head -1)"
+if [ -n "$left" ] && [ "$left" -gt 0 ] && [ "$left" -le 300 ]; then
+    ok "and a remaining count that spends what the claim already cost"
+else
+    bad "and a remaining count that spends what the claim already cost" \
+        "got [$left], wanted 1..300"
+fi
+
+# THE OTHER HALF, and it is not decoration: a brief that renders `{{DEADLINE}}` as nothing at
+# all would satisfy every assertion above if the persona simply had no wall. A persona
+# without one must be told so, rather than told nothing.
+walled_fayth
+testdb_reset; seed sp-vd-5; shim 1 close; run_aeon
+prompt="$(cat "$TMP/prompt" 2>/dev/null)"
+nowant "a persona with no wall gets no placeholder either" "{{" "$prompt"
+want   "and is told plainly that it has no clock" "no wall-clock deadline" "$prompt"
+nowant "and is not given a deadline it does not have" "This session is killed at" "$prompt"
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

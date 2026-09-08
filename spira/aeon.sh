@@ -19,6 +19,12 @@
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
+# WHEN THIS AEON STARTED, read once and here rather than wherever it is next wanted. A
+# persona with a wall (FAYTH_TIMEOUT_SECONDS) is killed a fixed number of seconds after the
+# unit starts, so the deadline is anchored to this line and not to the moment the model is
+# launched — by then the claim, the worktree and the fixture have already spent some of it.
+AEON_T0="$(date +%s)"
+
 FAYTH="${1:-}"; [ -n "$FAYTH" ] || die "usage: aeon.sh <fayth> [--dry-run]"
 DRY=0; [ "${2:-}" = "--dry-run" ] && DRY=1
 F="$SPIRA_HOME/chamber/$FAYTH.fayth"
@@ -838,6 +844,41 @@ This is the only measurement of whether the gate is worth the minutes it takes f
 branch. A gate whose reds are mostly its own fault gets deleted on this evidence, in a
 sentence, instead of after an outage — which is how the last one went."
 
+# ---- the deadline ---------------------------------------------------------------------
+# A SESSION THAT CAN BE KILLED MUST BE ABLE TO SEE WHEN. A persona that declares
+# FAYTH_TIMEOUT_SECONDS is killed from outside — the transient unit's TimeoutStartSec is set
+# from that same key — and its brief then asks it, if it cannot finish, to leave what it
+# found in the graph rather than in a session that is about to end. It had no way to tell how
+# long that was. Measured: four consecutive sessions on one incident, every one killed within
+# a second of the wall, and no commit and no bead between them; each had found something and
+# each took it with it. The wall is not the defect. Not being able to see it is.
+#
+# ANCHORED AT AEON_T0, THIS SCRIPT'S OWN START. The wall is on the unit, and by the time the
+# prompt is rendered the unit has already spent seconds claiming a bead and building a
+# worktree — a countdown started here would be exactly that much too generous, and the number
+# the aeon needs is the one it can still spend. Run by hand with no unit around it, only the
+# `timeout` on the session below applies and that starts later still, so this reads early
+# rather than late; early is the harmless direction.
+#
+# THE EPOCH IS IN THE TEXT ON PURPOSE. A clock time says when the session dies; the epoch is
+# what lets it ASK how much is left, at any point, in one command that depends on nothing
+# here. An aeon that has to estimate its remaining time will estimate it generously.
+if [ -n "${FAYTH_TIMEOUT_SECONDS:-}" ]; then
+    DEADLINE_AT=$(( AEON_T0 + FAYTH_TIMEOUT_SECONDS ))
+    DEADLINE_LEFT=$(( DEADLINE_AT - $(date +%s) ))
+    DEADLINE_BRIEF="**This session is killed at $(date -d "@$DEADLINE_AT" +'%H:%M:%S %Z' 2>/dev/null || printf 'epoch %s' "$DEADLINE_AT") — $DEADLINE_LEFT seconds from now.**
+The kill comes from outside the session, on a clock, and it is a wall rather than a request:
+work in progress is discarded and anything you learned that is not written down goes with it.
+Do not estimate what is left — read it, as often as you need to:
+
+    echo \$(( $DEADLINE_AT - \$(date +%s) ))"
+else
+    DEADLINE_BRIEF="**This session has no wall-clock deadline.** It runs until its work is
+done. What ends a session that is not moving is the heartbeat: it stops when nothing has
+observably changed for several checks, the lease then expires, and the bead returns to the
+queue. So a long session is fine and a silent one is not."
+fi
+
 BEAD_BODY="$(bdq show "$BEAD_ID" 2>/dev/null | grep -vE '^💡|^warning|^  Fix|^  Or')"
 PROMPT="$(sed -e "s|{{BEAD_ID}}|$BEAD_ID|g" -e "s|{{BRANCH}}|$BRANCH|g" \
               -e "s|{{REPO}}|$WORK|g" -e "s|{{REPO_NAME}}|$REPO_NAME|g" \
@@ -846,13 +887,14 @@ PROMPT="$(sed -e "s|{{BEAD_ID}}|$BEAD_ID|g" -e "s|{{BRANCH}}|$BRANCH|g" \
               -e "s|{{SOP}}|$SPIRA_HOME/sop.sh|g" -e "s|{{INCIDENT}}|$SPIRA_HOME/incident.sh|g" \
               -e "s|{{ASK}}|$SPIRA_NOTIFY|g" -e "s|{{SUITES}}|$SPIRA_HOME/suites.sh|g" \
               "$SPIRA_HOME/chamber/$FAYTH.md")"
-# PARAMETER EXPANSION, NOT sed, for the two multi-line substitutions. `s|{{X}}|<many lines>|`
+# PARAMETER EXPANSION, NOT sed, for the multi-line substitutions. `s|{{X}}|<many lines>|`
 # is not a thing sed will do, and a brief that silently rendered as the literal `{{PARK}}`
 # would leave an aeon with no instruction at all about how its work is meant to end.
 PROMPT="${PROMPT/\{\{BEAD\}\}/$BEAD_BODY}"
 PROMPT="${PROMPT/\{\{PARK\}\}/$PARK_BRIEF}"
 PROMPT="${PROMPT/\{\{FIXTURE\}\}/$FIXTURE_BRIEF}"
 PROMPT="${PROMPT/\{\{GATE\}\}/$GATE_BRIEF}"
+PROMPT="${PROMPT/\{\{DEADLINE\}\}/$DEADLINE_BRIEF}"
 
 # The memory book. Every agent reads it on every session; this is the delivery mechanism
 # for an aeon, standing in for the SessionStart hook an interactive session gets.
