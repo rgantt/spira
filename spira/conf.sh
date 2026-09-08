@@ -60,6 +60,7 @@ SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
 SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE SPIRA_VERDICT_TTL SPIRA_REBASE_ESCALATE_AT SPIRA_VERDICT_WINDOW
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S SPIRA_LOOM_BIN
 SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS
+SPIRA_GROOMER_LABEL
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_VIEW SPIRA_VIEW_SESSION
@@ -391,8 +392,11 @@ spira_conf_defaults() {
     # room. This is what "ops cannot be starved by builders" has always meant; SPIRA_LANES
     # makes it declared configuration rather than a property implied by FAYTH_ROLE=party.
     # A new lane is added here and given a name; fayths join it with FAYTH_LANE=<name>.
-    # The ops lane is declared by default because ops.fayth ships using it.
-    : "${SPIRA_LANES:=ops}"
+    # The ops and groomer lanes are declared by default because ops.fayth and groomer.fayth
+    # ship using them. A lane fayth still functions if its lane name is absent from this list
+    # (the mechanism is FAYTH_LANE set, not membership here), but the declaration makes it
+    # visible to operators reading SPIRA_LANES for the list of scheduled partitions.
+    : "${SPIRA_LANES:=ops groomer}"
     # ---- THE READ SURFACE OVER THE LIVE GRAPH ------------------------------------------
     # Where Loom listens. Localhost is the default because a bead carries internal working
     # notes and the operator's own judgement, so the address it is reachable at is a
@@ -429,6 +433,10 @@ spira_conf_defaults() {
     # and is named in the document. Two prefixes rather than one because the sources a spike
     # preserved need not sit under the document — set it to the trees your own notes use.
     : "${SPIRA_SPIKE_PATHS:=$SPIRA_SPIKE_DIR}"
+    # THE GROOMER PARTITION, mirroring the spike partition: read by groomer.fayth's predicate
+    # and by any scanner that queries for groom trigger beads. One definition keeps the label
+    # name consistent across fayth, scanner and anything else that files trigger beads.
+    : "${SPIRA_GROOMER_LABEL:=groom}"
     # The name the operator's OWN comments are recorded under, so the attention panel can tell
     # a reply of theirs from a reply of the agent's. Both write into the same thread, and a
     # panel that cannot separate them announces the agent's own comment back to it as an answer.

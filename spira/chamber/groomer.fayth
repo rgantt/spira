@@ -1,0 +1,57 @@
+# groomer.fayth — the Groomer: reconciles the DAG for graph hygiene.
+#
+# A fayth is a persona DEFINITION; an aeon is one summoned instance of it. Four things:
+# a predicate carving its partition out of the graph, the memories it must read, the tools
+# it may use, and what wakes it.
+
+FAYTH_NAME=groomer
+FAYTH_DESC="Groomer — the reconciler: splits unsplittable beads, merges duplicates, closes beads whose premises are gone, corrects mislabelled lanes"
+
+# The partition. AND-labels: the groomer only ever sees beads deliberately filed as groom
+# work — a trigger bead that says "a hygiene pass is needed now". This partition exists so
+# the groomer can be woken by an external trigger (watchtower, a timer, or an operator)
+# rather than on every sentinel pass. The label key is SPIRA_GROOMER_LABEL so an operator
+# can rename it without touching the fayth file.
+FAYTH_LABELS="spira,$SPIRA_GROOMER_LABEL"
+FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"
+
+# Statutes only. The groomer executes no runbook.
+FAYTH_MEMORY_PREFIXES="law-"
+
+# NO FAYTH_REPO. The repository comes from the BEAD through its `repo:` label. A groom
+# pass is not bound to one repository — it reads the whole graph.
+
+# HAIKU. The groomer's work is recognition: is this bead a duplicate? does its premise still
+# hold? what lane does it belong in? These are classification and comparison tasks, not
+# construction. The small model is the right shape for them, and a lane persona that holds a
+# slot for longer than needed starves the party it exists to serve.
+#
+# VERIFIED: `claude --model claude-haiku-4-5-20251001 -p ...` answers on this box. An id the
+# CLI rejects does not fail loudly — every summon dies and the lane looks merely quiet.
+# Probe a candidate id before writing it here.
+FAYTH_MODEL=claude-haiku-4-5-20251001
+FAYTH_MAX_CONCURRENT=1
+
+# THE GROOMER LANE. A lane fayth draws from its own FAYTH_MAX_CONCURRENT rather than from
+# SPIRA_MAX_AEONS, so a fully-occupied builder pool cannot prevent a groom pass. The groomer
+# lane is declared in SPIRA_LANES; without that declaration the lane still functions — a
+# fayth with FAYTH_LANE set is never a task fayth — but the lane is invisible to operators
+# reading SPIRA_LANES for the list of scheduled partitions.
+#
+# WHY NOT A CRON JOB. Deciding two beads are duplicates, or that a bead's premise is gone,
+# is judgement. A shell script running on a timer cannot exercise it — it can only call a
+# model, and a model needs the bead context, the graph, and the recent history to decide
+# correctly. The persona shape gets all three via the brief and the database; a cron job gets
+# none of them. (Decided when cutting this bead; reversible if the cadence proves workable
+# from a simpler trigger. sp-gsmx.8)
+FAYTH_LANE=groomer
+
+# LEASE AND HEARTBEAT. A groom pass reads the graph breadth-first and then acts on its
+# findings — it is bursty in a different way than a builder, but its wall is naturally the
+# time it takes to read all open beads plus one bd call per finding. Ten minutes covers a
+# graph with hundreds of beads; the heartbeat is short so a killed pass is reclaimable fast.
+FAYTH_LEASE_MINUTES=10
+FAYTH_HEARTBEAT_SECONDS=60
+FAYTH_STALL_BEATS=8
+
+FAYTH_TOOLS="Bash,Read,Glob,Grep,TodoWrite"
