@@ -144,8 +144,10 @@ BASE="$(spira_landref "$REPO")" || verdict "$NV" no-base \
 gate: give it a \`base\` column in $SPIRA_REPO_MAP"
 # THE ONE REFUSAL THAT USED TO SAY NOTHING (sp-io5j). A failed diff means the branch or the
 # base does not resolve in this checkout — a fact about the checkout, never about the work.
-files="$(git -C "$REPO" diff --name-only "$BASE...$BR" 2>/dev/null)" || verdict "$NV" no-diff \
-    "gate: cannot diff $BASE...$BR in $REPO_NAME — one of them does not resolve in this checkout"
+_diff_out="$(git -C "$REPO" diff --name-only "$BASE...$BR" 2>&1)" || verdict "$NV" no-diff \
+    "gate: cannot diff $BASE...$BR in $REPO_NAME — one of them does not resolve in this checkout
+$_diff_out"
+files="$_diff_out"
 
 # ---------------------------------------------------------------------------------------
 # LAYER 1 — universal. Every changed shell script must parse.
