@@ -43,6 +43,20 @@ SNAP_AGE_MAX="${SPIRA_WATCH_SNAP_MAX:-600}"
 now="$(date +%s)"
 
 # ---------------------------------------------------------------------------------------
+# HALTED? A deliberately stopped world must not manufacture incidents. Every pipeline
+# metric grows monotonically while nothing is wrong — time since last landing, queue depth
+# — so a sweep against a halted world describes a system that is broken when it is not.
+# cockpit/health.sh reads the same stamp directly for the same reason: a stale or absent
+# snapshot must not mask a deliberate halt.
+# ---------------------------------------------------------------------------------------
+HALT_STAMP="$SPIRA_RUN/world.halted"
+halt_since=""; halt_why=""
+if [ -f "$HALT_STAMP" ]; then
+    halt_since="$(head -1 "$HALT_STAMP" 2>/dev/null)"
+    halt_why="$(sed -n '2s/^why: //p' "$HALT_STAMP" 2>/dev/null)"
+fi
+
+# ---------------------------------------------------------------------------------------
 # THE COLLECTOR'S SNAPSHOT, and whether it can be believed at all. Every other number below
 # is read out of cockpit.env, so its freshness is the first fact — a stale file makes the
 # whole sweep a report about the past, and reporting the past as the present during an
@@ -250,10 +264,24 @@ fi
 # A SNAPSHOT WRITTEN BY A COLLECTOR PREDATING THAT SPLIT RENDERS `?`, WHICH IS CORRECT: `g`
 # reports an absent key as unread, and during a rollout the two halves are briefly skewed.
 # `?` says this pass could not read it. A 0 would say there are none, which nobody checked.
+
+# Pre-computed so the heredoc below can reference it as a plain variable. A trailing
+# newline is intentional: the heredoc adds one more, giving a blank line between the halt
+# banner and the body text.
+halt_section=""
+if [ -n "$halt_since" ]; then
+    halt_section="!! HALTED since ${halt_since}"
+    [ -n "$halt_why" ] && halt_section="${halt_section}
+   why: ${halt_why}"
+    halt_section="${halt_section}
+   No incidents are filed while the halt is in force.
+"
+fi
+
 snapshot() {
 cat <<EOF
 ## Spira pipeline, $(date -u +%Y-%m-%dT%H:%M:%SZ)
-
+${halt_section}
 N workers pull from a DAG into a merge queue. These are that queue's vital signs. A field
 reading \`?\` is one this pass COULD NOT READ — never treat it as a zero.
 
@@ -316,6 +344,14 @@ EOF
 
 [ "${1:-}" = "--show" ] && { snapshot; exit 0; }
 
+# A HALTED WORLD MUST NOT FILE. The halt stamp is the authoritative record; checking it
+# here rather than relying on the snapshot's staleness means a slow or dead collector
+# cannot make a deliberate halt look like an anomaly worth escalating.
+if [ -n "$halt_since" ]; then
+    log "watchtower: halted since ${halt_since} (${halt_why:-why unstated}) — sweep skipped"
+    exit 0
+fi
+
 # ---------------------------------------------------------------------------------------
 # HAND IT TO OPS. Through incident.sh, which is the intake that already exists — it spools
 # write-ahead before touching the database, dedupes on the ref so a sweep filed while the
@@ -327,7 +363,9 @@ EOF
 # minutes later — so a sweep about a stall would describe a slightly different stall
 # (law-escalations-carry-their-evidence).
 # ---------------------------------------------------------------------------------------
-INC="$(dirname "$0")/incident.sh"
+# SPIRA_INCIDENT_SH overrides the path so test suites can inject a mock without reaching
+# a real database. Same seam sentinel.sh carries for systemctl.
+INC="${SPIRA_INCIDENT_SH:-$(dirname "$0")/incident.sh}"
 [ -x "$INC" ] || [ -r "$INC" ] || { log "watchtower: $INC is missing — the sweep reaches nobody"; exit 1; }
 # FILED AS A CHORE BY THE WATCHTOWER, not as a bug by whoever ran the timer. The intake
 # defaults to `--type bug --priority 1` because its original caller was a crashed unit; a

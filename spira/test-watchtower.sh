@@ -351,6 +351,68 @@ want "and carries its cheap figures, not its output" "suites in the tree" "$snap
 is "and the sweep ran no suite of its own" "0" \
    "$(find "$TMP/run" -name '*.result' 2>/dev/null | wc -l)"
 
+
+# ======================================================================================
+echo
+echo "a halted world shows the halt in --show and files nothing:"
+# ======================================================================================
+# THE SEAM THIS COVERS. cockpit/health.sh reads world.halted directly to avoid a stale
+# snapshot masking a halt; watchtower.sh must do the same. The positive control here is
+# the running path — asserting only the halted case would leave the alarm the watchtower
+# exists for untested (law-absence-needs-a-positive-control).
+#
+# wt_file: runs watchtower WITHOUT --show, injecting a mock incident.sh so the filing
+# path can be probed without a real database. SPIRA_INCIDENT_SH carries the override;
+# the mock writes a sentinel file when called and exits 0.
+wt_file() {   # wt_file [VAR=val ...] -> touches $TMP/incident-called if incident.sh fires
+    local mock="$TMP/mock-inc.sh"
+    printf '#!/usr/bin/env bash\nprintf called > "%s"\ncat > /dev/null\n' \
+        "$TMP/incident-called" > "$mock"
+    chmod +x "$mock"
+    rm -f "$TMP/incident-called"
+    env -i PATH="$PATH" HOME="$TMP" \
+        SPIRA_CONF=/nonexistent SPIRA_RUN="$TMP/run" \
+        SPIRA_WATCH_GATE_WINDOW="$GATE_WINDOW" \
+        SPIRA_INCIDENT_SH="$mock" \
+        "$@" bash "$HERE/watchtower.sh" 2>/dev/null
+}
+
+fresh
+printf '2026-09-08T01:23:45Z\nwhy: deliberate halt for testing\n' > "$TMP/run/world.halted"
+snap="$(wt)"
+want "a halted --show names the halt"       "HALTED"                    "$snap"
+want "and shows the halt timestamp"         "2026-09-08T01:23:45Z"      "$snap"
+want "and shows the reason"                 "deliberate halt for testing" "$snap"
+want "and says no incidents are filed"      "No incidents are filed"    "$snap"
+# THE BODY IS STILL PRESENT. The human watching the pane needs to see why the numbers
+# look bad, not just that the world is halted; hiding the body would make a quiet
+# pane look the same whether the halt is in force or the detector is broken.
+want "and the body is still present"        "N workers pull"            "$snap"
+
+fresh
+mkdir -p "$TMP/run/landstate"
+printf '2026-09-08T01:23:45Z\nwhy: deliberate halt for testing\n' > "$TMP/run/world.halted"
+wt_file
+is "the filing path does not call incident.sh when halted" "" \
+   "$([ -f "$TMP/incident-called" ] && cat "$TMP/incident-called" || echo "")"
+
+# ======================================================================================
+echo
+echo "a running world carries no halt banner, and does file:"
+# ======================================================================================
+fresh
+mkdir -p "$TMP/run/landstate"
+# No world.halted stamp.
+snap="$(wt)"
+nowant "a running world has no halt banner"      "HALTED"              "$snap"
+nowant "and no 'no incidents' line"              "No incidents are filed" "$snap"
+
+fresh
+mkdir -p "$TMP/run/landstate"
+wt_file
+is "the filing path calls incident.sh when running" "called" \
+   "$([ -f "$TMP/incident-called" ] && cat "$TMP/incident-called" || echo "")"
+
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
 [ "$fail" -eq 0 ]
