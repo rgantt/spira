@@ -367,8 +367,17 @@ while IFS=$'\t' read -r id r_name superseded dropped; do
         if git -C "$r_path" show-ref --verify -q "refs/heads/spira/$id"; then
             continue   # work exists on a branch; CHECK 6 lands it
         fi
-        bead_reopen "$id" "Reopened by sentinel: closed, but no commit on ${subj_base:-the base} or on spira/$id names it in $r_name. Closed is not landed."
-        progress "reopened $id — closed without landing"
+        # COUNT IT. A bead that closes itself without committing a working change is
+        # reopened here, becomes ready, is claimed, and closes itself again — a loop
+        # with no counter, which is precisely the loop the poison threshold exists to
+        # bound. The aeon's own post-session check handles the normal case (the aeon
+        # detects closed+uncommitted and reopens it, so the cleanup trap sees the bead
+        # as open and charges via session_outcome). This is the safety net for the case
+        # where the aeon exited before reaching that check — in which case no attempt
+        # has been charged yet and this is genuinely a failed attempt at the work.
+        n="$(bump_attempt "$id" "closed-not-landed")"
+        bead_reopen "$id" "Reopened by sentinel: closed, but no commit on ${subj_base:-the base} or on spira/$id names it in $r_name. Closed is not landed; attempt $n charged toward the poison threshold."
+        progress "reopened $id — closed without landing (attempt $n)"
     fi
 done < <(
     # EVERY PERSONA'S PARTITION, NOT THE BUILDER'S. This listed `--label spira,plan`, so a

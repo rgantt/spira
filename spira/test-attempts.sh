@@ -160,17 +160,26 @@ is "set +e first lets it finish" "ENTERED
 LEDGER" "$(bash "$TMP/guarded.sh" 2>/dev/null)"
 
 # ======================================================================================
-# ONE DOOR ONTO THE ATTEMPT COUNTER. Structural, because the original bug was exactly a
-# second door: aeon.sh bumped on the way out and strand.sh bumped again reclaiming the ghost
-# that guaranteed, so one aeon dying cost two of the three attempts. A charge site added later
-# would be silent — nothing fails, a number is just larger — so the count of sites is the
-# assertion.
+# TWO DOORS ONTO THE ATTEMPT COUNTER — one for each site that has authority to say
+# "this work failed", and no more. The original bug was an unintended third door:
+# aeon.sh bumped on the way out and strand.sh bumped again reclaiming the ghost,
+# so one aeon dying cost two of the three attempts.
+#
+# aeon.sh:    the session ran and the model's own verdict was "not done" — session_outcome
+#             returns unlanded, which is the one outcome that charges.
+# sentinel.sh CHECK 5: a bead closed with no commit naming it, where the aeon's own post-
+#             session check did not catch it (the aeon exited before reaching that code).
+#             The normal case is handled by aeon.sh's cleanup after bead_reopen reopens
+#             the bead; sentinel.sh is the safety net for the escape path.
+#
+# A charge site added later would be silent — nothing fails, a number is just larger —
+# so the count of sites is the assertion.
 # ======================================================================================
 echo
-echo "the counter has one door:"
+echo "the counter has two doors:"
 sites="$(grep -l 'bump_attempt' "$HERE"/*.sh | grep -v '/lib\.sh$' | grep -v '/test-' \
          | xargs -r -n1 basename | sort | tr '\n' ' ' | sed 's/ $//')"
-is "only aeon.sh charges an attempt" "aeon.sh" "$sites"
+is "aeon.sh and sentinel.sh charge an attempt" "aeon.sh sentinel.sh" "$sites"
 # And it charges through the rule rather than around it: the call must sit inside the branch
 # outcome_charges decides, not beside it.
 guarded="$(sed -n '/if outcome_charges/,/^        else$/p' "$HERE/aeon.sh" | grep -c 'bump_attempt' || true)"
