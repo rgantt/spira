@@ -532,7 +532,7 @@ rebase_survivors() {     # rebase_survivors <repo> <name> <base> <landed-branch>
 land_repo() {
     local name="$1" repo br id st mode base land tip merged pushed nothing wedged attempt brs
     local bead_repo_name bead_repo_path gate_out base_branch base_remote bead_labels
-    local norebase was _ref _obj gate_suite basefail_filed=
+    local norebase was _ref _obj gate_suite basefail_filed= _cur_st
     local -A enum_tip=()
     # WHAT THIS PASS HAS ALREADY JUDGED CLOSED, REBASED AND STILL UNLANDED. A branch enters
     # when its rebase onto the base succeeds and leaves the moment it stops being that — it
@@ -590,6 +590,50 @@ land_repo() {
         [ -e "$land/.git" ] && git -C "$land" checkout -q -B landing "$base" 2>/dev/null
     fi
 
+    # ==================================================================================
+    # THE SCAN: one query for every branch, not one per branch. A bdjson show per branch
+    # was 466 ms each, growing linearly with the unlanded count; a single show with every
+    # id is the same answer once. At 25 branches that is ~11.7 s of per-branch queries
+    # replaced by ~0.5 s of one bulk query.
+    #
+    # A branch whose id is absent from the map is treated exactly as a bdjson show that
+    # returned nothing is treated today: st is empty, and the loop skips it through the
+    # non-closed path. The repo: label still falls back to the repository being swept.
+    #
+    # ONE QUERY FOR THE SWEEP IS NOT ONE QUERY FOR THE LANDING. A branch that passes the
+    # scan and makes it through the gate is re-read individually before landing or
+    # reopening — the map is up to a pass old by then, and closing or reopening on a stale
+    # status is how work gets reopened that already landed (law-closed-is-not-landed).
+    # ==================================================================================
+    local -A _scan_st=() _scan_repo=() _scan_labels=()
+    local _scan_ids=""
+    for br in $brs; do
+        _scan_ids="$_scan_ids ${br#spira/}"
+    done
+    if [ -n "${_scan_ids// /}" ]; then
+        local _sid _sst _srepo _slabels
+        # shellcheck disable=SC2086
+        while IFS=$'\t' read -r _sid _sst _srepo _slabels; do
+            [ -n "${_sid:-}" ] || continue
+            _scan_st["$_sid"]="$_sst"
+            _scan_repo["$_sid"]="$_srepo"
+            _scan_labels["$_sid"]="$_slabels"
+        done < <(bdjson show $_scan_ids 2>/dev/null | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: raise SystemExit
+d = d if isinstance(d, list) else [d]
+home = sys.argv[1]
+for i in d:
+    bid = i.get("id", "")
+    if not bid: continue
+    st = i.get("status", "-")
+    repo = next((l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")), home)
+    labels = " ".join(i.get("labels") or [])
+    print(f"{bid}\t{st}\t{repo}\t{labels}")
+' "$(spira_home_repo)" 2>/dev/null)
+    fi
+
     for br in $brs; do
         id="${br#spira/}"
         # THE LIST IS OLDER THAN THE LOOP. `brs` was read once at the top of this function
@@ -621,15 +665,9 @@ land_repo() {
             fi
             continue
         fi
-        read -r st bead_repo_name bead_labels <<< "$(bdjson show "$id" 2>/dev/null | python3 -c '
-import sys, json
-try: d = json.load(sys.stdin)
-except Exception: raise SystemExit
-d = d if isinstance(d, list) else [d]
-if not d: raise SystemExit
-i = d[0]
-repo = next((l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")), sys.argv[1])
-print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_home_repo)" 2>/dev/null)"
+        st="${_scan_st[$id]:-}"
+        bead_repo_name="${_scan_repo[$id]:-}"
+        bead_labels="${_scan_labels[$id]:-}"
         # A BRANCH SKIPPED FOR A BEAD THAT IS NOT CLOSED HAS TO HAVE A VOICE. This was a bare
         # `continue`, so the one state that most needs saying — a branch whose bead sits
         # in_progress while nothing is holding it — left no trace anywhere in this log, and
@@ -861,6 +899,20 @@ print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_hom
                 continue
             fi
 
+            # RE-READ THE BEAD. The gate took minutes; the bead may have been reopened
+            # and claimed in that window. Reopening on a stale status puts already-open
+            # work back on the board and charges an attempt it did not earn.
+            _cur_st="$(bdjson show "$id" 2>/dev/null | python3 -c '
+import sys,json
+try:d=json.load(sys.stdin)
+except:raise SystemExit
+d=d if isinstance(d,list) else [d]
+print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
+            if [ "${_cur_st:-}" != "closed" ]; then
+                log "CHECK6 $id: bead is now ${_cur_st:--} (was closed at scan time) — not reopening $br"
+                continue
+            fi
+
             # THE BRANCH'S OWN FAULT — the only path that reopens and charges.
             bead_reopen "$id" "Reopened by sentinel: branch $br failed $name's landing gate.
 
@@ -883,6 +935,20 @@ $(printf '%s' "$gate_out" | tail -20)"
         # queued behind a lock three times last week would escalate on its first hiccup this
         # week, and the escalation would be about nothing.
         rm -f "$SPIRA_RUN/noverdict/$(printf '%s' "$br" | tr -c 'A-Za-z0-9._-' '-')"* 2>/dev/null
+
+        # RE-READ THE BEAD before landing. The scan is up to a pass old; the gate in
+        # between takes minutes, and landing on a stale status is how landed work gets
+        # reopened — the bead may have been reopened and claimed while the gate ran.
+        _cur_st="$(bdjson show "$id" 2>/dev/null | python3 -c '
+import sys,json
+try:d=json.load(sys.stdin)
+except:raise SystemExit
+d=d if isinstance(d,list) else [d]
+print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
+        if [ "${_cur_st:-}" != "closed" ]; then
+            log "CHECK6 $id: bead is now ${_cur_st:--} (was closed at scan time) — not landing $br"
+            continue
+        fi
 
         case "$mode" in
         pr)

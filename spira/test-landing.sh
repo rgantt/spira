@@ -131,6 +131,9 @@ echo "gate: VERDICT=PASS reason=${GATE_REASON:-stub} branch=$1 repo=${2:-?}" >&2
 # that always fails is the honest fixture: this repository lands by push and has no pull
 # requests, so "no merged pull request" is the true answer.
 stub gh 'exit 1'
+# The base-fail tests below overwrite the gate stub; keep a copy so the sweep tests
+# can restore it.
+cp "$SH/gate.sh" "$TMP/gate-full.sh"
 
 B() { bd -C "$SPIRA_DB" "$@"; }
 status_of() { B show "$1" --json 2>/dev/null | python3 -c '
@@ -450,6 +453,9 @@ is "every rebase failure arm in landing.sh reads the kind" "" "$(arms "$HERE/lan
 printf '%s\n' 'if ! rebase_branch "$br" "$base"; then' '    bead_reopen "$id" "conflicts"' 'fi' > "$TMP/plant.sh"
 want "and the fence can see an arm that does not" "line 1" "$(arms "$TMP/plant.sh")"
 
+# Restore the full gate stub the base-fail tests replaced.
+cp "$TMP/gate-full.sh" "$SH/gate.sh"
+
 # --------------------------------------------------------------------------------------
 # THE SURVIVORS ARE REBASED WHEN THE BASE MOVES, not when some later pass reaches them.
 #
@@ -529,6 +535,105 @@ is     "and its tip is exactly as the loop left it" \
        "$(tip_at_gate sp-taken)" "$(tip_of sp-taken)"
 nowant "and nothing rebased it"                 "rebased spira/sp-taken" "$out"
 drop_branch sp-taken; drop_branch sp-tlands
+
+# --------------------------------------------------------------------------------------
+# THE BULK SCAN: one query not N
+#
+# The scan was the whole cost of a quiet pass, growing linearly with the branch count.
+# A counting shim around bd proves the scan issues one show per repository, not one per
+# branch.
+# --------------------------------------------------------------------------------------
+echo
+seed; branch sp-cnt1; branch sp-cnt2; branch sp-cnt3
+cat > "$TMP/bd-counter.sh" <<'SHIM'
+#!/usr/bin/env bash
+# Count bd show invocations by appending to a log. bdq prepends -C <db> before the
+# subcommand, so match anywhere in the args rather than on $1.
+case "$*" in *" show "*|*" show") printf '%s\n' "$*" >> "${BD_CALL_LOG:?}" ;; esac
+exec "$BD_REAL" "$@"
+SHIM
+chmod +x "$TMP/bd-counter.sh"
+export BD_CALL_LOG="$TMP/bd-calls.log" BD_REAL="${SPIRA_BD:-bd}" SPIRA_BD="$TMP/bd-counter.sh"
+landing >/dev/null 2>&1
+unset BD_CALL_LOG BD_REAL; unset SPIRA_BD
+show_calls="$(grep -c '^show' "$TMP/bd-calls.log" 2>/dev/null || echo 0)"
+# One bulk show for the scan, plus one re-read per branch that reaches the gate (three
+# here). The scan must not grow with the branch count — three branches and eleven must
+# both start with one show.
+want "three branches land with one scan query plus per-branch re-reads" \
+     "show" "$(head -1 "$TMP/bd-calls.log" 2>/dev/null)"
+# The first call is the bulk scan; it carries all three IDs on one line.
+first_call="$(head -1 "$TMP/bd-calls.log" 2>/dev/null)"
+want "the scan carries all ids in one call" "sp-cnt1" "$first_call"
+want "including the second"                 "sp-cnt2" "$first_call"
+want "and the third"                        "sp-cnt3" "$first_call"
+drop_branch sp-cnt1; drop_branch sp-cnt2; drop_branch sp-cnt3
+rm -f "$TMP/bd-calls.log"
+
+# --------------------------------------------------------------------------------------
+# A BRANCH WHOSE BEAD IS ABSENT FROM THE DATABASE
+#
+# A branch named spira/<id> with no bead in the store must be treated exactly as a bdjson
+# show that returned nothing: skipped as non-closed, never landed, never errored.
+# --------------------------------------------------------------------------------------
+seed
+git -C "$REPO" worktree add -q -b "spira/sp-ghost" "$RUN/worktree/sp-ghost" main
+printf 'ghost\n' > "$RUN/worktree/sp-ghost/ghost.txt"
+git -C "$RUN/worktree/sp-ghost" add -A
+git -C "$RUN/worktree/sp-ghost" commit -q -m "feat: sp-ghost — work"
+# sp-ghost has a branch but NO bead in the database.
+out="$(landing)"
+want "an absent bead is skipped as non-closed" "spira/sp-ghost not landed — its bead is -" "$out"
+nowant "and is never landed"                   "landed spira/sp-ghost" "$out"
+git -C "$REPO" worktree remove --force "$RUN/worktree/sp-ghost" >/dev/null 2>&1
+git -C "$REPO" branch -D spira/sp-ghost >/dev/null 2>&1
+
+# --------------------------------------------------------------------------------------
+# THE REPO: LABEL FALLS BACK TO THE SWEPT REPOSITORY
+#
+# A bead with no repo: label must be treated as belonging to the repository being swept,
+# not rejected as unroutable.
+# --------------------------------------------------------------------------------------
+seed; branch sp-nolabel
+# The branch helper creates a bead with empty labels. Verify landing treats it as
+# belonging to the fixture repo.
+out="$(landing)"
+want "a bead with no repo: label still lands" "landed spira/sp-nolabel" "$out"
+drop_branch sp-nolabel
+
+# --------------------------------------------------------------------------------------
+# A BEAD WHOSE STATUS CHANGED BETWEEN THE SCAN AND THE GATE
+#
+# The scan reads status once before the loop. The gate takes minutes. A bead reopened in
+# that window must not be landed on a stale "closed" — the re-read at the point of action
+# catches it.
+# --------------------------------------------------------------------------------------
+# The gate stub reopens the bead during the gate, simulating a concurrent reopen.
+stub gate.sh '
+'"${SPIRA_BD:-bd}"' -C "'"$SPIRA_DB"'" reopen "$SPIRA_GATE_BEAD" >/dev/null 2>&1
+echo "gate: VERDICT=PASS reason=stub branch=$1 repo=${2:-?}" >&2; exit 0'
+seed; branch sp-stale
+out="$(landing)"
+nowant "a bead reopened during the gate is not landed" "landed spira/sp-stale" "$out"
+want   "the re-read catches the status change"        "bead is now open" "$out"
+is     "and the bead stays open"                      open "$(status_of sp-stale)"
+drop_branch sp-stale
+
+# Same test but for the gate-failure path: a bead reopened during a failing gate must
+# not be reopened AGAIN (which would charge a second attempt).
+stub gate.sh '
+'"${SPIRA_BD:-bd}"' -C "'"$SPIRA_DB"'" reopen "$SPIRA_GATE_BEAD" >/dev/null 2>&1
+echo "gate: VERDICT=FAIL reason=stub-fail branch=$1 repo=${2:-?}" >&2; exit 1'
+seed; branch sp-stalered
+out="$(landing)"
+nowant "a bead already reopened is not reopened again by the gate failure" \
+       "Reopened by sentinel" "$out"
+want   "the re-read catches the status change on the failure path" \
+       "bead is now open" "$out"
+drop_branch sp-stalered
+
+# Restore the full gate stub for any future tests.
+cp "$TMP/gate-full.sh" "$SH/gate.sh"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
