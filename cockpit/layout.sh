@@ -474,6 +474,19 @@ down)
     ;;
 
 ensure)
+    # A copy running from a worktree must not heal the operator's live cockpit.
+    # `ensure` iterates over every cockpit window on the server and overwrites WINDOW on
+    # each pass — so a copy does not merely skip the wrong window, it ADOPTS every live
+    # pane and respawns them with its own $COCK, hijacking the installed dashboards. A
+    # polite refusal at the top binds the actor (the copy) rather than the path it travels,
+    # and exits 0 so a timer calling this does not page on the ordinary case of a worktree
+    # having been discarded while the timer still references the old path.
+    _self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")
+    _installed=$(realpath "$SPIRA_COCKPIT/layout.sh" 2>/dev/null || echo "$SPIRA_COCKPIT/layout.sh")
+    if [ "$_self" != "$_installed" ]; then
+        echo "cockpit: ensure refused — this is a copy, not the installed layout.sh; run $SPIRA_COCKPIT/layout.sh ensure" >&2
+        exit 0
+    fi
     for w in $(cockpit_windows); do
         WINDOW="$w"
         adopt_untagged
