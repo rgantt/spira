@@ -791,5 +791,241 @@ nowant "and does not reopen"          "reopened sp-loop" "$out"
 is     "bead stays closed on escalation" closed "$(status_of sp-loop)"
 drop_branch sp-loop
 
+# --------------------------------------------------------------------------------------
+# PR MODE: a branch is pushed, a pull request is opened, and the branch is left standing
+# for GitHub CI to merge it. The submission marker prevents re-pushing on every pass.
+# When the target repository's base moves, the pull request goes stale — this section
+# tests that the pass detects and corrects that.
+# --------------------------------------------------------------------------------------
+echo
+
+mkrepo2() {             # mkrepo2 <name> — create $TMP/<name> in pr mode with a bare remote
+    local rmt="$TMP/$1.git" repo="$TMP/$1"
+    git init -q --bare -b main "$rmt"
+    git init -q -b main "$repo"
+    git -C "$repo" commit -q --allow-empty -m base
+    git -C "$repo" remote add origin "$rmt"
+    git -C "$repo" push -q origin main
+    git -C "$repo" fetch -q origin
+}
+
+branch_in() {           # branch_in <repo-dir> <id> <repo-name> — closed bead + branch
+    local dir="$1" id="$2" name="$3"
+    git -C "$dir" worktree add -q -b "spira/$id" "$RUN/worktree-pr/$id" main
+    printf '%s\n' "$id" > "$RUN/worktree-pr/$id/$id.txt"
+    git -C "$RUN/worktree-pr/$id" add -A
+    git -C "$RUN/worktree-pr/$id" commit -q -m "feat: $id — work"
+    printf '{"id":"%s","title":"%s","status":"closed","issue_type":"task","labels":["repo:%s"],"updated_at":"2026-09-04T00:00:00Z","closed_at":"2026-09-04T00:00:00Z","dependencies":[{"issue_id":"%s","depends_on_id":"sp-goal","type":"parent-child"}]}\n' \
+        "$id" "$id" "$name" "$id" | testdb_seed
+}
+
+closed_child() {        # closed_child <id> <repo-name> — bead only, no branch
+    local id="$1" name="$2"
+    printf '{"id":"%s","title":"%s","status":"closed","issue_type":"task","labels":["repo:%s"],"updated_at":"2026-09-04T00:00:00Z","closed_at":"2026-09-04T00:00:00Z","dependencies":[{"issue_id":"%s","depends_on_id":"sp-goal","type":"parent-child"}]}\n' \
+        "$id" "$id" "$name" "$id" | testdb_seed
+}
+
+mkdir -p "$RUN/worktree-pr"
+
+# GH STUB FOR PR MODE. It responds to:
+#   pr view <branch> --json number -q .number  → the PR number
+#   pr view <branch> --json state -q .state    → OPEN, MERGED, or CLOSED
+#   pr create                                   → writes the state file
+#   pr merge                                    → no-op
+# The state file is "<number> <state>", because landing asks `pr view` two different
+# questions — which pull request is this, and is it still open — and a stub that answers
+# both with the same string is a stub that cannot tell a merged branch from an open one.
+# That distinction is the whole of the refresh path's safety.
+export GH_STATE="$TMP/gh.state"
+export GH_LOG="$TMP/gh.log"; : > "$GH_LOG"
+cat > "$SH/ghpr" <<'GH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "pr view")
+      [ -f "$GH_STATE" ] || exit 0
+      read -r gh_num gh_st < "$GH_STATE"
+      case "$*" in
+        *.number*) printf '%s\n' "$gh_num" ;;
+        *.state*)  printf '%s\n' "$gh_st" ;;
+      esac
+      exit 0 ;;
+  "pr create") cat >/dev/null; printf '%s %s\n' "${GH_NUM:-7}" OPEN > "$GH_STATE"; exit "${GH_CREATE_RC:-0}" ;;
+  "pr merge")  exit "${GH_MERGE_RC:-0}" ;;
+  "pr list")   printf '[]\n'; exit 0 ;;
+esac
+exit 1
+GH
+chmod +x "$SH/ghpr"
+
+# landing_pr — runs a pass over the pr-mode repository with a live ask stub.
+export ASK_LOG="$TMP/ask.log"
+cat > "$TMP/ask.sh" <<'ASKSH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$ASK_LOG"
+ASKSH
+chmod +x "$TMP/ask.sh"
+
+landing_pr() {
+    rm -f "$RUN/landing.progress"
+    : > "$ASK_LOG"
+    SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
+    SPIRA_HOME_REPO="$REPONAME" \
+    SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GH="$SH/ghpr" \
+    SPIRA_NOTIFY="$TMP/ask.sh" SPIRA_ASK="$TMP/ask.sh" \
+        bash "$SH/landing.sh" 2>&1
+}
+
+mailbox_pr() { cat "$RUN/landing.progress" 2>/dev/null; }
+
+# BASIC PR SUBMISSION: a closed bead is pushed, a PR is opened, and the marker prevents
+# a second push on the next run.
+mkrepo2 three
+cat > "$SH/repo-map" <<MAP
+three | $TMP/three | pr | |
+MAP
+rm -f "$GH_STATE"; : > "$GH_LOG"
+seed; branch_in "$TMP/three" sp-pr three
+out="$(landing_pr)"
+want "a pr-mode branch is pushed and a pull request is opened" "opened a pull request for spira/sp-pr" "$out"
+want "and the pass reported it"                                "opened a pull request for spira/sp-pr" "$(mailbox_pr)"
+
+: > "$GH_LOG"
+out="$(landing_pr)"
+nowant "an open pull request is not reopened next run"  "opened a pull request" "$out"
+[ -s "$GH_LOG" ] && bad "and gh is not called again" "$(cat "$GH_LOG")" \
+                 || ok "and gh is not called again"
+is "and nothing reaches the mailbox" "" "$(mailbox_pr)"
+
+# --------------------------------------------------------------------------------------
+# A PULL REQUEST WHOSE BASE HAS MOVED. This is the failure the submission marker created:
+# the marker skips a branch until its tip moves and nothing moved it, so the pull request
+# aged in place against a base that did not — and a required check that tests the PR head
+# rather than the merge result then goes red with nobody left to own it, because the bead is
+# closed and its aeon is gone (law-stale-red-pr).
+#
+# The assertions are ancestry in the branch and in the bare origin, not lines in a log: what
+# is being claimed is that the branch now carries the new base and that the remote agrees.
+# --------------------------------------------------------------------------------------
+advance_pr() {           # advance_pr <repo> — move the base out from under the branch
+    local r="$1"
+    git -C "$r" checkout -q main
+    git -C "$r" commit -q --allow-empty -m "the base moves"
+    git -C "$r" push -q origin main
+    git -C "$r" fetch -q origin
+}
+
+before="$(git -C "$TMP/three" rev-parse spira/sp-pr)"
+advance_pr "$TMP/three"
+: > "$GH_LOG"
+out="$(landing_pr)"
+want "a stale pull request is rebased onto the base that moved" "refreshed spira/sp-pr onto origin/main" "$out"
+git -C "$TMP/three" merge-base --is-ancestor origin/main spira/sp-pr \
+    && ok "and the branch really carries the new base now" \
+    || bad "the refresh" "the branch is still behind origin/main"
+[ "$before" != "$(git -C "$TMP/three" rev-parse spira/sp-pr)" ] \
+    && ok "and the tip really moved, which is what un-skips the marker" \
+    || bad "the refresh" "the tip is unchanged"
+git -C "$TMP/three" fetch -q origin
+is     "and the remote branch moved with it" \
+       "$(git -C "$TMP/three" rev-parse spira/sp-pr)" \
+       "$(git -C "$TMP/three" rev-parse refs/remotes/origin/spira/sp-pr)"
+nowant "and no SECOND pull request is opened for the same work" "pr create" "$(cat "$GH_LOG")"
+# A refresh moved no bead and landed nothing. Counting it as progress would mute CHECK 8 for
+# exactly as long as a branch went on failing to merge — and a branch being refreshed over
+# and over IS the paralysis CHECK 8 exists to notice.
+is "and a refresh is not reported to the sentinel as a movement" "" "$(mailbox_pr)"
+
+# Once it is current there is nothing left to do, and asking gh again would be a round trip
+# per branch per pass to learn that.
+: > "$GH_LOG"
+out="$(landing_pr)"
+nowant "a branch level with its base is not refreshed again" "refreshed spira/sp-pr" "$out"
+[ -s "$GH_LOG" ] && bad "and gh is not asked about it again" "$(cat "$GH_LOG")" \
+                 || ok "and gh is not asked about it again"
+
+# A MERGED PULL REQUEST IS NOT A STALE ONE. `gh pr merge --squash` lands a new commit, so the
+# branch is not an ancestor of its base and the Sending — whose whole predicate is ancestry —
+# never reaps it. It therefore stands here forever, falling further behind with every commit
+# that follows, and without this question every merged pull request in the repository would
+# be force-pushed once a pass until its budget ran out and then escalated to Ryan as work
+# that would not merge.
+printf '7 MERGED\n' > "$GH_STATE"
+before="$(git -C "$TMP/three" rev-parse spira/sp-pr)"
+advance_pr "$TMP/three"
+: > "$GH_LOG"
+out="$(landing_pr)"
+want "a merged pull request's branch is left alone" "its pull request is MERGED — nothing to refresh" "$out"
+is   "and its tip is exactly where it was"          "$before" "$(git -C "$TMP/three" rev-parse spira/sp-pr)"
+out="$(landing_pr)"
+nowant "and it is not re-examined on every later pass" "nothing to refresh" "$out"
+
+# A gh THAT CANNOT ANSWER IS NOT PERMISSION TO REWRITE THE BRANCH. Unreadable and open look
+# identical from here, and only one of the two readings force-pushes.
+rm -f "$GH_STATE"
+git -C "$TMP/three" branch -q -D spira/sp-pr2 2>/dev/null
+git -C "$TMP/three" branch -q spira/sp-pr2 spira/sp-pr
+closed_child sp-pr2 three
+printf '%s %s pr 0\n' "$(git -C "$TMP/three" rev-parse spira/sp-pr2)" "$(date +%s)" > "$RUN/submitted/sp-pr2"
+before="$(git -C "$TMP/three" rev-parse spira/sp-pr2)"
+out="$(landing_pr)"
+want "an unreadable pull request state stops the refresh" "gh will not say whether its pull request is open" "$out"
+is   "and the branch is untouched"                        "$before" "$(git -C "$TMP/three" rev-parse spira/sp-pr2)"
+git -C "$TMP/three" branch -q -D spira/sp-pr2
+
+# --------------------------------------------------------------------------------------
+# THE BOUND. A branch refreshed and refreshed that still does not merge is not a slow
+# landing, it is a stuck one, and a loop that goes on rebasing it hides that rather than
+# fixing it. The cap is lowered to 1 here so the escalation is reached in two passes.
+# --------------------------------------------------------------------------------------
+mkrepo2 eight
+cat > "$SH/repo-map" <<MAP
+eight | $TMP/eight | pr | |
+MAP
+rm -f "$GH_STATE"; : > "$GH_LOG"; : > "$ASK_LOG"
+seed; branch_in "$TMP/eight" sp-rot eight
+out="$(landing_pr)"
+want "the bounded case opens its pull request first" "opened a pull request for spira/sp-rot" "$out"
+
+advance_pr "$TMP/eight"
+out="$(SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
+    SPIRA_HOME_REPO="$REPONAME" SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GH="$SH/ghpr" \
+    SPIRA_NOTIFY="$TMP/ask.sh" SPIRA_ASK="$TMP/ask.sh" \
+    SPIRA_PR_REFRESH_MAX=1 bash "$SH/landing.sh" 2>&1)"
+want "the first refresh is spent"    "refreshed spira/sp-rot" "$out"
+is   "and nothing is escalated yet"  "" "$(cat "$ASK_LOG")"
+
+advance_pr "$TMP/eight"
+before="$(git -C "$TMP/eight" rev-parse spira/sp-rot)"
+: > "$ASK_LOG"; : > "$RUN/landing.progress"
+out="$(SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
+    SPIRA_HOME_REPO="$REPONAME" SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GH="$SH/ghpr" \
+    SPIRA_NOTIFY="$TMP/ask.sh" SPIRA_ASK="$TMP/ask.sh" \
+    SPIRA_PR_REFRESH_MAX=1 bash "$SH/landing.sh" 2>&1)"
+nowant "a branch past its cap is not rebased again"  "refreshed spira/sp-rot" "$out"
+is     "and its tip is left where it was"            "$before" "$(git -C "$TMP/eight" rev-parse spira/sp-rot)"
+want   "and it is escalated instead"                 "escalated sp-rot" "$out"
+want   "and the ask carries a default Ryan can take" "reopen sp-rot at P0" "$(cat "$ASK_LOG")"
+want   "and names the branch and its repository"     "spira/sp-rot in eight" "$(cat "$ASK_LOG")"
+want   "and leads with what the bead was for"        "WHAT THIS BEAD IS FOR" "$(cat "$ASK_LOG")"
+is     "and an escalation is not a movement either"  "" "$(mailbox_pr)"
+
+# ONCE, NOT EVERY PASS. A stuck branch stays stuck until someone decides about it, and a
+# check that says so every two minutes is a check Ryan learns to scroll past
+# (law-alerts-must-be-actionable). The marker's state is what remembers.
+advance_pr "$TMP/eight"
+: > "$ASK_LOG"
+out="$(SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
+    SPIRA_HOME_REPO="$REPONAME" SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GH="$SH/ghpr" \
+    SPIRA_NOTIFY="$TMP/ask.sh" SPIRA_ASK="$TMP/ask.sh" \
+    SPIRA_PR_REFRESH_MAX=1 bash "$SH/landing.sh" 2>&1)"
+want "an escalated branch says so rather than escalating again" "already escalated" "$out"
+is   "and Ryan is not paged a second time"                      "" "$(cat "$ASK_LOG")"
+
+# Restore repo-map to the fixture push-mode repo for any tests that follow.
+cat > "$SH/repo-map" <<MAP
+$REPONAME | $REPO | push | |
+MAP
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

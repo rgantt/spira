@@ -330,16 +330,109 @@ PAYLOAD
 
 SUBMITTED="$SPIRA_RUN/submitted"
 submitted() {            # 0 if nothing more to do for this tip right now
-    local id="$1" tip="$2" f="$SUBMITTED/$1" rec_tip rec_at rec_state
+    # rec_n IS LOAD-BEARING even though nothing here reads it. `read` puts every word past
+    # the last variable into that variable, so a three-variable read of a four-field record
+    # gives rec_state the value "pr 3" — and the `failed` comparison below, which decides
+    # whether a failed submission is retried, would then never be true again.
+    local id="$1" tip="$2" f="$SUBMITTED/$1" rec_tip rec_at rec_state rec_n
     [ -f "$f" ] || return 1
-    read -r rec_tip rec_at rec_state < "$f" 2>/dev/null || return 1
+    read -r rec_tip rec_at rec_state rec_n < "$f" 2>/dev/null || return 1
     [ "$rec_tip" = "$tip" ] || return 1
     [ "$rec_state" = failed ] || return 0
     [ $(( $(date +%s) - rec_at )) -lt 3600 ]
 }
-mark_submitted() {       # mark_submitted <id> <tip> <state>
+# THE FOURTH FIELD IS THE REFRESH BUDGET ALREADY SPENT, and it has to live in the record
+# rather than be counted from anywhere else, because a refresh rewrites the branch — which
+# moves the tip, which writes a fresh marker. A count derived from anything the refresh
+# itself changes resets to zero every time it is spent, and the bound is then no bound.
+submitted_rec() {        # submitted_rec <id> state|refreshes
+    local f="$SUBMITTED/$1" tip at state n
+    [ -f "$f" ] || return 1
+    read -r tip at state n < "$f" 2>/dev/null || return 1
+    case "$2" in
+        state)     printf '%s' "${state:-}" ;;
+        refreshes) printf '%s' "${n:-0}" ;;
+    esac
+}
+mark_submitted() {       # mark_submitted <id> <tip> <state> [refreshes]
     mkdir -p "$SUBMITTED"
-    printf '%s %s %s\n' "$2" "$(date +%s)" "$3" > "$SUBMITTED/$1"
+    printf '%s %s %s %s\n' "$2" "$(date +%s)" "$3" "${4:-0}" > "$SUBMITTED/$1"
+}
+
+# ======================================================================================
+# A SUBMITTED PULL REQUEST WHOSE BASE HAS MOVED IS DRAGGED BACK ONTO IT.
+#
+# `pr` mode pushes the branch, opens the pull request and records the tip, and every later
+# pass then skips the branch until that tip moves. Nothing moved it. So when the target
+# repository's base advances the pull request goes stale, and where a required check tests
+# the PR HEAD rather than the merge result it goes red with nobody owning it: the bead is
+# closed, the aeon is gone, and Spira has decided it is finished with the branch.
+#
+# `push` mode never had this. It rebases and merges inside the one pass, so its branch is
+# never left standing against a base that can move.
+#
+# THE PULL REQUEST'S OWN STATE IS ASKED FIRST, and that is not a formality. `gh pr merge
+# --squash` lands a NEW commit, so a merged branch is not an ancestor of its base — which
+# means the Sending, whose whole predicate is ancestry, never reaps it and it stands here
+# forever, further behind with every commit that follows. Without this question every
+# merged pull request in the repository would be force-pushed once a pass until its budget
+# ran out and then escalated to Ryan as work that would not merge: a page about something
+# that finished days ago. A gh that cannot answer is not a licence to rewrite a branch
+# either — unreadable is treated as leave it alone.
+#
+# AND IT IS BOUNDED. A branch refreshed and refreshed that still does not merge is not a
+# slow landing, it is a stuck one, and a loop that keeps rebasing it is hiding that rather
+# than fixing it. After the cap it is escalated ONCE — the marker's state records that, so
+# every later pass is silent — and it stays that way until something moves the branch.
+#
+# The cap is not a spira.conf key. Nothing about this box's layout sets it; it is a property
+# of the mechanism, and the thing an operator tunes is the escalation it produces.
+# ======================================================================================
+PR_REFRESH_MAX="${SPIRA_PR_REFRESH_MAX:-5}"
+PR_REFRESH_N=0           # set by needs_refresh, read by the caller that acts on it
+
+pr_state() {             # pr_state <repo> <branch> -> OPEN|MERGED|CLOSED, non-zero if unknown
+    local st
+    st="$( cd "$1" && ghq pr view "$2" --json state -q .state 2>/dev/null )"
+    [ -n "$st" ] || return 1
+    printf '%s' "$st"
+}
+
+# needs_refresh — 0 when this already-submitted branch should be rebased, re-gated and
+# force-pushed, with the refresh number in PR_REFRESH_N. Non-zero means leave it standing.
+needs_refresh() {        # needs_refresh <repo> <name> <branch> <id> <base> <tip>
+    local repo="$1" name="$2" br="$3" id="$4" base="$5" tip="$6" st n
+    PR_REFRESH_N=0
+    # Current already: the base is in the branch, so there is nothing to drag it onto. This
+    # is the common answer and it is a local read, which is what keeps this cheap enough to
+    # ask about every submitted branch on every pass.
+    git -C "$repo" merge-base --is-ancestor "$base" "refs/heads/$br" 2>/dev/null && return 1
+    case "$(submitted_rec "$id" state)" in
+        stale) log "CHECK6 $id: $br is behind $base and already escalated — leaving it standing"; return 1 ;;
+        done)  return 1 ;;
+    esac
+    st="$(pr_state "$repo" "$br")" || {
+        log "CHECK6 $id: $br is behind $base but gh will not say whether its pull request is open — not touching it"
+        return 1; }
+    if [ "$st" != OPEN ]; then
+        log "CHECK6 $id: $br is behind $base but its pull request is $st — nothing to refresh"
+        mark_submitted "$id" "$tip" done
+        return 1
+    fi
+    # Normalised to a number before it is compared as one. A marker written by an older
+    # harness has three fields, and a truncated write has whatever it has; `[ x -ge 5 ]`
+    # against either is a shell error, and the arm it falls to is the one that force-pushes.
+    n="$(submitted_rec "$id" refreshes)"
+    case "${n:-}" in ''|*[!0-9]*) n=0 ;; esac
+    if [ "$n" -ge "$PR_REFRESH_MAX" ]; then
+        spira_ask_refresh_loop "$repo" "$name" "$br" "$id" "$base" "$n"
+        mark_submitted "$id" "$tip" stale "$n"
+        act "escalated $id — its pull request will not merge after $n refresh(es)"
+        return 1
+    fi
+    PR_REFRESH_N=$(( n + 1 ))
+    log "CHECK6 $id: $br is behind $base — rebasing its pull request onto it (refresh $PR_REFRESH_N of $PR_REFRESH_MAX)"
+    return 0
 }
 
 # land_pr <repo> <branch> <id> <base-ref> -> 0 if a pull request is open for this tip.
@@ -543,7 +636,7 @@ rebase_survivors() {     # rebase_survivors <repo> <name> <base> <landed-branch>
 }
 
 land_repo() {
-    local name="$1" repo br id st mode base land tip merged pushed nothing wedged attempt brs
+    local name="$1" repo br id st mode base land tip merged pushed nothing wedged attempt brs refresh
     local bead_repo_name bead_repo_path gate_out base_branch base_remote bead_labels
     local norebase was _ref _obj gate_suite basefail_filed= _cur_st
     local -A enum_tip=()
@@ -763,10 +856,17 @@ for i in d:
 
         # A branch already sent under a mode that leaves it standing is not re-sent. Checked
         # before the rebase, because rebasing an open pull request's branch on every pass
-        # would rewrite it under its own reviewer.
+        # would rewrite it under its own reviewer — and the ONE thing that overrides that is
+        # a base which has moved out from under the pull request, which is the case
+        # needs_refresh isolates. A `hold`-mode branch has no pull request to go stale and
+        # no remote to push to, so it is only ever left alone.
         tip="$(git -C "$repo" rev-parse "$br" 2>/dev/null)"
+        refresh=0
         if [ "$mode" != push ] && submitted "$id" "$tip"; then
-            continue
+            if [ "$mode" != pr ] || ! needs_refresh "$repo" "$name" "$br" "$id" "$base" "$tip"; then
+                continue
+            fi
+            refresh="$PR_REFRESH_N"
         fi
 
         if ! rebase_branch "$br" "$base" "$repo" "$name"; then
@@ -1001,11 +1101,20 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
         case "$mode" in
         pr)
             if land_pr "$repo" "$br" "$id" "$base"; then
-                mark_submitted "$id" "$tip" pr
-                land_mark "$id" REBASED "$tip" pr-open
-                progress "opened a pull request for $br in $name"
+                mark_submitted "$id" "$tip" pr "$refresh"
+                if [ "$refresh" -gt 0 ]; then
+                    # A REFRESH IS NOT A MOVEMENT OF THE DAG, so it does not cross the seam.
+                    # No bead changed state and nothing landed — the branch was only dragged
+                    # back onto a base that moved. Reporting it as progress would count
+                    # maintenance as throughput and mute CHECK 8, the one check that notices
+                    # paralysis, for exactly as long as a branch went on failing to merge.
+                    act "refreshed $br onto $base in $name — rebased, re-gated and force-pushed"
+                else
+                    land_mark "$id" REBASED "$tip" pr-open
+                    progress "opened a pull request for $br in $name"
+                fi
             else
-                mark_submitted "$id" "$tip" failed
+                mark_submitted "$id" "$tip" failed "$refresh"
             fi
             ;;
         hold)

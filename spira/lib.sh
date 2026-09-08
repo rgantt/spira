@@ -123,6 +123,32 @@ spira_ask_rebase_loop() {  # <bead> <branch> <repo-name> <requeue-count> <confli
         >/dev/null 2>&1
 }
 
+# spira_ask_refresh_loop — escalate a pr-mode branch that will not merge despite being
+# repeatedly refreshed onto the base.
+#
+# A branch that has been rebased N times and its pull request still has not merged is not
+# a slow landing — it is a stuck one. The obstacle is not staleness; the loop keeps
+# removing that and the PR stays open. An aeon must own the investigation; the bead
+# belongs back on the board at high priority so the next aeon finds it immediately rather
+# than after whatever the queue was already doing.
+#
+# Deduped on the bead id (via ask_already_open) so a stuck branch sends one alert per cap,
+# not one per pass: a monitor that fires every two minutes trains the operator to mute it,
+# which is the failure law-alerts-must-be-actionable names.
+spira_ask_refresh_loop() {  # <repo> <repo-name> <branch> <bead> <base> <n>
+    local repo="$1" name="$2" br="$3" id="$4" base="$5" n="$6" behind
+    [ -n "${SPIRA_NOTIFY:-}" ] && [ -x "${SPIRA_NOTIFY:-/nonexistent}" ] || return 0
+    ask_already_open "$id refresh cap" && return 0
+    behind="$(git -C "$repo" rev-list --count "$br..$base" 2>/dev/null)" || behind="?"
+    "$SPIRA_NOTIFY" add \
+        "Spira: $id's pull request has been rebased $n time(s) and still has not merged" \
+        --default "reopen $id at P0 so an aeon owns the pull request's own failure, and leave the branch alone until it does" \
+        --why "the bead is closed and its aeon is gone, so nothing is watching this pull request. Spira has been dragging $br back onto $base every time the base moved, and $n rebases have not got it merged — which means the obstacle is not staleness. Nothing else is blocked; every other branch lands normally. But this deliverable is not in $name and the board says it is done." \
+        --evidence "$(printf 'BRANCH    %s in %s\nBASE      %s, %s commit(s) ahead of the branch\nREFRESHED %s time(s); the cap is %s\n\n%s\n' \
+             "$br" "$name" "$base" "$behind" "$n" "${SPIRA_PR_REFRESH_MAX:-5}" "$(bead_context "$id")")" \
+        >/dev/null 2>&1
+}
+
 # spira_ask_timeout_loop — escalate a bead that keeps timing out in a capped lane.
 #
 # A bead routed to a lane with FAYTH_TIMEOUT_SECONDS is killed when the cap expires. One
