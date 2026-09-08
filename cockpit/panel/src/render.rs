@@ -483,7 +483,7 @@ pub fn reader(
     // loudest that a record wanted an answer also did nothing when pressed. It now names what
     // ⏎ actually does here, and on a notification it names nothing because ⏎ does nothing.
     let enter = match view {
-        View::Decisions => format!(" · {}⏎{} decide", KEY, BAR),
+        View::Decisions => format!(" · {}⏎{} decide · {}c{} comment", KEY, BAR, KEY, BAR),
         // `L` is offered wherever it is bound, and it is bound here: the reader is where a
         // long insight is actually read, so it is where the question "should this be law?"
         // is answered. A key that works but is advertised on only one of two surfaces is
@@ -1721,7 +1721,12 @@ three")]);
         assert!(!foot.contains("decide"), "{foot:?}");
         assert!(foot.contains("comment"), "{foot:?}");
         let (lines, _) = reader(&it, View::Decisions, NOW, 0, 107, 19);
-        assert!(strip_seq(lines.last().unwrap()).contains("decide"), "a decision still decides");
+        let foot = strip_seq(lines.last().unwrap());
+        assert!(foot.contains("decide"), "a decision still decides: {foot:?}");
+        // The reader footer must also offer `c comment`, matching the list footer.
+        // This divergence is what let the original defect ship — the list advertised
+        // the key; the reader (the surface where you actually form the thought) did not.
+        assert!(foot.contains("comment"), "reader must offer c comment too: {foot:?}");
     }
 
     /// A `●` says the ball is with the operator. On a record that claim is false, and it is the

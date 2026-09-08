@@ -823,6 +823,15 @@ fn main() {
                     app.reading = false;
                     app.scroll.reset();
                 }
+                // ⏎ ON A DECISION IS THE DECISION — a deliberate ruling. `c` is the rare
+                // path for someone who has read the body and wants to comment without yet
+                // closing, matching the list's own `c comment` binding.
+                KeyCode::Char('c') if app.view == View::Decisions => {
+                    app.mode = Some("comment".into());
+                    app.buf.clear();
+                    app.reading = false;
+                    app.scroll.reset();
+                }
                 // The reader's footer advertises this on an insight, and an advertised key
                 // that does nothing is how a footer stops being believed.
                 KeyCode::Enter if app.view == View::Insights || app.view == View::Alerts => {
