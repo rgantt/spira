@@ -609,6 +609,21 @@ next_row() {
         "$(pri_colour "$pri")" "$pri" "$C_RST" "$C_ACC" "$id" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
 }
 
+# "P1 sp-id 12m Title..." -> next_row's format plus an age since close, coloured by threshold.
+# Age past hours is the actionable signal; the count alone is the normal healthy state of a
+# working system, and colouring it would make this section wallpaper within a day.
+unlanded_row() {
+    local raw="$1" pri id age rest
+    pri="${raw%% *}"; rest="${raw#* }"; id="${rest%% *}"; rest="${rest#* }"; age="${rest%% *}"; rest="${rest#* }"
+    local age_col="$C_DIM"
+    case "$age" in *h|*d) age_col="$C_WARN" ;; esac
+    local aw=${#age}; [ "$aw" -lt 4 ] && aw=4
+    fit "$rest" $(( COLS - 12 - ${#pri} - (${#id} > 14 ? ${#id} : 14) - aw ))
+    printf '        %s%s%s %s%-14s%s %s%-4s%s %s%s%s\n' \
+        "$(pri_colour "$pri")" "$pri" "$C_RST" "$C_ACC" "$id" "$C_RST" \
+        "$age_col" "$age" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
+}
+
 # RECENT rows arrive as `<age> <verb> <bead> <title...>`. Split rather than print flat: the
 # id and the verb are what a reader is scanning for, and dimming the whole line hid both.
 # A row that does not split is printed as it came — a formatter must never drop content it
@@ -682,6 +697,35 @@ next_section() {
         eval "raw=\${SP_NEXT$i:-}"
         [ -n "$raw" ] || break
         next_row "$raw"
+        i=$((i+1))
+    done
+}
+
+# UNLANDED — closed beads whose branch has not yet reached the base. This is the one
+# lifecycle stage the pane cannot otherwise show: between "an aeon closed it" and "a commit
+# on the base branch names it" there is a queue that was previously invisible. A non-zero
+# count is the normal healthy state of a working system; age past a threshold is the
+# actionable signal (law-alerts-must-be-actionable).
+unlanded_section() {
+    if [ -z "${SP_PEND_N:-}" ] || [ "${SP_PEND_N:-}" = "?" ]; then
+        unread_row UNLND "cannot read the unlanded queue"
+        return
+    fi
+    if [ "${SP_PEND_N}" -eq 0 ] 2>/dev/null; then
+        printf ' %sUNLND%s  %snothing waiting to land%s\n' \
+            "$C_DIM" "$C_RST" "$C_DIM" "$C_RST"
+        return
+    fi
+    local age_col="$C_DIM"
+    case "${SP_PEND_OLDEST:-}" in *h|*d) age_col="$C_WARN" ;; esac
+    printf ' %sUNLND%s  %s%s closed, not on base%s %s— oldest%s %s%s%s\n' \
+        "$C_DIM" "$C_RST" "$C_B" "${SP_PEND_N}" "$C_RST" \
+        "$C_DIM" "$C_RST" "$age_col" "${SP_PEND_OLDEST:-?}" "$C_RST"
+    local i=0 raw
+    while [ "$i" -lt "$MAX_SECTION_ROWS" ]; do
+        eval "raw=\${SP_PEND$i:-}"
+        [ -n "$raw" ] || break
+        unlanded_row "$raw"
         i=$((i+1))
     done
 }
@@ -985,7 +1029,7 @@ share() {
 #
 # frame <rows> <cols> — assemble one frame for a pane of this size (0 rows = unlimited).
 #
-# The four elastic sections are rendered IN FULL first and then cut to their allocation.
+# The five elastic sections are rendered IN FULL first and then cut to their allocation.
 # Building them first is what makes the share honest: the allocator is told what each
 # section could actually use, rather than a guess made before the data was read.
 frame() {
@@ -995,11 +1039,12 @@ frame() {
     # thread it through unchanged. Set once per frame, so a resize reflows on the next tick.
     COLS="${2:-0}"; [ "$COLS" -gt 0 ] 2>/dev/null || COLS=80
     load_snapshot
-    local -a HEAD TOKENS NOW NEXT RECENT CI STANDING give
+    local -a HEAD TOKENS NOW NEXT UNLANDED RECENT CI STANDING give
     mapfile -t HEAD     < <(header_line)
     mapfile -t TOKENS   < <(tokens_section)
     mapfile -t NOW      < <(now_section)
     mapfile -t NEXT     < <(next_section)
+    mapfile -t UNLANDED < <(unlanded_section)
     mapfile -t RECENT   < <(recent_section)
     mapfile -t CI       < <(ci_section)
     mapfile -t STANDING < <(standing_lines)
@@ -1022,17 +1067,21 @@ frame() {
     # pinned at five, the giving-back had nowhere to go and the bottom of the pane simply
     # went blank. Their ceilings are now high enough that the round-robin is what sizes them.
     #
-    # CI keeps the generic cap because it is a list rather than a glance, and an unbounded one
-    # — every bead parked on a run — could otherwise take the whole column.
+    # CI and UNLANDED keep the generic cap because they are lists rather than a glance, and
+    # an unbounded one could otherwise take the whole column.
     #
-    # EACH SECTION BIDS A BASE AND A MAX. NOW and CI bid the same for both: their size is set
-    # by how many aeons are awake and how much is parked, so there is no slack in them to give
-    # away and nothing to gain by asking for more than they have. NEXT and RECENT bid the five
-    # they have always been guaranteed as their base, and everything they rendered as their
-    # max — they are the two sections that exist to fill the column, so they are the two that
-    # bid for the slack.
-    local -a want=("${#NOW[@]}" "${#NEXT[@]}" "${#RECENT[@]}" "${#CI[@]}")
-    [ "${want[3]}" -gt "$MAX_SECTION_ROWS" ] && want[3]="$MAX_SECTION_ROWS"
+    # EACH SECTION BIDS A BASE AND A MAX. NOW, UNLANDED and CI bid the same for both: their
+    # size is set by how many aeons are awake and how much is pending/parked, so there is no
+    # slack in them to give away and nothing to gain by asking for more than they have. NEXT
+    # and RECENT bid the five they have always been guaranteed as their base, and everything
+    # they rendered as their max — they are the two sections that exist to fill the column,
+    # so they are the two that bid for the slack.
+    #
+    # INDICES ARE POSITIONAL: NOW=0, NEXT=1, UNLANDED=2, RECENT=3, CI=4. Adding a section
+    # in the middle shifts every index after it; they must be updated together.
+    local -a want=("${#NOW[@]}" "${#NEXT[@]}" "${#UNLANDED[@]}" "${#RECENT[@]}" "${#CI[@]}")
+    [ "${want[2]}" -gt "$MAX_SECTION_ROWS" ] && want[2]="$MAX_SECTION_ROWS"
+    [ "${want[4]}" -gt "$MAX_SECTION_ROWS" ] && want[4]="$MAX_SECTION_ROWS"
     # THE BASES ARE IN LINES, NOT ITEMS, because that is what the allocator hands out. NEXT
     # spends a line of its own on its header, so five queued beads is six lines; RECENT puts
     # the newest event on its header line, so five events is five. Getting this wrong would
@@ -1040,8 +1089,9 @@ frame() {
     local -a spec=(
         "${want[0]}:${want[0]}"
         "$(( NEXT_BASE_ROWS + 1 )):${want[1]}"
-        "$RECENT_BASE_ROWS:${want[2]}"
-        "${want[3]}:${want[3]}"
+        "${want[2]}:${want[2]}"
+        "$RECENT_BASE_ROWS:${want[3]}"
+        "${want[4]}:${want[4]}"
     )
     # TOKENS counts as FIXED, alongside the header and the standing figures: every one of its
     # rows is a number that is always worth its row, and the constraint that stops all other
@@ -1053,8 +1103,9 @@ frame() {
     printf '%s\n' "${TOKENS[@]}"
     [ "${give[0]}" -gt 0 ] && printf '%s\n' "${NOW[@]:0:${give[0]}}"
     [ "${give[1]}" -gt 0 ] && printf '%s\n' "${NEXT[@]:0:${give[1]}}"
-    [ "${give[2]}" -gt 0 ] && printf '%s\n' "${RECENT[@]:0:${give[2]}}"
-    [ "${give[3]}" -gt 0 ] && printf '%s\n' "${CI[@]:0:${give[3]}}"
+    [ "${give[2]}" -gt 0 ] && printf '%s\n' "${UNLANDED[@]:0:${give[2]}}"
+    [ "${give[3]}" -gt 0 ] && printf '%s\n' "${RECENT[@]:0:${give[3]}}"
+    [ "${give[4]}" -gt 0 ] && printf '%s\n' "${CI[@]:0:${give[4]}}"
     printf '%s\n' "${STANDING[@]}"
     return 0
 }

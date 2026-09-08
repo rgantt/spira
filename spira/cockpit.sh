@@ -612,8 +612,11 @@ print("SP_NEEDSOP=%d"  % sum(1 for i in work if i.get("status") != "closed" and 
     # repository's commit graph is wrong confidently in both directions: another repository's bead
     # that landed perfectly reads as unlanded in brain, and a panel that reports finished
     # work as lost is the same false alert as one that reports lost work as finished.
+    # TAB-SEPARATED: id, repo, priority, closed_at, title. The extra fields feed the PEND
+    # section below without a second walk of the database. The first two fields serve the
+    # existing landing check; the rest serve the unlanded-queue detail rows.
     closed_pairs="$(bdjson list --status closed --limit 0 --label spira,plan 2>/dev/null | python3 -c '
-import sys, json, os, datetime
+import sys, json, os, re, datetime
 run, home = sys.argv[1], sys.argv[2]
 try: d = json.load(sys.stdin)
 except Exception: raise SystemExit
@@ -626,10 +629,14 @@ for i in (d if isinstance(d, list) else [d]):
         ts = when(i.get("closed_at") or i.get("updated_at"))
         if ts and ts >= cut:
             repo = next((l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")), home)
-            print("%s %s" % (i["id"], repo))' "$SPIRA_RUN" "$(spira_home_repo)" 2>/dev/null)"
-    closed_ids="$(printf '%s\n' "$closed_pairs" | awk 'NF{print $1}')"
+            pri = i.get("priority", "")
+            cat = i.get("closed_at") or i.get("updated_at") or ""
+            title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80]
+            print("%s\t%s\t%s\t%s\t%s" % (i["id"], repo, pri, cat, title))' "$SPIRA_RUN" "$(spira_home_repo)" 2>/dev/null)"
+    closed_ids="$(printf '%s\n' "$closed_pairs" | awk -F'\t' 'NF{print $1}')"
     if [ -z "$closed_ids" ]; then
         echo "SP_CLOSED=0"; echo "SP_LANDED=0"; echo "SP_AWAITING_LAND=0"; echo "SP_UNLANDED=0"
+        echo "SP_PEND_N=0"; echo "SP_PEND_OLDEST=0"
     else
     # ONE FETCH PER REPOSITORY THAT ACTUALLY HAS A CLOSED BEAD IN IT, and none at all for the
     # rest. This runs on the collector loop; fetching every registered repository each pass
@@ -646,7 +653,7 @@ for i in (d if isinstance(d, list) else [d]):
     # closed bead in them counted as unlanded on the panel the operator reads.
     subjects=""
     branches=""
-    for _r in $(printf '%s\n' "$closed_pairs" | awk 'NF{print $2}' | sort -u); do
+    for _r in $(printf '%s\n' "$closed_pairs" | awk -F'\t' 'NF{print $2}' | sort -u); do
         _p="$(repo_root "$_r")" || continue
         [ -e "$_p/.git" ] || continue
         _refs="$(spira_landrefs "$_p")" || continue
@@ -659,30 +666,78 @@ $(git -C "$_p" for-each-ref --format='%(refname:short)' 'refs/heads/spira/' 'ref
     done
     if [ -z "$subjects" ] && [ -z "$branches" ]; then
         echo "SP_CLOSED=?"; echo "SP_LANDED=?"; echo "SP_AWAITING_LAND=?"; echo "SP_UNLANDED=?"
+        echo "SP_PEND_N=?"; echo "SP_PEND_OLDEST=?"
     else
-        # Subjects on stdin, branches as argv[2]. A `---` line in a commit body would split a
-        # stdin separator, and commit messages do contain freeform text.
-        printf '%s' "$subjects" | python3 -c '
-import sys, re
+        # Subjects on stdin, branches as argv[2], closed_pairs metadata as argv[3].
+        # A `---` line in a commit body would split a stdin separator, and commit messages
+        # do contain freeform text.
+        #
+        # _AWAITING lines carry the metadata the PEND section needs, sorted oldest-first by
+        # closed_at so the shell loop below emits rows in age order with no second sort.
+        local _land_out
+        _land_out="$(printf '%s' "$subjects" | python3 -c '
+import sys, re, datetime
 ids = [i for i in sys.argv[1].split() if i]
 br_lines = sys.argv[2].split("\n") if len(sys.argv) > 2 and sys.argv[2] else []
+meta = {}
+if len(sys.argv) > 3:
+    for line in sys.argv[3].split("\n"):
+        parts = line.strip().split("\t")
+        if len(parts) >= 5:
+            meta[parts[0]] = {"pri": parts[2], "cat": parts[3], "title": parts[4]}
 text = sys.stdin.read()
-# Bounded on both sides, so `sp-ops` does not match a commit naming `sp-ops-sop`. The commit
-# subject is the only machine-checkable link between a closed bead and the commit graph
-# (law-aeon-commits-name-their-bead), which is worth matching exactly.
-landed = awaiting = never = 0
+landed_set = set(); awaiting_ids = []; never = 0
 for i in ids:
     if re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(i), text):
-        landed += 1
+        landed_set.add(i)
     elif any(b.rstrip().endswith("/" + i) for b in br_lines if b.strip()):
-        awaiting += 1
+        awaiting_ids.append(i)
     else:
         never += 1
+def cat_key(bid):
+    m = meta.get(bid, {})
+    try: return datetime.datetime.fromisoformat(m.get("cat", "").replace("Z", "+00:00"))
+    except Exception: return datetime.datetime.max.replace(tzinfo=datetime.timezone.utc)
+awaiting_ids.sort(key=cat_key)
 print("SP_CLOSED=%d"        % len(ids))
-print("SP_LANDED=%d"        % landed)
-print("SP_AWAITING_LAND=%d" % awaiting)
+print("SP_LANDED=%d"        % len(landed_set))
+print("SP_AWAITING_LAND=%d" % len(awaiting_ids))
 print("SP_UNLANDED=%d"      % never)
-' "$closed_ids" "$branches" 2>/dev/null || { echo "SP_CLOSED=?"; echo "SP_LANDED=?"; echo "SP_AWAITING_LAND=?"; echo "SP_UNLANDED=?"; }
+for i in awaiting_ids:
+    m = meta.get(i, {})
+    print("_AWAITING=%s\t%s\t%s\t%s" % (i, m.get("pri", ""), m.get("cat", ""), m.get("title", "")))
+' "$closed_ids" "$branches" "$closed_pairs" 2>/dev/null)"
+        if [ -n "$_land_out" ]; then
+            printf '%s\n' "$_land_out" | grep '^SP_'
+
+            # ---- PENDING LANDING: individual beads with a branch, not yet on the base ----
+            local _pend_n=0 _pend_oldest_age="" _pend_now
+            _pend_now="$(date +%s)"
+            while IFS=$'\t' read -r _ul_id _ul_pri _ul_cat _ul_title; do
+                [ -n "$_ul_id" ] || continue
+                local _ul_age="?"
+                if [ -n "$_ul_cat" ]; then
+                    local _ul_epoch
+                    _ul_epoch="$(date -d "$_ul_cat" +%s 2>/dev/null)" || _ul_epoch=""
+                    if [ -n "$_ul_epoch" ]; then
+                        local _ul_secs=$(( _pend_now - _ul_epoch ))
+                        if [ "$_ul_secs" -lt 90 ]; then _ul_age="${_ul_secs}s"
+                        elif [ "$_ul_secs" -lt 5400 ]; then _ul_age="$(( _ul_secs / 60 ))m"
+                        elif [ "$_ul_secs" -lt 172800 ]; then _ul_age="$(( _ul_secs / 3600 ))h"
+                        else _ul_age="$(( _ul_secs / 86400 ))d"; fi
+                        [ -z "$_pend_oldest_age" ] && _pend_oldest_age="$_ul_age"
+                    fi
+                fi
+                printf 'SP_PEND%d=P%s %s %s %s\n' "$_pend_n" "${_ul_pri:-?}" "$_ul_id" "$_ul_age" "${_ul_title:--}"
+                _pend_n=$((_pend_n + 1))
+                [ "$_pend_n" -ge 20 ] && break
+            done < <(printf '%s\n' "$_land_out" | sed -n 's/^_AWAITING=//p')
+            echo "SP_PEND_N=$_pend_n"
+            echo "SP_PEND_OLDEST=${_pend_oldest_age:-0}"
+        else
+            echo "SP_CLOSED=?"; echo "SP_LANDED=?"; echo "SP_AWAITING_LAND=?"; echo "SP_UNLANDED=?"
+            echo "SP_PEND_N=?"; echo "SP_PEND_OLDEST=?"
+        fi
     fi
     fi
 
