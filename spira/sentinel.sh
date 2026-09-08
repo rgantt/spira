@@ -349,7 +349,7 @@ done
 # reading the wrong repository's graph gives the wrong answer confidently in both directions:
 # a bead for repository A reads as never landed in repository B, so this check would reopen finished
 # work on every pass. One query, both facts.
-while IFS=$'\t' read -r id r_name superseded dropped nopayload; do
+while IFS=$'\t' read -r id r_name superseded dropped nopayload sentcontent; do
     [ -n "$id" ] || continue
     # Only beads an aeon worked — anything closed by hand has its own evidence.
     [ -f "$SPIRA_RUN/$id.log" ] || continue
@@ -378,6 +378,20 @@ while IFS=$'\t' read -r id r_name superseded dropped nopayload; do
     # sets this label when it closes such a bead; CHECK 5 honours it here so the signal is
     # not simply the branch that the reaper correctly removes.
     [ "${nopayload:-0}" = 1 ] && continue
+    # A BRANCH THE SENDING REAPED BY CONTENT LEAVES NO COMMIT NAMING THE BEAD. content_landed
+    # deletes a branch when merging it would produce exactly the base tree — the work is on the
+    # base, but under some other commit, so no merge commit is ever made and the subject search
+    # below finds nothing. The guard above it ("work exists on a branch, CHECK 6 lands it")
+    # cannot fire either, because the Sending deleted that branch one pass earlier. So the bead
+    # was reopened, re-worked from scratch by a fresh aeon, closed, reaped and reopened again:
+    # 99 reopens over 80 beads in one day, each landing 86-143s after its own SENT — one
+    # sentinel pass, no jitter. sp-637b went six rounds. The Sending now labels these
+    # `content-landed` and this reads it.
+    #
+    # POISON IS TERMINAL HERE TOO. A poisoned bead was still being reopened by this check —
+    # sp-637b was poisoned after 3 attempts and reopened as attempt 4 four minutes later — so
+    # the counter that exists to bound the loop was being outrun by it.
+    [ "${sentcontent:-0}" = 1 ] && continue
     r_path="$(repo_root "${r_name:-}")" || {
         log "CHECK5 $id: repo:$r_name is not in repo-map — cannot say whether it landed"
         continue; }
@@ -404,13 +418,6 @@ while IFS=$'\t' read -r id r_name superseded dropped nopayload; do
     elif ! grep -qF "$id" <<< "$subjects"; then
         if git -C "$r_path" show-ref --verify -q "refs/heads/spira/$id"; then
             continue   # work exists on a branch; CHECK 6 lands it
-        fi
-        # CONTENT-LANDED REAPS HAVE NO MERGE COMMIT. The Sending marks them with
-        # content-landed so this check does not reopen them. Similarly, a poisoned bead
-        # must not be reopened by this check — the poison label is terminal.
-        if bdjson show "$id" 2>/dev/null | grep -qE '"label".*"content-landed"|"label".*"spira-poison"'; then
-            log "CHECK5 $id: closed, but content-landed or poisoned — not reopening"
-            continue
         fi
         # COUNT IT. A bead that closes itself without committing a working change is
         # reopened here, becomes ready, is claimed, and closes itself again — a loop
@@ -459,7 +466,11 @@ for i in (d if isinstance(d, list) else [d]):
     # diagnosis, a test result). The landing pass rebases and drops empty commits, so nothing
     # on the base will ever name it. The aeon sets this label on close; CHECK 5 honours it.
     nopayload = 1 if "no-payload" in (i.get("labels") or []) else 0
-    print("%s\t%s\t%s\t%s\t%s" % (i["id"], repo, sup, drop, nopayload))' "$home_repo" 2>/dev/null
+    # Sixth column: the Sending reaped this branch by content, or the bead is poisoned. Both
+    # mean no commit will ever name it, so reopening only burns another aeon on finished work.
+    lab = i.get("labels") or []
+    sentc = 1 if ("content-landed" in lab or "spira-poison" in lab) else 0
+    print("%s\t%s\t%s\t%s\t%s\t%s" % (i["id"], repo, sup, drop, nopayload, sentc))' "$home_repo" 2>/dev/null
     done <<< "$PARTITIONS" |
     # Sorted on the REPOSITORY column first, because the loop above caches one `git log`
     # walk per repository and re-walks whenever the repository changes between rows; `-u`

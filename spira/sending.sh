@@ -252,12 +252,24 @@ sys.exit(0 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
             say "WOULD  $id  send branch $br$( [ -n "$(worktree_of "$br" "$REPO")" ] && printf ' and its worktree')"
             continue
         fi
+        # LABEL BEFORE DELETING, AND ONLY WHEN THERE WAS WORK TO LAND. This branch is about
+        # to disappear, and with it the only evidence CHECK 5 has that the bead was not simply
+        # closed on nothing: it searches the base for a commit naming the id, and a content
+        # reap makes no such commit. Without the label it reopens the bead a pass later and a
+        # fresh aeon redoes finished work — 99 reopens over 80 beads in a day (sp-796o).
+        #
+        # AHEAD-COUNT FIRST, because content_landed is also true for a branch carrying nothing.
+        # An aeon that closes its bead having committed no working change leaves a branch with
+        # zero commits ahead of the base, merging it produces the base tree, and labelling that
+        # would exempt the empty case from the one check that exists to catch it. Zero ahead is
+        # either a real fast-forward merge, whose commit names the bead so CHECK 5 is satisfied
+        # anyway, or empty work that SHOULD be reopened. Only a branch with commits of its own
+        # whose diff is nonetheless already on the base is the case this label describes.
+        _ahead="$(git -C "$REPO" rev-list --count "$LANDREF..$br" 2>/dev/null || echo 0)"
+        if [ "${_ahead:-0}" -gt 0 ] 2>/dev/null; then
+            bdq label add "$id" content-landed >/dev/null 2>&1 || true
+        fi
         send_branch "$id" "$br"
-        # Mark beads sent via content_landed so CHECK 5 does not reopen them.
-        # The branch is deleted but no merge commit names this id, so CHECK 5's
-        # search for the id in subject lines finds nothing. This label is CHECK 5's
-        # guard against that false positive.
-        bdq label add "$id" content-landed >/dev/null 2>&1
     done
 
     # ----------------------------------------------------------------------------------
