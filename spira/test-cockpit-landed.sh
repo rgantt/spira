@@ -37,13 +37,18 @@ REAL_BD="$(PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" command -v bd)"
 [ -n "$REAL_BD" ] || { echo "SKIP cockpit-landed: no bd binary" >&2; exit 77; }
 
 REPO="$TMP/repo"
+REMOTE="$TMP/remote.git"                               # hermetic-ok: bare remote the fixture pushes to
 git init -q "$REPO"                                    # hermetic-ok: throwaway fixture repo in $TMP
+git init -q --bare "$REMOTE"                           # hermetic-ok: bare remote for spira_landrefs
+git -C "$REPO" remote add origin "$REMOTE"             # hermetic-ok: give the fixture a real remote
 git -C "$REPO" commit --allow-empty -m "init" -q       # hermetic-ok: seed commit for the fixture
 BASE_BR="$(git -C "$REPO" branch --show-current)"
 
 MAP="$TMP/repo-map"
-# Base left empty so spira_landref falls through to rung 4 (HEAD), which is the test
-# fixture's case: no remote, the local branch is the only truth there is.
+# Base left empty; spira_landref resolves via rung 3 (remote set-head --auto) to
+# origin/$BASE_BR after the push below — the same resolution path production uses.
+# Never rely on rung 4 (HEAD) here: that path exists for repos with no remote, but the
+# production harness always has one, and the fixture must exercise the same code path.
 cat > "$MAP" <<MAP
 # name | path | land | base | format | gate
 work | $REPO | push | | |
@@ -81,6 +86,12 @@ git -C "$REPO" checkout -q "$BASE_BR"
 
 # sp-oldd: a commit names it on the base branch, but it was closed >24h ago.
 git -C "$REPO" commit --allow-empty -m "sp-oldd fix" -q   # hermetic-ok: fixture commit
+
+# Push the base branch to the bare remote so origin/$BASE_BR has the landing commits.
+# cockpit.sh reads git log against origin/$BASE_BR (the remote-tracking ref from rung 3),
+# not the local branch — matching the production invariant that nothing advances the shared
+# checkout's default branch except a sentinel push.
+git -C "$REPO" push -q origin "$BASE_BR":"$BASE_BR" 2>/dev/null   # hermetic-ok: push to fixture remote
 
 # ======================================================================================
 echo "closed-vs-landed — three-way classification and 24h scoping:"
