@@ -87,6 +87,43 @@ case "$SPIRA_DB" in
 esac
 
 echo
+echo "the dolt server"
+# SPIRA_DOLT_DATA is either set (this installation manages the Dolt server) or empty
+# (the operator runs it another way). Empty is documented and not a fault — `bd -C` points
+# at the database project directory, not the server data directory, and a server someone else
+# starts is fine.
+#
+# WHEN SET, the server MUST be active. The database is unreachable without it, and every
+# diagnostic below — including "bd can read it" — fails without naming the server as the
+# cause. Naming the service here is the one moment when the right culprit is obvious from
+# context rather than buried in journal output.
+if [ -n "${SPIRA_DOLT_DATA:-}" ]; then
+    if [ -d "$SPIRA_DOLT_DATA" ]; then
+        OK "dolt data directory at $SPIRA_DOLT_DATA"
+    else
+        FAIL "SPIRA_DOLT_DATA is set but $SPIRA_DOLT_DATA does not exist" \
+             "Create it, or point SPIRA_DOLT_DATA at the directory dolt sql-server uses."
+    fi
+    if [ -f "$SPIRA_DOLT_DATA/dolt-server.yaml" ]; then
+        OK "dolt-server.yaml at $SPIRA_DOLT_DATA/dolt-server.yaml"
+    else
+        WARN "no dolt-server.yaml at $SPIRA_DOLT_DATA/dolt-server.yaml" \
+             "The dolt-beads.service ExecStart expects this file. Without it the server
+        cannot start. See the README for the minimal config."
+    fi
+    if systemctl --user is-active --quiet dolt-beads.service 2>/dev/null; then
+        OK "dolt-beads.service is active"
+    else
+        FAIL "dolt-beads.service is not active" \
+             "The database is unreachable without the server. Start it:
+        systemctl --user start dolt-beads.service
+        Or run install.sh to enable and start it."
+    fi
+else
+    OK "SPIRA_DOLT_DATA is empty — dolt server is managed independently"
+fi
+
+echo
 echo "bd schema"
 # BD MIGRATION COUNT vs DATABASE CURSOR. When the installed bd knows more or fewer
 # migrations than the database cursor, bd exits 0 with the complaint on stdout — callers
