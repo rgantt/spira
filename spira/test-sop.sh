@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+#
+# test-sop.sh — an SOP application leaves a record, and a session that left none is
+#               DISTINGUISHABLE from one that did.
+#
+#   ./test-sop.sh
+#
+# WHAT THIS SUITE IS FOR
+# ----------------------
+# The Ops brief told an aeon to match a runbook, run its CHECK, then run its FIX — and
+# nothing wrote down that any of it happened. A session that matched an SOP and ignored it
+# left exactly the trace of one that executed it faithfully, so nobody could say of any SOP
+# on the shelf how often it fired, how often it was applied, or how often the incident came
+# back anyway. `sop.sh applied` is that record and this is the suite that holds it.
+#
+# THE PROPERTY UNDER TEST IS A DISTINCTION, NOT A VALUE. Everything downstream — the check
+# that fires on a silent Ops session, the numbers that will say which runbooks work — rests
+# on being able to tell three states apart:
+#
+#   the ledger was read and holds a record for this bead          exit 0, the line on stdout
+#   the ledger was read and holds nothing for this bead           exit 1, a TRUE absence
+#   the ledger could not be read at all                           exit 2, NOT an absence
+#
+# A two-valued answer would merge the second and third, and the merged one reads as
+# all-clear (law-absence-needs-a-positive-control). So every assertion below that something
+# is ABSENT is preceded, in the same fixture, by proof that the same read finds the same
+# thing when it is present — and the unreadable cases are asserted as 2 rather than as 1.
+#
+# A REAL `bd` ON A THROWAWAY DATABASE. Half of what `applied` must do is put a note on a
+# bead, and a stub `bd` would reproduce the surface this suite remembers rather than the one
+# `sop.sh` actually calls (law-prefer-the-real-dependency). The shelf is real too: the slug
+# check reads `bd memories`, and its whole subtlety is telling "the shelf is empty" from "the
+# shelf could not be read", which no model of bd would get right by accident.
+#
+# THE ENVIRONMENT IS EXPLICIT AND MINIMAL, and SPIRA_SOP_LEDGER and SOP_WHY_CAP ARE PINNED TO
+# NON-DEFAULTS. A suite that inherits a real spira.conf asserts against one box, one that
+# inherits SPIRA_WIKI writes into a real wiki page, and one that asserts against the shipped
+# ledger path passes just as well if the code has that path written in — which is the thing
+# the key exists to stop (law-gates-run-in-a-clean-environment).
+#
+# covers: spira/sop.sh spira/chamber/ops.md spira/chamber/*
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+pass=0; fail=0
+ok()  { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
+bad() { fail=$((fail+1)); printf '  FAIL  %s: %s\n' "$1" "$2"; }
+is()     { [ "$2" = "$3" ] && ok "$1" || bad "$1" "wanted [$2] got [$3]"; }
+want()   { [[ "$3" == *"$2"* ]] && ok "$1" || bad "$1" "wanted [$2] in [$3]"; }
+nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3]"; }
+
+echo "test-sop.sh"
+
+# shellcheck disable=SC1090
+. "$HERE/testdb.sh"
+testdb_require test-sop
+TMP="$(mktemp -d)"; trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
+testdb_up sop || { echo "test-sop: could not build a fixture database"; exit 1; }
+
+RUN="$TMP/run"; mkdir -p "$RUN"
+# NON-DEFAULTS, BOTH OF THEM. The shipped ledger sits at $SPIRA_RUN/sop/applied.jsonl and the
+# shipped why-cap is 400; asserting against either would pass with the value written into the
+# code. This path is not under SPIRA_RUN at all, so a program that derived it rather than
+# reading the key would write somewhere this suite never looks.
+LEDGER="$TMP/elsewhere/sop-applications.jsonl"
+LEDGER_OVERRIDE=""
+WHY_CAP=30
+
+# WHAT IS PASSED, AND WHY EACH ONE. `env -i` names the whole environment rather than
+# inheriting it, so no real spira.conf decides a verdict here and no inherited SPIRA_WIKI
+# sends `synth` into a real wiki page. Three things have to be passed anyway:
+#
+#   HOME        the REAL one. `bd` and `dolt` read their own configuration and credentials
+#               from it, so a fixture home makes every database call fail — as "the shelf is
+#               unreadable", which is a state this suite also tests for and would then be
+#               asserting about the fixture rather than about the code.
+#   PATH        where the binaries are, before conf.sh rewrites it.
+#   SPIRA_PATH  and that rewrite is why. conf.sh REPLACES PATH with its own list so a systemd
+#               timer resolves `bd`, and SPIRA_PATH is the key that puts the operator's
+#               binaries back on the front of it. Omit it and the program under test loses
+#               `bd` entirely, which presents as every database assertion failing at once.
+sop() {                  # sop <args...> — the program under test, in a clean environment
+    env -i HOME="$HOME" PATH="$PATH" SPIRA_PATH="${SPIRA_PATH:-}" \
+        SPIRA_CONF="$TMP/nonexistent.conf" SPIRA_RUN="$RUN" \
+        SPIRA_DB="${SPIRA_DB_OVERRIDE:-$SPIRA_DB}" \
+        SPIRA_SOP_LEDGER="${LEDGER_OVERRIDE:-$LEDGER}" SOP_WHY_CAP="$WHY_CAP" \
+        BEADS_ACTOR="aeon-testops" BEADS_NO_AUTO_IMPORT=1 \
+        timeout 120 bash "$HERE/sop.sh" "$@" 2>&1
+}
+sop_rc() {               # the same, but the caller wants the status and not the output
+    sop "$@" >/dev/null 2>&1; printf '%s' "$?"
+}
+bdt() { bd -C "$SPIRA_DB" "$@"; }
+# THE NOTES AS THEY WERE WRITTEN. `bd show` wraps prose to a width, so an assertion against
+# the rendered form passes or fails on where the wrap fell rather than on what was recorded.
+notes() { bd -C "$SPIRA_DB" show "$1" --json 2>/dev/null; }
+
+# TWO INCIDENTS AND ONE RUNBOOK. sp-t1 is the session that applies the SOP; sp-t2 is the
+# session that matched it and recorded nothing. They are the same shape in every other
+# respect, which is what makes the comparison mean something.
+testdb_seed <<'JSONL'
+{"id":"sp-t1","title":"unit failed: fixture-one","status":"open","issue_type":"bug","priority":1}
+{"id":"sp-t2","title":"unit failed: fixture-two","status":"open","issue_type":"bug","priority":1}
+JSONL
+
+sop write disk-full - <<'SOP' >/dev/null 2>&1
+MATCH: (No space left on device|disk.*full)
+SYMPTOM: a unit fails and the volume it writes to is full
+CHECK: df -h /var | tail -1
+FIX: clear the oldest artifacts, then restart the unit
+SOP
+
+echo
+echo "--- the shelf, and the ledger before anything is recorded"
+
+out="$(sop list)"
+want "the fixture SOP is on the shelf" "sop-disk-full" "$out"
+
+# THE POSITIVE CONTROL FOR THE READ COMES FIRST, in its weakest form: with no ledger at all,
+# `log` must say UNREADABLE (2) and not "no records" (1). If those were the same answer, every
+# assertion after this one would be satisfied by a program that never wrote anything.
+is "no ledger at all reads as unreadable, not as empty" "2" "$(sop_rc log --bead sp-t1)"
+
+echo
+echo "--- a recorded application"
+
+out="$(sop applied disk-full --bead sp-t1 --check pass --held yes)"
+is  "recording exits 0"                         "0" "$(sop_rc applied disk-full --bead sp-t1 --check pass --held unknown)"
+want "it says what it recorded"                 "recorded sop-disk-full on sp-t1" "$out"
+want "--held yes reads as a complete outcome"   "taught us nothing new" "$out"
+
+want "the ledger is at the CONFIGURED path"     "sop-disk-full" "$(cat "$LEDGER" 2>/dev/null)"
+is   "nothing was written to the default path"  "0" "$(ls "$RUN/sop" 2>/dev/null | wc -l)"
+
+# EVERY FIELD DOWNSTREAM WILL READ, named here. A renamed field is the specific way this
+# measurement stops working while continuing to look healthy.
+line="$(head -1 "$LEDGER")"
+fields="$(python3 -c '
+import sys, json
+r = json.loads(sys.argv[1])
+print(" ".join("%s=%s" % (k, r.get(k)) for k in
+      ("sop","bead","check","held","actor","shelf","note")))
+print("ts=%s" % r["ts"]); print("epoch_is_int=%s" % isinstance(r["epoch"], int))
+' "$line" 2>&1)"
+want "the line names its SOP"      "sop=sop-disk-full" "$fields"
+want "the line names its bead"     "bead=sp-t1"        "$fields"
+want "the line records the CHECK"  "check=pass"        "$fields"
+want "the line records held"       "held=yes"          "$fields"
+want "the line records the actor"  "actor=aeon-testops" "$fields"
+want "the shelf was verified"      "shelf=ok"          "$fields"
+want "the note is recorded as landed" "note=ok"        "$fields"
+want "the timestamp is ISO-8601 UTC" "Z"               "$fields"
+want "the epoch is a number"       "epoch_is_int=True" "$fields"
+
+echo
+echo "--- THE DISTINCTION: a session that recorded nothing is not a session that recorded"
+
+is "a bead with a record reads 0"          "0" "$(sop_rc log --bead sp-t1)"
+is "a bead with NO record reads 1"         "1" "$(sop_rc log --bead sp-t2)"
+want "and the one with a record prints it" "sp-t1" "$(sop log --bead sp-t1)"
+nowant "the unrecorded bead prints nothing" "sp-t2" "$(sop log --bead sp-t1)"
+is "filtering by SOP finds it"             "0" "$(sop_rc log --sop disk-full)"
+is "filtering by an SOP nobody applied reads 1" "1" "$(sop_rc log --sop never-fired)"
+
+echo
+echo "--- the bead note, which is the half a human reads"
+
+note="$(notes sp-t1)"
+want "the note is on the bead"            "SOP sop-disk-full applied" "$note"
+want "the note carries the CHECK result"  "CHECK pass"                "$note"
+want "the note states the outcome in words" "taught us nothing new"   "$note"
+# The positive control for the read above: the SAME query against the bead that recorded
+# nothing must come back without it, or `want` would be passing on the string appearing
+# anywhere at all.
+nowant "and nothing was written onto the other bead" "SOP sop-disk-full applied" "$(notes sp-t2)"
+
+echo
+echo "--- append-only, and sorted by construction"
+
+before="$(cat "$LEDGER")"; n_before="$(wc -l < "$LEDGER")"
+sop applied disk-full --bead sp-t2 --check fail --held unknown >/dev/null 2>&1
+is  "a second record adds a line"      "$((n_before + 1))" "$(wc -l < "$LEDGER")"
+want "and leaves the first untouched"  "$before" "$(cat "$LEDGER")"
+is  "the earlier line is still line 1" "$line"   "$(head -1 "$LEDGER")"
+is  "the file is in epoch order"       "sorted"  "$(python3 -c '
+import sys, json
+e = [json.loads(l)["epoch"] for l in open(sys.argv[1]) if l.strip()]
+print("sorted" if e == sorted(e) else "OUT OF ORDER: %s" % e)' "$LEDGER")"
+is  "the bead that had no record now has one" "0" "$(sop_rc log --bead sp-t2)"
+
+echo
+echo "--- parseable without tooling"
+
+is "every line is a JSON object" "ok" "$(python3 -c '
+import sys, json
+for i, l in enumerate(open(sys.argv[1]), 1):
+    if not l.strip(): continue
+    try:
+        if not isinstance(json.loads(l), dict): print("line %d is not an object" % i); sys.exit()
+    except Exception as e: print("line %d: %s" % (i, e)); sys.exit()
+print("ok")' "$LEDGER")"
+want "grep alone answers who applied what" "sop-disk-full" "$(grep sp-t2 "$LEDGER")"
+
+echo
+echo "--- the refusals, each one a typo that would poison the count"
+
+is "an unknown slug is refused"            "1" "$(sop_rc applied no-such-sop --bead sp-t1 --check pass --held yes)"
+want "and it says so"  "no such SOP" "$(sop applied no-such-sop --bead sp-t1 --check pass --held yes)"
+is "a missing --bead is refused"           "1" "$(sop_rc applied disk-full --check pass --held yes)"
+is "an unspellable --check is refused"     "1" "$(sop_rc applied disk-full --bead sp-t1 --check maybe --held yes)"
+is "an unspellable --held is refused"      "1" "$(sop_rc applied disk-full --bead sp-t1 --check pass --held sortof)"
+is "--check fail --held yes is refused"    "1" "$(sop_rc applied disk-full --bead sp-t1 --check fail --held yes)"
+want "and it says why that cannot be true" "can have held" \
+     "$(sop applied disk-full --bead sp-t1 --check fail --held yes)"
+# A flag whose value is missing must not spin: `shift 2` with one argument left shifts
+# nothing, and the parse loop would run forever on the same token.
+is "a flag with no value is refused rather than hanging" "1" \
+   "$(sop_rc applied disk-full --bead)"
+
+n_after="$(wc -l < "$LEDGER")"
+is "and not one refusal wrote a line" "$((n_before + 1))" "$n_after"
+
+echo
+echo "--- the record survives the day the harness itself is broken"
+
+# THE SHELF CANNOT BE READ, so the slug cannot be verified and the note cannot be written.
+# Refusing here would mean the one incident where the database is down is the one incident
+# that leaves no trace, so the line is written anyway and says which half is missing.
+SPIRA_DB_OVERRIDE="$TMP/no-such-database"
+out="$(sop applied disk-full --bead sp-t1 --check pass --held unknown)"
+rc="$(sop_rc applied disk-full --bead sp-t1 --check pass --held unknown)"
+unset SPIRA_DB_OVERRIDE
+tail2="$(tail -2 "$LEDGER")"
+want "an unreadable shelf is recorded as unreadable" '"shelf":"unreadable"' "$tail2"
+want "and the missing note is recorded as missing"   '"note":"failed"'      "$tail2"
+is   "and the command exits non-zero about it"       "1" "$rc"
+want "and says the human will not see it on the bead" "was NOT" "$out"
+
+echo
+echo "--- --why: full on the bead, bounded in the ledger"
+
+long="$(printf 'x%.0s' $(seq 1 200))"
+printf 'the volume filled because %s\n' "$long" | sop applied disk-full --bead sp-t1 --check pass --held no --why - >/dev/null 2>&1
+w="$(python3 -c '
+import sys, json
+print(json.loads(open(sys.argv[1]).read().strip().splitlines()[-1])["why"])' "$LEDGER")"
+is   "the ledger truncates why to the CONFIGURED cap" "$WHY_CAP" "${#w}"
+want "keeping the front of it"                        "the volume filled" "$w"
+want "and the bead keeps the whole sentence"          "${long:0:120}" "$(notes sp-t1)"
+want "held=no reads as the runbook needing work"      "needs amending" "$(notes sp-t1)"
+
+echo
+echo "--- a corrupt ledger is not an empty one"
+
+CORRUPT="$TMP/corrupt.jsonl"; printf 'this is not json\nnor is this\n' > "$CORRUPT"
+LEDGER_OVERRIDE="$CORRUPT"
+is "a ledger of unparseable lines reads 2, not 1" "2" "$(sop_rc log --bead sp-t1)"
+want "and says the ledger is corrupt rather than empty" "corrupt, not empty" "$(sop log --bead sp-t1)"
+unset LEDGER_OVERRIDE
+# THE POSITIVE CONTROL FOR THAT 2: the same read against the good ledger still finds records,
+# so the 2 above is the corruption being detected and not this suite having lost its way to
+# the file.
+is "and the good ledger still reads 0" "0" "$(sop_rc log --bead sp-t1)"
+
+echo
+echo "--- the brief requires it, between the CHECK and the FIX"
+
+# THE POSITIVE CONTROL IS A DOCTORED COPY. A grep over a brief that finds what it wants tells
+# you nothing until you have watched it fail on a brief that does not have it — which is the
+# exact shape of the defect that let four personas ship naming eight commands that did not
+# exist while the suite stayed green.
+requires_record() {      # requires_record <file> -> "yes" | why not
+    python3 - "$1" <<'PY'
+import re, sys
+t = open(sys.argv[1]).read()
+# Step 1 is the loop's matching step; the rule is about where the record sits inside it.
+m = re.search(r"^1\.(.*?)^2\.", t, re.S | re.M)
+if not m: print("no step 1 in this brief"); raise SystemExit
+s = m.group(1)
+i_check = s.find("**CHECK**")
+i_rec   = s.find("applied <slug>")
+i_fix   = s.find("**FIX**")
+if i_rec < 0: print("step 1 never tells the aeon to record the application"); raise SystemExit
+if not (0 <= i_check < i_rec < i_fix):
+    print("the record is not between the CHECK and the FIX (check=%d record=%d fix=%d)"
+          % (i_check, i_rec, i_fix)); raise SystemExit
+for f in ("--bead", "--check", "--held"):
+    if f not in s: print("step 1 does not name %s" % f); raise SystemExit
+print("yes")
+PY
+}
+is "ops.md requires the record between CHECK and FIX" "yes" "$(requires_record "$HERE/chamber/ops.md")"
+want "and states held=yes as a real outcome" "held, and it taught us nothing new" "$(cat "$HERE/chamber/ops.md")"
+
+DOCTORED="$TMP/ops-without.md"
+python3 - "$HERE/chamber/ops.md" "$DOCTORED" <<'PY'
+import re, sys
+t = open(sys.argv[1]).read()
+# Remove every line that mentions the record, which is exactly what a future edit that
+# quietly drops the requirement would look like.
+out = "\n".join(l for l in t.split("\n") if "applied <slug>" not in l)
+open(sys.argv[2], "w").write(out)
+PY
+nowant "the check FAILS on a brief with the requirement removed" "yes" "$(requires_record "$DOCTORED")"
+
+# AND THE PATH IT NAMES MUST RESOLVE. `{{SOP}}` is substituted with the harness's own sop.sh,
+# so the brief telling an aeon to run `applied` is only worth anything if that subcommand is
+# there — a brief naming a subcommand this program does not have fails at 3am, not here.
+is "the subcommand the brief names exists" "0" "$(sop_rc log --bead sp-t1)"
+want "and 'applied' is in the program's own usage" "sop.sh applied" "$(sop bogus-subcommand)"
+
+echo
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

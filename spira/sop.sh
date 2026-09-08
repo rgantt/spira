@@ -6,6 +6,9 @@
 #   sop.sh show <slug>               one SOP's full text
 #   sop.sh list                      what is on the shelf
 #   sop.sh match [-|<file>]          which SOPs match an incident payload
+#   sop.sh applied <slug> --bead <id> --check pass|fail --held yes|no|unknown [--why -|<file>]
+#                                    record that a runbook was consulted, and what came of it
+#   sop.sh log [--bead <id>] [--sop <slug>]  the applications ledger, oldest first
 #   sop.sh retire <slug>             remove it
 #   sop.sh synth                     regenerate wiki/notes/standard-operating-procedures.md
 #
@@ -45,6 +48,55 @@
 # Statutes go to both because Gas Town agents still read them. SOPs go only to Spira: the
 # Ops persona is the only thing that executes one, it reads the harness database, and putting
 # runbooks in the town would charge every polecat context for a book it cannot act on.
+#
+# WHY AN APPLICATION IS RECORDED, AND WHY THE RECORD IS TWO PLACES
+# ----------------------------------------------------------------
+# The loop above told Ops to match a runbook, run its CHECK, then run its FIX — and nothing
+# wrote down that any of it happened. A session that matched an SOP and ignored it left
+# exactly the trace of one that executed it faithfully, so three questions nobody could
+# answer about any SOP on the shelf: how often it fired, how often it was applied, and how
+# often the incident came back anyway.
+#
+# `applied` is that record, and it goes to BOTH a ledger and the bead, because they are read
+# by different readers and neither substitutes for the other. The LEDGER is for counting —
+# one line, machine-shaped, appended, never rewritten. The BEAD NOTE is for the human reading
+# the incident six weeks later, who has the bead in front of them and not this directory.
+#
+# `--held` IS THE LOAD-BEARING FIELD, and `--held yes` is a FIRST-CLASS OUTCOME. "The SOP fit,
+# it held, and it taught us nothing new" is the outcome a healthy shelf produces most of the
+# time, and it has to be STATED rather than inferred from silence: the check that fires on a
+# session which recorded nothing cannot tell a good quiet session from an absent one, so an
+# honest "it worked, nothing to add" is precisely what keeps a good session from being
+# punished for it.
+#
+# THE LEDGER IS APPEND-ONLY AND SORTED BY CONSTRUCTION. One JSON object per line, timestamp
+# first, appended in the order the records were made — so the file is in time order without
+# anything ever sorting it, and a diff of it only ever grows at the tail. That is the same
+# property the sorted-JSONL mirrors have and the same reason: a file that reshuffles puts its
+# whole history into every commit and stops being reviewable. It is parseable with `grep` and
+# readable with `cat`, which is the situation you are in when the thing that reads it is the
+# thing that broke.
+#
+# LINES ARE SHORT ON PURPOSE. A single `printf` of one line under PIPE_BUF to a file opened
+# for append is atomic against other appenders, so two Ops sessions recording at once produce
+# two whole lines rather than one interleaved mess. `--why` is therefore truncated in the
+# ledger and kept in full on the bead note, which has no such constraint.
+#
+# THE LAST RECORD FOR A (bead, sop) PAIR WINS. The brief records once between the CHECK and
+# the FIX — when `held` is genuinely not known yet — and again once it is. Both lines stay,
+# because the first is the evidence the CHECK ran at all and deleting it would be the exact
+# erasure this exists to stop; a reader asking "did it hold" takes the last one.
+#
+# A REFUSAL HERE COSTS MORE THAN A THIN RECORD, so this validates the things that are typos
+# and nothing else. An unknown slug, an unspellable verdict, or `--check fail --held yes` —
+# a CHECK that did not confirm cannot have held — are refused, because each is a mistake at
+# the keyboard that would otherwise poison the count. A missing `--why` is not refused: the
+# sibling check fires on the ABSENCE of a record, so a fence that turns a session away here
+# would manufacture the very silence it punishes.
+#
+# WHEN THE SHELF CANNOT BE READ, THE RECORD IS STILL WRITTEN, marked `shelf=unreadable`. The
+# slug check exists to catch a typo; if the database is down, refusing would mean the one
+# incident where the harness itself is broken is the one incident that leaves no trace.
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -54,8 +106,27 @@ set -uo pipefail
 OUT="${SOP_PAGE:-${SPIRA_WIKI:+$SPIRA_WIKI/wiki/notes/standard-operating-procedures.md}}"
 WORD_CAP="${SOP_WORD_CAP:-250}"
 
-usage() { sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+# WHERE THE APPLICATIONS LEDGER LIVES. Under the runtime directory and so NOT a config key,
+# by the same rule as the gate log and the yield record: the harness put it there, and a
+# colleague who moves SPIRA_RUN moves this with it. The environment may still point it
+# elsewhere, which is the seam a suite drives so that a fixture's planted records never land
+# in the real count.
+#
+# NOTHING PRUNES IT. Every other record here has a retention because it is a queue of recent
+# events; this one is the long-run answer to "how often did that runbook actually work", and
+# a count that forgets its own history cannot answer it. One line per incident per runbook is
+# a few kilobytes a year.
+LEDGER="${SPIRA_SOP_LEDGER:-$SPIRA_RUN/sop/applied.jsonl}"
+# How much of `--why` survives into the ledger line. The full text goes on the bead note; this
+# bound is what keeps a line short enough that its append stays atomic against a second Ops
+# session writing at the same moment.
+WHY_CAP="${SOP_WHY_CAP:-400}"
+
+usage() { sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 slugify() { printf 'sop-%s' "${1#sop-}"; }
+# A flag proves its value is present before taking it: `shift 2` with one argument left shifts
+# nothing at all, and the parse loop then spins forever on the same token.
+need() { [ "$1" -ge 2 ] || { echo "sop: $2 needs a value" >&2; exit 1; }; }
 
 # Read from a file, from stdin on `-`, or from stdin when nothing is named. Never from an
 # argument: prose in a shell argument is how backticks and $( ) become command substitution
@@ -176,6 +247,181 @@ for k, v in d.items():
 for score, k, how, sym in sorted(hits, reverse=True):
     print(f"{k}\t{how}\t{score}\t{sym}")
 ' 2>/dev/null
+    ;;
+
+applied)
+    # THE RECORD. Written between the CHECK and the FIX with `--held unknown`, and again once
+    # the fix has been verified. See the header for why it goes to two places and why almost
+    # nothing here is a refusal.
+    [ $# -ge 2 ] || usage
+    key="$(slugify "$2")"; shift 2
+    bead=""; check=""; held=""; why_src=""; have_why=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --bead)  need $# --bead;  bead="$2";    shift 2 ;;
+            --check) need $# --check; check="$2";   shift 2 ;;
+            --held)  need $# --held;  held="$2";    shift 2 ;;
+            --why)   need $# --why;   why_src="$2"; have_why=1; shift 2 ;;
+            *) echo "sop: applied: unexpected argument: $1" >&2; usage ;;
+        esac
+    done
+
+    [ -n "$bead" ] || { echo "sop: applied needs --bead <id> — a record nobody can join back to an incident counts nothing" >&2; exit 1; }
+    case "$check" in
+        pass|fail) ;;
+        *) echo "sop: applied needs --check pass|fail — did the SOP's CHECK confirm this really is that failure?" >&2; exit 1 ;;
+    esac
+    case "$held" in
+        yes|no|unknown) ;;
+        *) echo "sop: applied needs --held yes|no|unknown — did the FIX resolve it?" >&2
+           echo "     yes      it fit, it held, and it taught us nothing new. Say this; it is a real outcome." >&2
+           echo "     no       it fit and the fix did NOT hold. The runbook needs amending." >&2
+           echo "     unknown  too early to tell, or the CHECK did not confirm so no FIX was run." >&2
+           exit 1 ;;
+    esac
+    # THE ONE INCOHERENT COMBINATION. A CHECK that did not confirm means the SOP does not
+    # apply and its FIX was never run, so it cannot have held. Refused rather than recorded,
+    # because it is a slip at the keyboard and a count that contains it is worse than one
+    # short by a line.
+    if [ "$check" = fail ] && [ "$held" = yes ]; then
+        echo "sop: refusing — --check fail --held yes. A CHECK that did not confirm means the" >&2
+        echo "     SOP does not apply and its FIX was never run, so nothing of it can have held." >&2
+        echo "     Record --held unknown and diagnose instead." >&2
+        exit 1
+    fi
+
+    why=""
+    [ "$have_why" = 1 ] && why="$(slurp "$why_src")"
+
+    # IS THE SLUG REAL? Only answerable when the shelf can be read at all, and the difference
+    # matters: `bd memories --json` prints nothing when the query fails and an object when the
+    # shelf is genuinely empty, so an empty STRING is the broken case and `{}` is the honest
+    # one. Conflating them would refuse every record on the day the database is down, which is
+    # the day a record is worth most.
+    raw="$(bdjson memories 2>/dev/null)"
+    if [ -z "${raw//[[:space:]]/}" ]; then
+        shelf_state="unreadable"
+        echo "sop: warning — could not read the shelf from $SPIRA_DB; recording $key unverified" >&2
+    else
+        shelf_state="ok"
+        if ! SOP_KEY="$key" python3 -c '
+import sys, json, os
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)   # unparseable is the unreadable case, handled above
+sys.exit(0 if os.environ["SOP_KEY"] in d else 1)' <<< "$raw"; then
+            echo "sop: refusing — no such SOP: $key. \`sop.sh list\` shows the shelf." >&2
+            exit 1
+        fi
+    fi
+
+    # ONE CLOCK READ, not two. Separate `date` calls can straddle a second boundary and put a
+    # timestamp and an epoch that disagree onto the same line, which is the sort of thing
+    # nobody notices until they are reconciling two records a year later.
+    read -r epoch ts <<< "$(date -u '+%s %Y-%m-%dT%H:%M:%SZ')"
+    actor="${BEADS_ACTOR:-${SPIRA_AEON:+aeon-$SPIRA_AEON}}"; actor="${actor:-${USER:-unknown}}"
+
+    # WHAT THE NOTE SAYS WHEN THE AEON SAID NOTHING. The outcome is rendered as a sentence
+    # rather than left as three flags, because the reader of a bead note is a person holding
+    # an incident and not this program's usage text — and because `--held yes` has to READ as
+    # a complete outcome, not as a blank.
+    case "$check:$held" in
+        fail:*)    verdict="The CHECK did not confirm: this SOP does not apply to this incident. Its MATCH fired anyway, which is a fact about the regex." ;;
+        pass:yes)  verdict="The SOP fit, it held, and it taught us nothing new." ;;
+        pass:no)   verdict="The SOP fit and its FIX did NOT hold. The runbook needs amending, not the threshold." ;;
+        pass:unknown) verdict="The CHECK confirmed. Whether the FIX held is not known yet." ;;
+    esac
+
+    note_state="ok"
+    {
+        printf 'SOP %s applied — CHECK %s, held=%s.\n\n%s\n' "$key" "$check" "$held" "$verdict"
+        [ -n "${why//[[:space:]]/}" ] && printf '\n%s\n' "$why"
+        printf '\nRecorded %s by %s. Ledger: %s\n' "$ts" "$actor" "$LEDGER"
+    } | bdq note "$bead" --stdin >/dev/null 2>&1 || note_state="failed"
+
+    # THE LEDGER LINE IS WRITTEN LAST, so it can say whether the note landed. A half-written
+    # record that admits which half is missing is worth more than one that does not.
+    mkdir -p "$(dirname "$LEDGER")" 2>/dev/null
+    line="$(SOP_TS="$ts" SOP_EPOCH="$epoch" SOP_SOP="$key" SOP_BEAD="$bead" \
+            SOP_CHECK="$check" SOP_HELD="$held" SOP_WHY="$why" SOP_CAP="$WHY_CAP" \
+            SOP_ACTOR="$actor" SOP_SHELF="$shelf_state" SOP_NOTE="$note_state" \
+            python3 -c '
+import os, json
+w = " ".join(os.environ.get("SOP_WHY", "").split())[: int(os.environ["SOP_CAP"])]
+print(json.dumps({
+    "ts":    os.environ["SOP_TS"],
+    "epoch": int(os.environ["SOP_EPOCH"]),
+    "sop":   os.environ["SOP_SOP"],
+    "bead":  os.environ["SOP_BEAD"],
+    "check": os.environ["SOP_CHECK"],
+    "held":  os.environ["SOP_HELD"],
+    "actor": os.environ["SOP_ACTOR"],
+    "shelf": os.environ["SOP_SHELF"],
+    "note":  os.environ["SOP_NOTE"],
+    "why":   w,
+}, separators=(",", ":"), ensure_ascii=False))')"
+    [ -n "$line" ] || { echo "sop: failed to render the ledger line — nothing recorded" >&2; exit 1; }
+    printf '%s\n' "$line" >> "$LEDGER" || {
+        echo "sop: failed to append to $LEDGER" >&2; exit 1; }
+
+    echo "recorded $key on $bead — check=$check held=$held"
+    echo "  $verdict"
+    if [ "$note_state" = failed ]; then
+        echo "sop: the ledger line was written but the note on $bead was NOT — the human reading" >&2
+        echo "     that incident will not see this. Add it by hand: bd -C $SPIRA_DB note $bead --stdin" >&2
+        exit 1
+    fi
+    ;;
+
+log)
+    # THE READ SIDE, and the reason it lives here rather than in each of its callers: the
+    # ledger's format is this program's business, and three consumers writing three parsers
+    # is three ways to disagree about what a record means.
+    #
+    # THE EXIT STATUS IS THE POINT, and it has three values because absence and blindness are
+    # different answers that a two-valued status would merge — the merged one reading as
+    # all-clear (law-absence-needs-a-positive-control):
+    #
+    #   0   at least one matching record; the lines are on stdout
+    #   1   the ledger was READ and holds no matching record. A true absence.
+    #   2   the ledger could not be read at all. NOT an absence; do not treat it as one.
+    shift || true
+    fb=""; fs=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --bead) need $# --bead; fb="$2";               shift 2 ;;
+            --sop)  need $# --sop;  fs="$(slugify "$2")";  shift 2 ;;
+            *) echo "sop: log: unexpected argument: $1" >&2; usage ;;
+        esac
+    done
+    if [ ! -f "$LEDGER" ]; then
+        echo "sop: no ledger at $LEDGER — nothing has ever been recorded, or it is not where this program looks." >&2
+        exit 2
+    fi
+    SOP_FB="$fb" SOP_FS="$fs" python3 -c '
+import sys, os, json
+fb, fs = os.environ.get("SOP_FB", ""), os.environ.get("SOP_FS", "")
+seen = bad = shown = 0
+try:
+    fh = open(sys.argv[1], encoding="utf-8", errors="replace")
+except OSError as e:
+    print("sop: cannot read the ledger: %s" % e, file=sys.stderr); sys.exit(2)
+for ln in fh:
+    ln = ln.strip()
+    if not ln: continue
+    seen += 1
+    try: r = json.loads(ln)
+    except Exception: bad += 1; continue
+    if fb and r.get("bead") != fb: continue
+    if fs and r.get("sop")  != fs: continue
+    print(ln); shown += 1
+# A FILE THAT HAS LINES AND NONE OF THEM PARSE IS BROKEN, NOT EMPTY. Reporting that as "no
+# records" is the reading that stops anybody looking.
+if seen and bad == seen:
+    print("sop: %d ledger line(s) and not one parsed as JSON — this ledger is corrupt, not empty" % seen,
+          file=sys.stderr)
+    sys.exit(2)
+sys.exit(0 if shown else 1)
+' "$LEDGER"
     ;;
 
 retire)

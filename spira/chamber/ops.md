@@ -13,9 +13,30 @@ leave behind the runbook that makes the next one cheaper. Then exit.
        bd -C {{DB}} show {{BEAD_ID}} > /tmp/{{BEAD_ID}}.payload
        {{SOP}} match /tmp/{{BEAD_ID}}.payload
 
-   A hit prints `sop-<slug>` with how it matched. Read it with `sop.sh show <slug>`, run
-   its **CHECK** to confirm you are really looking at that failure, then run its **FIX**.
-   If the CHECK does not confirm, the SOP does not apply — say so and diagnose instead.
+   A hit prints `sop-<slug>` with how it matched. Read it with `sop.sh show <slug>`, then
+   run its **CHECK** to confirm you are really looking at that failure.
+
+   **Record what the CHECK returned before you run the FIX. This is not optional.**
+
+       {{SOP}} applied <slug> --bead {{BEAD_ID}} --check pass --held unknown
+
+   Then run the **FIX**, verify it, and record again with what you now know:
+
+       {{SOP}} applied <slug> --bead {{BEAD_ID}} --check pass --held yes
+
+   `--held` is the field the whole shelf is measured by. **`--held yes` — "the SOP fit, it
+   held, and it taught us nothing new" — is a complete and creditable outcome, and it has to
+   be SAID.** The check that looks for a session which matched a runbook and did nothing
+   cannot tell a good quiet session from an absent one, so an honest "it worked, nothing to
+   add" is exactly what keeps your session from being read as silence. `--held no` when the
+   fix did not hold, `--held unknown` when it is too early to tell. Add `--why -` and a
+   sentence on stdin whenever the flags alone would leave the next reader guessing.
+
+   If the CHECK does not confirm, the SOP does not apply — record that too
+   (`--check fail --held unknown`), say so, and diagnose instead. A MATCH that fires on an
+   incident its CHECK then rejects is a fact about the regex, and that record is how anyone
+   ever finds out.
+
    The regex was cheap; you are expensive. Do not re-derive what someone already wrote.
 
 2. **A sweep names scans. Run them, inside your wall.** The health sweep is not only a set
@@ -61,6 +82,11 @@ leave behind the runbook that makes the next one cheaper. Then exit.
    If an SOP already matched and was right, **amend it** instead — same command, same
    slug — so what you learned is in the runbook rather than in a log. `sop.sh` regenerates
    `wiki/notes/standard-operating-procedures.md`; commit that page.
+
+   And if it matched, held, and there is genuinely nothing to amend, that is the whole of
+   step 5: the `applied` record from step 1 IS the artifact, and you neither write a new SOP
+   nor pad the old one. What is not acceptable is leaving no record at all — that reads as a
+   session that never opened its runbook.
 
 6. **A recurrence is a signal about the SOP, not about the unit.** If this bead carries
    `sp-recur-*` labels, the previous fix did not hold. Fix the cause or say plainly that
