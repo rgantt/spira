@@ -272,6 +272,63 @@ else
     exit 0
 fi
 
+# ---- world-stop fence ----------------------------------------------------------------
+# A bead labelled SPIRA_WORLD_STOP_LABEL declares it needs the world halted while it
+# runs — world.sh stop must be called before the session starts and world.sh start must
+# be called after, whether or not the session succeeds.
+#
+# WHY THIS FENCE AND NOT ONLY THE FILING GUARD. _bdq_check_destructive (lib.sh) stops a
+# bead from being filed without needs-ryan — it fires before the verdict that makes a
+# halting bead dispatchable. This fence fires after that verdict: once the operator
+# approves the work, the next summon must still drain the live pool before proceeding.
+# sp-6ylz had the danger in its title and was still claimed while aeons were running;
+# the title is prose, and prose is what nothing reads.
+#
+# FENCE, NOT SANDBOX. Every guard names its own override so the operator at the keyboard
+# can proceed when the situation is understood. SPIRA_WORLD_STOP_SKIP=1 is the override;
+# the refusal names it explicitly. A sandbox would refuse with no exit.
+#
+# OUR OWN PIDFILE IS NOT YET WRITTEN — it is written below, beside the teardown — so
+# every pidfile we find here belongs to a peer, not to ourselves.
+WORLD_WAS_STOPPED=0
+_world_stop_label="${SPIRA_WORLD_STOP_LABEL:-world-stop}"
+if bdjson show "$BEAD_ID" 2>/dev/null | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+d = d if isinstance(d, list) else [d]
+if d and "'"$_world_stop_label"'" in (d[0].get("labels") or []): sys.exit(1)
+sys.exit(0)' 2>/dev/null; then
+    : # no world-stop label — proceed normally
+else
+    _world_live=""
+    for _pf in "$SPIRA_RUN"/aeon-*.pid; do
+        [ -e "$_pf" ] || continue
+        _pid="$(cat "$_pf" 2>/dev/null)" || continue
+        [ -n "$_pid" ] && [ -d "/proc/$_pid" ] || { rm -f "$_pf"; continue; }
+        _world_live="${_world_live:+$_world_live, }$(basename "$_pf" .pid)"
+    done
+    unset _pf _pid
+    if [ -n "$_world_live" ] && [ -z "${SPIRA_WORLD_STOP_SKIP:-}" ]; then
+        # REFUSE, NOT PROCEED. Live aeons write to the database; running world.sh stop
+        # under them is what produced the three-minute outage this bead was filed to
+        # prevent. The fence releases the claim so the bead goes back to the ready queue,
+        # where it will be picked up once the live aeons finish naturally.
+        release_own_claim "$BEAD_ID"
+        log "$FAYTH/$AEON: $BEAD_ID carries $_world_stop_label — live aeons present ($_world_live) — released. Set SPIRA_WORLD_STOP_SKIP=1 to override."
+        bdq note "$BEAD_ID" "Released by aeon.sh: this bead carries $_world_stop_label and requires the world halted while it runs. Live aeons are present ($_world_live) and the world was not stopped. Wait for them to finish, or set SPIRA_WORLD_STOP_SKIP=1 to proceed with live aeons." >/dev/null 2>&1
+        ledger_done 0 world-stop-fence
+        exit 0
+    fi
+    # No live aeons (or operator override set): stop the world before the session.
+    log "$FAYTH/$AEON: $BEAD_ID carries $_world_stop_label — stopping the world before this session${_world_live:+ (SPIRA_WORLD_STOP_SKIP set, live: $_world_live)}"
+    "$SPIRA_HOME/world.sh" stop --why "world-stop bead $BEAD_ID" >/dev/null 2>&1 \
+        || log "$FAYTH/$AEON: $BEAD_ID world.sh stop returned non-zero — proceeding"
+    WORLD_WAS_STOPPED=1
+    unset _world_live
+fi
+unset _world_stop_label
+
 # ---- the workspace -------------------------------------------------------------------
 # THE REPOSITORY COMES FROM THE BEAD. A fayth supplies the persona, the statutes and the
 # tool allowlist; the bead supplies the workspace, through the same `repo:<name>` partition
@@ -413,6 +470,13 @@ cleanup() {
     if [ -n "$HB_PID" ]; then kill "$HB_PID" 2>/dev/null; fi
     fixture_drop
     rm -f "$PIDFILE" "${PIDFILE%.pid}.name"
+    # RESTORE THE WORLD if this aeon stopped it. Runs here, after the heartbeat and fixture
+    # but before any bead operations, so it fires on every exit path — a world halted for a
+    # bead that fails must not stay halted because the aeon died mid-teardown.
+    if [ "${WORLD_WAS_STOPPED:-0}" = 1 ]; then
+        log "$FAYTH: $BEAD_ID world-stop bead — starting the world"
+        "$SPIRA_HOME/world.sh" start >/dev/null 2>&1 || true
+    fi
     cd "$REPO" 2>/dev/null || true
     # If the bead is still ours and still open, hand it back rather than holding a lease
     # nobody is working. Lease expiry would do this eventually; doing it now is honest.

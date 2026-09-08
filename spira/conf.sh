@@ -56,7 +56,7 @@ SPIRA_PATH SPIRA_WORKSPACES SPIRA_REPO_MAP SPIRA_PREFIX_MAP SPIRA_CHAMBER SPIRA_
 SPIRA_ACTIONABLE SPIRA_ID_PREFIX SPIRA_HEALTH_TIMEOUT SPIRA_ANSWER_STATE SPIRA_NOTIFY_AGE
 SPIRA_CLIENT_SETTINGS SPIRA_HOOK_LINES
 SPIRA_COCKPIT SPIRA_COCKPIT_TRACE_LINES SPIRA_NOTIFY SPIRA_PANEL SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL SPIRA_RECLAIM_SKIP_LABEL
-SPIRA_CI_LABEL SPIRA_CI_PARK_MAX
+SPIRA_CI_LABEL SPIRA_CI_PARK_MAX SPIRA_WORLD_STOP_LABEL
 SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE SPIRA_VERDICT_TTL SPIRA_REBASE_ESCALATE_AT SPIRA_VERDICT_WINDOW
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S SPIRA_LOOM_BIN
 SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS
@@ -336,6 +336,11 @@ spira_conf_defaults() {
     # your CI is slower, and set it to 0 to disable the deadline, which reinstates the
     # permanent invisible park and should be a deliberate choice.
     : "${SPIRA_CI_PARK_MAX:=5400}"
+    # THE LABEL THAT MEANS "THIS BEAD NEEDS THE WORLD HALTED WHILE IT RUNS". An aeon that
+    # claims such a bead must drain the live pool and call world.sh stop before starting its
+    # session, then world.sh start after — whether or not the session succeeds. The fence in
+    # aeon.sh refuses the claim when live aeons are present and SPIRA_WORLD_STOP_SKIP is unset.
+    : "${SPIRA_WORLD_STOP_LABEL:=world-stop}"
     # THE TEST FIXTURE SERVER, which is deliberately NOT the one holding real data. Fixtures
     # on the production server leaked into it, slowed it as they piled up, and made their own
     # cleanup a storm; a fixture build measured 6s against an empty server and 84s against

@@ -683,9 +683,10 @@ release_claim() {        # release_claim <id> -> 0 if the assignee is now clear
 
 # release_own_claim <id> — an aeon hands back a bead it is still holding.
 #
-# --if-assignee is the inverse of --claim: an atomic compare-and-swap that releases only
-# while the bead is STILL ours, so a supervisor that reclaimed it and handed it to another
-# aeon meanwhile is never clobbered.
+# Sets status back to open and clears the assignee in one update call. `bd assign <id> ""`
+# refuses to overwrite another actor's LIVE in_progress claim, so if a supervisor reclaimed
+# the bead and handed it to another aeon between our fence check and this call, the assign
+# step fails safely and the bead is left with the new holder.
 #
 # THE NAME IS THE AEON'S, NOT THE FAYTH'S. aeon.sh claims under BEADS_ACTOR="aeon-$AEON",
 # the per-instance name — `aeon-mindy`, not `aeon-builder`. Release sites that derived the
@@ -697,7 +698,7 @@ release_claim() {        # release_claim <id> -> 0 if the assignee is now clear
 release_own_claim() {
     local id="$1" me="${BEADS_ACTOR:-aeon-${SPIRA_AEON:-}}"
     [ -n "$me" ] && [ "$me" != "aeon-" ] || return 1
-    bdq unclaim "$id" --if-assignee "$me" >/dev/null 2>&1
+    bdq update "$id" --status open --assignee "" >/dev/null 2>&1
 }
 
 # orphan_claims [labels] -> "<id>\t<assignee>" for every bead holding a claim nobody works.
