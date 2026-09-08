@@ -40,6 +40,22 @@ SNAP="$SPIRA_RUN/cockpit.env"
 WINDOW_HOURS="${SPIRA_COCKPIT_WINDOW_HOURS:-24}"
 INTERVAL="${SPIRA_COCKPIT_INTERVAL:-60}"
 
+# THE SNAPSHOT HAS EXACTLY ONE WRITER: spira-cockpit.service. A second writer — an aeon
+# running the collector from its worktree, a retired brain collector calling a vendored copy,
+# a manual `cockpit.sh once` — overwrites the live snapshot with whatever keys its branch
+# carries, and the pane reads `?` for every key the interloper lacked. The fence is
+# INVOCATION_ID, which systemd sets for exactly one process tree per invocation: if this
+# process's INVOCATION_ID matches the service's, it IS the service. SPIRA_COCKPIT_FORCE=1
+# names the override (a fence, not a wall).
+cockpit_may_write() {
+    [ "${SPIRA_COCKPIT_FORCE:-0}" = 1 ] && return 0
+    [ -n "${INVOCATION_ID:-}" ] || return 1
+    local svc_id
+    svc_id="$(systemctl --user show spira-cockpit.service -p InvocationID --value 2>/dev/null)" \
+        || return 1
+    [ "$INVOCATION_ID" = "$svc_id" ]
+}
+
 # The sentinel's own ready predicate — the ARRAY from lib.sh, not a copy of it, and not a
 # variable of the same name shadowing it. "Verbatim" was the intent of the copy that stood
 # here and the copy had already drifted: lib.sh grew `-u` and this had not, so the panel
@@ -779,7 +795,8 @@ print("SP_STRAND_OTHER=%s" % (",".join(rest) or "none"))
 
 write_snapshot() {
     local tmp="$SPIRA_RUN/.cockpit.$$"
-    probe 2>/dev/null | python3 -c '
+    local writer_unit="${INVOCATION_ID:+spira-cockpit.service}"
+    { probe 2>/dev/null; echo "SP_WRITER=$$:${writer_unit:-force}"; } | python3 -c '
 import sys
 seen = set()
 for line in sys.stdin:
@@ -804,8 +821,13 @@ for line in sys.stdin:
 
 case "${1:-once}" in
 once)
-    write_snapshot
-    echo "spira cockpit: $SNAP ($(wc -l < "$SNAP") keys)"
+    if cockpit_may_write; then
+        write_snapshot
+        echo "spira cockpit: $SNAP ($(wc -l < "$SNAP") keys)"
+    else
+        probe 2>/dev/null
+        echo "spira cockpit: keys printed to stdout (not the supervised process)" >&2
+    fi
     ;;
 # Appends from the snapshot ALREADY ON DISK, taking no fresh reading. It is how the series is
 # repaired without disturbing the live snapshot, and it is the seam the suite drives — the
@@ -814,9 +836,11 @@ history)
     append_history
     echo "spira cockpit: $HIST ($(( $(wc -l < "$HIST") - 1 )) rows)"
     ;;
-# Driven today by the town's cockpit collector, which already runs as a service. This mode
-# exists so that retiring that collector is a unit file rather than a rewrite.
 loop)
+    cockpit_may_write || {
+        echo "cockpit.sh loop: write refused — not the supervised process. Set SPIRA_COCKPIT_FORCE=1 to override." >&2
+        exit 1
+    }
     while :; do write_snapshot; sleep "$INTERVAL"; done
     ;;
 # The strand ledger's keys alone, taking no other reading. This is the seam the suite drives:

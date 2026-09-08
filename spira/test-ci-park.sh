@@ -371,6 +371,7 @@ cp "$HERE/cockpit.sh" "$HERE/cockpit-metrics.py" "$SH/" 2>/dev/null || true
 snapshot() {   # snapshot [max] -> the CI keys of one collector pass
     SPIRA_HOME="$SH" SPIRA_RUN="$CRUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$ALPHA" \
     SPIRA_REPO_MAP="$MAP" SPIRA_CI_PARK_MAX="${1-600}" SPIRA_GOAL=sp-goal SPIRA_FAYTHS=t \
+    SPIRA_COCKPIT_FORCE=1 \
         bash "$SH/cockpit.sh" once >/dev/null 2>&1
     grep '^SP_AWAITING' "$CRUN/cockpit.env" 2>/dev/null
 }
