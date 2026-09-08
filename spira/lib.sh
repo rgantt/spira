@@ -1125,12 +1125,16 @@ outcome_charges() {      # outcome_charges <outcome> -> rc 0 when it may charge 
 # megabytes of traces to answer, once, by hand. On the ledger line it is an awk one-liner
 # over one small file, and cost per landed bead becomes a number a panel can read.
 #
-# THE LAST `result` RECORD OF THE LAST ATTEMPT, through attempt_trace and never the raw file.
+# ALL `result` RECORDS OF THE LAST ATTEMPT, through attempt_trace and never the raw file.
 # The trace is appended to across attempts, so a session that was refused before it could
 # speak would otherwise be billed the previous attempt's tokens — the same boundary error
 # that charges a refusal as a verdict about the work, arriving as a cost figure instead of a
-# poison count. Several `result` records in one segment is not a malformed trace either: a
-# session can be resumed, and the last one is the one that describes how it ended.
+# poison count. Several `result` records in one segment is not a malformed trace: a session
+# woken by a task notification emits a second record for the notification turn only, so the
+# last record alone would mix scopes — its per-turn metrics describe the wake-up while its
+# total_cost_usd is the session cumulative. Per-turn fields are SUMMED across all records
+# so the session total is reported. Cumulative fields (duration_api_ms, total_cost_usd) are
+# taken from the last record, where the client has fully accumulated them.
 #
 # EVERY FIELD IS INDEPENDENTLY `?`, AND NEVER 0. A record with no `duration_ms` has been
 # observed in the wild beside one carrying it, so "the trace had no result at all" and "this
@@ -1152,30 +1156,9 @@ session_result_fields() {
             | python3 /dev/fd/3 3<<'PY' 2>/dev/null
 import json, sys
 
-last = None
-for line in sys.stdin:
-    # A CHEAP PREFILTER FIRST. Nearly every line of a trace is an assistant or tool event and
-    # parsing all of them to find one record is the difference between a millisecond and a
-    # second on a large segment. The parse below is still the test — the substring only
-    # decides what is worth parsing.
-    if '"type":"result"' not in line:
-        continue
-    line = line.strip()
-    if not line.startswith("{"):
-        continue
-    try:
-        d = json.loads(line)
-    except ValueError:
-        continue          # a partial last line is normal on a killed session
-    if isinstance(d, dict) and d.get("type") == "result":
-        last = d
-
-d = last or {}
 def obj(parent, key):
     v = parent.get(key)
     return v if isinstance(v, dict) else {}
-u = obj(d, "usage")
-det = obj(u, "output_tokens_details")
 
 def num(v, div=1):
     # bool IS AN int IN PYTHON, and a JSON `true` rendered as 1 would be a token count that
@@ -1190,15 +1173,70 @@ def money(v):
         return "?"
     return "%.4f" % v
 
+# A CHEAP PREFILTER FIRST. Nearly every line of a trace is an assistant or tool event and
+# parsing all of them to find result records is the difference between a millisecond and a
+# second on a large segment. The parse below is still the test — the substring only
+# decides what is worth parsing.
+records = []
+for line in sys.stdin:
+    if '"type":"result"' not in line:
+        continue
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue          # a partial last line is normal on a killed session
+    if isinstance(d, dict) and d.get("type") == "result":
+        records.append(d)
+
+def sumf(field_fn):
+    """Sum field_fn(d) across all records; None if the field never appeared."""
+    total = None
+    for d in records:
+        v = field_fn(d)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue
+        total = (total or 0) + v
+    return total
+
+def lastf(field_fn):
+    """Last non-None numeric value of field_fn across all records."""
+    result = None
+    for d in records:
+        v = field_fn(d)
+        if not isinstance(v, bool) and isinstance(v, (int, float)):
+            result = v
+    return result
+
+# PER-TURN FIELDS: summed across all result records so the session total is
+# reported even when a notification wake-up adds a second result record. Taking
+# only the last record would report only that turn, while total_cost_usd is
+# already the session cumulative — producing the impossible wall_s < api_s.
+wall_ms   = sumf(lambda d: d.get("duration_ms"))
+turns     = sumf(lambda d: d.get("num_turns"))
+in_tok    = sumf(lambda d: obj(d, "usage").get("input_tokens"))
+cache_tok = sumf(lambda d: obj(d, "usage").get("cache_read_input_tokens"))
+out_tok   = sumf(lambda d: obj(d, "usage").get("output_tokens"))
+think_tok = sumf(lambda d: obj(obj(d, "usage"), "output_tokens_details").get("thinking_tokens"))
+
+# CUMULATIVE FIELDS: the client accumulates these across all turns and writes the
+# running session total into each result record, so the last record holds the
+# session total. api_s > wall_s is structurally impossible once wall_s is also
+# the session total, and any trace that produced it is self-evidently broken.
+api_ms = lastf(lambda d: d.get("duration_api_ms"))
+cost   = lastf(lambda d: d.get("total_cost_usd"))
+
 sys.stdout.write("wall_s=%s api_s=%s turns=%s in_tok=%s cache_read_tok=%s out_tok=%s think_tok=%s cost_usd=%s" % (
-    num(d.get("duration_ms"), 1000),
-    num(d.get("duration_api_ms"), 1000),
-    num(d.get("num_turns")),
-    num(u.get("input_tokens")),
-    num(u.get("cache_read_input_tokens")),
-    num(u.get("output_tokens")),
-    num(det.get("thinking_tokens")),
-    money(d.get("total_cost_usd")),
+    num(wall_ms, 1000),
+    num(api_ms, 1000),
+    num(turns),
+    num(in_tok),
+    num(cache_tok),
+    num(out_tok),
+    num(think_tok),
+    money(cost),
 ))
 PY
     )"

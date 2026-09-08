@@ -173,17 +173,41 @@ want "nor the cache reads"               "cache_read_tok=?"  "$line"
 want "nor the thinking tokens"           "think_tok=?"       "$line"
 
 echo
-echo "several result records in one segment — the LAST one describes how the session ended:"
-# A session can be resumed, and then its segment holds more than one terminal record. The
-# first is not the reading; taking it would report the cost of the part that was thrown away.
+echo "several result records in one segment — all records contribute to the session total:"
+# A session woken by a task notification emits a second result record for only that turn.
+# Per-turn fields are summed across all records; cost comes from the last (cumulative) record.
 fresh; testdb_reset; seed sp-lg-4
 { printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":1000,"duration_api_ms":1000,"num_turns":1,"total_cost_usd":0.01,"usage":{"input_tokens":1,"cache_read_input_tokens":1,"output_tokens":1,"output_tokens_details":{"thinking_tokens":1}}}'
   printf '%s\n' "$FULL"; } | session 1 1
 run_aeon
 line="$(done_line)"
-want   "the last record is the reading"  "turns=7"    "$line"
-nowant "and the first is not"            "turns=1"    "$line"
-want   "its cost, not the earlier one"   "cost_usd=1.3475" "$line"
+want   "both records' turns are summed"  "turns=8"    "$line"
+nowant "neither record alone"            "turns=7"    "$line"
+want   "cost from the last record"       "cost_usd=1.3475" "$line"
+want   "wall_s sums both records"        "wall_s=91"  "$line"
+
+echo
+echo "wake-up notification adds a second result record — wall_s covers the whole session:"
+# THE BUG THIS SUITE GUARDS AGAINST. A session woken by a task notification emits a second
+# result record for just that turn. The last record alone would show wall_s=4 api_s=387 — an
+# impossible combination (api_s > wall_s) proving the fields are from different scopes.
+# After the fix, summing duration_ms gives the session total and the contradiction cannot occur.
+fresh; testdb_reset; seed sp-lg-7
+# First record: the main session (24 minutes of real work)
+MAIN='{"type":"result","subtype":"success","is_error":false,"duration_ms":1480000,"duration_api_ms":386600,"num_turns":21,"total_cost_usd":4.2700,"usage":{"input_tokens":15000,"cache_read_input_tokens":5415000,"output_tokens":15040,"output_tokens_details":{"thinking_tokens":5000}},"result":"done"}'
+# Second record: the wake-up notification turn (4 seconds; api_ms is cumulative for session)
+WAKEUP='{"type":"result","subtype":"success","is_error":false,"duration_ms":4000,"duration_api_ms":387000,"num_turns":1,"total_cost_usd":4.2746,"usage":{"input_tokens":3,"cache_read_input_tokens":133587,"output_tokens":42,"output_tokens_details":{"thinking_tokens":0}},"result":"done"}'
+{ printf '%s\n' "$MAIN"; printf '%s\n' "$WAKEUP"; } | session 1 1
+run_aeon
+line="$(done_line)"
+want   "wall_s reflects the whole session"      "wall_s=1484"    "$line"
+nowant "wall_s is not just the wake-up turn"    "wall_s=4"       "$line"
+want   "api_s from the last record (cumulative)" "api_s=387"     "$line"
+want   "turns sum both records"                  "turns=22"      "$line"
+want   "cost from the last record's cumulative"  "cost_usd=4.2746" "$line"
+# THE IMPOSSIBILITY GUARD. wall_s < api_s is structurally impossible for a sequential
+# session, so if the output contains api_s=387 it must not also contain wall_s=4.
+want   "wall_s=1484 is greater than api_s=387"  "wall_s=1484"    "$line"
 
 echo
 echo "a second attempt on the same bead reads its OWN segment, not the one above it:"
