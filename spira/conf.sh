@@ -64,7 +64,7 @@ COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_VIEW SPIRA_VIEW_SESSION
 SPIRA_ALERT_GLOB
-SPIRA_FAYTHS SPIRA_MAX_AEONS
+SPIRA_FAYTHS SPIRA_MAX_AEONS SPIRA_LANES
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
 SPIRA_ARCHIVE
 SPIRA_ARCHIVIST_EVERY SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
@@ -374,6 +374,14 @@ spira_conf_defaults() {
     # Four is the sum of what the two shipped personas declared, so this default changes
     # nothing on a host that was already running them and starts enforcing an order.
     : "${SPIRA_MAX_AEONS:=4}"
+    # THE DECLARED LANES — named scheduling partitions whose capacity does not compete with
+    # SPIRA_MAX_AEONS. A lane fayth draws from its own FAYTH_MAX_CONCURRENT rather than from
+    # the pool, so the pool can be fully occupied by builders while the lane fayth still has
+    # room. This is what "ops cannot be starved by builders" has always meant; SPIRA_LANES
+    # makes it declared configuration rather than a property implied by FAYTH_ROLE=party.
+    # A new lane is added here and given a name; fayths join it with FAYTH_LANE=<name>.
+    # The ops lane is declared by default because ops.fayth ships using it.
+    : "${SPIRA_LANES:=ops}"
     # ---- THE READ SURFACE OVER THE LIVE GRAPH ------------------------------------------
     # Where Loom listens. Localhost is the default because a bead carries internal working
     # notes and the operator's own judgement, so the address it is reachable at is a

@@ -813,6 +813,19 @@ for f in $TASK_FAYTHS; do
     fi
 done
 
+# LANE FAYTHS are handled AFTER the pool and draw from their own declared capacity, never
+# from SPIRA_MAX_AEONS. No pool argument is passed — that is the mechanism: fayth_free
+# without a pool arg uses FAYTH_MAX_CONCURRENT alone, so a fully-occupied builder pool
+# cannot prevent an ops aeon from starting. This is what the ops lane was always designed
+# to guarantee; generalising it into this loop is what makes it configurable.
+LANE_FAYTHS="$(spira_lane_fayths)"
+[ -n "$LANE_FAYTHS" ] && log "CHECK7 lanes (${SPIRA_LANES:-none} declared): $LANE_FAYTHS"
+for f in $LANE_FAYTHS; do
+    if summon_fayth "$f"; then
+        act "summoned a $f lane aeon"
+    fi
+done
+
 if [ "$GOAL_REACHED" = 1 ]; then
     log "pass complete — $acted action(s), $progressed progress, goal reached"
     exit 0

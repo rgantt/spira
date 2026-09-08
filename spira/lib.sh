@@ -224,18 +224,42 @@ spira_fayths() {         # the personas this harness runs, space separated, IN P
 }
 
 # spira_task_fayths -> the personas the sentinel's pool summons: everything that is not a
-# persistent party member.
+# party member and not a lane fayth.
 #
 # EVERY OTHER USE OF THE ROSTER KEEPS THEM. A party member's beads must still be reaped when
 # its lease dies, its partition still swept for stalled work, and its closed beads still
 # checked for having landed — those were each written against one hardcoded partition once
 # and the fix was to ask every persona's own predicate. Narrowing THAT would restore the bug
 # by another door. This narrows only who the pool summons.
+#
+# FAYTH_LANE is the declared form; FAYTH_ROLE=party is preserved as a backward-compatible
+# alias so an operator's custom fayth still works after upgrading. Both say the same thing:
+# this persona is not drawn from SPIRA_MAX_AEONS.
 spira_task_fayths() {
     local f out=""
     for f in $(spira_fayths); do
         [ "$(fayth_get "$f" FAYTH_ROLE task)" = party ] && continue
+        [ -n "$(fayth_get "$f" FAYTH_LANE "")" ] && continue
         out="$out $f"
+    done
+    printf '%s' "${out# }"
+}
+
+# spira_lane_fayths -> the personas that belong to a declared lane (FAYTH_LANE set).
+#
+# A lane fayth draws from its own FAYTH_MAX_CONCURRENT rather than from SPIRA_MAX_AEONS,
+# so the pool can be fully occupied by builders and a lane fayth still has room. The
+# sentinel's CHECK 7 handles lane fayths in a separate loop after the task pool, calling
+# summon_fayth without a pool argument so the pool never clamps a lane fayth's capacity.
+#
+# THE NAME MUST APPEAR IN SPIRA_LANES for the lane to be declared, but that is a
+# documentation and validation concern — a fayth that names an undeclared lane still
+# functions, because the mechanism (FAYTH_LANE present → not a task fayth) does not
+# require the name to be on the list.
+spira_lane_fayths() {
+    local f out=""
+    for f in $(spira_fayths); do
+        [ -n "$(fayth_get "$f" FAYTH_LANE "")" ] && out="$out $f"
     done
     printf '%s' "${out# }"
 }

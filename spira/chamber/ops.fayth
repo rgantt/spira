@@ -69,16 +69,21 @@ FAYTH_SOP_REQUIRED=1
 FAYTH_MODEL=claude-sonnet-5
 FAYTH_MAX_CONCURRENT=1
 
-# A PARTY MEMBER, NOT AN AEON. Ops is Yuna: it travels with the party and is always around.
-# A builder is Ifrit — called for one fight and dismissed after it. So Ops is NOT drawn from
-# SPIRA_MAX_AEONS and cannot be crowded out of it: it has its own summoner
-# (spira-ops.timer), and watchtower.sh gives it the pipeline's vital signs on a timer so the
-# role has something to be persistent about rather than existing only on paper.
+# THE OPS LANE — the declared configuration for what FAYTH_ROLE=party expressed implicitly.
+# Ops is in the ops lane, which means it draws from its own FAYTH_MAX_CONCURRENT rather
+# than from SPIRA_MAX_AEONS. The builder pool can be 100% occupied and Ops still has room,
+# because a lane fayth is never competing for the pool's slots.
 #
-# The first version of this gave Ops a reserved slot INSIDE the aeon pool. That was the
-# wrong shape for the same reason: a reserved slot is still a slot somebody must release,
-# and builders hold theirs for ~10 minutes (p50 9.4 min, p90 18.6 min measured over 28 runs). A role that never competes cannot be starved.
-FAYTH_ROLE=party
+# This is the shippe example of a priority lane: a persona that must be reachable even when
+# the rest of the party is fully engaged. The ops lane is declared in SPIRA_LANES (default:
+# "ops"), and a user who wants ops-level scheduling for their own persona names their lane
+# there and sets FAYTH_LANE=<name> in their fayth file — without editing this one.
+#
+# WHY FAYTH_ROLE=party IS GONE. The old property was a binary: party-or-task. A lane is a
+# named partition that any number of fayths can join, with configurable semantics. The
+# mechanism is the same — not drawn from SPIRA_MAX_AEONS — but the declaration is now
+# something an operator can read, set, and reason about rather than an opaque per-fayth flag.
+FAYTH_LANE=ops
 
 # BOUNDED BY THE SWEEP INTERVAL, which is the number that actually constrains this persona.
 # A sweep arrives every `OnUnitActiveSec` in systemd/spira-watchtower.timer — THIRTY MINUTES,
