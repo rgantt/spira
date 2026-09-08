@@ -2532,19 +2532,42 @@ EOF
 # otherwise block every rebase for a reason that has nothing to do with the work. Tracked
 # changes are salvaged to a patch and discarded; untracked files are left alone, because
 # `git diff HEAD` cannot carry their content and discarding them would destroy the one copy.
+#
+# A FAILURE IS NAMED, BECAUSE ONLY ONE OF THEM IS THE BRANCH'S FAULT. Every way this can
+# return 1 used to look the same to a caller — one exit status and an empty $REBASE_CONFLICTS
+# — so a caller that reopens a bead on a rebase failure reopened it for a missing ref, an
+# unresolvable base and a scratch tree it could not build, all with the words "conflicts in
+# unknown". That is a lie about a bead and it costs a session:
+#
+#   21:51:17  landed spira/<id>            <- pass A lands it
+#   21:52:13  landing: starting a pass     <- pass B reads the branch list, <id> still in it
+#   21:52:36  REMOVED branch spira/<id>    <- the Sending reaps it
+#   22:00:55  reopened <id> — does not rebase onto origin/main; conflicts in unknown
+#
+# Pass B held an eight-minute-old list, reached a ref that was gone, and this function said
+# "1" about it. $REBASE_FAILURE now says which:
+#
+#   conflict      the rebase RAN and the commits disagree — the branch's own fault, and the
+#                 only value on which finished work may be put back on the board
+#   no-branch     the ref is gone: reaped, landed, or slain under a stale list
+#   no-base       the ref it lands on does not resolve
+#   no-worktree   no tree to replay in
+#
+# The last three are the pass failing to ask the question, never an answer to it.
 # --------------------------------------------------------------------------------------
 REBASE_CONFLICTS=""
+REBASE_FAILURE=""
 rebase_branch() {
     local br="$1" onto="$2" repo="${3:-$(repo_root)}" name="${4:-}" wt scratch rc=0
-    REBASE_CONFLICTS=""
+    REBASE_CONFLICTS=""; REBASE_FAILURE=""
     # The repo NAME, for the formatter that runs on the result. Derived from the path only
     # when the caller did not supply it — both real callers hold it already, having read it
     # off the bead, and a derived value is a convention that breaks the moment two names
     # point at one checkout.
     [ -n "$name" ] || name="$(repo_name_at "$repo" 2>/dev/null)" || name=""
 
-    git -C "$repo" rev-parse --verify -q "$onto" >/dev/null 2>&1 || return 1
-    git -C "$repo" show-ref --verify -q "refs/heads/$br" || return 1
+    git -C "$repo" rev-parse --verify -q "$onto" >/dev/null 2>&1 || { REBASE_FAILURE=no-base; return 1; }
+    git -C "$repo" show-ref --verify -q "refs/heads/$br" || { REBASE_FAILURE=no-branch; return 1; }
     # Already current. This is the common case once branches are cut from the base ref, and
     # it is what makes running the rebase on every landing pass cheap.
     git -C "$repo" merge-base --is-ancestor "$onto" "refs/heads/$br" 2>/dev/null && return 0
@@ -2564,10 +2587,17 @@ rebase_branch() {
             # whose `.git` link is broken, including a live aeon's, and free its branch.
             spira_prune_worktrees "$repo" >/dev/null 2>&1
             git -C "$repo" worktree add -q --detach "$scratch" "$onto" >/dev/null 2>&1 \
-                || return 1
+                || { REBASE_FAILURE=no-worktree; return 1; }
         fi
         git -C "$scratch" checkout -q --detach >/dev/null 2>&1
-        git -C "$scratch" checkout -q -B "$br" "refs/heads/$br" >/dev/null 2>&1 || return 1
+        # A ref that vanished between the check above and here — the reaper runs on its own
+        # timer — is still `no-branch`, not a tree we could not build. The distinction is the
+        # whole point of naming these, so the narrower window gets the narrower name.
+        if ! git -C "$scratch" checkout -q -B "$br" "refs/heads/$br" >/dev/null 2>&1; then
+            git -C "$repo" show-ref --verify -q "refs/heads/$br" \
+                && REBASE_FAILURE=no-worktree || REBASE_FAILURE=no-branch
+            return 1
+        fi
         wt="$scratch"
     fi
 
@@ -2585,6 +2615,7 @@ rebase_branch() {
         REBASE_CONFLICTS="$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')"
         REBASE_CONFLICTS="${REBASE_CONFLICTS% }"
         git -C "$wt" rebase --abort >/dev/null 2>&1
+        REBASE_FAILURE=conflict
         rc=1
     else
         # THE REBASE ACTUALLY REPLAYED COMMITS, so the tree is machine-produced and nobody

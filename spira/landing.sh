@@ -338,15 +338,27 @@ PRBODY
 land_repo() {
     local name="$1" repo br id st mode base land tip merged pushed nothing wedged attempt brs
     local bead_repo_name bead_repo_path gate_out base_branch base_remote bead_labels
+    local norebase was _ref _obj
+    local -A enum_tip=()
     repo="$(repo_root "$name")" || { log "CHECK6 $name: no repo-map entry — skipped"; return 0; }
     [ -e "$repo/.git" ] || { log "CHECK6 $name: $repo is not a git checkout — skipped"; return 0; }
 
     # The local ref read comes first and the fetch is paid for only if there is something to
     # land. This runs every two minutes across every registered repository; an unconditional
     # fetch of each would be thousands of round trips a day to learn nothing.
-    brs="$(git -C "$repo" for-each-ref --format='%(refname:short)' 'refs/heads/spira/*' 2>/dev/null)"
+    #
+    # THE TIP IS READ WITH THE NAME, and it is what makes a vanished branch answerable. By
+    # the time this loop reaches a ref that has been reaped the ref is gone, so nothing can
+    # be asked about it any more — not "was this landed", not even "what was it". Held from
+    # the enumeration, the commit outlives the ref (it is on the base, which is why the ref
+    # was reaped) and the pass can say which of the two reasons it disappeared for.
+    brs="$(git -C "$repo" for-each-ref --format='%(refname:short) %(objectname)' 'refs/heads/spira/*' 2>/dev/null)"
     [ -n "$brs" ] || return 0
     n_branches=$(( n_branches + $(printf '%s\n' "$brs" | grep -c . || true) ))
+    while read -r _ref _obj; do
+        [ -n "${_ref:-}" ] && enum_tip["$_ref"]="$_obj"
+    done <<< "$brs"
+    brs="$(printf '%s\n' "$brs" | awk 'NF{print $1}')"
 
     mode="$(repo_land "$name")"
 
@@ -391,8 +403,22 @@ land_repo() {
         # A VANISHED BRANCH IS NEVER EVIDENCE OF UNLANDED WORK. Whatever removed it did so
         # deliberately; this pass simply holds a stale list. Skip it and say so — silence
         # here would make a re-read indistinguishable from a branch that was never seen.
+        #
+        # AND IT SAYS WHICH, rather than "landed or reaped elsewhere" — a line that names
+        # both possibilities settles neither, and this is the one place a reader looks when
+        # asking whether work was lost. The tip held from the enumeration answers it: on the
+        # base means the Sending reaped a landed branch, which is the ordinary case and needs
+        # no attention; not on the base means something removed work that is nowhere else,
+        # which is the case worth seeing (law-absence-needs-a-positive-control).
         if ! git -C "$repo" show-ref --verify --quiet "refs/heads/$br"; then
-            log "CHECK6 $id: $br is gone since this pass began — landed or reaped elsewhere, not reopening"
+            was="${enum_tip[$br]:-}"
+            if [ -n "$was" ] && git -C "$repo" merge-base --is-ancestor "$was" "$base" 2>/dev/null; then
+                log "CHECK6 $id: $br is gone since this pass began and $was is on $base — landed and reaped, not reopening"
+            elif [ -n "$was" ]; then
+                log "CHECK6 $id: $br is gone since this pass began and $was is NOT on $base — reaped or slain, not reopening"
+            else
+                log "CHECK6 $id: $br is gone since this pass began — landed or reaped elsewhere, not reopening"
+            fi
             continue
         fi
         read -r st bead_repo_name bead_labels <<< "$(bdjson show "$id" 2>/dev/null | python3 -c '
@@ -471,6 +497,17 @@ print(i.get("status", "-"), repo, " ".join(i.get("labels") or []))' "$(spira_hom
         fi
 
         if ! rebase_branch "$br" "$base" "$repo" "$name"; then
+            # ONLY A CONFLICT MAY REOPEN. rebase_branch returns 1 for four different things
+            # and exactly one of them is a fact about the branch; the other three are the
+            # pass failing to ask the question — most often a ref reaped out from under a
+            # branch list this loop read minutes ago, which is precisely the state the check
+            # above is racing and cannot win outright. Charging those to the work reopens a
+            # finished bead as "conflicts in unknown", costs an aeon a session finding
+            # nothing to rebase, and counts against the bead toward poison.
+            if [ "${REBASE_FAILURE:-}" != conflict ]; then
+                log "CHECK6 $id: could not attempt a rebase of $br onto $base (${REBASE_FAILURE:-unknown}) — not a conflict, leaving the bead closed"
+                continue
+            fi
             # "DOES NOT REBASE" IS NOT EVIDENCE OF UNLANDED WORK ON ITS OWN. content_landed
             # above has already cleared the ordinary squash case; this catches the one it
             # cannot — a squash that merged and was then amended on the base, where the
@@ -646,7 +683,7 @@ $(printf '%s' "$gate_out" | tail -20)"
                 log "CHECK6 $id: no landing worktree at $land — leaving $br to the next pass"
                 continue
             fi
-            merged=0; pushed=0; nothing=0; wedged=0
+            merged=0; pushed=0; nothing=0; wedged=0; norebase=''
             for attempt in 1 2 3; do
                 # A landing worktree that will not check the base out is a broken worktree,
                 # not a branch that conflicts — same reason as the guard above, and the same
@@ -662,7 +699,14 @@ $(printf '%s' "$gate_out" | tail -20)"
                 # Fetch it, replay the BRANCH onto it, and build the landing again from there.
                 git -C "$repo" fetch -q "$base_remote" 2>/dev/null
                 log "landing: push rejected, $base moved — retry $attempt"
-                if ! rebase_branch "$br" "$base" "$repo" "$name"; then merged=0; break; fi
+                # THE SAME RULE ON THE RETRY PATH. This arm falls through to "branch
+                # conflicts with $base", so a ref reaped between the losing push and the
+                # replay is reported as a disagreement that never happened — the identical
+                # defect by the second of the two routes into a reopen.
+                if ! rebase_branch "$br" "$base" "$repo" "$name"; then
+                    [ "${REBASE_FAILURE:-}" = conflict ] || norebase="${REBASE_FAILURE:-unknown}"
+                    merged=0; break
+                fi
                 # THE TIP IS RE-READ BECAUSE THE REBASE MOVED IT. `land_mark ... LANDED
                 # "$tip"` is the memory every later reader trusts for "this commit is on the
                 # base"; a tip from before the replay names a commit that is not, which is
@@ -679,6 +723,8 @@ $(printf '%s' "$gate_out" | tail -20)"
             done
             if [ "$wedged" = 1 ]; then
                 log "CHECK6 $id: landing worktree at $land will not check out $base — leaving $br to the next pass"
+            elif [ -n "$norebase" ]; then
+                log "CHECK6 $id: the retry could not attempt a rebase of $br onto $base ($norebase) — not a conflict, leaving the bead closed"
             elif [ "$nothing" = 1 ]; then
                 log "CHECK6 $id: $br adds nothing to $base once rebased — its work is already there, nothing to land"
             elif [ "$merged" = 1 ] && [ "$pushed" = 1 ]; then
