@@ -168,8 +168,13 @@ if [ -n "$latchable" ]; then
     echo
     printf '%s\n' "$latchable" | awk -v w="$WATCHD" '{ printf "    Monitor: %s tail %s\n", w, $1 }'
     echo
-    echo "\`tail\` resumes from the cursor, so it replays what was missed and then streams."
-    echo "Nothing above was marked read."
+    # MONITORS SURVIVE /clear. A session that has been cleared already holds any it attached
+    # before the clear, so attaching without checking first duplicates the Monitor and delivers
+    # every future event once per duplicate. The instruction below names the check so the agent
+    # does not need to know the hazard independently.
+    echo "Monitors survive /clear: run ListAgents first, and attach only the streams not"
+    echo "already listed there. \`tail\` resumes from the cursor, so it replays what was"
+    echo "missed and then streams. Nothing above was marked read."
 } > "$TMP/tail"
 fi
 

@@ -146,6 +146,12 @@ is  "one latch line per row, and no more" "2" \
     "$(printf '%s\n' "$out" | grep -c 'Monitor: ' || true)"
 has "the hook says why it cannot latch itself" "$out" "cannot attach"
 has "and that nothing was consumed" "$out" "Nothing above was marked read"
+# THE CHECK-FIRST INSTRUCTION. Monitors survive /clear, so a session that has been cleared
+# already holds any it attached before the clear. The hook must name this and tell the session
+# to run ListAgents first — then attach only what is missing — so the agent does not need to
+# know the hazard independently (acceptance: sp-vv4p).
+has "the hook warns that Monitors survive clear" "$out" "survive /clear"
+has "and to check ListAgents before attaching"   "$out" "ListAgents"
 
 echo
 echo "the newest lines are the ones kept"
