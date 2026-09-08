@@ -68,6 +68,24 @@ ledger() {
     [ "$DRY" = 1 ] && return 0
     printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LEDGER"
 }
+
+# ledger_done <rc> <status> — an aeon's disposition line, with what its session SPENT.
+#
+# THE SPEND IS ON THIS LINE BECAUSE NOTHING ELSE KEEPS IT. The client writes duration, turns,
+# tokens and cost to the terminal `result` record of every session and that trace is the only
+# copy; reading it back over a corpus of them is a purpose-built script, and reading it here
+# is one field of one short line. session_result_fields (lib.sh) is the parser, and the
+# figures are the SESSION's — a fayth's aeons can be compared with each other, and cost per
+# landed bead is an awk one-liner over this file.
+#
+# EVERY DISPOSITION CARRIES THE FIELDS, including the ones written before a session could
+# have run. A reader that must first know which statuses have them is a reader that will get
+# it wrong, and the ones without a session render `?` — never 0, which would say the session
+# ran and cost nothing.
+ledger_done() {
+    ledger "done $FAYTH $BEAD_ID rc=$1 status=$2 $(session_result_fields "${LOGF:-}")"
+}
+
 # Bounded here rather than by logrotate: this file is read in full on every cockpit pass,
 # and an unbounded input to something that runs every minute is a slow leak with a deadline.
 # The -f test is not redundant with wc's own error: `< "$LEDGER"` is the SHELL's redirection
@@ -238,7 +256,7 @@ if ! REPO="$(repo_root "$REPO_NAME")" || [ ! -e "$REPO/.git" ]; then
     log "$FAYTH: $BEAD_ID names repo:$REPO_NAME, which repo-map does not resolve to a checkout"
     bdq note "$BEAD_ID" "Released by aeon.sh: this bead carries repo:$REPO_NAME, and $SPIRA_REPO_MAP has no entry for it (or its path is not a git checkout). Add one, or correct the label. Refusing to work it in the home repo — a fix landed in the wrong repository passes every check downstream." >/dev/null 2>&1
     release_own_claim "$BEAD_ID"
-    ledger "done $FAYTH $BEAD_ID rc=1 status=unmapped-repo"
+    ledger_done 1 unmapped-repo
     exit 1
 fi
 REPO_LAND="$(repo_land "$REPO_NAME")"
@@ -400,7 +418,7 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
             release_own_claim "$BEAD_ID"
             bdq note "$BEAD_ID" "Returned unchanged by aeon.sh: the account's capacity window was spent mid-session, so this bead was never judged. No attempt was charged and nothing about the work is implied. Summoning is paused until the window reopens." >/dev/null 2>&1
             log "$FAYTH: $BEAD_ID returned unchanged — the account ran out of capacity, no attempt charged"
-            ledger "done $FAYTH $BEAD_ID rc=$rc status=capacity"
+            ledger_done "$rc" capacity
             exit $rc
         fi
         # SLAIN IS NOT FAILED. slay.sh writes this marker before it stops the unit; an
@@ -409,7 +427,7 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
         if [ -f "$SPIRA_RUN/$BEAD_ID.slain" ]; then
             release_own_claim "$BEAD_ID"
             log "$FAYTH: $BEAD_ID slain — released, no attempt charged"
-            ledger "done $FAYTH $BEAD_ID rc=$rc status=slain"
+            ledger_done "$rc" slain
             exit $rc
         fi
         # A VERDICT NOBODY HAS IS NOT A FAILED ATTEMPT. The landing gate outgrew the ceiling
@@ -428,7 +446,7 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
             release_own_claim "$BEAD_ID"
             bdq note "$BEAD_ID" "Released by aeon.sh: the session ended while its landing gate was still running, so it never held a verdict about its own work. No attempt was charged and nothing about the work is implied — $gate_why. Run the gate through gate-run.sh, which waits in bounded slices, and do not end the session while it is unfinished." >/dev/null 2>&1
             log "$FAYTH: $BEAD_ID released with its gate still running — no attempt charged ($gate_why)"
-            ledger "done $FAYTH $BEAD_ID rc=$rc status=gate-unfinished"
+            ledger_done "$rc" gate-unfinished
             exit $rc
         fi
         # THE BEAD IS OPEN BECAUSE THIS SCRIPT REOPENED IT, thirty lines ago and for a reason
@@ -443,7 +461,7 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
             bdq note "$BEAD_ID" "Requeue $n ($REQUEUE_CAUSE): $REQUEUE_WHY The session did the work and closed the bead; the harness put it back. NO attempt was charged and nothing about the work is implied." >/dev/null 2>&1
             log "$FAYTH: $BEAD_ID requeued by the harness ($REQUEUE_CAUSE) — requeue $n, no attempt charged"
             release_own_claim "$BEAD_ID"
-            ledger "done $FAYTH $BEAD_ID rc=$rc status=requeue-$REQUEUE_CAUSE"
+            ledger_done "$rc" "requeue-$REQUEUE_CAUSE"
             exit $rc
         fi
         cause="$(session_outcome "$LOGF")"
@@ -466,7 +484,7 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
         bdq note "$BEAD_ID" "Closed by the session while its landing gate was still running — $gate_why. The close carries no gate verdict; the landing pass gates this branch again and reopens the bead if it fails." >/dev/null 2>&1
         log "$FAYTH: $BEAD_ID closed with its gate still running ($gate_why)"
     fi
-    ledger "done $FAYTH $BEAD_ID rc=$rc status=${st:-?}"
+    ledger_done "$rc" "${st:-?}"
     exit $rc
 }
 # WHY THE HARNESS ITSELF PUT THIS BEAD BACK, if it did. Set by the verdict block at the foot

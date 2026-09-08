@@ -969,6 +969,110 @@ outcome_charges() {      # outcome_charges <outcome> -> rc 0 when it may charge 
 }
 
 # --------------------------------------------------------------------------------------
+# session_result_fields <trace-file> -> one line of `key=value` pairs saying what the
+# attempt COST, ready to append to a ledger line:
+#
+#   wall_s          seconds the session ran, wall clock
+#   api_s           seconds of that spent inside the API
+#   turns           num_turns, the client's own count
+#   in_tok          fresh input tokens
+#   cache_read_tok  prompt cache re-reads — two orders of magnitude larger, and the figure
+#                   that predicts a rate limit
+#   out_tok         output tokens
+#   think_tok       of those, thinking
+#   cost_usd        total_cost_usd, four decimals
+#
+# WHY IT IS KEPT AT ALL. Every one of these is already computed by the client and written to
+# the terminal `result` record of every session, and nothing kept any of it — so the first
+# time anyone asked where an aeon's hours went it took a purpose-built script over tens of
+# megabytes of traces to answer, once, by hand. On the ledger line it is an awk one-liner
+# over one small file, and cost per landed bead becomes a number a panel can read.
+#
+# THE LAST `result` RECORD OF THE LAST ATTEMPT, through attempt_trace and never the raw file.
+# The trace is appended to across attempts, so a session that was refused before it could
+# speak would otherwise be billed the previous attempt's tokens — the same boundary error
+# that charges a refusal as a verdict about the work, arriving as a cost figure instead of a
+# poison count. Several `result` records in one segment is not a malformed trace either: a
+# session can be resumed, and the last one is the one that describes how it ended.
+#
+# EVERY FIELD IS INDEPENDENTLY `?`, AND NEVER 0. A record with no `duration_ms` has been
+# observed in the wild beside one carrying it, so "the trace had no result at all" and "this
+# client did not report that figure" have to be distinguishable from "the session spent
+# nothing" — a refused session really did cost nearly nothing, and averaging the unreadable
+# in with it is how a cost-per-bead figure comes out reassuring exactly when the harness is
+# failing (law-absence-needs-a-positive-control).
+#
+# The program arrives on FD 3 because stdin is the trace; `python3 - <<PY` reads the heredoc
+# as the data and discards the pipe unread.
+# --------------------------------------------------------------------------------------
+session_result_fields() {
+    local f="${1:-}" out
+    # PIPED, NEVER THROUGH A VARIABLE. A segment can be tens of megabytes, and this runs in a
+    # teardown that must not be the reason an aeon fails to record what it did. An absent or
+    # unreadable file feeds the same program an empty stream, so the "no result record" line
+    # below is rendered by one code path rather than by a second copy of the key names.
+    out="$( { [ -n "$f" ] && [ -r "$f" ] && attempt_trace "$f" 0 2>/dev/null; true; } \
+            | python3 /dev/fd/3 3<<'PY' 2>/dev/null
+import json, sys
+
+last = None
+for line in sys.stdin:
+    # A CHEAP PREFILTER FIRST. Nearly every line of a trace is an assistant or tool event and
+    # parsing all of them to find one record is the difference between a millisecond and a
+    # second on a large segment. The parse below is still the test — the substring only
+    # decides what is worth parsing.
+    if '"type":"result"' not in line:
+        continue
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue          # a partial last line is normal on a killed session
+    if isinstance(d, dict) and d.get("type") == "result":
+        last = d
+
+d = last or {}
+def obj(parent, key):
+    v = parent.get(key)
+    return v if isinstance(v, dict) else {}
+u = obj(d, "usage")
+det = obj(u, "output_tokens_details")
+
+def num(v, div=1):
+    # bool IS AN int IN PYTHON, and a JSON `true` rendered as 1 would be a token count that
+    # was never a token count. Anything that is not a real number is unknown, which includes
+    # the JSON null this client writes for fields it did not fill in.
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return "?"
+    return "%d" % round(v / div)
+
+def money(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return "?"
+    return "%.4f" % v
+
+sys.stdout.write("wall_s=%s api_s=%s turns=%s in_tok=%s cache_read_tok=%s out_tok=%s think_tok=%s cost_usd=%s" % (
+    num(d.get("duration_ms"), 1000),
+    num(d.get("duration_api_ms"), 1000),
+    num(d.get("num_turns")),
+    num(u.get("input_tokens")),
+    num(u.get("cache_read_input_tokens")),
+    num(u.get("output_tokens")),
+    num(det.get("thinking_tokens")),
+    money(d.get("total_cost_usd")),
+))
+PY
+    )"
+    # THE ONE CASE THE PROGRAM ABOVE CANNOT RENDER: no python3 to run it. Nothing else in
+    # this library works without one, so this is insurance rather than a path — but a ledger
+    # line silently missing its fields would read as an older line rather than as a broken
+    # one, and every key here has to exist for a reader to be able to tell.
+    printf '%s' "${out:-wall_s=? api_s=? turns=? in_tok=? cache_read_tok=? out_tok=? think_tok=? cost_usd=?}"
+}
+
+# --------------------------------------------------------------------------------------
 # THE POISON ASK'S SUPPRESSION, AND WHY IT IS NOT THE POISON LABEL.
 #
 # The valve filed its escalation whenever a bead was over the threshold and did not CURRENTLY
