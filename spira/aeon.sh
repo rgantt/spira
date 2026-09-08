@@ -940,6 +940,47 @@ $PROMPT
 $CLOSE_BRIEF
 $REBASE_BRIEF"
 
+# ---- the shelf, before ----------------------------------------------------------------
+# READ BEFORE THE SESSION RUNS, for the closing-rule check at the foot of this script. A
+# write to the shelf is a CHANGE and there is no way to see one after the fact: `bd remember`
+# upserts, so amending an existing runbook leaves a shelf of exactly the size and shape it
+# had. Two digests and a comparison is the whole mechanism.
+#
+# ONLY FOR A PERSONA THAT DECLARES THE RULE, so no builder session pays a `bd memories`
+# query for a check that will not run.
+#
+# NOTHING ELSE IS WRITING THE SHELF BETWEEN THESE TWO READS: the persona that holds this
+# rule has one lane by construction (FAYTH_MAX_CONCURRENT=1 and a party member, so it is not
+# drawn from the aeon pool). If a second concurrent writer is ever introduced the comparison
+# widens rather than narrows — it would see the other session's write and let this one pass,
+# which is the harmless direction.
+#
+# THE EPOCH IS TAKEN FROM THE SAME CLOCK the applications ledger stamps its records with
+# (`date -u +%s`), because the second half of the check asks whether THIS session recorded
+# anything, not whether the bead has ever been recorded against. An incident reopened after
+# an earlier session did the honest thing would otherwise hand a later silent session a pass.
+SOP_REQUIRED="${FAYTH_SOP_REQUIRED:-0}"
+SHELF_BEFORE=""; SHELF_BEFORE_OK=0; SESSION_EPOCH="$(date -u +%s)"
+if [ "$SOP_REQUIRED" = 1 ]; then
+    # THE INSTRUMENT BEFORE ITS SILENCE IS BELIEVED. The applications ledger reads as
+    # UNREADABLE when the file does not exist — correctly, because from inside sop.sh an
+    # absent file and a misconfigured path are the same observation. On a fresh install
+    # nothing has ever created it, so without this the check would decline to judge every
+    # incident until the first honest session happened to record one, and the very sessions
+    # it exists to catch would be exactly the ones it never saw. An empty ledger is a real
+    # ledger: with it in place, "read it, nothing there" becomes an answer that can be had.
+    "$SPIRA_HOME/sop.sh" ledger-init >/dev/null 2>&1 \
+        || log "$FAYTH: could not create the SOP applications ledger — the closing rule cannot be judged this run"
+    if SHELF_BEFORE="$("$SPIRA_HOME/sop.sh" digest 2>/dev/null)"; then
+        SHELF_BEFORE_OK=1
+    else
+        # SAID OUT LOUD AND NOT SWALLOWED. An unreadable shelf here is what makes the check
+        # decline to judge later, and a silent decline is indistinguishable from a check
+        # that ran and found nothing wrong.
+        log "$FAYTH: could not read the SOP shelf before the session — the closing rule cannot be judged this run"
+    fi
+fi
+
 # ---- work ----------------------------------------------------------------------------
 # APPEND, NEVER TRUNCATE — see attempt_trace in lib.sh. A `>` here erased the previous
 # attempt's trace, so a bead only ever had a record of its last session; the mark line
@@ -1019,6 +1060,98 @@ elif [ "$st" = "closed" ] && [ "$committed" = "no" ]; then
     log "$FAYTH: $BEAD_ID closed with nothing committed and NOT reopened — superseded, so its work landed under another id"
 fi
 
+# ---- the closing rule: an incident resolved without a runbook is not resolved ----------
+# An incident that leaves no runbook behind is a POISONABLE condition, not a number on a
+# pane. The Ops brief has called this rule "not optional" since it was written, and it was
+# disobeyed six times in one day — which is the whole difference between an instruction and
+# a fence.
+#
+# THE THREE HONEST ENDINGS, and each is one command (see the persona's own fayth, which is
+# where the rule is declared and where they are enumerated):
+#
+#   nothing on the shelf fit; I diagnosed something new   ->  sop.sh write
+#   an SOP fit but was incomplete                         ->  sop.sh write   (the upsert)
+#   an SOP fit and its CHECK confirmed                    ->  sop.sh applied --check pass
+#
+# THE THIRD ROW IS WHAT KEEPS THIS FROM FIRING ON A GOOD SESSION. "The SOP fit, it held, and
+# it taught us nothing new" is the outcome a healthy shelf produces most of the time and it
+# is creditable; poisoning that session would punish the good case. SILENCE is what is being
+# outlawed here, not brevity — and recording the truth is the cheapest of the three ways out
+# whatever the truth turns out to be, which is the property that keeps this from becoming a
+# gate an aeon satisfies hollowly.
+#
+# `--held` DOES NOT ENTER INTO IT, deliberately. `--held no` and `--held unknown` are honest
+# outcomes of a runbook that genuinely fit, and demanding an amendment on top of one would
+# make `--held yes` the cheapest exit — a lie, and one that corrupts the single field the
+# whole shelf is measured by. What does not satisfy the rule is `--check fail` alone: that is
+# the session's own statement that nothing on the shelf applied, which is row one, and row
+# one's exit is a write.
+#
+# ONLY FOR A PERSONA THAT DECLARES THE RULE. A builder closing a bead without touching an
+# SOP is doing exactly its job.
+#
+# IT DECLINES TO JUDGE WHEN IT CANNOT READ. An unreadable shelf or an unreadable ledger is
+# not an absence, and treating one as an absence would poison every incident closed on the
+# day the database is down — the day a runbook is worth most (law-absence-needs-a-positive-control).
+SOP_SILENT=""
+if [ "$SOP_REQUIRED" = 1 ] && [ "$st" = "closed" ] && [ "$superseded" != 1 ]; then
+    shelf_after=""; shelf_after_ok=0
+    if shelf_after="$("$SPIRA_HOME/sop.sh" digest 2>/dev/null)"; then shelf_after_ok=1; fi
+
+    # A LINE PRESENT AFTER AND ABSENT BEFORE — a new SOP or an amended one. A retirement
+    # produces no such line and correctly does not discharge the rule: removing a runbook is
+    # curation, not the thing this incident was supposed to leave behind.
+    sop_wrote=no
+    if [ "$SHELF_BEFORE_OK" = 1 ] && [ "$shelf_after_ok" = 1 ]; then
+        while IFS= read -r l; do
+            [ -n "$l" ] || continue
+            grep -qxF -- "$l" <<< "$SHELF_BEFORE" || { sop_wrote=yes; break; }
+        done <<< "$shelf_after"
+    else
+        sop_wrote=unreadable
+    fi
+
+    # 0 recorded, 1 read and no such record, 2 unreadable. Anything else is sop.sh itself
+    # failing to run, which is the same answer as unreadable: not an absence.
+    sop_applied=0
+    "$SPIRA_HOME/sop.sh" log --bead "$BEAD_ID" --check pass --since "$SESSION_EPOCH" \
+        >/dev/null 2>&1 || sop_applied=$?
+
+    log "$FAYTH: $BEAD_ID closing-rule wrote=$sop_wrote applied=$sop_applied"
+    if [ "$sop_wrote" = yes ] || [ "$sop_applied" = 0 ]; then
+        :
+    elif [ "$sop_wrote" = unreadable ] || [ "$sop_applied" != 1 ]; then
+        log "$FAYTH: $BEAD_ID closing rule NOT judged — the shelf or the applications ledger could not be read (wrote=$sop_wrote applied=$sop_applied). Absence is not proven, so nothing is poisoned."
+    else
+        # The close is undone AND the bead is taken out of circulation, because this is not
+        # a bead the next aeon should retry blind: a session already resolved the incident
+        # and kept what it learned to itself, and the recovery is a human deciding what the
+        # runbook should have said. POISONED is in the log line on purpose — it is one of
+        # the strings the operator's panes treat as actionable, so this reaches somebody
+        # without a second notification path to build and forget.
+        bead_reopen "$BEAD_ID" "Reopened and poisoned by aeon.sh: this incident was closed and no runbook came out of it. The session recorded neither an SOP written or amended (sop.sh write) nor a runbook whose CHECK confirmed (sop.sh applied --check pass), so nothing on the shelf is any better for this incident having happened and the next occurrence costs exactly as much. The closing rule is not optional: an incident resolved without an SOP must produce one. To clear this, write the runbook this incident should have left — or, if one already fitted and held, record it — then remove the spira-poison label."
+        bdq label add "$BEAD_ID" spira-poison >/dev/null 2>&1
+        log "$FAYTH: $BEAD_ID REOPENED and POISONED — closed with no runbook written and no SOP application recorded"
+        SOP_SILENT=1
+        # THE ATTEMPT COUNTER MUST NOT ALSO CHARGE FOR THIS. The bead is open because this
+        # process reopened it, and the teardown cannot see that: it reads the session's trace,
+        # which is of a session that committed, closed and ran to its own end. Left to itself
+        # it writes a note about a worker that "did not survive to judge this bead" onto a
+        # bead whose session finished perfectly well, and adds a rung for it. The poison IS
+        # the verdict here and it needs no second counter behind it
+        # (law-charge-only-a-named-outcome).
+        #
+        # ONLY WHEN THE SESSION COMMITTED. A session that closed with nothing committed was
+        # already reopened above for that, and THAT is a verdict about the work which the
+        # attempt counter should keep charging — the requeue text would say the session did
+        # the work, which it did not.
+        if [ "$committed" = "yes" ]; then
+            REQUEUE_CAUSE="sop-silent"
+            REQUEUE_WHY="The incident was closed with no runbook behind it, so the close was undone and the bead poisoned; that poison is the verdict and this counter is not."
+        fi
+    fi
+fi
+
 # CLOSED BEHIND THE BASE IS NOT FINISHED. The brief asked for a rebase as the last step; this
 # is the check that it happened, and the fallback when it did not. The session is over, the
 # claim is still this process's, so rewriting the branch here rewrites nothing beneath
@@ -1027,7 +1160,12 @@ fi
 #   rebased  — it did not, but the replay was clean; the harness did it and says so
 #   reopened — it did not, and the replay conflicts; the next aeon is handed the rebase
 #              with the paths named, exactly as the landing pass would have, only sooner
-if [ "$st" = "closed" ] && [ "$committed" = "yes" ]; then
+#
+# NOT AFTER A CLOSE THAT WAS UNDONE. The closing-rule check above reopens and poisons; there
+# is no longer a close whose currency is worth judging, and a "rebased after the session
+# closed the bead" note on a bead this same process just reopened contradicts itself in the
+# one place a reader looks for what happened.
+if [ "$st" = "closed" ] && [ "$committed" = "yes" ] && [ -z "$SOP_SILENT" ]; then
     if [ -n "$BASE_REMOTE" ]; then
         git -C "$REPO" fetch -q "$BASE_REMOTE" 2>/dev/null \
             || log "$FAYTH: fetch of $BASE_REMOTE failed — judging currency against a possibly stale $BASE"

@@ -8,7 +8,10 @@
 #   sop.sh match [-|<file>]          which SOPs match an incident payload
 #   sop.sh applied <slug> --bead <id> --check pass|fail --held yes|no|unknown [--why -|<file>]
 #                                    record that a runbook was consulted, and what came of it
-#   sop.sh log [--bead <id>] [--sop <slug>]  the applications ledger, oldest first
+#   sop.sh log [--bead <id>] [--sop <slug>] [--check pass|fail] [--since <epoch>]
+#                                    the applications ledger, oldest first
+#   sop.sh digest                    one `<key> <hash>` line per SOP — what the shelf holds now
+#   sop.sh ledger-init               create an empty applications ledger if there is none
 #   sop.sh retire <slug>             remove it
 #   sop.sh synth                     regenerate wiki/notes/standard-operating-procedures.md
 #
@@ -122,7 +125,7 @@ LEDGER="${SPIRA_SOP_LEDGER:-$SPIRA_RUN/sop/applied.jsonl}"
 # session writing at the same moment.
 WHY_CAP="${SOP_WHY_CAP:-400}"
 
-usage() { sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '3,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 slugify() { printf 'sop-%s' "${1#sop-}"; }
 # A flag proves its value is present before taking it: `shift 2` with one argument left shifts
 # nothing at all, and the parse loop then spins forever on the same token.
@@ -384,22 +387,43 @@ log)
     #   0   at least one matching record; the lines are on stdout
     #   1   the ledger was READ and holds no matching record. A true absence.
     #   2   the ledger could not be read at all. NOT an absence; do not treat it as one.
+    #
+    # THE FILTERS ARE HERE AND NOT IN THE CALLERS, for the reason above. `--check` and
+    # `--since` exist because the closing-rule check in aeon.sh asks a narrower question than
+    # "has anything ever been recorded against this bead": it asks whether THIS SESSION
+    # recorded that a runbook actually fit. A caller grepping the lines for `"check":"pass"`
+    # would be a second parser of this format, and it would also lose the three-valued exit —
+    # which is the only thing that separates "no such record" from "cannot read the ledger".
     shift || true
-    fb=""; fs=""
+    fb=""; fs=""; fc=""; fsince=""
     while [ $# -gt 0 ]; do
         case "$1" in
-            --bead) need $# --bead; fb="$2";               shift 2 ;;
-            --sop)  need $# --sop;  fs="$(slugify "$2")";  shift 2 ;;
+            --bead)  need $# --bead;  fb="$2";               shift 2 ;;
+            --sop)   need $# --sop;   fs="$(slugify "$2")";  shift 2 ;;
+            --check) need $# --check; fc="$2";               shift 2 ;;
+            --since) need $# --since; fsince="$2";           shift 2 ;;
             *) echo "sop: log: unexpected argument: $1" >&2; usage ;;
         esac
     done
+    case "$fc" in
+        ""|pass|fail) ;;
+        *) echo "sop: log: --check takes pass or fail, not '$fc'" >&2; exit 1 ;;
+    esac
+    # A NON-NUMERIC --since IS REFUSED RATHER THAN COERCED. Silently reading it as 0 would
+    # widen the filter to the whole ledger, and a filter that fails open reports records the
+    # caller did not ask for as though they were the ones it did.
+    case "$fsince" in
+        ""|*[!0-9]*) [ -z "$fsince" ] || { echo "sop: log: --since takes a unix epoch, not '$fsince'" >&2; exit 1; } ;;
+    esac
     if [ ! -f "$LEDGER" ]; then
         echo "sop: no ledger at $LEDGER — nothing has ever been recorded, or it is not where this program looks." >&2
         exit 2
     fi
-    SOP_FB="$fb" SOP_FS="$fs" python3 -c '
+    SOP_FB="$fb" SOP_FS="$fs" SOP_FC="$fc" SOP_FSINCE="$fsince" python3 -c '
 import sys, os, json
 fb, fs = os.environ.get("SOP_FB", ""), os.environ.get("SOP_FS", "")
+fc, fsince = os.environ.get("SOP_FC", ""), os.environ.get("SOP_FSINCE", "")
+fsince = int(fsince) if fsince else None
 seen = bad = shown = 0
 try:
     fh = open(sys.argv[1], encoding="utf-8", errors="replace")
@@ -413,6 +437,14 @@ for ln in fh:
     except Exception: bad += 1; continue
     if fb and r.get("bead") != fb: continue
     if fs and r.get("sop")  != fs: continue
+    if fc and r.get("check") != fc: continue
+    # A LINE WITH NO PARSEABLE EPOCH IS OUTSIDE EVERY --since WINDOW, never inside one. A
+    # record whose timestamp cannot be read says nothing about when it was made, and the
+    # caller asking "was this recorded since T" is entitled to a no.
+    if fsince is not None:
+        try:
+            if int(r.get("epoch")) < fsince: continue
+        except (TypeError, ValueError): continue
     print(ln); shown += 1
 # A FILE THAT HAS LINES AND NONE OF THEM PARSE IS BROKEN, NOT EMPTY. Reporting that as "no
 # records" is the reading that stops anybody looking.
@@ -422,6 +454,72 @@ if seen and bad == seen:
     sys.exit(2)
 sys.exit(0 if shown else 1)
 ' "$LEDGER"
+    ;;
+
+digest)
+    # WHAT THE SHELF HOLDS RIGHT NOW, one `<key> <sha256-of-text>` line per SOP, sorted by key.
+    #
+    # WHY A DIGEST AND NOT A COUNT. `bd remember` upserts, so amending an existing runbook —
+    # which is one of the honest ways an Ops session can end — leaves the shelf exactly the
+    # size it was. A per-key hash makes a new SOP and an edited one the same observation,
+    # which is what a caller comparing two of these actually wants to know.
+    #
+    # WHY IT IS NOT A SINGLE HASH OF EVERYTHING. A whole-shelf hash cannot tell an addition
+    # from a RETIREMENT, and those are opposite facts: writing a runbook discharges the
+    # closing rule and removing one does not. Line-wise, a caller checks for a line present
+    # after and absent before, and a retirement simply produces no such line.
+    #
+    # THE EXIT STATUS CARRIES THE DIFFERENCE BETWEEN EMPTY AND BLIND, like `log` above:
+    #   0  the shelf was read; its lines are on stdout, and no lines means it is genuinely bare
+    #   2  the shelf could NOT be read. Not an empty shelf; do not compare two of these.
+    # `bd memories --json` prints nothing when the query fails and `{}` when the shelf is
+    # honestly empty, so the empty STRING is the broken case. Conflating them would make a
+    # database outage look like a session that wrote nothing, which is the reading that gets
+    # a good session punished (law-absence-needs-a-positive-control).
+    [ $# -eq 1 ] || usage
+    raw="$(bdjson memories 2>/dev/null)"
+    if [ -z "${raw//[[:space:]]/}" ]; then
+        echo "sop: could not read the shelf from $SPIRA_DB — this is not an empty shelf" >&2
+        exit 2
+    fi
+    printf '%s' "$raw" | python3 -c '
+import sys, json, hashlib
+try: d = json.load(sys.stdin)
+except Exception:
+    print("sop: the shelf did not parse as JSON — this is not an empty shelf", file=sys.stderr)
+    sys.exit(2)
+if not isinstance(d, dict):
+    print("sop: the shelf did not parse as an object — this is not an empty shelf", file=sys.stderr)
+    sys.exit(2)
+for k, v in sorted(d.items()):
+    if not k.startswith("sop-") or not isinstance(v, str): continue
+    # Hashed on the STRIPPED text, the same normalisation `shelf` applies, so a trailing
+    # newline gained or lost in transit is not reported as an amendment nobody made.
+    print("%s %s" % (k, hashlib.sha256(v.strip().encode("utf-8")).hexdigest()))'
+    ;;
+
+ledger-init)
+    # THE INSTRUMENT, BEFORE ITS SILENCE IS BELIEVED. `log` answers 2 — unreadable — when
+    # there is no ledger file at all, and it is right to: an absent file and a misconfigured
+    # path are the same observation from inside this program. But a caller that must judge
+    # "did this session record anything" needs `log`'s 1 to be reachable on a fresh install,
+    # where nothing has ever been recorded and so nothing has ever created the file.
+    #
+    # So the caller creates it first, and an EMPTY ledger is a real ledger: from then on 1
+    # means "read it, nothing there" and 2 means the read genuinely failed. This is the
+    # positive control the closing-rule check rests on — it makes absence a thing that can be
+    # observed rather than inferred from a missing file.
+    #
+    # `applied` still creates the ledger on its own first write, so this is never required;
+    # it only removes an ambiguity for whoever is about to act on a silence.
+    [ $# -eq 1 ] || usage
+    if [ -e "$LEDGER" ]; then
+        echo "ledger present: $LEDGER"
+    else
+        mkdir -p "$(dirname "$LEDGER")" 2>/dev/null
+        : >> "$LEDGER" || { echo "sop: cannot create the ledger at $LEDGER" >&2; exit 1; }
+        echo "created empty ledger: $LEDGER"
+    fi
     ;;
 
 retire)

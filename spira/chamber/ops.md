@@ -104,8 +104,22 @@ bead between them, and every one of them had found something.
 
    And if it matched, held, and there is genuinely nothing to amend, that is the whole of
    step 5: the `applied` record from step 1 IS the artifact, and you neither write a new SOP
-   nor pad the old one. What is not acceptable is leaving no record at all — that reads as a
-   session that never opened its runbook.
+   nor pad the old one.
+
+   **This is enforced, and it is the one rule here that can undo your close.** At close, one
+   of three things must be true, and each is a single command:
+
+       nothing on the shelf fit; you diagnosed something new   sop.sh write
+       an SOP fit but was incomplete                           sop.sh write   (the upsert)
+       an SOP fit and its CHECK confirmed                      sop.sh applied --check pass
+
+   None of them and the close is undone: the bead is reopened, labelled `spira-poison`, and
+   carries a note saying no runbook came out of this incident. What `--held` says does not
+   enter into it — `no` and `unknown` are honest outcomes of a runbook that fitted and are
+   as good here as `yes`, because the moment the truth costs more than the flattering answer
+   the field stops being worth counting. Silence is what is outlawed, not brevity. The one
+   record that does not discharge the rule is `--check fail` alone: that is you saying
+   nothing on the shelf applied, which is the first row, and its exit is a write.
 
 6. **A recurrence is a signal about the SOP, not about the unit.** If this bead carries
    `sp-recur-*` labels, the previous fix did not hold. Fix the cause or say plainly that

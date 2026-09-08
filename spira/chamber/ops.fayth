@@ -20,6 +20,33 @@ FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"
 # growing shelf of runbooks out of the context of every agent that will never execute one.
 FAYTH_MEMORY_PREFIXES="law-,sop-"
 
+# THE CLOSING RULE, AS A MECHANISM RATHER THAN A SENTENCE IN THE BRIEF. An incident closed
+# without a runbook coming out of it has its close UNDONE by aeon.sh: reopened, labelled
+# spira-poison, and the reason written on the bead. The brief has called this rule "not
+# optional" since it was written and it was disobeyed six times in one day, which is the
+# difference between an instruction and a fence.
+#
+# Three ways to satisfy it, and one of them costs a single command:
+#
+#   nothing on the shelf fit; I diagnosed something new   ->  sop.sh write
+#   an SOP fit but was incomplete                         ->  sop.sh write   (the upsert)
+#   an SOP fit and its CHECK confirmed                    ->  sop.sh applied --check pass
+#
+# The third row is what keeps this from firing on a good session. "It matched, it held, it
+# taught us nothing new" is a complete outcome and must not be punished — SILENCE is what is
+# outlawed, not brevity. So recording the truth is always the cheapest way out, whatever the
+# truth was: `--held no` and `--held unknown` satisfy this exactly as `--held yes` does, and
+# deliberately, because demanding an amendment on top of an honest "it did not hold" would
+# make `--held yes` the cheapest exit and corrupt the one field the whole shelf is measured
+# by. The one record that does NOT satisfy it is `--check fail` alone: that is the session's
+# own statement that nothing on the shelf applied, which is row one, whose exit is a write.
+#
+# DECLARED HERE, NOT KEYED ON A PERSONA'S NAME IN aeon.sh. Ops is the only role that
+# executes a runbook; a builder that closes a bead without touching an SOP is doing exactly
+# its job, and a check that recognised "ops" by string would bind the wrong persona the day
+# this one is renamed or a second healer is added beside it.
+FAYTH_SOP_REQUIRED=1
+
 # NO FAYTH_REPO. The repository comes from the BEAD — a `repo:<name>` label resolved
 # through .claude/spira/repo-map — because a repository pinned per persona is a
 # persona that can only ever work one of them, and every fayth here named the same

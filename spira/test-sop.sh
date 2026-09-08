@@ -309,5 +309,87 @@ is "the subcommand the brief names exists" "0" "$(sop_rc log --bead sp-t1)"
 want "and 'applied' is in the program's own usage" "sop.sh applied" "$(sop bogus-subcommand)"
 
 echo
+echo "--- digest: what the shelf holds, so a write can be seen after the fact"
+
+# A DIGEST EXISTS BECAUSE `bd remember` UPSERTS. Amending a runbook leaves the shelf exactly
+# the size it was, so a caller asking "did this session leave a runbook behind" cannot count
+# and cannot compare a whole-shelf hash either — that would read a RETIREMENT as a write.
+# Every assertion here is about that distinction.
+d0="$(sop digest)"
+want "digest names the SOP on the shelf" "sop-disk-full" "$d0"
+is   "one line per SOP"                  "1" "$(printf '%s\n' "$d0" | grep -c .)"
+is   "and it reads 0"                    "0" "$(sop_rc digest)"
+
+sop write disk-full - <<'SOP' >/dev/null 2>&1
+MATCH: (No space left on device|disk.*full)
+SYMPTOM: a unit fails and the volume it writes to is full
+CHECK: df -h /var | tail -1
+FIX: clear the oldest artifacts, then restart the unit, then verify the next run is green
+SOP
+d1="$(sop digest)"
+is     "an AMENDED SOP leaves the shelf the same size" "1" "$(printf '%s\n' "$d1" | grep -c .)"
+nowant "but its line changed, so the amendment is visible" "$d1" "$d0"
+
+sop write clock-skew - <<'SOP' >/dev/null 2>&1
+SYMPTOM: a unit fails because the box's clock moved
+CHECK: timedatectl show -p NTPSynchronized
+FIX: restart the time sync unit
+SOP
+d2="$(sop digest)"
+is   "a NEW SOP adds a line"                   "2" "$(printf '%s\n' "$d2" | grep -c .)"
+is   "and loses no earlier line to it"         "0" "$(comm -23 <(printf '%s\n' "$d1" | sort) <(printf '%s\n' "$d2" | sort) | grep -c .)"
+is   "so exactly one line is new"              "1" "$(comm -13 <(printf '%s\n' "$d1" | sort) <(printf '%s\n' "$d2" | sort) | grep -c .)"
+
+# A RETIREMENT IS NOT A WRITE, and this is the assertion that makes the format load-bearing:
+# after retiring, no line exists that was absent before, which is the test a caller runs.
+sop retire clock-skew >/dev/null 2>&1
+d3="$(sop digest)"
+is "after a retirement no line is new" "0" \
+   "$(comm -13 <(printf '%s\n' "$d2" | sort) <(printf '%s\n' "$d3" | sort) | grep -c .)"
+is "and the shelf shrank"              "1" "$(printf '%s\n' "$d3" | grep -c .)"
+
+# THE POSITIVE CONTROL FOR THE 2. An unreadable shelf must not read as an empty one, or a
+# database outage looks exactly like a session that wrote nothing.
+SPIRA_DB_OVERRIDE="$TMP/no-such-db"
+is   "an unreadable shelf reads 2, not 0"          "2" "$(sop_rc digest)"
+want "and says so rather than printing an empty shelf" "not an empty shelf" "$(sop digest)"
+unset SPIRA_DB_OVERRIDE
+is   "and the real shelf still reads 0"            "0" "$(sop_rc digest)"
+
+echo
+echo "--- log --check and --since: which records, and whose"
+
+# The closing-rule check asks a narrower question than "has anything ever been recorded
+# against this bead": it asks whether THIS session recorded that a runbook actually fitted.
+# Both filters exist for that, and both keep the three-valued exit.
+sop applied disk-full --bead sp-t2 --check fail --held unknown >/dev/null 2>&1
+is "a bead with only a check=fail record reads 1 for pass" "1" "$(sop_rc log --bead sp-t2 --check pass)"
+is "and 0 for fail"                                        "0" "$(sop_rc log --bead sp-t2 --check fail)"
+is "an unspellable --check is refused"                     "1" "$(sop_rc log --bead sp-t2 --check maybe)"
+is "a non-numeric --since is refused rather than read as 0" "1" "$(sop_rc log --bead sp-t1 --since yesterday)"
+
+now="$(date -u +%s)"
+is "records made before a --since window are not in it" "1" "$(sop_rc log --bead sp-t1 --since $((now + 60)))"
+is "and the same read without the window still finds them" "0" "$(sop_rc log --bead sp-t1)"
+sop applied disk-full --bead sp-t1 --check pass --held yes >/dev/null 2>&1
+is "a record made inside the window is in it" "0" "$(sop_rc log --bead sp-t1 --since $((now - 5)))"
+
+echo
+echo "--- ledger-init: absence has to be observable before it is acted on"
+
+# WITHOUT THIS, A FRESH INSTALL CANNOT DISTINGUISH "nothing was recorded" FROM "no ledger",
+# and the closing-rule check would decline to judge precisely the sessions it exists to
+# catch — the ones that recorded nothing, on a shelf nobody had recorded against yet.
+FRESH="$TMP/fresh/applications.jsonl"
+LEDGER_OVERRIDE="$FRESH"
+is   "with no ledger at all, a read is UNREADABLE"  "2" "$(sop_rc log --bead sp-t1)"
+want "ledger-init says it created one"              "created empty ledger" "$(sop ledger-init)"
+is   "and now the same read is a TRUE absence"      "1" "$(sop_rc log --bead sp-t1)"
+want "running it again leaves the existing one alone" "ledger present" "$(sop ledger-init)"
+LEDGER_OVERRIDE=/proc/nope/applications.jsonl
+is   "an unwritable ledger path fails rather than pretending" "1" "$(sop_rc ledger-init)"
+unset LEDGER_OVERRIDE
+
+echo
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
