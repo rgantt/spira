@@ -30,8 +30,24 @@ SC="${SPIRA_SYSTEMCTL:-systemctl}"
 
 # The loop, in the order that stops cleanly: summons first so nothing new is born, then the
 # legs that act on what is already there.
-TIMERS=(spira-sentinel.timer spira-ops.timer spira-watchtower.timer
-        spira-archivist.timer spira-archive.timer spira-skew.timer)
+#
+# TIMER NAMES ARE INSTANCE-QUALIFIED after install.sh's per-instance migration (sp-trn1).
+# Each base is tried in instance-qualified form first (spira-<base>-<instance>.timer); if
+# neither is-enabled nor is-active confirms it exists, the plain name is used as a fallback.
+# This makes world.sh correct before a migration and after. c0e2f8c applied the same shape
+# to cockpit.sh and health.sh when the rename broke them identically (sp-4biz, 2026-09-08).
+TIMER_BASES=(spira-sentinel spira-ops spira-watchtower spira-archivist spira-archive spira-skew)
+TIMERS=()
+for _b in "${TIMER_BASES[@]}"; do
+    _inst="${_b}${SPIRA_INSTANCE:+-$SPIRA_INSTANCE}.timer"
+    if "$SC" --user is-enabled "$_inst" >/dev/null 2>&1 ||
+       "$SC" --user is-active  "$_inst" >/dev/null 2>&1; then
+        TIMERS+=("$_inst")
+    else
+        TIMERS+=("${_b}.timer")
+    fi
+done
+unset _b _inst
 STAMP="$SPIRA_RUN/world.halted"
 DRAIN_STAMP="$SPIRA_RUN/world.draining"
 
@@ -90,9 +106,22 @@ stop)
     for t in "${TIMERS[@]}"; do
         "$SC" --user stop "$t" 2>/dev/null && printf '  stopped %s\n' "$t"
     done
-    [ "$hard" = 1 ] && for u in $("$SC" --user list-units 'spira-watch@*' --no-legend 2>/dev/null | awk '{print $1}'); do
-        "$SC" --user stop "$u" 2>/dev/null && printf '  stopped %s\n' "$u"
-    done
+    # WATCHER UNITS ARE INSTANCE-QUALIFIED after the per-instance migration. The template
+    # form (spira-watch@<name>.service) was renamed to spira-watch-<name>-<instance>.service;
+    # list-units 'spira-watch@*' finds nothing after that rename. Both forms are queried so
+    # --hard works during a migration and after (sp-4biz, 2026-09-08).
+    if [ "$hard" = 1 ]; then
+        for u in $(
+            {
+                "$SC" --user list-units 'spira-watch@*' --no-legend 2>/dev/null
+                "$SC" --user list-units \
+                      "spira-watch-*${SPIRA_INSTANCE:+-$SPIRA_INSTANCE}.service" \
+                      --state=active --no-legend 2>/dev/null
+            } | awk '{print $1}'
+        ); do
+            "$SC" --user stop "$u" 2>/dev/null && printf '  stopped %s\n' "$u"
+        done
+    fi
 
     # WORK SERVICES execute work the timers do not — spira-landing is the critical one, because
     # it runs the same gate.sh passes an aeon does and survives a timer stop. Discovered from
