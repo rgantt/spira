@@ -856,6 +856,37 @@ A merge conflict is not an escalation — do not close the bead and do not ask a
 "
 fi
 
+# RESUME_BRIEF — when a prior session committed work on this branch, tell the model
+# explicitly so it resumes from that state rather than restarting from scratch.
+#
+# WHY AFTER THE REBASE. The count `BASE..BRANCH` is correct only once the branch sits on
+# top of the current base. Before the rebase, the count might include commits already on
+# the base (if the branch were merged rather than rebased); after, it is exactly the set
+# of new commits the next session will see. An aeon that is told "5 commits from a prior
+# session" before the rebase would be counting commits that no longer exist at that tip.
+#
+# ZERO MEANS FRESH. A branch the harness just created from the base has no prior commits
+# and gets no brief — "resume rather than restart" is noise when there is nothing to resume.
+RESUME_BRIEF=""
+_n_prior="$(git -C "$REPO" rev-list --count "$BASE..$BRANCH" 2>/dev/null || true)"
+case "${_n_prior:-0}" in
+    0|'?') ;;
+    *)  _prior_log="$(git -C "$REPO" log --format='  %h %s' -n 5 "$BRANCH" 2>/dev/null)"
+        RESUME_BRIEF="## Prior work on this branch
+
+\`$BRANCH\` carries **$_n_prior** commit(s) from a previous session:
+
+\`\`\`
+$_prior_log
+\`\`\`
+
+Run \`git -C $WORK log --oneline\` and read the bead's notes (shown in \"The bead\" above)
+before doing any work. The notes record why the previous session did not land. Fix that
+specific problem — do not redo work that is already committed."
+        ;;
+esac
+unset _n_prior _prior_log
+
 # ---- one test fixture for the whole session -------------------------------------------
 # WAITING ON TESTS WAS 43% OF A SESSION'S WALL CLOCK and 73% of its tool time, and the
 # suites here are not CPU-bound, they are database-bound: `bd init` is nearly all of the
@@ -1150,6 +1181,7 @@ $STATUTES
 ---
 
 $PROMPT
+$RESUME_BRIEF
 $CLOSE_BRIEF
 $REBASE_BRIEF"
 

@@ -604,9 +604,10 @@ rebase_survivors() {     # rebase_survivors <repo> <name> <base> <landed-branch>
                 continue
             fi
             n_swept_conflict=$(( n_swept_conflict + 1 ))
-            local _other_beads _reopen_note _rq_n
+            local _other_beads _reopen_note _rq_n _rn_sweep
+            _rn_sweep="$(git -C "$repo" rev-list --count "$base..$br" 2>/dev/null || echo '?')"
             _other_beads="$(other_beads_on_conflicts "$repo" "$br" "$base" "${REBASE_CONFLICTS:-}")"
-            _reopen_note="Reopened by sentinel: $br does not rebase onto $base in $name after $landed landed; conflicts in ${REBASE_CONFLICTS:-unknown}."
+            _reopen_note="Reopened by sentinel: $br does not rebase onto $base in $name after $landed landed; conflicts in ${REBASE_CONFLICTS:-unknown}. The branch carries $_rn_sweep commit(s) from the previous session — resume from the existing work."
             if [ -n "$_other_beads" ]; then
                 _reopen_note="$_reopen_note Those files were changed on $base by $_other_beads — check whether this work is already landed before resolving."
             else
@@ -893,9 +894,10 @@ for i in d:
                 log "CHECK6 $id: $br does not rebase onto $base, but its pull request is merged — landed, not stuck"
                 continue
             fi
-            local _other_beads _reopen_note _rq_n
+            local _other_beads _reopen_note _rq_n _rn_land
+            _rn_land="$(git -C "$repo" rev-list --count "$base..$br" 2>/dev/null || echo '?')"
             _other_beads="$(other_beads_on_conflicts "$repo" "$br" "$base" "${REBASE_CONFLICTS:-}")"
-            _reopen_note="Reopened by sentinel: $br does not rebase onto $base in $name; conflicts in ${REBASE_CONFLICTS:-unknown}."
+            _reopen_note="Reopened by sentinel: $br does not rebase onto $base in $name; conflicts in ${REBASE_CONFLICTS:-unknown}. The branch carries $_rn_land commit(s) from the previous session — resume from the existing work."
             if [ -n "$_other_beads" ]; then
                 _reopen_note="$_reopen_note Those files were changed on $base by $_other_beads — check whether this work is already landed before resolving."
             else
@@ -1066,9 +1068,12 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
             fi
 
             # THE BRANCH'S OWN FAULT — the only path that reopens and charges.
-            bead_reopen "$id" "Reopened by sentinel: branch $br failed $name's landing gate.
+            local _rn_gate
+            _rn_gate="$(git -C "$repo" rev-list --count "$base..$br" 2>/dev/null || echo '?')"
+            bead_reopen "$id" "Reopened by sentinel: branch $br failed $name's landing gate. The branch carries $_rn_gate commit(s) from the previous session — the next aeon should resume from the existing work, not restart.
 
 $(printf '%s' "$gate_out" | tail -20)"
+            unset _rn_gate
             progress "reopened $id — failed the gate"
             spira_event bead.reopened "$id" "reopened $id — $br failed $name's landing gate" \
                 "$(printf '%s' "$gate_out" | tail -3)" || true
@@ -1252,7 +1257,10 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
                 log "landing: $br merges clean but push kept losing the race — retrying next pass"
             else
                 git -C "$land" merge --abort 2>/dev/null
-                bead_reopen "$id" "Reopened by sentinel: branch $br conflicts with $base. A merge conflict is not an escalation — rebase and finish."
+                local _rn_merge
+                _rn_merge="$(git -C "$repo" rev-list --count "$base..$br" 2>/dev/null || echo '?')"
+                bead_reopen "$id" "Reopened by sentinel: branch $br conflicts with $base. The branch carries $_rn_merge commit(s) from the previous session — rebase onto $base, resolve the conflict, and finish. A merge conflict is not an escalation."
+                unset _rn_merge
                 bump_requeue "$id" merge-conflict >/dev/null
                 progress "reopened $id — branch conflicts with $base"
                 spira_event bead.reopened "$id" "reopened $id — $br conflicts with $name's $base" \
