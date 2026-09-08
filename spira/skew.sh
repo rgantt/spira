@@ -209,6 +209,24 @@ $(git -C "$SPIRA_REPO" log --oneline --no-decorate -20 "HEAD..$base" 2>/dev/null
         findings="${findings}DIRTY $SPIRA_REPO carries modifications that are on no branch
 $(printf '%s\n' "$dirty" | head -20 | sed 's/^/    /')
 "
+        # Among dirty files, identify those where the working tree drops lines from the
+        # base ref. Comparing against $base (the remote-tracking ref, already fetched)
+        # rather than HEAD means a tree that is both DIRTY and BEHIND is not understated:
+        # measuring against HEAD alone reported 330 lines across 16 files; against
+        # origin/main it was 1,840 lines across 91 files — wrong by 5x, precise-looking.
+        local drop_files="" drop_ref drop_path
+        drop_ref="${base:-HEAD}"
+        while IFS= read -r drop_path; do
+            [ -n "$drop_path" ] || continue
+            if git -C "$SPIRA_REPO" diff "$drop_ref" -- "$drop_path" 2>/dev/null \
+                    | grep -q '^-[^-]'; then
+                drop_files="${drop_files}    $drop_path"$'\n'
+            fi
+        done < <(git -C "$SPIRA_REPO" diff --name-only HEAD 2>/dev/null)
+        if [ -n "$drop_files" ]; then
+            findings="${findings}FILES-DROPPING-COMMITTED-LINES dirty files whose working tree drops lines from ${drop_ref}:
+$drop_files"
+        fi
     fi
 
     # ---------------------------------------------------------------- COPY
@@ -279,20 +297,31 @@ escalate() {
     mkdir -p "$SPIRA_RUN" 2>/dev/null
     printf '%s' "$fp" > "$stamp"
 
-    [ -x "$SPIRA_NOTIFY" ] || {
-        echo "skew: no escalation path at $SPIRA_NOTIFY — the finding above reaches nobody" >&2
-        return 0; }
+    # Stdout goes to skew.log under the service unit. Stderr does too (both streams are
+    # captured), but everything below writes to stdout so the delivery path is explicit and
+    # does not depend on StandardError being redirected — which has changed once already.
+    if [ ! -x "${SPIRA_NOTIFY:-}" ]; then
+        echo "skew: no escalation path at ${SPIRA_NOTIFY:-(unset)} — the finding above reaches nobody"
+        return 1
+    fi
 
     # The installer sits beside the harness directory, not inside it, so it is derived
     # rather than written — the two layouts put it in different places and a hardcoded one
     # would be wrong in whichever the reader is standing in.
     local installer; installer="$(cd "$SPIRA_HOME/../systemd" 2>/dev/null && pwd -P)/install.sh"
 
-    "$SPIRA_NOTIFY" add \
+    local notify_out notify_rc
+    notify_out="$("$SPIRA_NOTIFY" add \
         "The Spira copy in force is not the code that landed" \
         --default "pull $SPIRA_REPO onto its base ref and re-run $installer; if a second harness is named below, delete that copy so the repository it sits in carries none" \
         --why "beads can be closed, gated and merged while the behaviour they changed never takes effect — the tree that was edited is self-consistent, so nothing downstream reports a fault" \
-        --evidence "$findings" >/dev/null 2>&1
+        --evidence "$findings" 2>&1)"; notify_rc=$?
+
+    if [ "$notify_rc" != 0 ]; then
+        echo "skew: escalation failed (rc=$notify_rc): $notify_out"
+        return "$notify_rc"
+    fi
+    echo "skew: escalated — $notify_out"
 }
 
 # =======================================================================================
