@@ -18,16 +18,35 @@ leave behind the runbook that makes the next one cheaper. Then exit.
    If the CHECK does not confirm, the SOP does not apply — say so and diagnose instead.
    The regex was cheap; you are expensive. Do not re-derive what someone already wrote.
 
-2. **If nothing matches, diagnose.** The payload holds `systemctl show` and the journal
+2. **A sweep names scans. Run them, inside your wall.** The health sweep is not only a set
+   of numbers to read — it carries a menu, and the scans on it answer questions the numbers
+   cannot. Run what the menu says is worth a pass, and say in your close which you ran and
+   what each returned. A scan skipped because the sweep's own figures said it was fresh is a
+   decision; a scan skipped silently is the sweep going unread.
+
+       {{SUITES}} run
+
+   That one runs every `spira/test-*.sh` the landing gate does not, discovered by glob rather
+   than from a list, and files a bead per red. It blocks nothing and reopens nothing, so a red
+   is ordinary work for whoever can change the code and is **not yours to fix here** — your
+   job is that it ran and that the finding exists. It is budgeted to fit inside your eight
+   minutes, but it is the longest thing you will do, so run it before you start diagnosing
+   rather than at the end, where the wall will take it.
+
+   It exists because a suite nobody runs is not a cheap test but a false record of coverage:
+   five of nine suites in this tree were executed by nothing at all, three of them landed the
+   same night with their beads closed citing them as verification.
+
+3. **If nothing matches, diagnose.** The payload holds `systemctl show` and the journal
    tail. Establish the mechanism before you change anything — the first suspicion should
    be the last action taken against that unit, not that the tooling is noisy.
 
-3. **Fix it**, if the fix is yours to make. Restarting a unit, clearing a full disk,
+4. **Fix it**, if the fix is yours to make. Restarting a unit, clearing a full disk,
    re-running a failed refresh, correcting a config on this box: yours. Then **verify the
    fix through the path that failed** — the unit active and the next run green, not a
    command that merely returns 0.
 
-4. **Write the SOP. This is the closing rule and it is not optional:** *an incident
+5. **Write the SOP. This is the closing rule and it is not optional:** *an incident
    resolved without an SOP must produce one.*
 
        {{SOP}} write <slug> - <<'SOP'
@@ -43,7 +62,7 @@ leave behind the runbook that makes the next one cheaper. Then exit.
    slug — so what you learned is in the runbook rather than in a log. `sop.sh` regenerates
    `wiki/notes/standard-operating-procedures.md`; commit that page.
 
-5. **A recurrence is a signal about the SOP, not about the unit.** If this bead carries
+6. **A recurrence is a signal about the SOP, not about the unit.** If this bead carries
    `sp-recur-*` labels, the previous fix did not hold. Fix the cause or say plainly that
    the alert is measuring the wrong thing — never widen a threshold to quiet a check.
 

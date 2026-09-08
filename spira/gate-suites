@@ -1,0 +1,59 @@
+# gate-suites — the suites the landing gate runs, and why each one earns the wait.
+#
+# THIS IS THE ONLY HAND-WRITTEN LIST OF SUITES, and it is deliberately not a list of what
+# EXISTS. What exists is a glob over `spira/test-*.sh`; this file names the subset that sits
+# between a branch and its landing, which is a choice somebody has to make and cannot be
+# derived. Everything the glob finds and this file does not name is run by `suites.sh` on a
+# timer instead — so the complement is derived, and a suite dropped from here moves to the
+# timed run rather than falling out of the world.
+#
+# THE FAILURE THIS SHAPE EXISTS TO PREVENT. The list used to live inside gate-spira.sh, and
+# nothing else could read it, so the timed runner could not know what the gate already
+# covered and the only way to answer "what runs nowhere" was for a person to compare two
+# things by eye. Nobody did, for as long as the arrangement lasted: five of nine suites ran
+# nowhere at all, three of them landed the same night citing themselves as verification.
+#
+# A LINE HERE MUST NAME A FILE THAT EXISTS. gate-spira.sh refuses to report a pass when one
+# does not, because a gate that quietly runs five checks where six are written down is a gate
+# reporting on work it never looked at.
+#
+# Blank lines and `#` comments are ignored. One repository-relative path per line.
+
+# THE SOAK. Does the merge queue make progress while several gates and a landing pass run
+# against each other? It reproduces the livelock that cost a whole morning against the old
+# code and shows it gone. Every failure this pipeline has ever had is a property of the
+# pipeline — two things running at once, a lock, a queue that stops moving — never a function
+# returning the wrong value, and this is the check for that class.
+spira/test-soak.sh
+
+# THE POISON COUNTER'S OWN, and it is here because poison is the one piece of state the
+# pipeline writes that nothing undoes on its own. A bead wrongly poisoned is not retried, not
+# reported and not claimable, so the failure is silent by construction — and the counter
+# charged for worker deaths and rate-limit refusals for as long as nobody was reading it. The
+# suite pins the charging rule to default-deny and pins the counter to one door; both are
+# properties an edit can remove without anything failing.
+spira/test-poison.sh
+
+# THE VERDICT CHECK, which earns its place by the same rule as the fences: it is a property
+# of the pipeline, not of a function's return value. A bead that is reopened forever is a
+# queue that has stopped moving, and it costs a session every two minutes while it does.
+spira/test-aeon-verdict.sh
+
+# THE WATCHTOWER'S OWN, and it earns its place by the same rule read the other way round. A
+# gate that breaks refuses good work, loudly; a DETECTOR that breaks reports the stall and the
+# healthy case identically, and the reassuring reading is the one it gives. Detection is what
+# this gate deferred to (law-detection-outranks-rejection), so the one check the deleted
+# seventeen minutes cannot be traded for is that the detector can still read the far end of
+# the queue. Its headline field was unreadable from the day it shipped and woke three Ops
+# sessions before anyone looked at the bytes.
+spira/test-watchtower.sh
+
+# THE HERMETICITY FENCE'S OWN POSITIVE CONTROL, and it is the reason that fence is worth the
+# line it costs. A static check that reports a clean tree looks identical whether its matcher
+# fires or never could, so the fence alone would be a green light nobody had tested; this
+# plants an offender of each shape and requires it to be named.
+spira/test-hermetic.sh
+
+# THE ATTEMPT LEDGER'S OWN. An attempt count decides whether work is poisoned, so a count
+# that charges the harness for its own restarts removes work nobody ever tried.
+spira/test-attempts.sh

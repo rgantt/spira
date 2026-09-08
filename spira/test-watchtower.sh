@@ -241,10 +241,28 @@ echo "the snapshot still renders as a whole:"
 fresh
 land_mark sp-whole LANDED cafe5 spira
 snap="$(wt)"
-for section in 'The far end' 'The workers' 'The graph' 'Can this snapshot be believed'; do
+for section in 'The far end' 'The workers' 'The graph' 'The menu' 'Can this snapshot be believed'; do
     want "the snapshot still carries: $section" "$section" "$snap"
 done
 want "and still warns that ? is not a zero" "never treat it as a zero" "$snap"
+
+# ======================================================================================
+echo
+echo "the sweep NAMES the scans rather than running them:"
+# ======================================================================================
+# THE DIVISION IS THE POINT AND IT IS LOAD-BEARING. A several-minute suite run inside this
+# program would make the detector the thing that is down during an outage, and would push a
+# ten-minute cadence past the interval that produces it. So the sweep carries the scan's NAME
+# and the cheap figures that say whether it is worth a pass, and the Ops session spends its
+# own budget on it. The name is asserted because a menu naming nothing is a scan that runs
+# nowhere, which is the defect the runner was written to end.
+want "the sweep names the timed suite run"      "suites.sh run" "$snap"
+want "and says what the runner covers"          "the landing gate does NOT run" "$snap"
+want "and carries its cheap figures, not its output" "suites in the tree" "$snap"
+# It must not have RUN anything: `--show` touches nothing, and a suite executed here would
+# have written a result under the scratch runtime directory.
+is "and the sweep ran no suite of its own" "0" \
+   "$(find "$TMP/run" -name '*.result' 2>/dev/null | wc -l)"
 
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"

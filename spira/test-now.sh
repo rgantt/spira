@@ -15,6 +15,8 @@
 # looking behind — so every case here has its negative beside it.
 #
 # No database, no network, under a second.
+#
+# covers: cockpit/health.sh spira/lib.sh spira/cockpit.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PANE="$HERE/../cockpit/health.sh"

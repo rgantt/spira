@@ -173,6 +173,26 @@ for _f in $(spira_fayths 2>/dev/null); do
     aeons_live=$(( aeons_live + $(aeon_count "$_f" 2>/dev/null || echo 0) ))
 done
 
+# ---------------------------------------------------------------------------------------
+# THE MENU. The sweep names scans for the Ops session to RUN; it does not run them here.
+#
+# That division is the whole point and it is not decoration. This program's contract is to be
+# deterministic and cheap, because the one thing a detector may not be is another thing that
+# is down during an outage — a several-minute test run inside it would make it exactly that,
+# and would push a ten-minute cadence past the interval that produces it. So the menu is a
+# NAME plus the cheap facts that say whether the scan is worth this pass, and the session
+# spends its own eight minutes on it.
+#
+# `suites.sh status` is a glob and a read per suite: no database, no network, nothing that
+# can hang. A pass that cannot produce it prints why rather than an empty section, because a
+# menu with nothing on it and a menu that could not be built read identically otherwise.
+SUITES="$(dirname "$0")/suites.sh"
+suites_block="  (unavailable — $SUITES is missing, so nothing knows which suites run nowhere)"
+if [ -r "$SUITES" ]; then
+    suites_block="$(bash "$SUITES" status 2>/dev/null)"
+    [ -n "$suites_block" ] || suites_block="  (unreadable — suites.sh status produced nothing)"
+fi
+
 snapshot() {
 cat <<EOF
 ## Spira pipeline, $(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -201,6 +221,21 @@ reading \`?\` is one this pass COULD NOT READ — never treat it as a zero.
 
   open $(g SP_OPEN) · closed $(g SP_CLOSED) · landed $(g SP_LANDED) · needs-operator $(g SP_NEEDSOP)
   parked on CI $(g SP_AWAITING_N), oldest $(g SP_AWAITING_AGE), stuck $(g SP_AWAITING_STUCK)
+
+### The menu — run these scans, then look for what they do not cover
+
+A sweep is not only a set of numbers to read. These are the scans that are worth sampling
+before anything else, because each answers a question the numbers above cannot.
+
+  bash $SUITES run
+
+    Every \`spira/test-*.sh\` in the tree that the landing gate does NOT run, discovered by
+    glob so a new suite is run by existing and a deleted one stops being run. It files a bead
+    per red, blocks nothing and reopens nothing, and is budgeted at ${SPIRA_SUITES_BUDGET:-420}s
+    so it fits inside your own wall. Worth a pass when a figure below says a timed suite has
+    no result or a stale one; skip it when they are all fresh and green.
+
+$suites_block
 
 ### Can this snapshot be believed?
 

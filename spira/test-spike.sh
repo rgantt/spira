@@ -116,7 +116,8 @@ for f in "$HERE"/chamber/*.md; do
         [ -x "$cand" ] || missing="$missing $cand"
     done < <(
         sed -e "s|{{SOP}}|$HERE/sop.sh|g" -e "s|{{INCIDENT}}|$HERE/incident.sh|g" \
-            -e "s|{{ASK}}|${SPIRA_NOTIFY:-$SPIRA_COCKPIT/ask.sh}|g" "$f" |
+            -e "s|{{ASK}}|${SPIRA_NOTIFY:-$SPIRA_COCKPIT/ask.sh}|g" \
+            -e "s|{{SUITES}}|$HERE/suites.sh|g" "$f" |
         grep -oE '(^|[`( ])/[A-Za-z0-9_./-]+\.sh' | tr -d '`( ' | sort -u
     )
     is "every command $n.md names exists and is executable" "" "$missing"

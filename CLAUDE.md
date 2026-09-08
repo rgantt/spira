@@ -37,21 +37,28 @@ them back at the installed copy would make the gate test the code already in for
 
 ## Tests
 
-`spira/test-*.sh`, discovered rather than listed — add one and it is gated. Run the suites
-that cover what you changed while you work, and the whole gate once before you push.
+`spira/test-*.sh`, discovered by glob and never from a list — add one and something runs it.
+Run the suites that cover what you changed while you work, and the whole gate once before you
+push.
+
+**Two places a suite can run, and adding one puts it in the second.** `spira/gate-suites`
+names the few the landing gate runs on every branch, each with the reason it earns the wait;
+that is the only hand-written list of suites here and adding to it is a deliberate act. The
+glob's complement — everything `spira/test-*.sh` finds that the list does not name — is run by
+`spira/suites.sh` on a schedule, inside the Ops session, which files a bead per red and blocks
+nothing. So a new suite is executed by existing, a deleted one stops being run with no edit,
+and the two sets cannot be edited into overlapping. Before this the gate's list was
+unreadable from outside the gate: five of nine suites ran nowhere at all, three of them landed
+the same night with their beads closed citing them as verification.
 
 **Every suite declares what it covers**, on a `# covers:` line just above its `set -uo
-pipefail`, as space-separated path globs. The landing gate selects suites from the changed
-files through those declarations and refuses a branch where a suite declares nothing, so this
-is the one thing there is to remember when adding a suite. Err wide: a suite run needlessly
-costs seconds, while a file no suite claims to cover forces the whole set on every branch that
-touches it. Changing a shared file — `lib.sh`, `conf.sh`, `testdb.sh`, any `gate*.sh` — selects
-everything, and so does any path no suite claims. A `# covers:` glob outranks a file's
-extension, so a suite may claim prose and should where prose is executable in effect — the
-personas are `.md` files. `spira/gate-select.sh` is the selector and
-`--lint` is what the gate runs; `gate-full.sh` runs the whole set against the base ref daily
-and escalates on red, which is what makes a hole in the map a fact within a day rather than
-never.
+pipefail`, as space-separated path globs. Err wide: a suite run needlessly costs seconds. A
+`# covers:` glob outranks a file's extension, so a suite may claim prose and should where
+prose is executable in effect — the personas are `.md` files. Nothing selects on those
+declarations yet; they are what a later selector will read, and a selector is only sound once
+a full run exists behind it. A suite that declares nothing is reported by `suites.sh` as an
+omission and is still run — skipping it would rebuild the defect that program ends.
+`suites.sh list` prints every suite, where it runs, and what it claims.
 
 Three properties the existing suites have and a new one should too:
 

@@ -205,6 +205,52 @@
 # open no pull request, so there is no run to wait for at any deadline.
 # SPIRA_CI_PARK_MAX = 5400
 
+# ---- the suites, and where each of them runs -----------------------------------------------
+# Which suites the LANDING GATE runs, as a file of repository-relative paths with the reason
+# each earns the wait beside it. `spira/suites.sh` reads the same file and runs everything the
+# `spira/test-*.sh` glob finds that it does NOT name — so the gated set and the timed set are
+# complements by construction and no suite can fall between them.
+#
+# What suites EXIST is the glob and never a list. The list used to live inside the gate where
+# nothing else could read it, so nothing could answer "which suites does the gate not run":
+# nine suites, four gated, five executed by nothing at all. A suite nobody runs is not a cheap
+# test, it is a false record of coverage, and worse than no suite.
+#
+# The gate itself reads the copy in the tree UNDER TRIAL rather than this key, for the same
+# reason SPIRA_HOME is not settable: it extracts a branch to a scratch tree and must judge that
+# tree, so a configured path would point it back at the code already in force.
+# SPIRA_GATE_SUITES = <the harness>/gate-suites
+
+# Where the timed run records what it found — one file per suite, holding a status, the epoch
+# it was written and how long the suite took. A GREEN CYCLE HAS TO LEAVE A POSITIVE RECORD:
+# without one, "no bead was filed" reads identically whether every suite passed or the runner
+# has not run since the box came up, and an empty directory gives the reassuring reading.
+# SPIRA_SUITES_STATE = <the runtime directory>/suites
+
+# How long one timed pass may take, and how long any one suite inside it may run, in seconds.
+# The pass runs INSIDE an Ops session whose own wall systemd enforces, so the budget is under
+# it with room for the session to read the sweep and write up what it found. A pass that runs
+# out of budget stops cleanly and leaves a cursor, so the suites it did not reach LEAD the next
+# pass rather than being the ones that are never run. The per-suite timeout is one key for both
+# the gate and the timed pass, because a suite affordable in one and not the other is a suite
+# whose cost nobody has decided.
+# SPIRA_SUITES_BUDGET = 420
+# SPIRA_SUITE_TIMEOUT = 600
+
+# The priority a red from the timed pass is filed at. Routine by default: that pass blocks
+# nothing and reopens nothing, and a failure caught twenty minutes after landing is fine when a
+# revert undoes it. A suite covering something where that is not true says so ITSELF, with a
+# `# priority: N` line beside its `# covers:` line — how urgent a failure is, is a claim only
+# the suite's author can make, and a central table of it would be a second list to keep in step
+# with the glob.
+# SPIRA_SUITES_PRIORITY = 2
+
+# How old a suite's result may be before it stops being evidence, in seconds. Past this the
+# sweep reports the suite as unrun rather than as green, because a stale pass and a runner that
+# has stopped are the same silence from outside. Keep it longer than the interval at which the
+# sweep names the scan, so an ordinary quiet hour does not read as a fault.
+# SPIRA_SUITES_STALE = 21600
+
 # ---- the read surface over the live graph --------------------------------------------------
 # Where Loom listens: one route serving the live beads and the dependency edges between them,
 # and the page that draws them. LOCALHOST BY DEFAULT, deliberately — a bead carries internal

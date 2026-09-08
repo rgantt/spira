@@ -364,36 +364,48 @@ goes back into the report that would have found it.
 The ops pane reports the two populations separately, because "waiting on a run" is routine and
 "parked with no run to wait for" is a fault.
 
-## The gate runs the suites the change needs
+## What the gate runs, and what runs everything else
 
 The landing gate is serialised and it dominates a landing pass, so what it costs is the cap on
 how fast finished work reaches the base ref — and the branches paying it most often are the
-ones least able to break anything. A prose edit used to build a database fixture and run every
-suite in the repository.
+ones least able to break anything. So the gate does not run every suite in the tree. It runs
+the pipeline's own: the fences over what a revert cannot undo, a soak over the merge queue,
+and the handful of suites covering the state the pipeline writes that nothing takes back.
 
-So each suite declares what it covers, on a `# covers:` line naming path globs, and
-`spira/gate-select.sh` reads the changed files through those declarations. The rules are
-short and every uncertain one widens rather than narrows, because the only failure that
-matters here is running too FEW suites and that failure is green:
+Which ones is `spira/gate-suites`, one repository-relative path per line with the reason it
+earns the wait beside it. That list is the ONLY hand-written list of suites in the harness.
+What suites EXIST is a glob over `spira/test-*.sh`, and never a list.
 
-- a shared file — `lib.sh`, `conf.sh`, `testdb.sh`, any `gate*.sh` — selects everything;
-- a changed path no suite claims selects everything, so a new file is never quietly skipped;
-- an absent, empty or unreadable changed-file list selects everything;
-- only an explicit list of inert paths — prose, the ignore file, images — may select nothing,
-  and only where no suite claims them: a `# covers:` glob naming a file outranks its
-  extension, because the extension is a guess that it cannot change behaviour and the glob
-  is a statement that it can. The personas an aeon is executed with are `.md` files.
+Everything the glob finds that `gate-suites` does not name is run by `spira/suites.sh` on a
+schedule instead — so the two sets are complements by construction, a suite dropped from the
+gate moves to the timed run rather than out of the world, and neither can be edited into
+overlapping the other. That shape exists because the list used to live inside the gate where
+nothing else could read it, and nothing could then answer "which suites does the gate not
+run": measured once, nine suites, four gated, **five executed by nothing at all**, three of
+them landed the same night with their beads closed citing them as verification. A suite
+nobody runs is not a cheap test. It is a false record of coverage, and worse than no suite,
+because its existence is what stops anybody writing the check it was meant to be.
 
-Two mechanisms keep the map honest, because it is maintained by hand and decays the first time
-somebody moves a function between two scripts. The gate refuses a branch where any suite
-declares no `# covers:` line, since a suite claiming nothing looks exactly like a suite that is
-passing. And `spira/gate-full.sh` runs the whole set against the ref everything lands on, daily
-from `spira-gate-full.timer`, where a red result is nobody's branch and is therefore either a
-hole in the map or something already landed broken — escalated once per distinct finding. That
-is the meter: it says when the cheap selection has stopped being adequate, rather than leaving
-it to be discovered by the defect it let through.
+`suites.sh run` files a bead per red — through the same intake a crashed unit uses, deduped on
+the suite and a fingerprint of the failure, so a persistent red bumps a recurrence rather than
+filing every cycle — and it blocks nothing, reopens nothing and refuses no branch. A failure
+caught twenty minutes after landing is fine when a revert undoes it. A green cycle leaves a
+timestamped record per suite, because "no bead was filed" otherwise reads identically whether
+everything passed or the runner has not run since the box came up.
 
-Set `SPIRA_GATE_ALL=1` to run everything regardless.
+It runs INSIDE the Ops session, which is why it has no timer of its own: `watchtower.sh` names
+the scan on the sweep it files and the Ops aeon runs it within its budget. The watchtower may
+not run it, and that is not decoration — a detector's one obligation is to be cheap and
+deterministic, because the thing it must not be is another thing that is down during an
+outage.
+
+Each suite also declares what it covers, on a `# covers:` line naming path globs. Nothing
+selects on those yet; they are what a later selector will read, and a selector is only sound
+once a full run exists behind it — an unmapped file has to fall back to "run everything", and
+"everything" was exactly the hand-kept list that was already missing five of nine.
+`suites.sh list` prints every suite, where it runs, and what it claims; a suite that declares
+nothing is reported as an omission and is still run, because skipping it would rebuild the
+defect inside the program written to end it.
 
 ### And it is run in bounded slices, because an agent's tool has a ceiling
 
@@ -726,8 +738,8 @@ Generic mechanism. A colleague clones this and it carries none of the operator's
 | `spira/inventory-deny` | the tokens that fence refuses beyond the structural ones. Ships EMPTY: a list of somebody else's names is itself the inventory |
 | `spira/hermetic.sh` | the fence over the suites themselves: a static scan refusing a test that names `systemctl`, `gh` or an undirected `bd`/`git`. A suite that reads the box is green until the box changes, then refuses correct work with nothing pointing anywhere but at the branch. `# hermetic-ok: <why>` stands it down at the call |
 | `spira/actors.example` | commit author to harness, for authors the commit graph cannot vote on. Its rows are one installation's roster |
-| `spira/gate-select.sh` | which suites a changed-file list needs, read from the `# covers:` line each suite declares about itself. Every uncertain case selects everything — the only wrong answer here is too few, and too few is green |
-| `spira/gate-full.sh` | the meter under that selection: runs the whole suite set against the ref everything lands on, daily, and escalates on red. A hand-kept map decays silently, so it is checked rather than trusted |
+| `spira/gate-suites` | which suites the landing gate runs, one path per line with the reason each earns the wait. The only hand-written list of suites here; what suites EXIST is a glob |
+| `spira/suites.sh` | runs everything that glob finds and `gate-suites` does not name, on a schedule, and files a bead per red. Blocks nothing. A suite nobody runs is a false record of coverage, which is worse than no suite |
 | `spira/skew.sh` | is the harness in force the harness that landed — the hourly check that the executing copy is current, clean and the only one, and the landing gate's fence against work landing in a copy nothing executes |
 | `spira/doctor.sh` | read-only preflight — every missing program, unreadable database, unmapped repository and unbuilt panel, named in one pass |
 | `spira/statutes/` | the SEED statute book, one file per statute. Statutes live in the beads KV store, which is per-installation, so a clone gets the mechanism and none of the law unless it ships as text |

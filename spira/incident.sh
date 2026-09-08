@@ -35,6 +35,19 @@
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
+# WHICH PARTITION AN INTAKE LANDS IN, and therefore who works it. `spira,incident` is Ops's
+# and is the default, because the original caller was a crashed unit and Ops is the healer.
+# A caller whose finding is a DEFECT rather than an outage sets this to the builder's labels
+# instead: a red test suite needs somebody who can change the code, and Ops has eight minutes
+# and a runbook. Everything else about the intake — the write-ahead spool, the dedupe on the
+# external ref, the recurrence bump, the Sin escalation — is the same either way, and is the
+# reason a second implementation of "file a bead, but only once" does not exist.
+#
+# THE OPEN-BEAD LOOKUP USES THE SAME VALUE. Filing under one label set and deduping under
+# another would find no open bead every time and file a fresh one on every pass, which is the
+# exact failure the dedupe exists to prevent, arriving silently.
+LABELS="${SPIRA_INCIDENT_LABELS:-spira,incident}"
+
 SPOOL="${SPIRA_SPOOL:-$SPIRA_RUN/incident-spool}"
 ILOG="${SPIRA_INCIDENT_LOG:-$SPIRA_RUN/incident.log}"
 SIN_AT="${SPIRA_SIN_AT:-5}"
@@ -52,7 +65,7 @@ open_incident() {        # open_incident <ref> -> bead id or empty
     # `bd list --external-ref` is an exact-match filter that already exists, and the
     # hand-rolled version would additionally have depended on external_ref surviving the
     # JSON round trip, which is a fact about a version rather than about the data.
-    bdjson list --status open,in_progress --limit 0 --label spira,incident \
+    bdjson list --status open,in_progress --limit 0 --label "$LABELS" \
                 --external-ref "$1" 2>/dev/null \
       | python3 -c '
 import sys, json
@@ -113,7 +126,7 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
     id="$(BEADS_ACTOR="${SPIRA_INCIDENT_ACTOR:-${BEADS_ACTOR:-}}" \
           bdq create "$title" --type "${SPIRA_INCIDENT_TYPE:-bug}" \
             --priority "${SPIRA_INCIDENT_PRIORITY:-1}" \
-            --labels spira,incident --external-ref "$ref" \
+            --labels "$LABELS" --external-ref "$ref" \
             --body-file "$pf" --silent 2>/dev/null | tr -d '[:space:]')"
     if [ -z "${id:-}" ]; then
         ilog "create FAILED for $ref — stays spooled"
@@ -206,7 +219,15 @@ systemd)
 file)
     title="${2:?usage: incident.sh file <title> [-|<file>]}"
     src="${3:--}"
-    ref="incident:$(printf '%s' "$title" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-60)"
+    # THE REF IS THE DEDUPE KEY AND THE CALLER MAY STATE IT. Derived from the title only
+    # because most callers have nothing better; a title is prose, it is truncated at 60
+    # characters here, and two genuinely different findings that happen to share a wording
+    # would then dedupe into one bead and the second would be lost as a recurrence of the
+    # first. A caller that knows the identity of what it found — a suite plus the fingerprint
+    # of its failure — passes that instead, and gets the dedupe the comment on open_incident
+    # promises: keyed on an identifier, not on words somebody will eventually reword.
+    ref="${SPIRA_INCIDENT_REF:-}"
+    [ -n "$ref" ] || ref="incident:$(printf '%s' "$title" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-60)"
     case "$src" in
         -) sp="$(spool_write "$ref" "$title")" ;;
         *) sp="$(spool_write "$ref" "$title" < "$src")" ;;
@@ -228,7 +249,7 @@ drain)
     ;;
 
 list)
-    bdq list --status open,in_progress --limit 0 --label spira,incident 2>/dev/null \
+    bdq list --status open,in_progress --limit 0 --label "$LABELS" 2>/dev/null \
         | grep -vE '^💡|^warning|^  Fix|^  Or'
     n="$(find "$SPOOL" -maxdepth 1 -type f ! -name '*.bad' 2>/dev/null | wc -l)"
     [ "$n" -gt 0 ] && printf '\n%s event(s) still in the spool — run: incident.sh drain\n' "$n"

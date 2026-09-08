@@ -111,35 +111,30 @@ run() {                  # run <suite> — its output only when it matters
     esac
 }
 
-# THE THIRD IS THE VERDICT CHECK, and it earns its place by the same rule as the other two:
-# it is a property of the pipeline, not of a function's return value. A bead that is reopened
-# forever is a queue that has stopped moving, and it costs an Opus session every two minutes
-# while it does — which is more than every quality check this gate deleted was ever worth.
-# 13s.
-#
-# THE FOURTH IS THE WATCHTOWER'S OWN, and it earns its place by the same rule read the other
-# way round. A gate that breaks refuses good work, loudly; a DETECTOR that breaks reports the
-# stall and the healthy case identically, and the reassuring reading is the one it gives.
-# Detection is what this gate deferred to (law-detection-outranks-rejection), so the one
-# check the deleted 17 minutes cannot be traded for is that the detector can still read the
-# far end of the queue. Its headline field was unreadable from the day it shipped and woke
-# three Ops sessions before anyone looked at the bytes. Under a second, no database.
-#
-# THE FIFTH IS THE HERMETICITY FENCE'S OWN POSITIVE CONTROL, and it is the reason the fence
-# above is worth the line it costs. A static check that reports a clean tree looks identical
-# whether its matcher fires or never could, so the fence alone would be a green light nobody
-# had tested; this plants an offender of each shape and requires it to be named. Under a
-# second, no database.
-#
-# THE SIXTH IS THE POISON COUNTER'S OWN, and it is here because poison is the one piece of
-# state the pipeline writes that nothing undoes on its own. A bead wrongly poisoned is not
-# retried, not reported and not claimable, so the failure is silent by construction — and the
-# counter charged for worker deaths and rate-limit refusals for as long as nobody was reading
-# it. The suite pins the charging rule to default-deny and pins the counter to one door; both
-# are properties an edit can remove without anything failing.
-for s in spira/test-soak.sh spira/test-poison.sh spira/test-aeon-verdict.sh spira/test-watchtower.sh \
-         spira/test-hermetic.sh spira/test-attempts.sh; do
-    [ -r "$s" ] || { say "$s is missing — refusing to report a pass without it"; exit 1; }
+# WHICH SUITES, AND WHY EACH — in `spira/gate-suites`, one path per line with its reason
+# beside it. It is a file rather than a list on the line below for one reason: nothing else
+# could read the list while it lived here, so no program could answer "which suites does the
+# gate NOT run", and the answer went unexamined until five of nine suites were running
+# nowhere at all. `suites.sh` runs the complement on a timer, derived from the same file, so
+# a suite dropped from the gate moves to the timed run rather than out of the world.
+SUITE_LIST=spira/gate-suites
+[ -r "$SUITE_LIST" ] || { say "$SUITE_LIST is missing — refusing to report a pass without it"; exit 1; }
+# Read whole first, then run: a list that names a file which does not exist is a gate
+# reporting on work it never looked at, and finding that out halfway through means the
+# suites before the bad line have already been paid for.
+suites=""
+while IFS= read -r s || [ -n "$s" ]; do
+    s="${s%%#*}"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"
+    [ -n "$s" ] || continue
+    [ -r "$s" ] || { say "$SUITE_LIST names $s, which is not here — refusing to report a pass without it"; exit 1; }
+    suites="$suites $s"
+done < "$SUITE_LIST"
+# AN EMPTY LIST IS A FAILURE, NOT AN EMPTY GATE (law-absence-needs-a-positive-control). A
+# truncated or all-comment file would otherwise run nothing and exit 0, which is the one
+# verdict a gate must never reach by accident.
+[ -n "$suites" ] || { say "$SUITE_LIST names no suite — refusing to report a pass on nothing"; exit 1; }
+
+for s in $suites; do
     run "$s"
 done
 

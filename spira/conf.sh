@@ -69,6 +69,8 @@ SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CT
 SPIRA_ARCHIVE
 SPIRA_ARCHIVIST_AT SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
 SPIRA_TESTDB_LIB SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT
+SPIRA_GATE_SUITES SPIRA_SUITES_STATE SPIRA_SUITES_BUDGET SPIRA_SUITE_TIMEOUT
+SPIRA_SUITES_PRIORITY SPIRA_SUITES_STALE
 "
 
 # --------------------------------------------------------------------------------------
@@ -492,6 +494,50 @@ spira_conf_defaults() {
     # no configuration at all.
     local _tdb; _tdb="$(basename "$SPIRA_HOME")"
     : "${SPIRA_TESTDB_LIB:=$_tdb/testdb.sh}"
+
+    # WHICH SUITES THE LANDING GATE RUNS, as a file of repository-relative paths, one per
+    # line. suites.sh reads it to run everything the `spira/test-*.sh` glob finds that this
+    # file does NOT name — so the gated set and the timed set are complements by construction
+    # and no suite can fall between them. That is the whole defect the file exists to close:
+    # the list used to live inside gate-spira.sh where nothing else could read it, and five of
+    # nine suites were running nowhere at all before anybody compared the two by hand.
+    #
+    # THE GATE ITSELF IGNORES THIS KEY and reads the copy beside it in the tree under trial,
+    # which is not a disagreement but the same rule as SPIRA_HOME: the gate extracts a branch
+    # to a scratch tree and must judge THAT tree, so a configured path would point it back at
+    # the installed copy and it would test the code already in force. In every real
+    # installation the two resolve to the same file. What the key buys is a fixture that can
+    # pin it somewhere disposable, which is what stops a suite asserting against the shipped
+    # list and passing just as well with the list written back into the code.
+    : "${SPIRA_GATE_SUITES:=$SPIRA_HOME/gate-suites}"
+    # WHERE THE TIMED RUN RECORDS WHAT IT FOUND — one file per suite, holding a status, the
+    # epoch it was written and how long the suite took. A green cycle has to leave a POSITIVE
+    # record: without one, "no bead was filed" reads identically whether every suite passed or
+    # the runner has not run since the box came up, and the reassuring reading is the one an
+    # empty directory gives (law-absence-needs-a-positive-control).
+    : "${SPIRA_SUITES_STATE:=$SPIRA_RUN/suites}"
+    # HOW LONG ONE TIMED PASS MAY TAKE, in seconds. The pass runs INSIDE an Ops session, whose
+    # own wall is FAYTH_TIMEOUT_SECONDS — 480 — enforced by systemd rather than requested. So
+    # this is under it with room for the session to read the sweep, run the scan and write up
+    # what it found. A pass that runs out of budget stops cleanly and leaves a cursor, so the
+    # suites it did not reach lead the next pass rather than being the ones that are never run.
+    : "${SPIRA_SUITES_BUDGET:=420}"
+    # HOW LONG ANY ONE SUITE MAY RUN, in seconds, in the gate and in the timed pass alike. One
+    # key for both, because a suite that is affordable in one and not the other is a suite
+    # whose cost nobody has decided.
+    : "${SPIRA_SUITE_TIMEOUT:=600}"
+    # THE PRIORITY A RED FROM THE TIMED PASS IS FILED AT. Routine by default: the timed pass
+    # blocks nothing and reopens nothing, and by law-reversibility-outranks-coverage a failure
+    # caught twenty minutes after landing is fine when a revert undoes it. A suite that covers
+    # something where that is not true says so ITSELF, with a `# priority: N` line beside its
+    # `# covers:` line — the priority of what a suite covers is a claim only the suite's author
+    # can make, and a central table of it would be a second list to keep in step with the glob.
+    : "${SPIRA_SUITES_PRIORITY:=2}"
+    # HOW OLD A SUITE'S RESULT MAY BE BEFORE IT IS NO LONGER EVIDENCE, in seconds. Past this
+    # the watchtower reports the suite as unrun rather than as green, because a stale pass and
+    # a runner that has stopped are the same silence from outside. Longer than the interval at
+    # which the sweep names the scan, so an ordinary quiet hour does not read as a fault.
+    : "${SPIRA_SUITES_STALE:=21600}"
 
     # THE MAP FALLS BACK TO THE EXAMPLE, and that is what makes a clean clone runnable at
     # all. The real map is one operator's inventory of checkouts and does not ship; the
