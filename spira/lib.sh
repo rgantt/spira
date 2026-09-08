@@ -1918,7 +1918,29 @@ else:
 # --------------------------------------------------------------------------------------
 youngest_in_subtree() {
     local root="$1" exclude="${2:-0}" newest=0
-    local p pid st cur hops hit excl
+    local p pid st cur hops hit excl parent
+    # Build entire ppid map with ONE awk pass, then walk ancestry via array lookups.
+    # Old: forked awk per ancestor hop per pid (up to 40 hops * 461 processes = 18k forks).
+    # Scales to 4.8s on a loaded box; kills suites faster than they can finish.
+    # New: one pass builds the map; ancestry walks as O(1) lookups.
+    declare -A ppid
+    # PARSE AFTER THE COMM, NOT BY FIELD NUMBER. /proc/<pid>/stat is "pid (comm) state ppid",
+    # and comm is an arbitrary process name in parentheses that MAY CONTAIN SPACES — right now
+    # this box is running "(Web Content)", "(Socket Process)" and "(tmux: server)". For those,
+    # $4 is the state character, not the ppid, so the ancestry walk looks up ppid["S"], finds
+    # nothing, and silently stops one hop in. A worker descending from any such process would
+    # not be attributed to its root, and youngest_in_subtree exists to say whether an aeon is
+    # alive: under-reporting here reaps an aeon that is working. Split on the LAST ")" instead,
+    # which is unambiguous because comm is the only parenthesised field.
+    while IFS=' ' read -r pid parent; do
+        [ -n "$pid" ] && ppid["$pid"]="$parent"
+    done < <(awk '{ n = match($0, /^[0-9]+ \(/); if (!n) next
+                    close_paren = 0
+                    for (i = length($0); i > 0; i--) if (substr($0, i, 1) == ")") { close_paren = i; break }
+                    if (!close_paren) next
+                    rest = substr($0, close_paren + 2)      # "state ppid ..."
+                    split(rest, a, " ")
+                    print $1, a[2] }' /proc/*/stat 2>/dev/null)
     for p in /proc/[0-9]*/stat; do
         pid="${p%%/stat}"; pid="${pid##*/}"
         [ "$pid" = "$exclude" ] && continue
@@ -1927,7 +1949,7 @@ youngest_in_subtree() {
             [ "$cur" = "$root" ] && { hit=1; break; }
             [ "$cur" = "$exclude" ] && { excl=1; break; }
             [ "$cur" = "1" ] || [ -z "$cur" ] && break
-            cur=$(awk '{print $4}' "/proc/$cur/stat" 2>/dev/null) || break
+            cur="${ppid["$cur"]}" || break
             hops=$((hops+1))
         done
         [ "$hit" = 1 ] && [ "$excl" = 0 ] || continue
@@ -1945,7 +1967,13 @@ youngest_in_subtree() {
 # --------------------------------------------------------------------------------------
 subtree_has_flock() {
     local root="$1"
-    local p pid cur hops hit comm
+    local p pid cur hops hit comm parent
+    # Same ppid-map optimization as youngest_in_subtree:
+    # build the entire map with ONE awk pass, walk ancestry via array lookups.
+    declare -A ppid
+    while IFS=' ' read -r pid parent; do
+        ppid["$pid"]="$parent"
+    done < <(awk '{print $1, $4}' /proc/*/stat 2>/dev/null)
     for p in /proc/[0-9]*/comm; do
         comm="$(cat "$p" 2>/dev/null)" || continue
         [ "$comm" = "flock" ] || continue
@@ -1954,7 +1982,7 @@ subtree_has_flock() {
         while [ "$hops" -lt 40 ]; do
             [ "$cur" = "$root" ] && { hit=1; break; }
             [ "$cur" = "1" ] || [ -z "$cur" ] && break
-            cur=$(awk '{print $4}' "/proc/$cur/stat" 2>/dev/null) || break
+            cur="${ppid["$cur"]}" || break
             hops=$((hops+1))
         done
         [ "$hit" = 1 ] && return 0
