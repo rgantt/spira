@@ -251,5 +251,27 @@ want "and says summons stay gated" "REMAIN GATED"         "$out"
 kill "$WORKER_PID" 2>/dev/null; wait "$WORKER_PID" 2>/dev/null; WORKER_PID=""
 world resume >/dev/null
 
+# ---- THE GATE MUST COVER EVERY DOOR, NOT JUST THE TIDY ONE --------------------------
+# summon_fayth() is called only from sentinel.sh, and that grep is what made the first
+# version of this gate look complete. It was not: spira-ops.service and spira-qa.service
+# ExecStart aeon.sh DIRECTLY, so ops and qa never reach summon_fayth. A qa aeon was summoned
+# four minutes into a drain that had reported DRAINED (sp-637b, 2026-09-08).
+#
+# So this asserts on the FILE, not on behaviour: every unit template whose ExecStart is
+# aeon.sh is a door, and aeon.sh itself must carry the gate. A new ops-shaped persona added
+# later fails here rather than in production.
+HARNESS="$(cd "$HERE/.." && pwd)"
+if [ -d "$HARNESS/systemd" ]; then
+    doors="$(grep -l 'ExecStart=.*aeon\.sh' "$HARNESS/systemd"/*.service 2>/dev/null | wc -l)"
+    [ "${doors:-0}" -ge 1 ] && ok "units that ExecStart aeon.sh directly exist ($doors) — the gate must cover them" \
+                            || bad "direct-ExecStart doors" "expected at least one, found ${doors:-0}"
+    grep -q 'world.draining' "$HARNESS/spira/aeon.sh" \
+        && ok "aeon.sh itself carries the drain gate" \
+        || bad "aeon.sh carries the drain gate" "no world.draining check in aeon.sh"
+    grep -q 'world.draining' "$HARNESS/spira/lib.sh" \
+        && ok "summon_fayth also carries it (cheaper: never starts the unit)" \
+        || bad "summon_fayth carries the drain gate" "no world.draining check in lib.sh"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

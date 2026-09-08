@@ -105,6 +105,25 @@ if [ "$have" -ge "${FAYTH_MAX_CONCURRENT:-1}" ]; then
     exit 0
 fi
 
+# ---- draining -------------------------------------------------------------------------
+# BOUND HERE FOR THE REASON THE PARAGRAPH BELOW ALREADY GIVES, and it is here because that
+# paragraph was not read closely enough the first time. The drain gate went into
+# summon_fayth() alone, on the strength of a grep showing summon_fayth is called only from
+# sentinel.sh. That grep was true and the conclusion was wrong: spira-ops.service and
+# spira-qa.service ExecStart THIS SCRIPT directly, so ops and qa never pass through
+# summon_fayth at all. A qa aeon was summoned four minutes into a drain that reported
+# DRAINED (sp-637b, 2026-09-08 20:06). law-guard-binds-the-caller, in the one shape the
+# file already warned about.
+#
+# Exit 0, not 1: an aeon that correctly declined LIVED, exactly as the capacity and
+# concurrency cases below argue. A failed unit here would make a deliberate drain look like
+# a broken timer every time it fired.
+if [ -f "${SPIRA_RUN:-}/world.draining" ]; then
+    log "$FAYTH: draining — claiming nothing (world.sh resume to lift)"
+    ledger "awake $FAYTH draining"
+    exit 0
+fi
+
 # ---- the account ----------------------------------------------------------------------
 # BOUND HERE AS WELL AS AT summon_fayth, because aeons arrive from two places — the
 # sentinel's CHECK 7 and spira-ops.service — and a guard on one of them binds whichever
