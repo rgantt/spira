@@ -879,8 +879,7 @@ summon_fayth() {         # summon_fayth <fayth> [pool-remaining]
     # ahead of capacity and readiness, because it is the only condition here a person is
     # actively blocked on: a rollout that must not kill work in flight — install.sh, a schema
     # change, swapping the checkout aeon.sh itself is read from — needs the pool to reach
-    # zero, and it never does while summons continue (per Ryan, 2026-09-08: "that's the only
-    # way they will ever drain").
+    # zero, and it never does while summons continue.
     #
     # THE GATE IS HERE, NOT ON THE TIMER, and that is the whole design. Landing is a LEG of
     # the sentinel pass (sentinel.sh starts spira-landing) and not a timer of its own, so
