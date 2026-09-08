@@ -758,10 +758,13 @@ export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin
 # sentinel logged "no fayth in the chamber" for every persona, and Spira summoned nothing for
 # six minutes while the panes showed 0 ready rather than a fault.
 #
-# The cursor was rolled back v61 -> v53 per the vendor's RECOVERY-1.2.1.md on 2026-09-08
-# (sp-6ylz, on Ryan's verdict). Verified after: bd reads and writes the database with the flag
-# UNSET, 2346 issues intact, and audit-event versioning is no longer paused. The revert point
-# and the eight deleted rows are recorded in $SPIRA_RUN/reaped/sp-6ylz.schema-rollback-*.md.
+# The rollback (sp-6ylz, 2026-09-08 18:14) ran and was reverted three minutes later at 18:17:
+# at v53 every write to the production database failed. The cursor has been at v61 since 18:17.
+# Reads and writes work without BD_IGNORE_SCHEMA_SKEW because this bd is a CGO main-build that
+# knows all 61 migrations — NOT because the cursor moved. The rule the scar teaches: bd's version
+# string does not order against release tags. A main build knows MORE migrations than tagged
+# v1.2.2 (which knows only 53), so pin by migration count, never by version string.
+# The revert evidence is in $SPIRA_RUN/reaped/sp-6ylz.schema-rollback-*.md.
 
 # --------------------------------------------------------------------------------------
 # WHAT IS EXPORTED, AND WHAT MUST NEVER BE.
