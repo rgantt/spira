@@ -22,6 +22,10 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/conf.sh"
 
+# systemctl behind a seam so test suites can stub it without reaching the box.
+# The same seam sentinel.sh carries, named the same way so one variable stubs both.
+SC="${SPIRA_SYSTEMCTL:-systemctl}"
+
 # The loop, in the order that stops cleanly: summons first so nothing new is born, then the
 # legs that act on what is already there.
 TIMERS=(spira-sentinel.timer spira-ops.timer spira-watchtower.timer
@@ -39,7 +43,37 @@ live_aeons() {
         c="$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)" || continue
         case "$c" in *"$SPIRA_HOME/aeon.sh"*) ;; *) continue ;; esac
         pid="${p#/proc/}"
-        printf '%s %s\n' "$pid" "$(systemctl --user status "$pid" 2>/dev/null | head -1 | awk '{print $2}')"
+        printf '%s %s\n' "$pid" "$("$SC" --user status "$pid" 2>/dev/null | head -1 | awk '{print $2}')"
+    done
+}
+
+# work_services -> one service unit name per line, for the active spira-*.service units that
+# execute work. Enumerated from what systemd reports rather than from a hand-written list, so
+# a new work unit cannot silently escape a halt.
+#
+# EXCLUDED DELIBERATELY:
+#   spira-cockpit.service   the pane the operator is reading
+#   spira-watch@*.service   handled separately by --hard
+# Dolt is never named spira-*; the exclusions above are the only ones needed.
+work_services() {
+    "$SC" --user list-units 'spira-*.service' --state=active --no-legend 2>/dev/null \
+        | awk '{print $1}' \
+        | grep -Ev '^spira-cockpit\.service$|^spira-watch@'
+}
+
+# live_workers -> one pid per line for any process running gate.sh or landing.sh from this
+# home. These are the processes that survive a stop of spira-landing.service if it was killed
+# before they finished — the evidence that the halt was incomplete.
+# NEVER pgrep -f: the pattern is a substring of this script's own command line.
+live_workers() {
+    local p c
+    for p in /proc/[0-9]*; do
+        [ -r "$p/cmdline" ] || continue
+        c="$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)" || continue
+        case "$c" in
+            *"$SPIRA_HOME/gate.sh"*|*"$SPIRA_HOME/landing.sh"*)
+                printf '%s\n' "${p#/proc/}" ;;
+        esac
     done
 }
 
@@ -51,11 +85,26 @@ stop)
 
     echo "spira: halting the loop"
     for t in "${TIMERS[@]}"; do
-        systemctl --user stop "$t" 2>/dev/null && printf '  stopped %s\n' "$t"
+        "$SC" --user stop "$t" 2>/dev/null && printf '  stopped %s\n' "$t"
     done
-    [ "$hard" = 1 ] && for u in $(systemctl --user list-units 'spira-watch@*' --no-legend 2>/dev/null | awk '{print $1}'); do
-        systemctl --user stop "$u" 2>/dev/null && printf '  stopped %s\n' "$u"
+    [ "$hard" = 1 ] && for u in $("$SC" --user list-units 'spira-watch@*' --no-legend 2>/dev/null | awk '{print $1}'); do
+        "$SC" --user stop "$u" 2>/dev/null && printf '  stopped %s\n' "$u"
     done
+
+    # WORK SERVICES execute work the timers do not — spira-landing is the critical one, because
+    # it runs the same gate.sh passes an aeon does and survives a timer stop. Discovered from
+    # what systemd reports rather than from a hand-written list (work_services above), so a new
+    # unit cannot silently escape.
+    svc_failed=0
+    while IFS= read -r svc; do
+        [ -n "$svc" ] || continue
+        if "$SC" --user stop "$svc" 2>/dev/null; then
+            printf '  stopped %s\n' "$svc"
+        else
+            printf '  WARNING: could not stop %s — still running\n' "$svc" >&2
+            svc_failed=1
+        fi
+    done < <(work_services)
 
     # AEONS ARE STOPPED THROUGH slay.sh, not killed. It writes the marker that makes the
     # aeon's own exit path release its bead with NO ATTEMPT CHARGED — a bare kill leaves the
@@ -87,13 +136,22 @@ stop)
 
     mkdir -p "$SPIRA_RUN"
     { date -u '+%Y-%m-%dT%H:%M:%SZ'; printf 'why: %s\n' "${why:-unstated}"; } > "$STAMP"
+
+    # A HALT THAT CANNOT STOP SOMETHING SAYS SO AND EXITS NON-ZERO. Printing STOPPED while a
+    # worker is still running was the bug that made this bead necessary: the operator halted,
+    # saw the success message, and three gate.sh processes on spira-landing.service went on
+    # saturating the tree lock the halt was meant to clear.
+    if [ "$svc_failed" = 1 ]; then
+        printf 'spira: stop INCOMPLETE — work service(s) could not be stopped (see warnings above)\n' >&2
+        exit 1
+    fi
     echo "spira: STOPPED. Dolt and the cockpit are untouched. Restart with: world.sh start"
     ;;
 
 start)
     echo "spira: starting the loop"
     for t in "${TIMERS[@]}"; do
-        systemctl --user start "$t" 2>/dev/null && printf '  started %s\n' "$t"
+        "$SC" --user start "$t" 2>/dev/null && printf '  started %s\n' "$t"
     done
     rm -f "$STAMP"
     echo "spira: RUNNING"
@@ -103,10 +161,27 @@ status)
     if [ -f "$STAMP" ]; then printf 'spira: HALTED since %s\n' "$(head -1 "$STAMP")"; sed -n 2p "$STAMP"
     else echo "spira: not halted by world.sh"; fi
     for t in "${TIMERS[@]}"; do
-        printf '  %-26s %s\n' "$t" "$(systemctl --user is-active "$t" 2>/dev/null)"
+        printf '  %-26s %s\n' "$t" "$("$SC" --user is-active "$t" 2>/dev/null)"
     done
-    printf '  %-26s %s\n' "dolt-beads.service" "$(systemctl --user is-active dolt-beads.service 2>/dev/null)"
-    printf '  %-26s %s\n' "dolt-beads-test.service" "$(systemctl --user is-active dolt-beads-test.service 2>/dev/null)"
+    printf '  %-26s %s\n' "dolt-beads.service" "$("$SC" --user is-active dolt-beads.service 2>/dev/null)"
+    printf '  %-26s %s\n' "dolt-beads-test.service" "$("$SC" --user is-active dolt-beads-test.service 2>/dev/null)"
+
+    # WORK SERVICES: spira-landing is always checked because it is a transient unit — it only
+    # exists while it is running and does not appear in list-unit-files, so `is-active` is the
+    # only reliable probe. Any other active spira-*.service (excluding cockpit and watch@) is
+    # also reported, so a new work unit cannot hide here while appearing as HALTED above.
+    printf '  %-26s %s\n' "spira-landing.service" "$("$SC" --user is-active spira-landing.service 2>/dev/null || echo inactive)"
+    while IFS= read -r svc; do
+        case "$svc" in spira-landing.service|spira-cockpit.service) continue ;; esac
+        printf '  %-26s %s\n' "$svc" "$("$SC" --user is-active "$svc" 2>/dev/null)"
+    done < <("$SC" --user list-units 'spira-*.service' --state=active --no-legend 2>/dev/null | awk '{print $1}' | grep -Ev '^spira-watch@')
+
+    # /proc SCAN: gate.sh and landing.sh processes survive a service stop if the service was
+    # killed before they finished. Status reports the count so a running worker cannot hide
+    # behind a HALTED header and 0 live aeons.
+    wcount="$(live_workers | grep -c . || true)"
+    printf '  %-26s %s\n' "live workers (/proc)" "$wcount"
+
     a="$(live_aeons | grep -c . || true)"; printf '  live aeons: %s\n' "$a"
     ;;
 *)  echo "usage: world.sh {stop [--why \"...\"] [--hard] | start | status}" >&2; exit 64 ;;

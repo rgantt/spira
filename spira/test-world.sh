@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+#
+# test-world.sh — world.sh stops work services and reports them honestly.
+#
+#   ./test-world.sh
+#
+# WHAT THIS SUITE COVERS
+# ----------------------
+# 2026-09-07: world.sh stop printed STOPPED while spira-landing.service was still running.
+# The check did not catch it because world.sh's own status reported timers and live aeons,
+# and spira-landing is neither — it is a transient systemd unit that executes the same
+# gate.sh passes an aeon does, supervised outside the timer loop.
+#
+# THREE PROPERTIES, each a pair (law-absence-needs-a-positive-control):
+#
+#   1. status reports spira-landing.service as active when it is, and inactive when it is not.
+#      A status that always shows "inactive" and one that is merely correct look identical.
+#
+#   2. stop stops spira-landing.service (and any other active spira-*.service work unit),
+#      confirmed by what the stub was asked to do.
+#
+#   3. stop exits non-zero and does NOT print STOPPED when a service cannot be stopped.
+#      Without this, the scar is invisible: the operator halts, sees the success message,
+#      and the worker goes on running.
+#
+#   4. live_workers (/proc) is non-zero when a process matching gate.sh or landing.sh is
+#      running, and zero when it is not.
+#
+# systemctl IS STUBBED, not reached. A suite that asks the real systemd is green for as long
+# as the box happens to be in the state its author had (law-gates-run-in-a-clean-environment).
+# The stub records every call world.sh makes, so the assertions are about what world.sh DID,
+# not about what systemd reported.
+#
+# covers: spira/world.sh
+# hermetic-ok: stubs systemctl via SPIRA_SYSTEMCTL; /proc scan uses real background process
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+pass=0; fail=0
+ok()  { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
+bad() { fail=$((fail+1)); printf '  FAIL  %s: %s\n' "$1" "$2"; }
+is()     { [ "$2" = "$3" ] && ok "$1" || bad "$1" "wanted [$2] got [$3]"; }
+want()   { [[ "$3" == *"$2"* ]] && ok "$1" || bad "$1" "wanted [$2] in [$3]"; }
+nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3]"; }
+
+echo "test-world.sh"
+
+TMP="$(mktemp -d)"; trap 'kill "$WORKER_PID" 2>/dev/null; rm -rf "$TMP"' EXIT INT TERM
+WORKER_PID=""
+
+SH="$TMP/spira"
+RUN="$TMP/run"
+CALLS="$TMP/sc-calls"   # every systemctl call world.sh makes, one per line
+export CALLS            # the stub appends to this path; it must be visible in its environment
+mkdir -p "$SH" "$RUN"
+
+# A copy of the harness the world.sh under test can source without touching the real box.
+cp "$HERE/world.sh" "$HERE/conf.sh" "$SH/"
+# slay.sh is called by `stop` for live aeons; stub it so no real aeons are touched.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SH/slay.sh"; chmod +x "$SH/slay.sh"
+
+# The systemctl stub. It records every call; what it answers depends on the service asked for.
+# ACTIVE_SVC controls which service is "active" for the current test.
+ACTIVE_SVC=""
+write_sc() {
+    cat > "$TMP/systemctl" <<'SC'
+#!/usr/bin/env bash
+# Record this call (without the --user flag, which is noise in assertions).
+printf '%s\n' "$*" >> "$CALLS"
+cmd=""
+svc=""
+for a; do
+    case "$a" in --user|--state=active|--no-legend) ;; *) [ -z "$cmd" ] && cmd="$a" || svc="$a" ;; esac
+done
+case "$cmd" in
+is-active)
+    if [ "$svc" = "$ACTIVE_SVC" ]; then echo active; exit 0
+    else echo inactive; exit 3
+    fi ;;
+list-units)
+    # Emit the ACTIVE_SVC as the one active service, if any.
+    [ -n "$ACTIVE_SVC" ] && printf '%s active running\n' "$ACTIVE_SVC"
+    exit 0 ;;
+stop)
+    if [ "$svc" = "$STOP_FAILS" ]; then exit 1
+    else exit 0
+    fi ;;
+*)  exit 0 ;;
+esac
+SC
+    chmod +x "$TMP/systemctl"
+    export ACTIVE_SVC STOP_FAILS
+}
+STOP_FAILS=""
+
+world() {
+    : > "$CALLS"
+    SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_CONF="$TMP/no-such-conf" \
+    SPIRA_SYSTEMCTL="$TMP/systemctl" \
+        bash "$SH/world.sh" "$@" 2>&1
+}
+world_rc() {
+    : > "$CALLS"
+    SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_CONF="$TMP/no-such-conf" \
+    SPIRA_SYSTEMCTL="$TMP/systemctl" \
+        bash "$SH/world.sh" "$@" 2>&1; echo "$?"
+}
+
+# --------------------------------------------------------------------------------------
+# 1. STATUS REPORTS WORK SERVICES
+# The positive control comes first: a status that always says inactive looks exactly like
+# one that is merely correct when nothing is running (law-absence-needs-a-positive-control).
+# --------------------------------------------------------------------------------------
+echo
+echo "status reports spira-landing.service:"
+
+ACTIVE_SVC=spira-landing.service; write_sc
+out="$(world status)"
+want "when active, status shows it active" "spira-landing.service" "$out"
+want "and shows the state"                 "active"                  "$out"
+
+ACTIVE_SVC=""; write_sc
+out="$(world status)"
+want  "when inactive, spira-landing.service still appears" "spira-landing.service" "$out"
+want  "and is shown as inactive"                           "inactive"              "$out"
+
+# --------------------------------------------------------------------------------------
+# 2. STOP STOPS WORK SERVICES
+# Stop must call systemctl to stop spira-landing.service when it is active. Confirmed by
+# reading the call log, not by asking systemd what state it ended up in.
+# --------------------------------------------------------------------------------------
+echo
+echo "stop stops work services:"
+
+ACTIVE_SVC=spira-landing.service; write_sc; : > "$CALLS"
+out="$(world stop)"
+calls="$(cat "$CALLS")"
+want "stop calls systemctl to stop spira-landing.service"   "stop spira-landing.service"  "$calls"
+want "and reports it stopped"                               "stopped spira-landing.service" "$out"
+want "and prints the STOPPED message"                       "STOPPED"                       "$out"
+
+ACTIVE_SVC=""; write_sc
+out="$(world stop)"
+nowant "when nothing is active, stop does not try to stop spira-landing" \
+       "stop spira-landing.service" "$(cat "$CALLS")"
+want   "and still prints STOPPED"                           "STOPPED" "$out"
+
+# --------------------------------------------------------------------------------------
+# 3. STOP EXITS NON-ZERO WHEN A SERVICE CANNOT BE STOPPED
+# The scar: world.sh printed STOPPED while spira-landing.service was still running.
+# A halt that cannot stop something must say so and exit non-zero.
+# --------------------------------------------------------------------------------------
+echo
+echo "stop exits non-zero when a service cannot be stopped:"
+
+ACTIVE_SVC=spira-landing.service; STOP_FAILS=spira-landing.service; write_sc
+rc_out="$(world_rc stop)"
+rc="${rc_out##*$'\n'}"; rc="${rc%%[!0-9]*}"
+out="${rc_out%$'\n'*}"
+is     "exit code is non-zero"                    "1"      "$rc"
+nowant "and does not print STOPPED"               "STOPPED" "$out"
+want   "and warns about the failure"              "WARNING"  "$out"
+STOP_FAILS=""
+
+# --------------------------------------------------------------------------------------
+# 4. LIVE WORKERS (/proc) — status counts running gate.sh / landing.sh processes
+#
+# A REAL background process, because /proc is the real thing and cannot be stubbed. The
+# process is started under $SPIRA_HOME so world.sh's own live_workers() scan finds it —
+# the scan is keyed on $SPIRA_HOME/gate.sh and $SPIRA_HOME/landing.sh in the cmdline.
+# --------------------------------------------------------------------------------------
+echo
+echo "live workers (/proc) scan:"
+
+# The positive control: a process that IS running must appear in the count.
+# We start a background bash that names $SH/landing.sh as its argv[0] equivalent:
+# argv: bash <path>/landing.sh
+FAKE_LANDING="$SH/landing.sh"
+printf '#!/usr/bin/env bash\nsleep 30\n' > "$FAKE_LANDING"; chmod +x "$FAKE_LANDING"
+
+ACTIVE_SVC=""; write_sc
+bash "$FAKE_LANDING" &
+WORKER_PID=$!
+
+out="$(world status)"
+want "status reports a live worker when one is running" "live workers (/proc)" "$out"
+wcount="$(printf '%s' "$out" | grep 'live workers' | grep -oE '[0-9]+' | tail -1)"
+[ "${wcount:-0}" -ge 1 ] && ok "live workers count is at least 1" \
+                           || bad "live workers count" "wanted >=1, got [${wcount:-?}]"
+
+kill "$WORKER_PID" 2>/dev/null; wait "$WORKER_PID" 2>/dev/null; WORKER_PID=""
+
+out="$(world status)"
+wcount="$(printf '%s' "$out" | grep 'live workers' | grep -oE '[0-9]+' | tail -1)"
+is "and is 0 after the process exits" "0" "${wcount:-?}"
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
