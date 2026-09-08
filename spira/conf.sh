@@ -685,6 +685,18 @@ unset _spira_conf_here _spira_conf_env _spira_conf_home_env
 # --------------------------------------------------------------------------------------
 export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
+# THE DATABASE IS AT SCHEMA v61, MIGRATED BY THE ACCIDENTAL v1.2.0/v1.2.1 RELEASE, and every
+# bd newer than v1.1.0 refuses it outright. That refusal EXITS 0 with the complaint on stdout,
+# so a caller that checks status reads success and parses an error as data: on 2026-09-08 a
+# CGO rebuild of bd landed in ~/.local/bin and fayth_ready returned nothing, the sentinel
+# logged "no fayth in the chamber" for every persona, and Spira summoned nothing for six
+# minutes while the panes showed 0 ready rather than a fault. This is the vendor's own
+# stopgap and it is verified safe for this schema range; audit-event versioning stays paused
+# until the schema is rolled back to v53 per RECOVERY-1.2.1.md (sp-sk3p). REMOVE THIS LINE
+# the moment that recovery runs - a stopgap nobody deletes is how the next binary silently
+# gets the same pass.
+export BD_IGNORE_SCHEMA_SKEW=1
+
 # --------------------------------------------------------------------------------------
 # WHAT IS EXPORTED, AND WHAT MUST NEVER BE.
 #
