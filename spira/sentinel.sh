@@ -62,6 +62,27 @@ act()      { acted=$((acted+1)); log "ACT $*"; }
 progress() { progressed=$((progressed+1)); act "$@"; }
 
 # ======================================================================================
+# DATABASE CHECK. Verify bd can reach $SPIRA_DB before reading any state. When bd
+# cannot reach the database, every state read — goal_open_children, plan_ready,
+# plan_inprog — returns 0 or empty, so GOAL_REACHED fires on the same evidence that
+# a working, goal-complete sentinel and a broken one produce: six minutes of DB outage
+# read as "pass complete — 0 action(s), 0 progress, goal reached" (sp-4fss).
+#
+# This also ensures a zero-capacity pass (SPIRA_MAX_AEONS=0, used by the test instance
+# permanently) is distinguishable in the log from a pass that could not read the graph:
+# both produce zero actions and zero progress, but this check makes one exit 1 with
+# "DATABASE UNREADABLE" while the other reaches "goal reached" on confirmed state.
+#
+# bdq is used rather than bdjson because bdjson pipes through sed (json_only) and
+# always exits 0 regardless of whether bd itself succeeded; the underlying bd call is
+# what says whether the database is reachable.
+# ======================================================================================
+if ! bdq list --limit 1 >/dev/null 2>&1; then
+    log "DATABASE UNREADABLE — bd cannot reach $SPIRA_DB; state is unknown and this pass cannot close any gap"
+    exit 1
+fi
+
+# ======================================================================================
 # STATE
 # ======================================================================================
 open_children="$(goal_open_children)"
