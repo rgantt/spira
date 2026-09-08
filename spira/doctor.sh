@@ -114,6 +114,23 @@ else
     esac
     . "$SPIRA_HOME/lib.sh"
     home="$(spira_home_repo)"
+    # A ROW WITH FEWER THAN SIX COLUMNS MISDIRECTS ITS GATE AS A FORMATTER. The NF-based
+    # back-compat in repo_field reads the gate from $5 on a five-field row, $4 on a
+    # four-field row, and so on — so a row that drops FORMAT rather than leaving it empty
+    # runs the gate expression (e.g., `origin/main`, a test command) as a formatter in the
+    # branch's tree after a rebase and commits the result. The fix is not in repo_field,
+    # which preserves the historical shape intentionally; the fix is refusing to load a row
+    # this narrow in the first place (law-a-documented-control-must-exist).
+    while IFS= read -r narrow; do
+        [ -n "$narrow" ] || continue
+        FAIL "repo:$narrow — fewer than six columns (FORMAT missing or row truncated)" \
+             "A short row runs its gate field as a formatter in the branch's tree after a
+        rebase and commits the result. Add the missing | delimiters so every field has its
+        own column, leaving FORMAT empty where no formatter is needed."
+    done < <(awk 'BEGIN{FS="|"} /^[ \t]*#/{next}
+                  {n=$1; gsub(/^[ \t]+|[ \t]+$/,"",n)
+                   if (n!="" && NF>1 && NF<6) print n}' \
+        "$SPIRA_REPO_MAP" 2>/dev/null || true)
     repo_root "$home" >/dev/null 2>&1 \
         && OK "the home repository '$home' has a row" \
         || FAIL "the home repository '$home' has no row in the map" \

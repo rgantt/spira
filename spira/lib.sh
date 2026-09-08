@@ -2120,7 +2120,7 @@ repo_base() {
 # repo_name_at <path> -> the map name for a checkout path, or non-zero.
 #
 # The reverse of repo_root, and it exists because rebase_branch is addressed by PATH — that
-# is the seam test-rebase.sh and test-repo.sh both drive — while the formatter is declared
+# is the seam test-rebase.sh drives — while the formatter is declared
 # per NAME. Paths are unique by construction: two repositories cannot share a directory,
 # which is the same property the per-repository scratch worktree is named for. A caller
 # that already holds the name should pass it rather than make this guess.

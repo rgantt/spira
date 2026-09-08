@@ -65,7 +65,7 @@
 # EVERY LINE CARRIES ALL SIX COLUMNS, EVEN WHERE THREE OF THEM ARE EMPTY. A row written in an
 # older, narrower form reads its GATE as a formatter and runs it in the branch's tree — so
 # `test -f branch-only.txt` becomes something this harness executes and commits the result of.
-# test-repo.sh refuses a line with fewer than six fields for that reason.
+# doctor.sh refuses a line with fewer than six fields for that reason.
 #
 # A `repo:` value ABSENT from this file is refused rather than guessed. An unmapped repo must
 # fail closed — a default of the home repository is how another repository's bead gets "fixed"
