@@ -184,7 +184,7 @@ elif [ -n "$repo" ]; then
         # with refs nobody will ever read and teach everyone to ignore it.
         parked=""
         if base="$(spira_landref "$repo" 2>/dev/null)" \
-           && ! git -C "$repo" merge-base --is-ancestor "$br" "$base" 2>/dev/null; then
+           && ! content_landed "$repo" "$br" "$base" 2>/dev/null; then
             if git -C "$repo" update-ref "refs/slain/$ID" "$br" 2>/dev/null; then
                 parked="refs/slain/$ID"
                 say "work: $br carries work $base does not — parked at $parked"
@@ -197,7 +197,7 @@ elif [ -n "$repo" ]; then
         fi
     fi
     if [ -n "$tip" ] && [ "$fail" = 0 ]; then
-        if spira_destroy_branch "$ID" "$br" "$repo" "slain: $WHY"; then
+        if spira_destroy_branch "$ID" "$br" "$repo" "slain: $WHY" slain; then
             nuked="branch $br deleted at $tip${parked:+, kept at $parked}"; say "work: $nuked"
         else
             say "work: could not delete $br${SPIRA_DESTROY_ERR:+ — $SPIRA_DESTROY_ERR}"; fail=1

@@ -2960,12 +2960,31 @@ spira_destroy_worktree() {
 }
 
 # --------------------------------------------------------------------------------------
-# spira_destroy_branch <id> <branch> <repo> <why> -> 0 gone, 1 refused or survived.
+# spira_destroy_branch <id> <branch> <repo> <why> [caller] -> 0 gone, 1 refused or survived.
 # The witnesses are re-read rather than inherited from the worktree removal: they are two
 # /proc reads and a cached status, and the alternative is a decision made before the act.
+#
+# CONTENT, NOT ANCESTRY. This function guards its deletion with content_landed, the same
+# predicate the Sending uses to SELECT branches for deletion — "would merging this branch
+# change the base tree?" An empty-commit branch (e.g. a review-only bead) passes: its diff
+# is empty, so the merge is a no-op, and the content is already on the base. Ancestry alone
+# answers "not landed" about such a branch forever, because the squash commit is not a
+# direct ancestor — which is precisely why the selector rejected ancestry as the question.
+# The fence must ask the same question or the two sides contradict: the selector says yes,
+# the fence says no, and the branch accretes refusals until a human notices.
+#
+# CALLER EXCEPTIONS. Pass a non-empty fifth argument when the caller has already verified
+# that deletion is safe, so the content check is not repeated here:
+#   "sending" — the Sending's selector already ran content_landed (or the superseded
+#               exception), and send_branch confirmed liveness once more before this call.
+#   "slain"   — slay.sh has already parked any unlanded commits at refs/slain/<id>; the
+#               branch still carries content not on the base, but the durable copy is no
+#               longer in refs/heads alone, so deletion is safe.
+# Any other non-empty value is treated the same way (future callers that have verified
+# safety by their own means). An empty fifth argument applies the content fence.
 # --------------------------------------------------------------------------------------
 spira_destroy_branch() {
-    local id="$1" br="$2" repo="$3" why="${4:-}" held wt err
+    local id="$1" br="$2" repo="$3" why="${4:-}" caller="${5:-}" held wt err base
     git -C "$repo" show-ref --verify -q "refs/heads/$br" || return 0
     if held="$(spira_holder_witnesses "$id")"; then
         spira_reaplog REFUSED "$id" "branch $br — $held"
@@ -2977,6 +2996,17 @@ spira_destroy_branch() {
     if [ -n "$wt" ] && [ -e "$wt" ]; then
         spira_reaplog REFUSED "$id" "branch $br is checked out at $wt"
         return 1
+    fi
+    # CONTENT FENCE. The fence fires only when the caller has not already verified safety.
+    # NEVER use ancestry (merge-base --is-ancestor) here: that rejects empty-commit branches
+    # whose squash commit is not a direct ancestor, contradicting the selector that approved them.
+    if [ -z "$caller" ] \
+       && base="$(spira_landref "$repo" 2>/dev/null)" \
+       && git -C "$repo" rev-parse -q --verify "$base" >/dev/null 2>&1; then
+        if ! content_landed "$repo" "$br" "$base"; then
+            spira_reaplog REFUSED "$id" "branch $br — content not on $base, refusing to destroy unlanded work ($why)"
+            return 1
+        fi
     fi
     spira_reaplog REMOVING "$id" "branch $br ($why)"
     err="$(git -C "$repo" branch -D "$br" 2>&1)"
