@@ -446,6 +446,13 @@ spira_conf_defaults() {
     # cosmetic choice. It defaults to the wiki when one is configured, because an operator
     # who keeps notes works there rather than in the harness they are merely running.
     : "${COCKPIT_CWD:=${SPIRA_WIKI:-$SPIRA_REPO}}"
+    # HOW LONG A CLIENT MAY BE IDLE BEFORE ensure DETACHES IT. Ghost clients — terminals
+    # whose PTY is no longer actively used but remain attached to the tmux server — drive the
+    # window-size flap: with window-size latest, a ghost becomes "latest" whenever its session
+    # is touched, shrinking the cockpit window to the ghost's small terminal height until the
+    # operator's client regains "latest". Detaching them eliminates the root cause.
+    # Default is 6 hours (21600 s); set to 0 to disable detachment.
+    : "${COCKPIT_CLIENT_IDLE_SECS:=21600}"
     # Optional, and EMPTY IS THE DEFAULT for every one of them. Each names something a
     # colleague does not have — a Gas Town, a wiki, a design document — and every caller
     # must treat empty as "skip this", never as "guess". That is rule 2 of the boundary:
@@ -760,7 +767,7 @@ spira_gate_blames_branch() {   # spira_gate_blames_branch <status> -> 0 if the b
 }
 
 # --------------------------------------------------------------------------------------
-export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIRA_PATH SPIRA_GOAL \
+export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD COCKPIT_CLIENT_IDLE_SECS SPIRA_PATH SPIRA_GOAL \
        SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL \
        SPIRA_CI_LABEL SPIRA_CI_PARK_MAX \
        SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT \

@@ -222,6 +222,40 @@ heal_ready() {
 # is cheap; nothing here supervises a process any more.
 #
 # The dashboard learned this already: a failed probe renders `?`, never 0.
+# GHOST CLIENT DETACHMENT. With window-size latest (the server default), whichever client
+# most recently changed its active window determines the cockpit window height. Ghost clients —
+# terminals that have been idle for days but remain attached — periodically become "latest"
+# and shrink the cockpit window to their small terminal height, causing the NEXT/RECENT
+# sections to flap between ~5 and ~14 rows tick to tick.
+#
+# Two complementary defences:
+#
+#   1. detach_idle_clients removes the root cause: a client that has been idle longer than
+#      COCKPIT_CLIENT_IDLE_SECS (default 6 h) is detached and cannot become "latest".
+#
+#   2. window-size largest (set in `up` and repaired by `ensure`) provides defence in depth:
+#      even if a ghost reconnects briefly before the next ensure run, the server picks the
+#      largest attached client — always the operator's live terminal — rather than the most
+#      recently active one. `window-size manual` would also prevent the flap, but it freezes
+#      the window at the size at creation time and never follows the operator's terminal when
+#      they resize it. `window-size latest` with aggressive-resize on is the old per-window
+#      smallness heuristic and does not help here. `window-size largest` responds to resize
+#      while ignoring activity order, which is exactly what the cockpit needs.
+IDLE_SECS="${COCKPIT_CLIENT_IDLE_SECS:-21600}"
+detach_idle_clients() {
+    [ "$IDLE_SECS" -gt 0 ] 2>/dev/null || return 0
+    local now; now=$(date +%s)
+    tmux list-clients -F '#{client_tty} #{client_activity}' 2>/dev/null \
+    | while read -r tty act; do
+        [ -n "$tty" ] && [ -n "$act" ] || continue
+        local age=$(( now - act ))
+        if [ "$age" -ge "$IDLE_SECS" ]; then
+            heal_log "detach: client $tty idle ${age}s — detaching"
+            tmux detach-client -t "$tty" 2>/dev/null || true
+        fi
+    done
+}
+
 proc_start() {
     local e; e=$(ps -o etimes= -p "$1" 2>/dev/null | tr -d ' ')
     [ -n "$e" ] || return 1
@@ -455,6 +489,10 @@ up)
     tag_pane "$dec" panel
 
     echo "cockpit: up in $WINDOW (session $sess · panel $dec · health $hea)"
+    # window-size largest so the operator's terminal (always the tallest) governs the cockpit
+    # window height regardless of which client was most recently active. See detach_idle_clients
+    # for the full rationale.
+    tmux set-option -t "${WINDOW%%:*}" window-size largest 2>/dev/null || true
     # ALWAYS hand focus back to the session pane: hunk-open sends keys to the active pane.
     tmux select-pane -t "$sess" 2>/dev/null || true
     ;;
@@ -487,6 +525,17 @@ ensure)
         echo "cockpit: ensure refused — this is a copy, not the installed layout.sh; run $SPIRA_COCKPIT/layout.sh ensure" >&2
         exit 0
     fi
+    # Detach clients idle longer than COCKPIT_CLIENT_IDLE_SECS (default 6 h). Ghost clients
+    # cause the NEXT/RECENT flap by becoming "latest" with window-size latest, shrinking the
+    # cockpit to their small terminal height. This runs unconditionally — before checking for
+    # cockpit windows — so ghosts are cleared even on a server where ensure has never seen a
+    # cockpit pane yet.
+    detach_idle_clients
+    # Defence in depth: ensure window-size largest is set for every session hosting a cockpit
+    # window. This survives a ghost that reconnects between two ensure runs.
+    for w in $(cockpit_windows); do
+        tmux set-option -t "${w%%:*}" window-size largest 2>/dev/null || true
+    done
     for w in $(cockpit_windows); do
         WINDOW="$w"
         adopt_untagged
