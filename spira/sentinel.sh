@@ -230,6 +230,12 @@ fi
 dispatchable="$(dispatchable_open)"
 log "CHECK4 examining $(printf '%s' "$dispatchable" | grep -c . || true) dispatchable bead(s), threshold $POISON_AT"
 for id in $dispatchable; do
+    # ONLY sp-attempt-N IS READ HERE. The other counters a bead accumulates — a reclaim for
+    # each worker that died holding it, a requeue for each time the harness put finished work
+    # back — are diagnostic, and lib.sh says so where they are defined. That is invisible from
+    # a bead's label set, which shows one undifferentiated run of counters beside the poison
+    # label, so a bead carrying six reclaims and no attempt reads as poisoned-by-reclaims and
+    # has been reported as a second poison door. It is not one: it cannot reach this line.
     n="$(attempts_of "$id")"; n="${n:-0}"
     [ "$n" -ge "$POISON_AT" ] || continue
 
