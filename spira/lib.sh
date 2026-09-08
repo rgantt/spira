@@ -26,8 +26,8 @@ unset _spira_lib_dir
 export BEADS_NO_AUTO_IMPORT=1
 mkdir -p "$SPIRA_RUN"
 
-# Always name the database. This repo has no .beads, so an implicit bd reads the town or
-# nothing — never the database meant (law-bd-c-selects-the-database).
+# Always name the database. This repo has no .beads, so an implicit bd reads whatever store
+# the working directory resolves to, or nothing — never the database meant.
 # SPIRA_BD is the seam a suite uses for the ONE thing a real bd cannot be asked to do on
 # demand — a probe that fails. It is not a place to put a model of bd: the suites run the
 # real binary against a throwaway database (`testdb.sh`), because a partial model drifts

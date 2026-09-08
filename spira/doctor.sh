@@ -68,7 +68,7 @@ if [ -d "$SPIRA_DB/.beads" ]; then
     OK "$SPIRA_DB has a .beads"
     # A DATABASE THAT ANSWERS IS NOT THE SAME AS ONE THAT IS THERE. `bd` takes its database
     # from the path it is pointed at, so a wrong or moved path does not error — it silently
-    # answers from some other store (law-bd-c-selects-the-database).
+    # answers from some other store.
     if out="$(timeout 60 bd -C "$SPIRA_DB" list --limit 1 --json 2>&1)"; then
         OK "bd can read it"
     else

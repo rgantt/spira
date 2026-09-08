@@ -23,7 +23,7 @@ DIR="$SPIRA_HOME/statutes"
 spira_require bd || exit 1
 [ -d "$DIR" ] || { echo "seed: no statutes directory at $DIR" >&2; exit 1; }
 # A missing `.beads` is a real fault to report, never a reason to quietly write whatever
-# database the working directory happens to resolve to (law-bd-c-selects-the-database).
+# database the working directory happens to resolve to.
 [ -d "$SPIRA_DB/.beads" ] || {
     echo "seed: $SPIRA_DB has no .beads — refusing to guess a database." >&2
     echo "      Set SPIRA_DB in ${SPIRA_CONF_FILE:-spira.conf}, or run: bd -C $SPIRA_DB init" >&2

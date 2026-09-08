@@ -53,7 +53,7 @@ synth() {
 slugify() { printf 'law-%s' "${1#law-}"; }
 
 # A missing `.beads` is a real fault to report, never a reason to quietly address whatever
-# database the working directory happens to resolve to (law-bd-c-selects-the-database).
+# database the working directory happens to resolve to.
 [ -d "$DB/.beads" ] || { echo "rule: $DB has no .beads — refusing to guess a database" >&2; exit 1; }
 
 case "${1:-}" in
