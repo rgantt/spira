@@ -4,7 +4,7 @@
 #
 #   hold.sh <bead-id>              claim and hold with this shell's pid
 #   hold.sh <bead-id> --pid <P>    hold with pid P instead of $$
-#   hold.sh <bead-id> --release    release a held bead (equivalent to release.sh)
+#   hold.sh <bead-id> --release    release a held bead (equivalent to unhold.sh)
 #
 # WHY THIS EXISTS. The reaper checks holder_alive, which looks for a pidfile named
 # aeon-<fayth>-<id>.pid with a process whose argv contains aeon.sh. A non-aeon session
@@ -13,7 +13,7 @@
 # this cost sp-7pi eight attempts, none of which was a fact about the work.
 #
 # hold.sh writes hold-<id>.pid, which holder_alive checks by pid only (no argv test),
-# and starts a background heartbeat that keeps the lease alive. release.sh (or --release)
+# and starts a background heartbeat that keeps the lease alive. unhold.sh (or --release)
 # tears both down. A dead holder's pid vanishes from /proc and the bead is freed on the
 # next sweep — the same liveness contract as an aeon, without requiring aeon.sh in argv.
 #
@@ -41,7 +41,7 @@ PIDFILE="$SPIRA_RUN/hold-$ID.pid"
 HBFILE="${PIDFILE%.pid}.hb"
 
 if [ "$MODE" = release ]; then
-    exec "$HERE/release.sh" "$ID"
+    exec "$HERE/unhold.sh" "$ID"
 fi
 
 # Refuse if an aeon already holds it — the hold is for NON-aeon work.
@@ -73,7 +73,7 @@ echo "$HOLD_PID" > "$PIDFILE"
 # Start a background heartbeat so the lease does not expire under sentinel CHECK 2.
 # Simpler than an aeon's: no stall detection, because the holder is a human at the
 # keyboard. Beats every 120s (matching aeon.sh's default). Exits when the pidfile is
-# removed (release.sh) or the holder pid dies.
+# removed (unhold.sh) or the holder pid dies.
 #
 # Redirected to /dev/null: the heartbeat inherits this script's file descriptors, and a
 # $() substitution around the caller waits until EVERY writer on the pipe closes — so

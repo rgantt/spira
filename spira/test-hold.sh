@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# test-hold.sh — hold.sh and release.sh let a non-aeon actor hold a bead
+# test-hold.sh — hold.sh and unhold.sh let a non-aeon actor hold a bead
 # so the reaper does not reclaim it.
 #
 #   ./test-hold.sh
@@ -13,7 +13,7 @@
 # A REAL bd ON A THROWAWAY DATABASE, because every claim is about what bd does
 # with a status, a claim and an assignee (law-prefer-the-real-dependency).
 #
-# covers: spira/hold.sh spira/release.sh spira/lib.sh spira/strand.sh
+# covers: spira/hold.sh spira/unhold.sh spira/lib.sh spira/strand.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
@@ -142,14 +142,14 @@ rc=$?
 is "hold.sh refuses double hold" 1 "$rc"
 
 # ======================================================================================
-# 6. release.sh tears down the hold.
+# 6. unhold.sh tears down the hold.
 # ======================================================================================
 echo
-echo "release.sh:"
+echo "unhold.sh:"
 
-out="$(bash "$HERE/release.sh" sp-h1 2>&1)"
+out="$(bash "$HERE/unhold.sh" sp-h1 2>&1)"
 rc=$?
-is "release.sh exits 0"         0   "$rc"
+is "unhold.sh exits 0"          0   "$rc"
 is "pidfile is gone"             no  "$([ -f "$SPIRA_RUN/hold-sp-h1.pid" ] && echo yes || echo no)"
 is "heartbeat file is gone"      no  "$([ -f "$SPIRA_RUN/hold-sp-h1.hb" ] && echo yes || echo no)"
 
