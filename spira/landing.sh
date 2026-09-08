@@ -618,19 +618,20 @@ land_repo() {
     # reopening — the map is up to a pass old by then, and closing or reopening on a stale
     # status is how work gets reopened that already landed (law-closed-is-not-landed).
     # ==================================================================================
-    local -A _scan_st=() _scan_repo=() _scan_labels=()
+    local -A _scan_st=() _scan_repo=() _scan_labels=() _scan_superseded=()
     local _scan_ids=""
     for br in $brs; do
         _scan_ids="$_scan_ids ${br#spira/}"
     done
     if [ -n "${_scan_ids// /}" ]; then
-        local _sid _sst _srepo _slabels
+        local _sid _sst _srepo _ssup _slabels
         # shellcheck disable=SC2086
-        while IFS=$'\t' read -r _sid _sst _srepo _slabels; do
+        while IFS=$'\t' read -r _sid _sst _srepo _ssup _slabels; do
             [ -n "${_sid:-}" ] || continue
             _scan_st["$_sid"]="$_sst"
             _scan_repo["$_sid"]="$_srepo"
             _scan_labels["$_sid"]="$_slabels"
+            _scan_superseded["$_sid"]="${_ssup:-0}"
         done < <(bdjson show $_scan_ids 2>/dev/null | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
@@ -643,7 +644,16 @@ for i in d:
     st = i.get("status", "-")
     repo = next((l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")), home)
     labels = " ".join(i.get("labels") or [])
-    print(f"{bid}\t{st}\t{repo}\t{labels}")
+    # `bd list` and `bd show` name the supersession field differently: show returns
+    # "dependency_type", list returns "type". Accept either spelling (law-absent-needs-a-positive-control
+    # was triggered by this exact bug — sp-dvlq was superseded by sp-35pl and was still reopened
+    # every two minutes because only the show spelling was read off a list row).
+    sup = 1 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
+                   for x in (i.get("dependencies") or [])) else 0
+    # sup BEFORE labels: bash whitespace-IFS collapses consecutive tabs, so an empty labels
+    # field followed by a non-empty sup field would produce the wrong token order. With sup
+    # first, only the trailing labels tab can be empty, and trailing whitespace IFS is stripped.
+    print(f"{bid}\t{st}\t{repo}\t{sup}\t{labels}")
 ' "$(spira_home_repo)" 2>/dev/null)
     fi
 
@@ -681,6 +691,7 @@ for i in d:
         st="${_scan_st[$id]:-}"
         bead_repo_name="${_scan_repo[$id]:-}"
         bead_labels="${_scan_labels[$id]:-}"
+        bead_superseded="${_scan_superseded[$id]:-0}"
         # A BRANCH SKIPPED FOR A BEAD THAT IS NOT CLOSED HAS TO HAVE A VOICE. This was a bare
         # `continue`, so the one state that most needs saying — a branch whose bead sits
         # in_progress while nothing is holding it — left no trace anywhere in this log, and
@@ -709,6 +720,17 @@ for i in d:
         bead_repo_path="$(repo_root "${bead_repo_name:-}")" || bead_repo_path=""
         if [ "$bead_repo_path" != "$repo" ]; then
             log "CHECK6 $id: $br is in $name but the bead names repo:${bead_repo_name:-?} — not landing it here"
+            continue
+        fi
+        # A SUPERSEDED BEAD'S BRANCH WILL NEVER LAND HERE. `bd supersede` records the
+        # relation as a `supersedes` dependency; its work was carried onto the successor's
+        # branch and landed under the successor's id. Rebasing would produce a conflict
+        # BECAUSE the base already holds those changes, and reopening says "closed without
+        # landing" about work that is already there. The Sending reaps the branch; this pass
+        # leaves the bead alone. The exemption is the same one aeon.sh carries for its verdict
+        # check and the sentinel carries for CHECK 5 — the three must answer identically.
+        if [ "${bead_superseded:-0}" = 1 ]; then
+            log "CHECK6 $id: $br is superseded — its work landed under the successor's id; leaving it for the Sending to reap"
             continue
         fi
         # WHETHER THE BASE ALREADY HOLDS THIS WORK IS THE WHOLE QUESTION, and ancestry is

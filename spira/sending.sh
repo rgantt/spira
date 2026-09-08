@@ -220,7 +220,31 @@ sweep_repo() {
         # three times in thirteen minutes. content_landed asks whether merging this branch
         # would change anything; it is exact, local, and answers NO on a conflict, so it can
         # never authorise deleting a ref that still carries work.
+        #
+        # A SUPERSEDED BEAD'S BRANCH IS THE EXCEPTION. Its work landed under the successor's
+        # id; merging this branch would conflict with changes already on the base, so
+        # content_landed returns false — but leaving the branch standing re-exposes it to the
+        # landing pass, which would otherwise have to skip it on every pass forever. Reap it
+        # here. The same check landing.sh uses: both spellings of the supersession field,
+        # because bd list and bd show name it differently (law-absence-needs-a-positive-control:
+        # the first version read only the show spelling off a list row and the exemption never
+        # fired once).
         if ! content_landed "$REPO" "$br" "$LANDREF"; then
+            if bdjson show "$id" 2>/dev/null | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(1)
+d = d if isinstance(d, list) else [d]
+if not d: sys.exit(1)
+sys.exit(0 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
+                  for x in (d[0].get("dependencies") or [])) else 1)' 2>/dev/null; then
+                if [ "$DRY" = 1 ]; then
+                    say "WOULD  $id  reap superseded branch $br$( [ -n "$(worktree_of "$br" "$REPO")" ] && printf ' and its worktree')"
+                    continue
+                fi
+                reap "$id" "$br"
+                continue
+            fi
             n="$(git -C "$REPO" rev-list --count "$LANDREF..$br" 2>/dev/null || echo '?')"
             say "KEEP   $id  unlanded — $n commit(s) not in $LANDREF"; continue
         fi
