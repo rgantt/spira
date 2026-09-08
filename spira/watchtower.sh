@@ -333,9 +333,13 @@ INC="$(dirname "$0")/incident.sh"
 # defaults to `--type bug --priority 1` because its original caller was a crashed unit; a
 # ten-minute health sweep is routine, and filing it that way put a chore in the operator's
 # own queue wearing his name and a defect's type.
-SPIRA_INCIDENT_TYPE=chore \
+# The prefix must sit on the READER, not the writer: in `VAR=x cmd1 | cmd2`, the
+# assignment scopes to cmd1 only — each side of a pipeline forks its own subshell
+# before the assignment is applied, so a left-side prefix never reaches incident.sh
+# and it silently falls back to --type bug --priority 1, actor unset (sp-b9qs).
+snapshot | SPIRA_INCIDENT_TYPE=chore \
 SPIRA_INCIDENT_PRIORITY=2 \
 SPIRA_INCIDENT_ACTOR=watchtower \
-snapshot | bash "$INC" file "Spira sweep — is the pipeline moving?" - >/dev/null || {
+bash "$INC" file "Spira sweep — is the pipeline moving?" - >/dev/null || {
     log "watchtower: could not file the sweep"; exit 1; }
 log "watchtower: swept — ${since_land}m since the last landing, $(g SP_UNLANDED) unlanded, ${aeons_live} aeons"
