@@ -187,12 +187,20 @@ rows = d if isinstance(d, list) else [d]
 # APOSTROPHES ARE FORBIDDEN IN THIS BLOCK. It lives inside python3 -c '...', so one
 # would close the quote and leave the whole file syntactically invalid.
 #
-# FIVE, AND THE RENDERER AGREES. This is the head of a queue, not the queue: five is what
-# the operator asked for, and the rows it gives back went to NOW, which now says how healthy
-# each session is rather than only that one exists. The cap matches health.sh MAX_NEXT_ROWS
-# -- there is no point emitting more than can be shown, and a collector cap LOOSER than the
-# renderer only means the renderer does the trimming instead.
-for n, i in enumerate(rows[:5]):
+# FORTY, AND THE RENDERER AGREES. This is the head of a queue, not the queue, but how much
+# of that head is worth showing is not a constant -- it is whatever the column has room for
+# once NOW has taken its rows, and NOW swings with how many aeons are awake. So the cap here
+# is a CEILING rather than a size: it matches health.sh MAX_NEXT_ROWS, and the pane allocator
+# decides the actual height on every repaint.
+#
+# IT WAS FIVE, AND FIVE IS WHAT LEFT THE PANE HALF EMPTY. On the 52-row column this renders
+# into, an idle harness filled about eighteen rows: every section had reached its want and
+# the round-robin had nowhere left to put the remaining budget.
+#
+# A COLLECTOR CAP TIGHTER THAN THE RENDERER IS THE ONE THAT CANNOT BE SEEN. The renderer
+# trimming rows it was given is visible; rows never emitted look exactly like rows that do
+# not exist, so this must be the looser of the two, never the tighter.
+for n, i in enumerate(rows[:40]):
     print("SP_NEXT%d=P%s %s %s" % (n, i.get("priority"), i["id"], (i.get("title") or "")[:80].replace("=", "-")))
 print("SP_NEXT_N=%d" % len(rows))
 ' 2>/dev/null
@@ -212,7 +220,7 @@ print("SP_NEXT_N=%d" % len(rows))
     # switch explains itself instead of having to be inferred from a clock.
     {
         grep -E 'ACT (landed|reopened|poisoned|reclaimed [0-9]|announced|reaped)' \
-             "$SPIRA_RUN/sentinel.log" 2>/dev/null | tail -40 \
+             "$SPIRA_RUN/sentinel.log" 2>/dev/null | tail -80 \
           | sed -E 's/^([^ ]+) spira: ACT /\1 /'
         # strand.sh's output carries NO timestamp of its own — it is printed inside a pass.
         # Stamping it with now() made a half-hour-old reclaim read "0s ago", which is the
@@ -230,7 +238,7 @@ for line in open(sys.argv[1], errors="replace"):
         parts = line.split()
         if len(parts) > 1:
             out.append("%s reclaimed %s" % (ts, parts[1]))
-print("\n".join(out[-20:]))
+print("\n".join(out[-40:]))
 ' "$SPIRA_RUN/sentinel.log" 2>/dev/null
         # THE BEAD IS FIELD 4, NOT 3. A ledger line is `<ts> <verb> <fayth> <bead>`, so `$3`
         # is "builder" and the predicate `$3 ~ /^sp-/` was never once true — claims have been
@@ -249,14 +257,17 @@ print("\n".join(out[-20:]))
                  for (i = 5; i <= NF; i++) if ($i ~ /^status=/) { sub(/^status=/, "", $i); st = $i }
                  printf "%s %s %s\n", $1, st == "closed" ? "finished" : st, $4
              }' \
-            "$SPIRA_RUN/aeon-ledger.log" 2>/dev/null | tail -40
+            "$SPIRA_RUN/aeon-ledger.log" 2>/dev/null | tail -80
     # EVERY STAGE OF THIS PIPELINE IS A CAP AND THE SMALLEST ONE DECIDES. Widening only the
-    # last would still emit four events, because each source is trimmed before the merge.
+    # last would still emit four events, because each source is trimmed before the merge —
+    # which is why raising the renderer's ceiling to forty meant raising every `tail` above
+    # this line too, not just the `head` on it.
     # -u BECAUSE THE SOURCES OVERLAP AND THE LEDGER REPEATS ITSELF. slay.sh can write two
     # `done` lines for one aeon, and a bead that is both claimed and ended in the window
     # arrives from two branches of the merge — so the pane showed the same event twice and
-    # spent two of twenty rows saying it once.
-    } | sort -r -u | head -20 | python3 -c '
+    # spent two of twenty rows saying it once. The dedupe is also why the sources are trimmed
+    # LOOSER than the output: forty unique events can need well over forty input lines.
+    } | sort -r -u | head -60 | python3 -c '
 import sys, json, re, datetime
 now = datetime.datetime.now(datetime.timezone.utc)
 
@@ -290,12 +301,14 @@ for line in sys.stdin:
     seen.add(key)
     rows.append(parts)
 
-# FIVE ROWS, AND THE CAP IS APPLIED HERE RATHER THAN ON THE PIPE ABOVE. The head above is
+# FORTY ROWS, AND THE CAP IS APPLIED HERE RATHER THAN ON THE PIPE ABOVE. The head above is
 # the MERGE WINDOW and has to stay wider than the cap, because the dedup that follows it
-# removes rows: trimming to five before it would emit four events and call that the cap.
-# Five matches MAX_RECENT_ROWS in health.sh, the figure the operator asked for. The
-# renderer holds it too, so a wider snapshot from an older collector still renders five.
-for n, parts in enumerate(rows[:5]):
+# removes rows: trimming to forty before it would emit thirty-one events and call that the cap.
+# Forty matches MAX_RECENT_ROWS in health.sh -- a CEILING, not a height. How many of these the
+# pane actually shows is decided per repaint by `share`, which hands RECENT whatever NOW is
+# not using. The renderer holds the same ceiling, so a snapshot from a collector with a wider
+# one still renders at most forty.
+for n, parts in enumerate(rows[:40]):
     try:
         t = datetime.datetime.strptime(parts[0], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
         secs = int((now - t).total_seconds())
@@ -309,7 +322,28 @@ for n, parts in enumerate(rows[:5]):
     # The last word of an event is its bead id; look the title up and append it. A missing
     # title is left absent rather than filled with a placeholder, so the row still says what
     # happened when the map could not be built.
-    bead = body.split()[-1] if body.split() else ""
+    #
+    # AND THE LAST WORD IS SOMETIMES A REF, NOT AN ID. The sentinel logs a landing as
+    # `landed spira/sp-mebw`, which is the BRANCH. Looked up whole it matches nothing, so every
+    # landed row on the pane rendered with no title at all -- the one event class where the
+    # reader most wants to know what landed. Fall back to the ref basename, which is the bead.
+    toks = body.split()
+    verb = toks[0] if toks else ""
+    bead = toks[-1] if toks else ""
+    if bead not in titles and "/" in bead:
+        bead = bead.rsplit("/", 1)[-1]
+    # A LANDING NAMES THE BEAD; A REAP NAMES THE BRANCH. They are different questions. What
+    # landed is work, and the branch it arrived on is an implementation detail the reader
+    # already knows -- so `spira/` is noise on that row. What was reaped is a REF, in one of
+    # seven repositories, and the whole point of the row is which one; there the bare id is
+    # the redundant half, because the branch already ends with it.
+    if verb == "landed" and toks and "/" in toks[-1]:
+        toks[-1] = bead
+        body = " ".join(toks)
+    elif len(toks) > 2 and toks[-1] == bead:
+        for t in toks[:-1]:
+            if t.endswith("/" + bead) or t == bead:
+                body = " ".join(toks[:-1]); break
     title = titles.get(bead, "")
     row = "%s %s" % (body, title) if title else body
     print("SP_EVENT%d=%-7s %s" % (n, rel, row[:110].replace("=", "-")))

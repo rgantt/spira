@@ -73,6 +73,11 @@ set -uo pipefail
 # repository by the sweep below; nothing here may read it before then.
 WORKTREES="$SPIRA_RUN/worktree"
 REPO=""
+# THE REPOSITORY'S NAME, ALONGSIDE ITS PATH. A REAPED line names a branch, and a branch name
+# alone is ambiguous across a harness that manages seven repositories: `spira/sp-mebw` exists
+# in exactly one of them, but nothing in the string says which, and the reader of the pane is
+# being asked to go and look. Set beside REPO in sweep_repo so the two cannot disagree.
+REPONAME=""
 
 DRY=0; FETCH=1; ONLY=""; STATUS_FROM=""
 while [ $# -gt 0 ]; do
@@ -157,7 +162,7 @@ reap() {
     # so deleting it here would silently disable the closed-but-not-landed check for exactly
     # the beads that check exists for.
     reaped=$((reaped+1))
-    say "REAPED $id  branch and worktree"
+    say "REAPED $id  $REPONAME $br"
 }
 
 # ======================================================================================
@@ -175,6 +180,8 @@ reap() {
 sweep_repo() {
     local name="$1" br id n w brs rem held
     REPO="$(repo_root "$name")" || { say "SKIP   $name  repo-map has no path for it"; return 0; }
+    REPONAME="$name"
+
     if [ ! -e "$REPO/.git" ]; then say "SKIP   $name  $REPO is not a git checkout"; return 0; fi
 
     # ----------------------------------------------------------------------------------
@@ -267,7 +274,7 @@ for line in sys.stdin:
             say "FAILED $id  orphaned worktree $w was not removed — see $SPIRA_REAPLOG"
             failed=$((failed+1)); continue; }
         reaped=$((reaped+1))
-        say "REAPED $id  orphaned worktree (branch $br is gone)"
+        say "REAPED $id  $REPONAME $br  orphaned worktree (branch was already gone)"
     done < <(git -C "$REPO" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
 
     # Registrations whose directory a human already deleted. Harmless, but they accumulate

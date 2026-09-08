@@ -629,7 +629,17 @@ land_drain
 sent="$("$SPIRA_HOME/sending.sh" 2>&1)"
 [ -n "$sent" ] && printf '%s\n' "$sent"
 n_reaped="$(grep -c '^REAPED' <<< "$sent" || true)"
-[ "${n_reaped:-0}" -gt 0 ] && act "reaped $n_reaped landed branch(es)"
+# ONE ACT PER BRANCH, NAMING IT, rather than one act carrying a count. "reaped 2 landed
+# branch(es)" told the pane that something had been cleaned up and withheld the only part a
+# reader can act on — WHICH branch, in WHICH repository. Two of these a pass is two rows, and
+# RECENT now has the height for them; a count is what a section with five rows had to settle
+# for. The id is last so the title lookup in the collector still finds it.
+if [ "${n_reaped:-0}" -gt 0 ]; then
+    while read -r _ rid rrepo rbr _; do
+        [ -n "${rbr:-}" ] || continue
+        act "reaped $rrepo $rbr $rid"
+    done < <(grep '^REAPED' <<< "$sent")
+fi
 # A FAILED reap is a leak that will repeat every pass, so it is worth a line in the log —
 # but it is NOT an action, because counting a failure as an action is precisely how the
 # starvation check was blinded in the first place.

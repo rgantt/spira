@@ -303,68 +303,86 @@ case "$dark" in *'0 turns'*|*'0 files'*)
 is_n "and NOW still renders its rows" 3 "$(rows_of "$dark" NOW)"
 
 echo
-echo "NEXT and RECENT stop at five, and the rows they give back go to NOW"
+echo "the column is filled, and NOW is served before the sections that fill it"
 
-# THE PANE IS 200 ROWS TALL, WHICH IS THE POSITIVE CONTROL. A "5" measured in a pane that
-# could only fit five would be the pane speaking, not the cap: at this height nothing but
-# MAX_NEXT_ROWS and MAX_RECENT_ROWS can be what limits them
-# (law-absence-needs-a-positive-control).
-#
-# COUNTED AS ITEMS, NOT AS LINES OF SECTION. NEXT spends a line of its own on its header, so
-# five beads is six lines; RECENT puts the newest event on its header line, so five events is
-# five. Both show five items, and it is the items the operator asked to cap.
+# THE FIXTURE IS THREE AEONS AND FOURTEEN OF EACH, and both figures matter. Three aeons is a
+# NOW that wants twelve rows, which is the only section here whose size swings with the state
+# of the world. Fourteen queued beads and fourteen events is more than the five NEXT and
+# RECENT are guaranteed and less than the forty they may grow to, so what they render is
+# decided by the allocator rather than by either bound — which is the property under test.
 {
     printf 'SP_AEON_N=3\n'
     for i in 0 1 2; do
         printf 'SP_AEON%d_NAME=aeon%d\nSP_AEON%d_FAYTH=builder\nSP_AEON%d_BEAD=sp-w%d\n' "$i" "$i" "$i" "$i" "$i"
         printf 'SP_AEON%d_MIN=5\nSP_AEON%d_ACT=doing a thing\nSP_AEON%d_TITLE=A worked bead\n' "$i" "$i" "$i"
         # THE SESSION FIGURES ARE PART OF THE FIXTURE, not an optional extra: without SAID
-        # the section emits three rows per aeon and the height assertion below would be
+        # the section emits three rows per aeon and the height assertions below would be
         # measuring the OLD shape while passing.
         printf 'SP_AEON%d_TURNS=7\nSP_AEON%d_CTX=90000\nSP_AEON%d_TOOLS=19\n' "$i" "$i" "$i"
         printf 'SP_AEON%d_FILES=2\nSP_AEON%d_QUIET=30\nSP_AEON%d_SAID=thinking about it\n' "$i" "$i" "$i"
     done
-    # FOURTEEN OF EACH, more than the cap and more than the collector would now emit. The
-    # renderer has to hold the line on its own: a snapshot written by an older collector, or
-    # by one whose cap was widened, must still render five.
     printf 'SP_NEXT_N=25\n'
     for i in $(seq 0 13); do printf 'SP_NEXT%d=P1 sp-n%d A queued bead\n' "$i" "$i"; done
     for i in $(seq 0 13); do printf 'SP_EVENT%d=%dm ago landed spira/sp-e%d\n' "$i" "$i" "$i"; done
     printf 'SP_AWAITING_N=0\n'
 } | snap
 
+# THE PANE IS THE HEIGHT THE OPERATOR ACTUALLY RUNS. 52 rows is the health pane in the
+# cockpit, and it is the case this change exists for: before it, this frame came to 46 lines
+# and left six of his rows blank, because every section had reached its want and the
+# round-robin had nowhere left to put the budget. The operator: "i still see a lot of unused
+# vertical rows ... if there are no aeons running? more next, more recent. if there are
+# aeons? scale those down."
+real="$(pane 52)"
+is_n "a 52-row pane is filled to exactly 52 rows" 52 "$(printf '%s\n' "$real" | wc -l)"
+is_n "NOW is served first and takes all twelve of its rows" 12 "$(rows_of "$real" NOW)"
+# AND THE SLACK WENT TO THE TWO SECTIONS THAT EXIST TO ABSORB IT, past the five that used to
+# be their whole size. Asserted as "more than five" rather than as an exact number: the exact
+# figure is a function of how tall the fixed sections happen to render, and pinning it would
+# make this suite fail on a change to a line it is not about.
+n_next="$(printf '%s\n' "$real" | grep -c 'sp-n[0-9]')"
+n_rec="$(printf '%s\n' "$real" | grep -c 'sp-e[0-9]')"
+if [ "$n_next" -gt 5 ] && [ "$n_rec" -gt 5 ]; then
+    pass=$((pass+1)); printf '  ok    NEXT grew to %s and RECENT to %s, past the five that were their whole size\n' "$n_next" "$n_rec"
+else
+    fail=$((fail+1)); printf '  FAIL  the slack was not taken up: NEXT %s RECENT %s, both still at or under five\n' "$n_next" "$n_rec"
+fi
+
+# THE CEILING IS THE CEILING, and this is its positive control: at 200 rows nothing but
+# MAX_NEXT_ROWS, MAX_RECENT_ROWS and the amount of data can be what limits these
+# (law-absence-needs-a-positive-control). Fourteen of each is all the fixture has, so
+# fourteen is the answer — a section that invented a fifteenth would be reading something
+# that is not there.
 tall="$(pane 200)"
-# THE IDS THEMSELVES, NOT A COUNT OF LINES MATCHING A PATTERN. A count is the one assertion
-# here that passes when the section renders NOTHING, and "no rows" and "five rows" are the
-# two answers this is separating — the first draft of this counted `landed spira/sp-e0`,
-# which the renderer pads to `landed    spira/sp-e0`, so it measured zero and the cap
-# assertion beside it passed for the same wrong reason.
 ids_of() { printf '%s\n' "$tall" | grep -o "$1" | tr '\n' ' ' | sed 's/ $//'; }
-is_n "fourteen ready beads render as the five head NEXT rows" \
-     "sp-n0 sp-n1 sp-n2 sp-n3 sp-n4" "$(ids_of 'sp-n[0-9]*')"
-is_n "and fourteen events render as the five newest RECENT rows" \
-     "sp-e0 sp-e1 sp-e2 sp-e3 sp-e4" "$(ids_of 'sp-e[0-9]*')"
-# THE ROWS THE CAPS GAVE BACK GO TO NOW, which is the whole point of capping them: the
-# section describing work in flight is the one that must not be trimmed, and it takes all
-# twelve of its rows in a pane this tall. NOW is deliberately not held by the generic
-# MAX_SECTION_ROWS — its want is four rows per LIVE AEON, a figure set by how many sessions
-# are running, and capping it too would make the section that just got wider the first the
-# allocator trims.
-is_n "NOW takes all four rows of all three aeons in a tall pane" 12 "$(rows_of "$tall" NOW)"
+is_n "all fourteen ready beads render when there is room for them" \
+     "sp-n0 sp-n1 sp-n2 sp-n3 sp-n4 sp-n5 sp-n6 sp-n7 sp-n8 sp-n9 sp-n10 sp-n11 sp-n12 sp-n13" \
+     "$(ids_of 'sp-n[0-9]*')"
+is_n "and all fourteen events" \
+     "sp-e0 sp-e1 sp-e2 sp-e3 sp-e4 sp-e5 sp-e6 sp-e7 sp-e8 sp-e9 sp-e10 sp-e11 sp-e12 sp-e13" \
+     "$(ids_of 'sp-e[0-9]*')"
+is_n "with NOW still taking all four rows of all three aeons" 12 "$(rows_of "$tall" NOW)"
 
-# AT THE HEIGHT THE PANE ACTUALLY IS. 200 rows proves the cap is the cap; 45 proves the
-# trade was worth making, and it is the only figure the operator can check by looking. All
-# twelve NOW rows, five and five below them — which is the whole exchange this bead is:
-# NEXT and RECENT gave up rows so the section describing work in flight could have them.
-real="$(pane 45)"
-is_n "a 45-row pane gives NOW all twelve of its rows" 12 "$(rows_of "$real" NOW)"
-is_n "with NEXT still at five" 5 "$(printf '%s\n' "$real" | grep -c 'sp-n[0-9]')"
-is_n "and RECENT still at five" 5 "$(printf '%s\n' "$real" | grep -c 'sp-e[0-9]')"
+# NOW IS SERVED BEFORE THE SLACK, WHICH IS THE HALF THAT IS EASY TO GET WRONG. A single
+# round-robin over the raised ceilings is fair and therefore wrong here: it handed NOW 8 of
+# its 12 rows on a 45-row pane while NEXT and RECENT grew past five, trimming the section
+# that describes work in flight to feed the two that exist to fill space around it. Tier one
+# of the share is what stops that, and this is the assertion that would catch its removal.
+tight="$(pane 45)"
+n_now="$(rows_of "$tight" NOW)"
+n_next5="$(printf '%s\n' "$tight" | grep -c 'sp-n[0-9]')"
+n_rec5="$(printf '%s\n' "$tight" | grep -c 'sp-e[0-9]')"
+if [ "$n_now" -ge 11 ] && [ "$n_next5" -le 5 ] && [ "$n_rec5" -le 5 ]; then
+    pass=$((pass+1)); printf '  ok    on a 45-row pane NOW keeps %s rows while NEXT/RECENT hold at their base (%s/%s)\n' "$n_now" "$n_next5" "$n_rec5"
+else
+    fail=$((fail+1)); printf '  FAIL  the slack was taken from NOW: NOW %s, NEXT %s, RECENT %s\n' "$n_now" "$n_next5" "$n_rec5"
+fi
+is_n "and a 45-row pane is still filled to exactly 45 rows" 45 "$(printf '%s\n' "$tight" | wc -l)"
 
-# AND THE CAPS ARE NOT WHAT KEEPS THE PANE HONEST WHEN IT IS SHORT. At twenty rows the
-# sections still contend, so the round-robin must still ration NOW rather than let it take
-# all twelve — otherwise CI, the last section in the order and the only place a bead parked
-# since yesterday appears, is starved out of the pane entirely.
+# AND THE TIERS ARE NOT WHAT KEEPS THE PANE HONEST WHEN IT IS SHORT. At twenty rows the
+# sections still contend inside tier one, so the round-robin must still ration NOW rather
+# than let it take all twelve — otherwise CI, the last section in the order and the only
+# place a bead parked since yesterday appears, is starved out of the pane entirely.
 busy="$(pane 20)"
 n_now="$(rows_of "$busy" NOW)"
 if [ "$n_now" -ge 1 ] && [ "$n_now" -lt 12 ]; then

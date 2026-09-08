@@ -205,16 +205,39 @@ age_str() {
 # output to match — there is no point emitting rows nothing can show.
 MAX_SECTION_ROWS=20
 
-# NEXT AND RECENT ARE HELD TO FIVE, AND THEY ARE TWO CONSTANTS RATHER THAN ONE. The operator
-# asked for more about the sessions that are RUNNING and was explicit about what pays for it:
-# five queued beads and five events are enough. They are separate keys because they answer
-# different questions and will not stay the same number — a shared constant is how two
-# sections come to be resized together by someone who meant to resize one.
+# NEXT AND RECENT ARE ELASTIC, AND THE ALLOCATOR — NOT A CONSTANT — DECIDES HOW TALL THEY ARE.
+# They were held to five each, which spent the pane's slack rather than the pane: on the
+# 52-row column this runs in, an idle harness rendered about eighteen rows and left thirty
+# blank, because once every section had reached its `want` the round-robin had nowhere left
+# to put the budget. The operator, watching that: "i still see a lot of unused vertical rows
+# ... if there are no aeons running? more next, more recent. if there are aeons? scale those
+# down."
+#
+# So these are no longer the size of the section. They are a CEILING on how much the section
+# may ever ask for, set high enough that on any real pane the height is decided by `share`
+# and by how much data actually exists. `share` already scales correctly in both directions
+# — it is round-robin, one row at a time, so a NOW that grows by four rows per live aeon
+# takes its rows out of these two and hands them back when the aeons finish.
+#
+# THEY STAY TWO KEYS RATHER THAN ONE. They answer different questions and will not stay the
+# same number — a shared constant is how two sections come to be resized together by someone
+# who meant to resize one.
+#
+# THE COLLECTOR MUST AGREE. A ceiling here that the collector does not emit rows for is a
+# section that silently stays five tall; `spira/cockpit.sh` caps SP_NEXT and SP_EVENT to the
+# same figure, and the two are commented at each other on purpose.
 #
 # The generic cap above still governs CI, which is a list of work parked since yesterday and
 # has no fixed useful length.
-MAX_NEXT_ROWS=5
-MAX_RECENT_ROWS=5
+MAX_NEXT_ROWS=40
+MAX_RECENT_ROWS=40
+
+# THE FIVE THAT WERE THE WHOLE SECTION ARE NOW ITS FLOOR. Elastic does not mean unguaranteed:
+# these are what NEXT and RECENT are given before any section is taken past its base, so a
+# short or busy pane still shows the same five queued beads and five events it always did.
+# The ceilings above are only what they may grow INTO once every other section is satisfied.
+NEXT_BASE_ROWS=5
+RECENT_BASE_ROWS=5
 
 # Read both snapshots into the shell. Called once per frame; every section reads what it
 # left behind.
@@ -905,35 +928,52 @@ standing_lines() {
     fi
 }
 
-# share <rows> <fixed> <want...> -> one allocation per want, on its own line
+# share <rows> <fixed> <base:max...> -> one allocation per section, on its own line
 #
 # ROUND-ROBIN, ONE ROW AT A TIME. Filling each section to its cap in turn is the obvious
-# implementation and the wrong one: NOW spends three rows per working aeon, so on a busy
+# implementation and the wrong one: NOW spends four rows per working aeon, so on a busy
 # day it would take the whole column and CI — the section that reports a run parked since
 # yesterday, and the only place that fact appears — would be the one to vanish.
+#
+# TWO TIERS, BECAUSE ONE ROUND-ROBIN CANNOT SAY BOTH THINGS. Every section names a BASE it
+# needs and a MAX it could use, and the base of every section is satisfied before any section
+# is taken past it. Without the split, giving NEXT and RECENT a high ceiling so they could
+# absorb the pane's slack also let them out-vote NOW in the ordinary case: a fair one-row-each
+# share handed NOW 8 of the 12 rows its three live aeons wanted on a 45-row pane, while NEXT
+# and RECENT grew past the five they need — the section describing work in flight trimmed to
+# feed the two sections that exist to fill space around it. Tier one is the rationing that
+# protects CI on a short pane; tier two is the slack, and only the elastic sections bid for it.
 #
 # EVERY SECTION KEEPS ITS FIRST ROW even when there is no budget for it. The overflow then
 # falls off the BOTTOM of the frame in `render`, which marks the count on the header; a
 # section quietly allocated zero rows would leave no such mark.
 share() {
     local rows="$1" fixed="$2"; shift 2
-    local -a want=("$@") give=()
-    local n=${#want[@]} i budget moved
+    local -a spec=("$@") base=() max=() give=()
+    local n=${#spec[@]} i budget moved tier lim
     for (( i = 0; i < n; i++ )); do
-        if [ "${want[i]}" -gt 0 ]; then give[i]=1; else give[i]=0; fi
+        base[i]="${spec[i]%%:*}"; max[i]="${spec[i]##*:}"
+        # A MAX BELOW ITS BASE IS THE BASE. The two are computed independently at the call
+        # site — one from a constant, one from how many rows the section actually rendered —
+        # and a section with three rows of data must not be asked for five.
+        [ "${max[i]}" -lt "${base[i]}" ] 2>/dev/null && max[i]="${base[i]}"
+        if [ "${max[i]}" -gt 0 ]; then give[i]=1; else give[i]=0; fi
     done
     # 0 rows means no limit, which is what `once` uses: give every section everything.
-    [ "$rows" -le 0 ] && { printf '%s\n' "${want[@]}"; return; }
+    [ "$rows" -le 0 ] && { printf '%s\n' "${max[@]}"; return; }
     budget=$(( rows - fixed ))
     for (( i = 0; i < n; i++ )); do budget=$(( budget - give[i] )); done
-    moved=1
-    while [ "$budget" -gt 0 ] && [ "$moved" = 1 ]; do
-        moved=0
-        for (( i = 0; i < n; i++ )); do
-            [ "$budget" -gt 0 ] || break
-            if [ "${give[i]}" -lt "${want[i]}" ]; then
-                give[i]=$(( give[i] + 1 )); budget=$(( budget - 1 )); moved=1
-            fi
+    for tier in 1 2; do
+        moved=1
+        while [ "$budget" -gt 0 ] && [ "$moved" = 1 ]; do
+            moved=0
+            for (( i = 0; i < n; i++ )); do
+                [ "$budget" -gt 0 ] || break
+                if [ "$tier" = 1 ]; then lim="${base[i]}"; else lim="${max[i]}"; fi
+                if [ "${give[i]}" -lt "$lim" ]; then
+                    give[i]=$(( give[i] + 1 )); budget=$(( budget - 1 )); moved=1
+                fi
+            done
         done
     done
     printf '%s\n' "${give[@]}"
@@ -974,18 +1014,41 @@ frame() {
     # already its own bound — a figure set by how many sessions are running, not by a number
     # written down here. Holding it to twenty as well would mean the section that just got
     # four rows deep is the first one the allocator trims, which is exactly backwards: it is
-    # the section describing work in flight, and with NEXT and RECENT at five each the
-    # round-robin has the rows to give it.
+    # the section describing work in flight.
+    #
+    # NOW IS ALSO WHY THE OTHER TWO ARE ELASTIC RATHER THAN FIXED. NOW's want is the only one
+    # on this pane that swings with the state of the world, so it is the one the column has
+    # to absorb: every row it takes when three aeons wake up has to come from somewhere, and
+    # every row it gives back when they finish has to go somewhere. With NEXT and RECENT
+    # pinned at five, the giving-back had nowhere to go and the bottom of the pane simply
+    # went blank. Their ceilings are now high enough that the round-robin is what sizes them.
     #
     # CI keeps the generic cap because it is a list rather than a glance, and an unbounded one
     # — every bead parked on a run — could otherwise take the whole column.
+    #
+    # EACH SECTION BIDS A BASE AND A MAX. NOW and CI bid the same for both: their size is set
+    # by how many aeons are awake and how much is parked, so there is no slack in them to give
+    # away and nothing to gain by asking for more than they have. NEXT and RECENT bid the five
+    # they have always been guaranteed as their base, and everything they rendered as their
+    # max — they are the two sections that exist to fill the column, so they are the two that
+    # bid for the slack.
     local -a want=("${#NOW[@]}" "${#NEXT[@]}" "${#RECENT[@]}" "${#CI[@]}")
     [ "${want[3]}" -gt "$MAX_SECTION_ROWS" ] && want[3]="$MAX_SECTION_ROWS"
+    # THE BASES ARE IN LINES, NOT ITEMS, because that is what the allocator hands out. NEXT
+    # spends a line of its own on its header, so five queued beads is six lines; RECENT puts
+    # the newest event on its header line, so five events is five. Getting this wrong would
+    # quietly move one of them off the guarantee by a row.
+    local -a spec=(
+        "${want[0]}:${want[0]}"
+        "$(( NEXT_BASE_ROWS + 1 )):${want[1]}"
+        "$RECENT_BASE_ROWS:${want[2]}"
+        "${want[3]}:${want[3]}"
+    )
     # TOKENS counts as FIXED, alongside the header and the standing figures: every one of its
     # rows is a number that is always worth its row, and the constraint that stops all other
     # work must not be what the allocator elides on a short pane.
     mapfile -t give < <(share "$rows" \
-        $(( ${#HEAD[@]} + ${#TOKENS[@]} + ${#STANDING[@]} )) "${want[@]}")
+        $(( ${#HEAD[@]} + ${#TOKENS[@]} + ${#STANDING[@]} )) "${spec[@]}")
 
     printf '%s\n' "${HEAD[@]}"
     printf '%s\n' "${TOKENS[@]}"
