@@ -1,10 +1,10 @@
 [Unit]
-# Pushes every beads database that has a configured Dolt remote. Three rigs had a real
-# private GitHub remote wired by make-beads-repo.sh and then nothing ever pushed again —
-# all three last received data on 2026-09-02 within 36 seconds of each other, the
-# signature of a one-shot setup script rather than a backup. A configured remote that
-# nothing pushes answers "is this backed up?" with a yes it has not earned.
-Description=Push beads Dolt databases to their configured remotes
+# Pushes Spira's beads database to its configured Dolt remote. make-beads-repo.sh wired
+# real private GitHub remotes and then nothing ever pushed again — three databases last
+# received data on 2026-09-02 within 36 seconds of each other, the signature of a one-shot
+# setup script rather than a backup. A configured remote that nothing pushes answers "is
+# this backed up?" with a yes it has not earned.
+Description=Push Spira's beads Dolt database to its configured remote
 Documentation=file://@SPIRA_REPO@/beads-push.sh
 After=default.target
 
