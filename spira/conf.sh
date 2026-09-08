@@ -70,7 +70,7 @@ SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CT
 SPIRA_ARCHIVE
 SPIRA_ARCHIVIST_EVERY SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
 SPIRA_ARCHIVIST_PER_PASS
-SPIRA_TESTDB_LIB SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT
+SPIRA_TESTDB_LIB SPIRA_TESTDB_BD SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT
 SPIRA_GATE_TIMEOUT SPIRA_GATE_BUDGET
 SPIRA_GATE_SUITES SPIRA_SUITES_STATE SPIRA_SUITES_BUDGET SPIRA_SUITE_TIMEOUT
 SPIRA_SUITES_PRIORITY SPIRA_SUITES_STALE
@@ -574,6 +574,13 @@ spira_conf_defaults() {
     # no configuration at all.
     local _tdb; _tdb="$(basename "$SPIRA_HOME")"
     : "${SPIRA_TESTDB_LIB:=$_tdb/testdb.sh}"
+    # THE EMBEDDED bd BINARY used by test fixtures. Fixtures need a CGO-enabled build for
+    # embedded Dolt; the production binary (the one aeons and the sentinel use) may be the
+    # CGO_ENABLED=0 build, which is incompatible. A separate binary avoids a schema-mismatch
+    # forced on the production database when the two share different migration counts.
+    # The default name `bd-embedded` is a sibling of `bd` on PATH; an operator whose main
+    # binary already has CGO support can set this to `bd` to consolidate.
+    : "${SPIRA_TESTDB_BD:=bd-embedded}"
 
     # WHICH SUITES THE LANDING GATE RUNS, as a file of repository-relative paths, one per
     # line. suites.sh reads it to run everything the `spira/test-*.sh` glob finds that this
@@ -804,7 +811,7 @@ spira_gate_blames_branch() {   # spira_gate_blames_branch <status> -> 0 if the b
 export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD COCKPIT_CLIENT_IDLE_SECS SPIRA_PATH SPIRA_GOAL \
        SPIRA_WORKSPACES SPIRA_OPERATOR SPIRA_OPERATOR_ACTOR SPIRA_TZ SPIRA_ASK_LABEL SPIRA_RECLAIM_SKIP_LABEL \
        SPIRA_CI_LABEL SPIRA_CI_PARK_MAX \
-       SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT \
+       SPIRA_TESTDB_BD SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT \
        SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE \
        SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S SPIRA_LOOM_BIN \
        SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS \

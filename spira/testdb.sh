@@ -30,12 +30,13 @@
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/conf.sh"
 
-TESTDB_BD="${TESTDB_BD:-bd}"
+TESTDB_BD="${TESTDB_BD:-${SPIRA_TESTDB_BD:-bd-embedded}}"
 # Preserved if already set, so a caller that built a shared fixture and exported it is not
 # erased by the act of sourcing this file.
 TESTDB_NAME="${TESTDB_NAME:-}"
 TESTDB_DIR="${TESTDB_DIR:-}"
 TESTDB_BASELINE="${TESTDB_BASELINE:-}"
+TESTDB_BIN="${TESTDB_BIN:-}"
 
 testdb_available() {     # 0 if the embedded engine is usable on this box
     command -v "$TESTDB_BD" >/dev/null 2>&1 || return 1
@@ -63,9 +64,10 @@ testdb_require() {       # testdb_require <suite-name>
     exit 77
 }
 
-# testdb_up <tag> — a fixture workspace with an embedded Dolt database. Exports SPIRA_DB,
-# which is the only thing lib.sh's `bdq` needs, and leaves SPIRA_BD unset so the REAL binary
-# is what runs.
+# testdb_up <tag> — a fixture workspace with an embedded Dolt database. Exports SPIRA_DB
+# and SPIRA_BD: lib.sh's `bdq` reads both, and SPIRA_BD must point at the embedded binary
+# or every bdq call inside a test (including within aeon.sh runs) will reach the production
+# binary, which is built CGO_ENABLED=0 and cannot open the embedded store.
 #
 # `--prefix sp` with no --server: the issue prefix is production's, so ids read `sp-a3f`
 # exactly as they do live, while the database is a private directory with no server traffic.
@@ -78,7 +80,13 @@ testdb_up() {            # testdb_up <tag>
     local tag="$1"
     if [ "${TESTDB_SHARED:-0}" = 1 ] && [ -n "${TESTDB_NAME:-}" ] && [ -n "${TESTDB_BASELINE:-}" ]; then
         testdb_reset || { printf 'testdb: could not reset shared fixture %s\n' "$TESTDB_NAME" >&2; return 1; }
-        export SPIRA_DB="$TESTDB_DIR"; unset SPIRA_BD
+        export SPIRA_DB="$TESTDB_DIR" SPIRA_BD="$TESTDB_BD"
+        # conf.sh resets PATH from SPIRA_PATH; add TESTDB_BIN to both so child processes that
+        # re-source conf.sh (e.g. nested aeon.sh calls) still find the embedded binary.
+        if [ -n "${TESTDB_BIN:-}" ]; then
+            export PATH="$TESTDB_BIN:$PATH"
+            export SPIRA_PATH="$TESTDB_BIN${SPIRA_PATH:+:$SPIRA_PATH}"
+        fi
         return 0
     fi
 
@@ -109,8 +117,27 @@ testdb_up() {            # testdb_up <tag>
         printf 'testdb: baseline snapshot failed for %s\n' "$TESTDB_NAME" >&2
         rm -rf "$TESTDB_DIR" "$TESTDB_BASELINE"; TESTDB_DIR=""; TESTDB_BASELINE=""; TESTDB_NAME=""; return 1; }
 
-    export SPIRA_DB="$TESTDB_DIR"
-    unset SPIRA_BD
+    # MAKE `bd` RESOLVE TO THE EMBEDDED BINARY IN THIS PROCESS TREE. Test suites call `bd`
+    # directly (not through bdq) for helper functions; without this, those calls hit the
+    # production binary (CGO_ENABLED=0) which cannot open the embedded store. A symlink in a
+    # private tempdir prepended to PATH intercepts all bare `bd` invocations for the life of
+    # the test while leaving every other command name untouched.
+    #
+    # SPIRA_PATH AS WELL AS PATH. conf.sh line 700 rebuilds PATH from scratch:
+    #   export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:..."
+    # Any child process that sources conf.sh (including aeon.sh when it runs as a subprocess
+    # of a test suite) loses a bare PATH modification. conf.sh honors SPIRA_PATH from the
+    # environment (env-first `:=` pattern), so prepending TESTDB_BIN there makes the shim
+    # survive conf.sh resets in every child that this process spawns.
+    local _bd_real; _bd_real="$(command -v "$TESTDB_BD" 2>/dev/null)"
+    if [ -n "$_bd_real" ]; then
+        TESTDB_BIN="$(mktemp -d)"
+        ln -sf "$_bd_real" "$TESTDB_BIN/bd"
+        export PATH="$TESTDB_BIN:$PATH"
+        export SPIRA_PATH="$TESTDB_BIN${SPIRA_PATH:+:$SPIRA_PATH}"
+    fi
+
+    export SPIRA_DB="$TESTDB_DIR" SPIRA_BD="$TESTDB_BD"
     return 0
 }
 
@@ -140,7 +167,7 @@ testdb_seed() {          # testdb_seed  < JSONL on stdin
 testdb_drop() {
     [ "${TESTDB_SHARED:-0}" = 1 ] && return 0
     [ -n "${TESTDB_NAME:-}" ] || return 0
-    rm -rf "${TESTDB_DIR:-}" "${TESTDB_BASELINE:-}"
-    TESTDB_NAME=""; TESTDB_DIR=""; TESTDB_BASELINE=""
+    rm -rf "${TESTDB_DIR:-}" "${TESTDB_BASELINE:-}" "${TESTDB_BIN:-}"
+    TESTDB_NAME=""; TESTDB_DIR=""; TESTDB_BASELINE=""; TESTDB_BIN=""
     return 0
 }
