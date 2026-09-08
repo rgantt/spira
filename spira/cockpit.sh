@@ -1207,8 +1207,31 @@ print("SP_SOP_RECURRED=%d" % len(recurred_sops))
     }
 }
 
+# The snapshot is written to a temp and renamed, so a reader can never see a half-file.
+# The temp is a SCRIPT-LEVEL variable with its trap installed once, not a local re-armed on
+# every pass: in loop mode write_snapshot runs forever, and the pass that gets killed is
+# exactly the one that would have been running unarmed. Probing is the slow part and a kill
+# lands in it, so every unclean exit used to leave a temp behind — 303 of them accumulated
+# in one hour of a restart loop, and a directory that grows a file per unclean exit also
+# hides how often unclean exits happen, because nothing counts them.
+SNAP_TMP=""
+clear_snap_tmp() {
+    [ -n "$SNAP_TMP" ] && rm -f -- "$SNAP_TMP"
+    SNAP_TMP=""
+    return 0
+}
+trap clear_snap_tmp EXIT
+# Each signal re-raises itself after cleaning up rather than exiting with a made-up status,
+# so the caller — systemd on a restart, a shell on Ctrl-C — still sees the death it sent.
+for _sig in INT TERM HUP; do
+    trap "clear_snap_tmp; trap - $_sig; kill -s $_sig \$\$" "$_sig"
+done
+unset _sig
+
 write_snapshot() {
-    local tmp="$SPIRA_RUN/.cockpit.$$"
+    # mktemp, not `.cockpit.$$`: a recycled pid collides with a leaked temp from a previous
+    # one, and the redirect below would then silently reuse that file.
+    SNAP_TMP="$(mktemp "$SPIRA_RUN/.cockpit.XXXXXXXX")" || return 1
     local writer_unit="${INVOCATION_ID:+spira-cockpit.service}"
     { probe 2>/dev/null; echo "SP_WRITER=$$:${writer_unit:-force}"; } | python3 -c '
 import sys
@@ -1228,14 +1251,30 @@ for line in sys.stdin:
         continue
     seen.add(k)
     print("%s=%s" % (k, "\x27" + v.replace("\x27", "\x27\\\x27\x27") + "\x27"))
-' > "$tmp"
-    mv -f "$tmp" "$SNAP"
+' > "$SNAP_TMP"
+    # The rename consumes the temp; clearing the variable is what keeps the EXIT trap from
+    # chasing a name that is now the snapshot's.
+    mv -f "$SNAP_TMP" "$SNAP" && SNAP_TMP=""
     append_history
+}
+
+# Remove any .cockpit.* temps left by a previous unclean exit. At startup the previous
+# process is gone, so every .cockpit.* in SPIRA_RUN is an orphan: the live snapshot is
+# cockpit.env, not .cockpit.anything, and no reader knows the temp's name.
+sweep_stale_tmps() {
+    local _f _n=0
+    for _f in "$SPIRA_RUN"/.cockpit.*; do
+        [ -e "$_f" ] || continue
+        rm -f -- "$_f" && _n=$((_n+1))
+    done
+    [ "$_n" -gt 0 ] && echo "cockpit.sh: swept $_n stale temp(s) from $SPIRA_RUN" >&2
+    return 0
 }
 
 case "${1:-once}" in
 once)
     if cockpit_may_write; then
+        sweep_stale_tmps
         write_snapshot
         echo "spira cockpit: $SNAP ($(wc -l < "$SNAP") keys)"
     else
@@ -1255,6 +1294,7 @@ loop)
         echo "cockpit.sh loop: write refused — not the supervised process. Set SPIRA_COCKPIT_FORCE=1 to override." >&2
         exit 1
     }
+    sweep_stale_tmps
     while :; do write_snapshot; sleep "$INTERVAL"; done
     ;;
 # The strand ledger's keys alone, taking no other reading. This is the seam the suite drives:
