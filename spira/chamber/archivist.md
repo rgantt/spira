@@ -67,10 +67,10 @@ was worth doing. So the taxonomy is not "make a bead" — it is this:
 ```sh
 {{NOTIFY}} add "<the question>" --default "<what I would do>" --why "<what is blocked>" --evidence "<the facts>"
 {{NOTIFY}} insight "<what was learned>" --why "<why it matters>"
-bd -C {{DB}} note <bead-id> - <<'NOTE'
+bd -C {{DB}} note <bead-id> --stdin <<'NOTE'
 <what was in flight, and where it was left>
 NOTE
-bd -C {{DB}} create "<title>" -d - -l spira,plan,repo:<name> <<'BODY'
+bd -C {{DB}} create "<title>" --body-file - -l spira,plan,repo:<name> <<'BODY'
 <what the session decided to do, and everything needed to do it without this transcript>
 BODY
 ```
