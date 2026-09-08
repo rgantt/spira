@@ -100,6 +100,10 @@ seed() {   # seed <id> [status]
     printf '{"id":"%s","title":"t","status":"%s","issue_type":"task","labels":["spira","plan","repo:fixture"],"updated_at":"2026-09-04T00:00:00Z"}\n' \
         "$1" "${2:-open}" | testdb_seed
 }
+seed_nopayload() {   # seed_nopayload <id> [status]
+    printf '{"id":"%s","title":"t","status":"%s","issue_type":"task","labels":["spira","plan","repo:fixture","no-payload"],"updated_at":"2026-09-04T00:00:00Z"}\n' \
+        "$1" "${2:-open}" | testdb_seed
+}
 run_aeon() { rm -rf "$SPIRA_RUN/worktree"; "$SPIRA_HOME/aeon.sh" builder > "$TMP/out" 2>&1; }
 field() { bd -C "$SPIRA_DB" show "$1" --json 2>/dev/null | sed -n '/^[[{]/,$p' | python3 -c '
 import sys,json
@@ -134,6 +138,25 @@ want   "the verdict records the exemption"   "superseded=1" "$(cat "$TMP/out")"
 want   "and says why it declined to act"     "NOT reopened — superseded" "$(cat "$TMP/out")"
 nowant "so nothing is reopened"              "REOPENED"    "$(cat "$TMP/out")"
 nowant "and no reopen note is written"       "Closed is not landed" "$(notes sp-vd-3)"
+
+# ======================================================================================
+echo
+echo "no-payload with nothing committed — left closed, because its deliverable is not a commit (sp-ail7):"
+# ======================================================================================
+# THE DEFECT THIS REPRODUCES. A bead whose work produces no commit — a QA sweep, a
+# watchtower pass, an analysis — closes correctly and is then reopened by this very check
+# because no commit names it. The bead oscillates closed -> reopened without bound,
+# accumulating attempt labels toward poison, for work that was done correctly every time.
+# The aeon sets no-payload on close; the check must honour it before deciding to reopen.
+#
+# THE OTHER HALF is the existing "closed with NOTHING committed" case above: a bead without
+# no-payload that commits nothing IS reopened. The label exempts; it does not disable.
+testdb_reset; seed_nopayload sp-vd-np; shim 0 close; run_aeon
+is     "the bead stays closed"               closed "$(field sp-vd-np status)"
+want   "the verdict records the exemption"   "nopayload=1" "$(cat "$TMP/out")"
+want   "and says why it declined to act"     "NOT reopened — no-payload" "$(cat "$TMP/out")"
+nowant "so nothing is reopened"              "REOPENED"    "$(cat "$TMP/out")"
+nowant "and no reopen note is written"       "Closed is not landed" "$(notes sp-vd-np)"
 
 # ======================================================================================
 echo

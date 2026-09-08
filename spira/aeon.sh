@@ -1280,13 +1280,18 @@ log "$FAYTH: $BEAD_ID session exited rc=$rc"
 verdict="$(bdjson show "$BEAD_ID" 2>/dev/null | python3 -c '
 import sys,json
 try: d=json.load(sys.stdin)
-except Exception: print(" 0"); sys.exit()
+except Exception: print(" 0 0"); sys.exit()
 d=d if isinstance(d,list) else [d]
-if not d: print(" 0"); sys.exit()
+if not d: print(" 0 0"); sys.exit()
 sup = 1 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
                for x in (d[0].get("dependencies") or [])) else 0
-print("%s %s" % (d[0].get("status",""), sup))' 2>/dev/null)"
-st="${verdict%% *}"; superseded="${verdict##* }"
+# A BEAD MARKED no-payload HAS NO COMMIT AND NEVER WILL. Its deliverable is the bead
+# itself — a report, a test result, a sweep result — written into the close reason. The
+# aeon sets this label on close; the sentinel honours it in CHECK5; this check must honour
+# it here so the bead is never reopened in the first place.
+nopayload = 1 if "no-payload" in (d[0].get("labels") or []) else 0
+print("%s %s %s" % (d[0].get("status",""), sup, nopayload))' 2>/dev/null)"
+st="${verdict%% *}"; _vrest="${verdict#* }"; superseded="${_vrest%% *}"; nopayload="${_vrest##* }"
 # NEVER `git log | grep -q` under `set -o pipefail`. grep -q exits on the first match and
 # closes the pipe; git log then dies of SIGPIPE and pipefail propagates 141 as the
 # pipeline's status, so a MATCH reads as a failure. This exact line reported "closed with
@@ -1323,16 +1328,20 @@ else
         committed=no
     fi
 fi
-log "$FAYTH: $BEAD_ID status=$st committed=$committed superseded=$superseded"
+log "$FAYTH: $BEAD_ID status=$st committed=$committed superseded=$superseded nopayload=$nopayload"
 
-if [ "$st" = "closed" ] && [ "$committed" = "no" ] && [ "$superseded" != 1 ]; then
+if [ "$st" = "closed" ] && [ "$committed" = "no" ] && [ "$superseded" != 1 ] && [ "$nopayload" != 1 ]; then
     bead_reopen "$BEAD_ID" "Reopened by aeon.sh: closed without a commit naming $BEAD_ID on $BRANCH. Closed is not landed."
     log "$FAYTH: $BEAD_ID REOPENED — closed with nothing committed"
-elif [ "$st" = "closed" ] && [ "$committed" = "no" ]; then
+elif [ "$st" = "closed" ] && [ "$committed" = "no" ] && [ "$superseded" = 1 ]; then
     # SAID OUT LOUD. This is the one path where the harness sees a bead closed with nothing
     # committed and declines to act, and a silent decline is indistinguishable from the
     # check never having run at all.
     log "$FAYTH: $BEAD_ID closed with nothing committed and NOT reopened — superseded, so its work landed under another id"
+elif [ "$st" = "closed" ] && [ "$committed" = "no" ] && [ "$nopayload" = 1 ]; then
+    # SAID OUT LOUD for the same reason. A bead with no-payload declared its deliverable is
+    # not a commit — the close is the evidence, and reopening it would revert a correct close.
+    log "$FAYTH: $BEAD_ID closed with nothing committed and NOT reopened — no-payload, so its deliverable is not a commit"
 fi
 
 # ---- the closing rule: an incident resolved without a runbook is not resolved ----------
