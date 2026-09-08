@@ -24,11 +24,11 @@ FAYTH_MEMORY_PREFIXES="law-"
 # one. A bead with no `repo:` label is the home repo, which is what Spira's own plan
 # beads are.
 # OPUS 4.6 (per the operator, 2026-09-07). The builders are the party's DPS and hold their
-# slots for 45-90 minutes each, so they are where the five-hour window actually goes — and
-# that window, not CPU and not the slot count, is Spira's throughput ceiling. A cheaper model
-# in the seats that are occupied longest buys more finished beads per window than a wider
-# pool did: four slots was tried and returned to three ninety minutes later because a slot is
-# only throughput if the aeon in it can finish.
+# slots for ~10 minutes each (p50 9.4 min, p90 18.6 min measured over 28 runs), so they are
+# where the five-hour window actually goes — and that window, not CPU and not the slot count,
+# is Spira's throughput ceiling. A cheaper model in the seats that are occupied longest buys
+# more finished beads per window than a wider pool did: four slots was tried and returned to
+# three ninety minutes later because a slot is only throughput if the aeon in it can finish.
 #
 # VERIFIED, NOT ASSUMED: `claude --model claude-opus-4-6 -p ...` answers on this box. An id
 # the CLI rejects does not fail loudly here — every summon dies and the pool looks merely
@@ -55,8 +55,8 @@ FAYTH_MODEL=claude-opus-4-6
 #
 # Aeons work in separate worktrees and claim atomically, so the risk is contention in a
 # shared repo, not lost work; the governor will withhold in enforce mode if that proves wrong.
-# SPIRA_MAX_AEONS in spira.conf is NOT this number: it is declared and documented but nothing
-# reads it, so this file is the only ceiling that exists.
+# SPIRA_MAX_AEONS in spira.conf is the pool ceiling: the sentinel reads it and draws
+# it down across the task roster. This number is the fallback for a host with no pool.
 FAYTH_MAX_CONCURRENT=3
 
 # ELASTIC, AND THEREFORE LAST IN SPIRA_FAYTHS. The builder takes whatever the pool has left

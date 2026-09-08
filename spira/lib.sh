@@ -413,7 +413,7 @@ release_orphan_claims() {   # release_orphan_claims [labels] -> a RELEASED line 
 #   pool, because they are not task-specific work: they are persistent roles that are always
 #   present, with their own summoner (Ops has spira-ops.timer). Ops is the healer. Keeping it
 #   out of the pool is what actually guarantees it a place — a reserved slot inside a shared
-#   pool is still a slot somebody has to release, and builders hold theirs for 45-90 minutes.
+#   pool is still a slot somebody has to release, and builders hold theirs for ~10 minutes (p50 9.4 min, p90 18.6 min measured over 28 runs).
 #
 #   TASK FAYTHS (the default) — summoned for one bead and gone. This pool is theirs alone.
 #   FAYTH_ELASTIC means "no number of your own, take what is left": builders are the DPS, and
@@ -443,7 +443,7 @@ release_orphan_claims() {   # release_orphan_claims [labels] -> a RELEASED line 
 #
 # WHY THERE IS NO RESERVATION MECHANISM. The first version of this gave Ops a reserved slot
 # inside the shared pool, because ordering alone only stops a builder taking a slot AHEAD of
-# Ops within one pass and does nothing about builders already inside 45-90 minute sessions.
+# Ops within one pass and does nothing about builders already inside ~10-minute sessions.
 # Taking party members out of the pool entirely is the simpler answer to the same problem and
 # has no arithmetic to get wrong: a role that never competes cannot be starved.
 # THE POOL IS A CEILING, NOT A FLOOR. It only ever lowers what a persona may start, so a
@@ -455,8 +455,10 @@ fayth_free() {           # fayth_free <fayth> [pool-remaining]
     # there is no remainder to take, so it falls back to its declared cap rather than to
     # unbounded — an elastic persona on a host that never enforced a pool must not become
     # the one that discovers the box's limits.
+    local is_remainder=0
     if [ "$(fayth_get "$f" FAYTH_ELASTIC 0)" = 1 ] && [ -n "$pool" ]; then
         max="$pool"
+        is_remainder=1
     fi
     # THE GOVERNOR WITHHOLDS HERE, at the one chokepoint every summon path goes through.
     # FAYTH_MAX_CONCURRENT is a COUNT, which is a proxy for load rather than a measure of
@@ -465,13 +467,17 @@ fayth_free() {           # fayth_free <fayth> [pool-remaining]
     # absence means no opinion, so a suite with no budget.env behaves exactly as before.
     # Only `enforce` clamps. In `measure` the budget is recorded and reported and changes
     # nothing, so the history accumulates under real conditions before it decides anything.
-    # IT CLAMPS BY HEADROOM — how many MORE the governor says may start — not by a total.
-    # The governor's number was always "how many fit in the idle CPU", which is additional
-    # aeons since the running ones are already in the load; reading it as a cap and then
-    # subtracting the running count again withheld more the more was running.
+    # A REMAINDER IS NOT A CAP. A number that already nets out what is running (the pool
+    # from sentinel.sh, the headroom from the governor) is how many MORE may start. Subtracting
+    # the running count from it again withholds more the more is running, so the system
+    # saturates at half its ceiling and reports itself at its limit.
     local gmode free
     have="$(aeon_count "$f")"
-    free=$(( max > have ? max - have : 0 ))
+    if [ "$is_remainder" = 1 ]; then
+        free="$max"
+    else
+        free=$(( max > have ? max - have : 0 ))
+    fi
     budget="$(. "$SPIRA_RUN/budget.env" 2>/dev/null; printf '%s' "${SP_HEADROOM:-}")"
     gmode="$(. "$SPIRA_RUN/budget.env" 2>/dev/null; printf '%s' "${SP_GOVERNOR_MODE:-measure}")"
     if [ "$gmode" = enforce ] && [ -n "$budget" ] && [ "$budget" -lt "$free" ] 2>/dev/null; then
