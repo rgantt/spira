@@ -418,31 +418,37 @@ print("SP_CLOSED_KINDS=%s" % (", ".join("%s %d" % (k, v) for k, v in sorted(kind
     # the home repo's branches would report "no unsent work" while another repository's
     # branches aged forever — the reassuring answer, produced by looking in the wrong place.
     # Refs are a local read, so this costs nothing per repository; no fetch happens here.
-    _fail=0; _n=0; _o=""
+    _fail=0; _n=0; _o=""; _done=0; _unadopted=0
     for _r in $(spira_repos); do
         _p="$(repo_root "$_r")" || continue
         [ -e "$_p/.git" ] || continue
-        # How many unsent branches are FINISHED — their bead is closed, so they await only
-        # the rites. That is the number saying whether the sending is keeping up.
-        _done=0
-        for _b in $(git -C "$_p" for-each-ref --format='%(refname:short)' 'refs/heads/spira/*' 2>/dev/null); do
-            _st="$(bdjson show "${_b#spira/}" 2>/dev/null | python3 -c '
+        # ONE LOOP PER REPOSITORY, fetching both name and timestamp. The bead lookup decides
+        # whether a branch counts as unsent work or as an unadopted stray — a ref whose suffix
+        # resolves to no bead can never be reaped by any rite and is a permanent +1 on a figure
+        # whose whole purpose is to trend to zero.
+        if _brs="$(git -C "$_p" for-each-ref --format='%(refname:short) %(committerdate:unix)' 'refs/heads/spira/*' 2>/dev/null)"; then
+            while read -r _b _ts; do
+                [ -n "$_b" ] || continue
+                _st="$(bdjson show "${_b#spira/}" 2>/dev/null | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin); print((d if isinstance(d, list) else [d])[0].get("status", ""))
 except Exception: print("")' 2>/dev/null)"
-            [ "$_st" = closed ] && _done=$((_done+1))
-        done
-        echo "SP_BRANCH_DONE=$_done"
-        if _brs=$(git -C "$_p" for-each-ref --format='%(committerdate:unix)' 'refs/heads/spira/*' 2>/dev/null); then
-            while read -r _ts; do
-                [ -n "$_ts" ] || continue
+                if [ -z "$_st" ]; then
+                    _unadopted=$((_unadopted+1))
+                    continue
+                fi
+                [ "$_st" = closed ] && _done=$((_done+1))
                 _n=$((_n+1))
-                if [ -z "$_o" ] || [ "$_ts" -lt "$_o" ]; then _o="$_ts"; fi
+                if [ -n "$_ts" ]; then
+                    if [ -z "$_o" ] || [ "$_ts" -lt "$_o" ]; then _o="$_ts"; fi
+                fi
             done <<< "$_brs"
         else
             _fail=1
         fi
     done
+    echo "SP_BRANCH_DONE=$_done"
+    echo "SP_UNADOPTED=$_unadopted"
     if [ "$_fail" = 1 ]; then
         echo "SP_UNSENT=?"
         echo "SP_UNSENT_OLDEST_H=?"

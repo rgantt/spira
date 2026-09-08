@@ -757,10 +757,12 @@ standing_lines() {
     # column a third of a 214-wide window, and the terminal cuts rather than folds — so the
     # gloss that makes "fiends" mean anything was the part that disappeared. The counts stay
     # on the first row; the word that needs explaining takes the second.
-    printf ' %sSEND%s   %s%s branches unsent%s · %s%s awaiting rites%s · %soldest %sh%s\n' \
+    local unadopt_seg=""
+    [ "${SP_UNADOPTED:-0}" != 0 ] && unadopt_seg="$(printf ' · %s%s unadopted%s' "$C_WARN" "${SP_UNADOPTED}" "$C_RST")"
+    printf ' %sSEND%s   %s%s branches unsent%s · %s%s awaiting rites%s · %soldest %sh%s%s\n' \
         "$C_DIM" "$C_RST" "$C_B" "${SP_UNSENT:-?}" "$C_RST" \
         "$( [ "${SP_BRANCH_DONE:-0}" = 0 ] && printf '%s' "$C_DIM" || printf '%s' "$C_WARN")" "${SP_BRANCH_DONE:-?}" "$C_RST" \
-        "$age_col" "${SP_UNSENT_OLDEST_H:-?}" "$C_RST"
+        "$age_col" "${SP_UNSENT_OLDEST_H:-?}" "$C_RST" "$unadopt_seg"
     printf '        %s%s fiends%s %s— unsent work that came back%s\n' \
         "$fail_col" "${SP_SENT_FAILED:-?}" "$C_RST" "$C_DIM" "$C_RST"
 
