@@ -127,7 +127,9 @@ status_of() { bdjson show "$ID" | python3 -c 'import sys,json
 d=json.load(sys.stdin); d=d if isinstance(d,list) else [d]; print(d[0].get("status","") if d else "")' 2>/dev/null; }
 st="$(status_of)"
 if [ "$st" = in_progress ]; then
-    bdq unclaim "$ID" --force >/dev/null 2>&1 || bdq unclaim "$ID" >/dev/null 2>&1 || true
+    bdq unclaim "$ID" --force >/dev/null 2>&1 \
+        || bdq update "$ID" --status open --assignee "" >/dev/null 2>&1 \
+        || true
 fi
 bdq update "$ID" --assignee "" --force >/dev/null 2>&1 || bdq update "$ID" --assignee "" >/dev/null 2>&1
 
