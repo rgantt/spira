@@ -423,6 +423,19 @@ fn lead(desc: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The ask body with the Default recommendation line removed.
+///
+/// `detail_lines` renders `lead` above the body as "default: …". Leaving the same line in
+/// the body renders it twice — once labelled, once as raw markdown — claiming rows that
+/// produce nothing the reader has not already seen. Blank lines left adjacent by the removal
+/// are stripped so a description that IS ONLY the Default line leaves an empty body rather
+/// than a body of blank rows.
+fn ask_body(desc: &str) -> String {
+    let joined: Vec<&str> = desc.lines().filter(|l| !l.contains("Default")).collect();
+    let s = joined.join("\n");
+    s.trim_matches('\n').to_string()
+}
+
 /// An insight's body, with the escalation template's call to action taken off it.
 ///
 /// (the operator, verbatim: *"these insights seem more like bug reports which means they're
@@ -820,11 +833,19 @@ pub fn view_items(
                     // NO `lead` ON EVENTS EITHER. An event has already happened, so there
                     // is nothing to agree to.
                     let is_record = badge == "insight" || is_event;
+                    let item_lead = if is_record { String::new() } else { lead(desc) };
+                    let item_body = if badge == "insight" {
+                        fyi_body(desc)
+                    } else if !item_lead.is_empty() {
+                        ask_body(desc)
+                    } else {
+                        desc.to_string()
+                    };
                     Item {
                         id: r["id"].as_str().unwrap_or("?").to_string(),
                         title: r["title"].as_str().unwrap_or("").to_string(),
-                        lead: if is_record { String::new() } else { lead(desc) },
-                        body: if badge == "insight" { fyi_body(desc) } else { desc.to_string() },
+                        lead: item_lead,
+                        body: item_body,
                         badge: badge.to_string(),
                         when: r["created_at"].as_str().unwrap_or("").to_string(),
                         enacted: enacted(&l),
@@ -919,6 +940,21 @@ mod tests {
     fn a_plain_body_is_left_alone() {
         let b = "one line.\n\nand another.";
         assert_eq!(fyi_body(b), b);
+    }
+
+    /// When the description IS only the Default recommendation, `ask_body` returns an empty
+    /// string — the lead already renders it as "default: …", and a body that only repeats
+    /// that sentence costs a row and says nothing new.
+    #[test]
+    fn the_lead_line_is_removed_from_the_ask_body() {
+        assert_eq!(ask_body("**Default:** do X."), "");
+        // A description with prose before and after keeps everything else.
+        let desc = "Why this matters.\n\n**Default:** do X.\n\nMore context.";
+        let body = ask_body(desc);
+        assert!(body.contains("Why this matters."), "{body:?}");
+        assert!(body.contains("More context."), "{body:?}");
+        assert!(!body.contains("Default"), "{body:?}");
+        assert!(!body.contains("do X"), "{body:?}");
     }
 
     // ── NOTIFICATIONS: events as outcomes ────────────────────────────────────────────
