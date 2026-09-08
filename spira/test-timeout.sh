@@ -16,6 +16,7 @@
 #   3. A claim released because spira-poison raced the predicate check is a clean exit.
 #   4. SP_OPS_AGE reports 0 when an ops aeon pid is live, not the stale log mtime.
 #
+# defect: sp-06hs
 # covers: spira/lib.sh spira/aeon.sh spira/cockpit.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

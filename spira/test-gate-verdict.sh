@@ -24,6 +24,7 @@
 # of this harness rather than the installed one — the harness's own bytes are part of the
 # key, so a case about a changed harness has to be able to change one.
 #
+# defect: sp-0v8
 # covers: spira/gate.sh spira/conf.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

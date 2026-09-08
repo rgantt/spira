@@ -28,6 +28,7 @@
 # tag before trusting any 'not present' assertions. It also verifies the
 # suite itself fails when release.sh is absent.
 #
+# defect: sp-gsmx.3
 # covers: spira/release.sh spira/lib.sh
 # covers: spira/promote.sh
 set -uo pipefail

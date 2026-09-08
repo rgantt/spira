@@ -32,6 +32,7 @@
 # The program is run in an isolated environment (law-gates-run-in-a-clean-environment):
 # SPIRA_CONF=/nonexistent, fixture SPIRA_DB, fixture SPIRA_REPO_MAP, fixture git repo.
 #
+# defect: sp-gsmx.1
 # covers: spira/released-defects.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

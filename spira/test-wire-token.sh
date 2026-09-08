@@ -20,6 +20,7 @@
 # Each grep below targets the functional form — the literal string as it would appear in the
 # source — so a rename that updates every grep but not the say, or vice versa, is caught here.
 #
+# defect: sp-dcfm
 # covers: spira/sending.sh spira/sentinel.sh spira/cockpit-metrics.py
 
 # covers: spira/sending.sh spira/sentinel.sh spira/cockpit-metrics.py

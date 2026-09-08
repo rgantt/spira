@@ -37,6 +37,7 @@
 # NO DATABASE, NO BOX. sending_metrics is a pure function over log lines, so the fixture is a
 # string and the suite is hermetic by construction.
 #
+# defect: sp-1smg
 # covers: spira/cockpit-metrics.py
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

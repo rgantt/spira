@@ -27,6 +27,7 @@
 # (broken database) depends on `bd` returning the empty string on failure, which it does,
 # and no stub can promise to do the same when the code evolves.
 #
+# defect: sp-wwav
 # covers: spira/cockpit.sh spira/sop.sh
 # covers: spira/cockpit-metrics.py
 set -uo pipefail

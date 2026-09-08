@@ -14,6 +14,7 @@
 #
 #   ./test-sop-lint.sh
 #
+# defect: sp-atts
 # covers: spira/sop.sh spira/gate-spira.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

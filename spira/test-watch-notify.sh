@@ -35,6 +35,7 @@
 # SHIPPED vocabulary — so a filter expression written into the code instead of read from
 # configuration fails here rather than passing by coincidence.
 #
+# defect: sp-ee4
 # covers: spira/watchd.sh spira/watchers systemd/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

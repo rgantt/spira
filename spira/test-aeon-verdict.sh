@@ -26,6 +26,7 @@
 # commit graph and a model of either would be a second implementation of the thing in
 # question (law-prefer-the-real-dependency).
 #
+# defect: sp-dvlq
 # covers: spira/aeon.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

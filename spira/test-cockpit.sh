@@ -14,6 +14,7 @@
 # invocation, so the collector refuses to write unless its INVOCATION_ID matches
 # spira-cockpit.service's — or SPIRA_COCKPIT_FORCE=1 names the override.
 #
+# defect: sp-20d
 # covers: spira/cockpit.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

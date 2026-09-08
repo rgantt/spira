@@ -24,6 +24,7 @@
 # calls bd label add/remove and bd show; a stub would drift silently and prove nothing
 # about the real label path.
 #
+# defect: sp-rzyl
 # covers: spira/sentinel.sh spira/lib.sh
 # hermetic-ok: uses a fixture database, no systemd or gh
 set -uo pipefail

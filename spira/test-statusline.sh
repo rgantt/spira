@@ -16,6 +16,7 @@
 #   4. THE RESOLUTION: the /tmp/sl2/rec.sh shape that caused this bead, where the command is a
 #      wrapper under /tmp that pipes to a ctx-meter.sh copy in a worktree.
 #
+# defect: sp-9ydp
 # covers: spira/statusline-check.py spira/doctor.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

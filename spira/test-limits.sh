@@ -28,6 +28,7 @@
 # into their real runtime directory and asserts against their real account
 # (law-gates-run-in-a-clean-environment).
 #
+# defect: sp-0uu
 # covers: spira/ctx-meter.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

@@ -12,6 +12,7 @@
 #   - every field renders ? on an unreadable source, never 0 and never blank
 #   - gate-run.sh --status emits nothing on stderr under a changing process table
 #
+# defect: sp-idml
 # covers: spira/cockpit.sh spira/gate-run.sh cockpit/health.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

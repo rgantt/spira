@@ -16,6 +16,7 @@
 # mechanism directly: the flock, the meter and the timeout, each as a separate case so a
 # break names itself. The soak takes ~90s; this takes ~10s.
 #
+# defect: sp-64v0
 # covers: spira/gate.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

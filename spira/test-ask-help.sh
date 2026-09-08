@@ -14,6 +14,7 @@
 # exactly what happened before this suite. The count before and after is the discriminating
 # fact (law-absence-needs-a-positive-control).
 #
+# defect: sp-7r21
 # covers: cockpit/ask.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

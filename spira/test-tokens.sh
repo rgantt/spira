@@ -11,6 +11,7 @@
 #
 # No database, no network, under a second.
 #
+# defect: sp-rcr
 # covers: spira/tokens.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

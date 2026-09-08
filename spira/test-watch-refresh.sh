@@ -28,6 +28,7 @@
 # and the 60s cadence out of those two files, so a change to either must run it, while a
 # change to some other unit has no business selecting it.
 #
+# defect: sp-gys
 # covers: spira/watch-refresh.sh systemd/spira-watch-refresh.service systemd/spira-watch-refresh.timer
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

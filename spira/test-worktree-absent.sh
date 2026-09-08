@@ -29,6 +29,7 @@
 # registry and the filesystem. A git fixture with a real repo is the right dependency
 # (law-prefer-the-real-dependency).
 #
+# defect: sp-hl92
 # covers: spira/lib.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

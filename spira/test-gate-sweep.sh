@@ -5,6 +5,7 @@
 #
 #   ./test-gate-sweep.sh
 #
+# defect: sp-ic8n
 # covers: spira/gate-sweep.sh spira/gate.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

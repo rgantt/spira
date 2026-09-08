@@ -30,6 +30,7 @@
 # session it ran — and a model of aeon.sh would be a second implementation of the thing in
 # question (law-prefer-the-real-dependency).
 #
+# defect: sp-214
 # covers: spira/aeon.sh spira/lib.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

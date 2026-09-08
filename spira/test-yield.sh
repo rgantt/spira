@@ -28,6 +28,7 @@
 # whole metric rests on, and if it ever stops being visible to the gate, both reds land in
 # one column and the number stops meaning anything.
 #
+# defect: sp-1xb0
 # covers: spira/yield.sh spira/gate.sh spira/watchtower.sh cockpit/health.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

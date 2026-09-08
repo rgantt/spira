@@ -34,6 +34,7 @@
 # Compact JSON is required: the real Claude CLI outputs without spaces, and the
 # Python parser in review.sh searches for the literal '"type":"result"'.
 #
+# defect: sp-gsmx.4
 # covers: spira/review.sh spira/promote.sh spira/conf.sh spira/lib.sh
 # covers: spira/release.sh
 set -uo pipefail

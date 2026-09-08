@@ -16,6 +16,7 @@
 # superseded — because every silence below would pass just as well against a version of the
 # fix that skipped every branch, or reaped nothing.
 #
+# defect: sp-amac
 # covers: spira/landing.sh spira/sending.sh spira/lib.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

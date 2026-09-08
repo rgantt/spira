@@ -23,6 +23,7 @@
 #    SPIRA_WORKSPACES changes the default.
 # 5. promote.sh contains no hardcoded absolute path for the production checkout.
 #
+# defect: sp-gsmx.2
 # covers: spira/conf.sh spira/promote.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

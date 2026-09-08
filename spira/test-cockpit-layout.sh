@@ -10,6 +10,7 @@
 # COCKPIT_CLIENT_IDLE_SECS (default 6 h); layout.sh up sets window-size largest so the
 # biggest client's height governs regardless of which client was most recently active.
 #
+# defect: sp-eq5
 # covers: cockpit/layout.sh
 set -uo pipefail
 

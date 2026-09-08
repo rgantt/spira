@@ -13,6 +13,7 @@
 # A REAL bd ON A THROWAWAY DATABASE, because every claim is about what bd does
 # with a status, a claim and an assignee (law-prefer-the-real-dependency).
 #
+# defect: sp-oz0b
 # covers: spira/hold.sh spira/unhold.sh spira/lib.sh spira/strand.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

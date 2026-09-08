@@ -24,6 +24,7 @@
 # test is how `bd list --status closed` represents labels and dependencies — precisely the
 # seam that broke supersession.
 #
+# defect: sp-kufh
 # covers: spira/sentinel.sh spira/lib.sh
 # hermetic-ok: uses a fixture database and a local git repo, no systemd or gh
 set -uo pipefail

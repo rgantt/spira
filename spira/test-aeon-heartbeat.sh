@@ -12,6 +12,7 @@
 #
 # No database, no network, under a second.
 #
+# defect: sp-q697
 # covers: spira/lib.sh spira/aeon.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

@@ -14,6 +14,7 @@
 # are waiting on a reply". The suite worked around it with a sleep 2 — the tell that the
 # ordering is the program's to establish and not the test's to arrange around.
 #
+# defect: sp-b0c
 # covers: cockpit/unanswered.sh cockpit/ask.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

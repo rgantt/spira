@@ -31,6 +31,7 @@
 # so a literal written into the hook cannot pass by coincidence, and nothing here can reach
 # the operator's own configuration or their live client settings file.
 #
+# defect: sp-4vp
 # covers: spira/install-session-hook.sh spira/watchd.sh systemd/install.sh systemd/cockpit-ensure.service
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

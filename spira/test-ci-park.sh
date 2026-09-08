@@ -30,6 +30,7 @@
 # against the shipped value passes just as well if the number is written into the code,
 # which is the thing the configuration key exists to stop.
 #
+# defect: sp-jll
 # covers: spira/lib.sh spira/sentinel.sh spira/cockpit.sh spira/aeon.sh spira/strand.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

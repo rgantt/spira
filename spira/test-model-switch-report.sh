@@ -17,6 +17,7 @@
 #
 # Driven entirely from fixture files in a temp dir; no database or network.
 #
+# defect: sp-59ej
 # covers: spira/model-switch-report.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

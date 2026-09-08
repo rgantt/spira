@@ -34,6 +34,7 @@
 # is not the property under test — the failure it exists to stop is a landing pass that never
 # consults it, which is why a change to `landing.sh` has to select this suite too.
 #
+# defect: sp-qkf
 # covers: spira/confine.sh spira/landing.sh spira/chamber/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

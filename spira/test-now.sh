@@ -16,6 +16,7 @@
 #
 # No database, no network, under a second.
 #
+# defect: sp-efx
 # covers: cockpit/health.sh spira/lib.sh spira/cockpit.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

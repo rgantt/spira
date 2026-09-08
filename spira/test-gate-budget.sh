@@ -15,6 +15,7 @@
 #      not with a budget-specific code — the branch did not cause the overrun.
 #   3. A second overrun does not file a second bead (deduplication).
 #
+# defect: sp-cv0i
 # covers: spira/gate-spira.sh spira/conf.sh
 # shellcheck disable=SC1090
 set -uo pipefail

@@ -21,6 +21,7 @@
 # clone with no binary fails the timed run and files a bead rather than silently being
 # absent from the record.
 #
+# defect: sp-wok.3
 # covers: loom/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

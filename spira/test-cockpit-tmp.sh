@@ -21,6 +21,7 @@
 # `git` to get far enough to be interrupted, and a box where it cannot start is a box where
 # this property is unobservable, not one where it holds.
 #
+# defect: sp-2yd
 # covers: spira/cockpit.sh
 # shellcheck disable=SC2034
 set -uo pipefail

@@ -20,6 +20,7 @@
 # NO DATABASE. The emitter's contract is what it hands to `$SPIRA_NOTIFY`, and what
 # `ask.sh note` then writes is test-cockpit-db.sh's question, against a real `bd`. Splitting
 # them keeps this suite fast enough to be the one that always runs.
+# defect: sp-gvm
 # covers: spira/lib.sh spira/aeon.sh spira/landing.sh spira/sentinel.sh spira/strand.sh cockpit/ask.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

@@ -38,6 +38,7 @@
 # to have one; the rendering was verified separately, by eye and by a headless run, against
 # the same fixture this asserts on.
 #
+# defect: sp-wok.2
 # covers: loom/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

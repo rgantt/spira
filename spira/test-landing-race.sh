@@ -27,6 +27,7 @@
 # `confine.sh` are stubs whose exit status this suite dictates: each has its own suite, and
 # what is under test here is what landing does AFTER a verdict, not how one is reached.
 #
+# defect: sp-dupland
 # covers: spira/landing.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

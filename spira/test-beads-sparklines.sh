@@ -12,6 +12,7 @@
 #
 # No network. No real database. Under a second.
 #
+# defect: sp-mn8q
 # covers: spira/cockpit.sh cockpit/health.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

@@ -53,6 +53,7 @@
 # database reads either side of a session, and a stub of either side would be a second
 # implementation of the thing in question (law-prefer-the-real-dependency).
 #
+# defect: sp-9pyr
 # covers: spira/aeon.sh spira/sop.sh spira/chamber/ops.fayth spira/chamber/ops.md
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

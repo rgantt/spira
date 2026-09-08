@@ -19,6 +19,7 @@
 #
 # The buggy code produces (3, 1, 0, 0) instead, saturating at n=2.
 #
+# defect: sp-gzlv
 # covers: spira/lib.sh spira/chamber/builder.fayth
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

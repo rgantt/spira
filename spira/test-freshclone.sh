@@ -32,6 +32,7 @@
 #   caught before the shipped default is declared generic — otherwise a check that
 #   never read the key would pass just as well.
 #
+# defect: sp-cmn
 # covers: spira/conf.sh spira/doctor.sh spira/*.sh
 # covers: spira/statutes/law-ships-for-a-colleague.txt
 set -uo pipefail

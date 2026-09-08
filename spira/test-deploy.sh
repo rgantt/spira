@@ -34,6 +34,7 @@
 # money on every run. The fake claude reads FAKE_REVIEW_VERDICT and emits a
 # valid compact stream-json response, identical to the one in test-review.sh.
 #
+# defect: sp-gsmx.5
 # covers: spira/deploy.sh spira/review.sh spira/promote.sh spira/landing.sh
 # covers: spira/release.sh spira/conf.sh spira/lib.sh
 set -uo pipefail

@@ -13,6 +13,7 @@
 # EVERY CASE CARRIES ITS POSITIVE CONTROL. The guard must fire when a copy is run, and must
 # NOT fire when the installed copy is run. Both must be observed, not just one.
 #
+# defect: sp-zp8
 # covers: cockpit/layout.sh
 set -uo pipefail
 

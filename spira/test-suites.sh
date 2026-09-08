@@ -33,6 +33,7 @@
 # priority passes just as well with the number written back into the code, which is the thing
 # the key exists to stop.
 #
+# defect: sp-ewnb
 # covers: spira/suites.sh spira/gate-suites spira/gate-spira.sh spira/incident.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

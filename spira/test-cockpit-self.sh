@@ -36,6 +36,7 @@
 # NO DATABASE, NO BOX. The SELF metrics are pure functions over log lines, so the fixtures
 # are strings and the suite is hermetic by construction.
 #
+# defect: sp-jo8i
 # covers: spira/cockpit-metrics.py cockpit/health.sh
 
 # covers: spira/cockpit-metrics.py cockpit/health.sh

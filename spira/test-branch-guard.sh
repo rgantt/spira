@@ -7,6 +7,7 @@
 # (the guard MUST NOT fire on the good cases), and two check-mode cases (the audit detects
 # an aeon tip and a checkout ahead of remote, then clears on both counts after cleanup).
 #
+# defect: sp-poou
 # covers: spira/branch-guard.sh spira/hooks/pre-commit
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

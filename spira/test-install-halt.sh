@@ -17,6 +17,7 @@
 # Pin a non-default SPIRA_RUN so the halt stamp resolves there, not to the operator's
 # live run directory (law-gates-run-in-a-clean-environment).
 #
+# defect: sp-8jy7
 # covers: systemd/install.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"

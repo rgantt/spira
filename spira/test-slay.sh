@@ -16,6 +16,7 @@
 # remote for branches and worktrees, because every claim about the work is
 # about what git says exists (law-prefer-the-real-dependency).
 #
+# defect: sp-ekio
 # covers: spira/slay.sh spira/lib.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

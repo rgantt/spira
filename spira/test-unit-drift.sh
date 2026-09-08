@@ -29,6 +29,7 @@
 # resolves there and never at the operator's real units. SPIRA_CONF is set to a nonexistent
 # file so no box configuration leaks in (law-gates-run-in-a-clean-environment).
 #
+# defect: sp-0dx3
 # covers: systemd/install.sh spira/skew.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

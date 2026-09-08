@@ -14,6 +14,7 @@
 # from the bead is that env mode reports the operator's, not the aeon's, when the pointer is
 # fresh — and reports `-` when the pointer is stale, never the aeon's.
 #
+# defect: sp-881
 # covers: spira/ctx-meter.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

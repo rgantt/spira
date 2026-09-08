@@ -18,6 +18,7 @@
 # confirm the check catches it. Only after that do we run the check over the real sources.
 # A check that finds nothing is indistinguishable from one pointed at the wrong place.
 #
+# defect: sp-j5z3
 # covers: spira/chamber/archivist.md spira/chamber/builder.md spira/chamber/spike.md
 # covers: spira/chamber/ops.md spira/*.sh
 set -uo pipefail

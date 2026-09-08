@@ -26,6 +26,7 @@
 # thing in question (law-prefer-the-real-dependency). The sub-programs ARE stubs: what they
 # do is not under test here, only which beads the valve reaches.
 #
+# defect: sp-mqnf
 # covers: spira/sentinel.sh spira/lib.sh spira/chamber/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

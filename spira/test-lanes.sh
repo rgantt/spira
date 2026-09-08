@@ -24,6 +24,7 @@
 # presence, so a check pointed at the wrong thing and a check that found nothing look
 # different (law-absence-needs-a-positive-control).
 #
+# defect: sp-vyl4
 # covers: spira/lib.sh spira/conf.sh spira/sentinel.sh spira/escape.sh spira/chamber/ops.fayth
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

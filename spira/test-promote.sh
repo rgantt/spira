@@ -21,6 +21,7 @@
 # POSITIVE CONTROL. The systemctl shim is verified to have been invoked before asserting
 # that restarts happened: an empty log and a full log are otherwise indistinguishable.
 #
+# defect: sp-gsmx.2
 # covers: spira/promote.sh spira/conf.sh systemd/install.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

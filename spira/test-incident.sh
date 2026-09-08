@@ -38,6 +38,7 @@
 # returned "no open bead" on every call would make a suite that always "passed"
 # (law-prefer-the-real-dependency).
 #
+# defect: sp-5ll6
 # covers: spira/incident.sh spira/watchtower.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

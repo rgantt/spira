@@ -26,6 +26,7 @@
 # with a label, a lease and a compare-and-swap. A stub would be a second implementation of the
 # one thing being asked about (law-prefer-the-real-dependency).
 #
+# defect: sp-sc3
 # covers: spira/lib.sh spira/attempts.sh spira/aeon.sh spira/strand.sh spira/capacity.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

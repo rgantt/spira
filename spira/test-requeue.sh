@@ -38,6 +38,7 @@
 # script itself is not run — staging a ghost needs an expired lease and a dead holder — and a
 # suite that claimed a file it never executes would let the gate believe that file is covered.
 #
+# defect: sp-l7f5
 # covers: spira/aeon.sh spira/attempts.sh spira/lib.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

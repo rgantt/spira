@@ -15,6 +15,7 @@
 #   sp-ccc  closed, NO branch, NOT on base           → does NOT appear (never landed)
 #   sp-ddd  closed, branch exists in master-based repo, NOT on base → appears, tests master
 #
+# defect: sp-a5ga
 # covers: spira/cockpit.sh cockpit/health.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

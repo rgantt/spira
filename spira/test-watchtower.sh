@@ -38,6 +38,7 @@
 # shipped six-hour window would pass just as well if the code had the literal written in,
 # which is the thing the key exists to prevent.
 #
+# defect: sp-86q8
 # covers: spira/watchtower.sh spira/landing.sh spira/cockpit.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

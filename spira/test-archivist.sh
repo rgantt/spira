@@ -11,6 +11,7 @@
 # the account capacity is paused. A pass archives at most SPIRA_ARCHIVIST_PER_PASS sessions,
 # choosing the most drifted first. No two archives run concurrently, even across entry points.
 #
+# defect: sp-mebw
 # covers: spira/archivist.sh spira/conf.sh spira/hooks/session.sh spira/ctx-meter.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"

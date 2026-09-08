@@ -26,6 +26,7 @@
 # the database for open beads; a stub would reproduce the surface remembered here, drift
 # silently, and prove nothing about the real suppression path.
 #
+# defect: sp-yki4
 # covers: spira/sentinel.sh spira/lib.sh
 # hermetic-ok: uses a fixture database, no systemd or gh
 set -uo pipefail

@@ -20,6 +20,7 @@
 # proves the check could have seen something by running the positive first — an assertion of
 # absence from a probe that was never pointed at anything is indistinguishable from a pass
 # (law-absence-needs-a-positive-control).
+# defect: sp-obd
 # covers: spira/pilgrimage.sh cockpit/ask.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

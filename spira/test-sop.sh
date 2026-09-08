@@ -38,6 +38,7 @@
 # ledger path passes just as well if the code has that path written in — which is the thing
 # the key exists to stop (law-gates-run-in-a-clean-environment).
 #
+# defect: sp-9p1a
 # covers: spira/sop.sh spira/chamber/ops.md spira/chamber/*
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

@@ -15,6 +15,7 @@
 # when the probe distinguishes it from real work. This suite drives a TWO-repo fixture and
 # plants both shapes.
 #
+# defect: sp-884p
 # covers: spira/cockpit.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

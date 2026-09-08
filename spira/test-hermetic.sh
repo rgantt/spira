@@ -34,6 +34,7 @@
 # THE PROGRAM RUNS IN AN EMPTY ENVIRONMENT. It is a fence over hermeticity; a suite for it
 # that let the box decide its verdict would be the joke it is meant to prevent.
 #
+# defect: sp-4d8v
 # covers: spira/hermetic.sh spira/gate-spira.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

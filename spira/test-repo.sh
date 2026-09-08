@@ -16,6 +16,7 @@
 # only against well-formed input proves nothing: it passes just as well when its
 # pattern never matches.
 #
+# defect: sp-2inx
 # covers: spira/doctor.sh spira/lib.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

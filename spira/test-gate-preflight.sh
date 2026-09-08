@@ -9,6 +9,7 @@
 # code. The gate now captures git's own diagnostic and includes it, so a missing branch or
 # an unfetched base names itself rather than saying nothing.
 #
+# defect: sp-io5j
 # covers: spira/gate.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

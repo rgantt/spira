@@ -23,6 +23,7 @@
 # A REAL bd ON A FIXTURE DATABASE (law-prefer-the-real-dependency), because the test is about
 # what labels and notes incident.sh writes through bd.
 #
+# defect: sp-kufh
 # covers: spira/incident.sh spira/watchtower.sh
 # hermetic-ok: uses a fixture database, no systemd or gh
 set -uo pipefail
