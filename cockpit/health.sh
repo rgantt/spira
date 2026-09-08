@@ -974,7 +974,7 @@ standing_lines() {
         "$C_DIM" "${SP_CLOSED:-?}" "$C_RST" "${SP_LANDED:-?}" \
         "$C_DIM" "${SP_AWAITING_LAND:-0}" "$C_RST" \
         "$( [ "${SP_UNLANDED:-0}" = 0 ] && printf '%s' "$C_OK" || printf '%s' "$C_BAD$C_B")" "${SP_UNLANDED:-?}" "$C_RST"
-    fit "never landed = closed, no commit names it, no branch carries it" $(( COLS - 8 ))
+    fit "never landed = closed, no commit names it, no branch" $(( COLS - 8 ))
     printf '        %s%s%s\n' "$C_DIM" "$FIT" "$C_RST"
 
     # LAND — the DONE-to-LANDED stretch. The operator (2026-09-07): "there's currently a
@@ -1042,7 +1042,7 @@ standing_lines() {
     # rendered under that name made a childless epic read as a dead worker. The ledger total
     # stays alongside in parentheses, because it is context rather than an alarm.
     local _graph
-    _graph="$(printf 'open %s · ready %s · working %s · poison %s · stranded %s (ledger %s)' \
+    _graph="$(printf 'open %s · ready %s · working %s · poison %s · strand %s (ledger %s)' \
         "${SP_OPEN:-?}" "${SP_READY:-?}" "${SP_INPROG:-?}" "${SP_POISON:-?}" \
         "${SP_STRAND_GHOST:-?}" "${SP_STRANDS:-?}")"
     fit "$_graph" $(( COLS - 8 ))
