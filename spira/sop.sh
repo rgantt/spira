@@ -14,6 +14,7 @@
 #   sop.sh ledger-init               create an empty applications ledger if there is none
 #   sop.sh retire <slug>             remove it
 #   sop.sh synth                     regenerate wiki/notes/standard-operating-procedures.md
+#   sop.sh lint                      validate every sop- key against the write validator
 #
 # `<slug>` is written without the `sop-` prefix; it is added for you.
 #
@@ -145,7 +146,7 @@ LEDGER="${SPIRA_SOP_LEDGER:-$SPIRA_RUN/sop/applied.jsonl}"
 # session writing at the same moment.
 WHY_CAP="${SOP_WHY_CAP:-400}"
 
-usage() { sed -n '3,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 slugify() { printf 'sop-%s' "${1#sop-}"; }
 # A flag proves its value is present before taking it: `shift 2` with one argument left shifts
 # nothing at all, and the parse loop then spins forever on the same token.
@@ -626,6 +627,71 @@ b += ["Related: [[spira]], [[common-law]], [[codified-judgement]]", ""]
 open(out, "w").write("\n".join(b))
 print(f"sop-synth: wrote {out} — {len(sops)} SOP(s)")
 PY
+    ;;
+
+lint)
+    # VALIDATES EVERY SOP ON THE SHELF AGAINST THE SAME RULES THAT `write` ENFORCES.
+    # `bd remember sop-<slug>` bypasses those rules; lint is what catches what slipped through.
+    # Fails closed: an unreadable shelf is not a clean shelf — a broken database is not evidence
+    # that no malformed SOPs exist (law-absence-needs-a-positive-control).
+    [ $# -eq 1 ] || usage
+    raw="$(bdjson memories 2>/dev/null)"
+    if [ -z "${raw//[[:space:]]/}" ]; then
+        echo "sop: lint: could not read the shelf from $SPIRA_DB — refusing to report clean" >&2
+        exit 1
+    fi
+    SOP_LINT_CAP="$WORD_CAP" printf '%s\n' "$raw" | python3 -c '
+import sys, json, re, os
+
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("sop: lint: shelf did not parse as JSON — refusing to report clean", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(d, dict):
+    print("sop: lint: shelf is not an object — refusing to report clean", file=sys.stderr)
+    sys.exit(1)
+
+sops = {k: v.strip() for k, v in d.items() if isinstance(v, str) and k.startswith("sop-")}
+cap = int(os.environ.get("SOP_LINT_CAP", "250"))
+failures = []
+
+for key, text in sorted(sops.items()):
+    reasons = []
+    if not text.strip():
+        reasons.append("empty SOP")
+    else:
+        for field in ("SYMPTOM", "CHECK", "FIX"):
+            if not re.search(rf"^\s*{field}:", text, re.M):
+                reasons.append("missing required field: " + field)
+        m = re.search(r"^\s*MATCH:\s*(.+)$", text, re.M)
+        if m:
+            pat = m.group(1).strip()
+            try:
+                re.compile(pat)
+            except re.error:
+                reasons.append("MATCH is not a valid extended regex: " + pat)
+        words = len(text.split())
+        if words > cap:
+            reasons.append("%d words, cap is %d" % (words, cap))
+    if reasons:
+        for r in reasons:
+            print("FAIL  %s: %s" % (key, r))
+        failures.append(key)
+    else:
+        print("ok    %s" % key)
+
+if failures:
+    n = len(sops)
+    print(
+        "\n%d of %d SOP(s) failed — fix with sop.sh write or remove with sop.sh retire" % (len(failures), n),
+        file=sys.stderr,
+    )
+    sys.exit(1)
+else:
+    n = len(sops)
+    print("ok — %s" % ("%d SOP(s) on the shelf, all valid" % n if n else "shelf is empty"))
+' || exit 1
     ;;
 
 *) usage ;;

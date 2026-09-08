@@ -122,6 +122,18 @@ if ! herm="$(bash spira/hermetic.sh 2>&1)"; then
     exit 1
 fi
 
+# THE SOP SHELF. `sop.sh write` validates; `bd remember sop-<slug>` does not — it is the
+# back door this check closes. Lint reads every sop- key and applies the same rules, so a
+# runbook written directly cannot survive to be matched at 3am. An unreadable shelf fails
+# closed: a broken database is not evidence that no malformed SOPs exist
+# (law-absence-needs-a-positive-control, law-bake-rules-into-tools).
+[ -r spira/sop.sh ] || { say "spira/sop.sh is missing — refusing to land unchecked"; exit 1; }
+if ! sop_lint="$(bash spira/sop.sh lint 2>&1)"; then
+    printf '%s\n' "$sop_lint" >&2
+    say "sop lint FAILED — the shelf has malformed entries; fix with sop.sh write or sop.sh retire"
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------------------
 # 2 AND 3 — the pipeline. Both are real programs run against each other; neither models
 # anything (law-prefer-the-real-dependency).

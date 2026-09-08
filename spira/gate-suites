@@ -72,3 +72,10 @@ spira/test-attempts.sh
 # gate faults" and reads as good news. The suite plants a real defect and a red that is a
 # suite reading the box, and requires them in different columns.
 spira/test-yield.sh
+
+# THE SOP LINT FENCE'S OWN POSITIVE CONTROL. gate-spira.sh calls sop.sh lint as a fence to
+# catch SOPs written directly with `bd remember` — the back door that bypasses the write
+# validator. Without a positive control, a lint that passes an empty shelf and a lint that
+# cannot detect anything look identical. This suite plants a malformed SOP via the back door
+# and requires lint to name it, then confirms the gate's call exists in gate-spira.sh.
+spira/test-sop-lint.sh
