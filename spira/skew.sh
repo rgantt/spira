@@ -3,6 +3,7 @@
 # skew.sh — is the harness that RUNS the harness that LANDED?
 #
 #   skew.sh check                          audit this box; escalate on divergence
+#   skew.sh units                          are the installed units what the templates render?
 #   skew.sh refresh [repo]                 fast-forward the checkout to its base ref
 #   skew.sh copies                         every mapped repository carrying a harness copy
 #   skew.sh foreign <repo> <base> <ref>    may this branch land? — the landing gate's fence
@@ -30,6 +31,8 @@
 #            is executing was reviewed by nobody.
 #   COPY     another mapped repository carries a second harness. Work aimed at the harness
 #            can land there, pass everything, and never run.
+#   STALE    the installed systemd units differ from what the templates in this checkout
+#            would render. A template changed, and nobody re-ran install.sh.
 #
 # `check` REPORTS; `refresh` REPAIRS — but only by fast-forward, and only when the checkout is
 # clean and on the base branch. A dirty tree or a detached HEAD is never clobbered, and a
@@ -217,8 +220,31 @@ $(printf '%s\n' "$dirty" | head -20 | sed 's/^/    /')
 "
     done < <(copies 2>/dev/null)
 
+    # ---------------------------------------------------------------- STALE
+    # The installed systemd units may differ from what the templates in this checkout would
+    # render — a template changed and nobody re-ran install.sh. install.sh --diff already
+    # finds this state; nothing ran it on a timer until now.
+    #
+    # IT DOES NOT REPAIR (the operator, over sp-jo6f: REPORT ONLY). Installing units acts on
+    # the operator's live service manager, an authority this harness has declined to take.
+    local stale_out stale_rc installer
+    installer="$(cd "$SPIRA_HOME/../systemd" 2>/dev/null && pwd -P)/install.sh"
+    if [ ! -r "$installer" ]; then
+        findings="${findings}CANNOT-DIFF install.sh is missing at $installer — unit staleness has no answer
+"
+    else
+        stale_out="$(bash "$installer" --diff 2>&1)"; stale_rc=$?
+        if [ "$stale_rc" != 0 ]; then
+            hard=1
+            findings="${findings}STALE installed systemd units differ from what this checkout renders
+$(printf '%s\n' "$stale_out" | head -40 | sed 's/^/    /')
+    Re-run $installer to bring the installed units into line with the templates.
+"
+        fi
+    fi
+
     if [ -z "$findings" ]; then
-        printf 'skew: in effect — %s is %s, clean, and is the only harness the map names\n' \
+        printf 'skew: in effect — %s is %s, clean, the only harness the map names, and units match\n' \
             "$SPIRA_REPO" "${base:-its base ref}"
         return 0
     fi
@@ -313,10 +339,37 @@ refresh() {
     return 0
 }
 
+# =======================================================================================
+# units — are the installed units what the templates render?
+#
+# EXIT   0  the installed units match
+#        1  at least one differs — the output names which
+#        3  the check itself could not run (install.sh missing, render failure)
+#
+# This is the standalone entry point; `check` includes it in its audit. It costs no database
+# call: install.sh --diff renders templates from conf.sh and diffs files on disk.
+# =======================================================================================
+units() {
+    local installer stale_out stale_rc
+    installer="$(cd "$SPIRA_HOME/../systemd" 2>/dev/null && pwd -P)/install.sh"
+    if [ ! -r "$installer" ]; then
+        printf 'skew: install.sh is missing at %s — unit staleness has no answer\n' "$installer" >&2
+        return 3
+    fi
+    stale_out="$(bash "$installer" --diff 2>&1)"; stale_rc=$?
+    if [ "$stale_rc" = 0 ]; then
+        printf 'skew: units — installed units match what this box renders\n'
+        return 0
+    fi
+    printf '%s\n' "$stale_out"
+    return 1
+}
+
 case "${1:-check}" in
     check)   check ;;
+    units)   units ;;
     refresh) shift; refresh "$@" ;;
     copies)  copies || { echo "skew: no mapped repository carries a harness — the map or the matcher is wrong" >&2; exit 3; } ;;
     foreign) shift; foreign "$@" ;;
-    *)       sed -n '3,8p' "$0" >&2; exit 2 ;;
+    *)       sed -n '3,9p' "$0" >&2; exit 2 ;;
 esac
