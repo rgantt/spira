@@ -55,7 +55,41 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE/.." 2>/dev/null || { printf 'gate: cannot reach the tree holding %s\n' "$0" >&2; exit 1; }
 
 rc=0
+gate_total=0      # wall-clock seconds summed across all suites
+gate_unmeasurable=0  # set to 1 if any suite's cost cannot be measured
 say() { printf 'gate: %s\n' "$*" >&2; }
+
+# file_budget_bead <total> <budget> <over> — file a bead when the gate exceeds its budget.
+# Runs in a subshell so sourcing lib.sh does not pollute this script's stripped environment.
+# Failure to file must not change the gate's verdict; the caller passes `|| true`.
+# SPIRA_DB from the environment wins by conf.sh's env-first rule, so a test database set
+# before this script was invoked is the one that receives the bead — not the operator's live
+# store. In production, HOME is set (by gate.sh's env -i) so conf.sh finds spira.conf.
+file_budget_bead() {
+    local total="$1" budget="$2" over="$3"
+    (
+        . "$HERE/lib.sh" 2>/dev/null || exit 0
+        local ref="gate:budget"
+        # Dedupe: only file if no open bead with this ref already exists.
+        local existing
+        existing="$(bdq list --external-ref "$ref" --status open --json 2>/dev/null \
+            | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+print(d[0]["id"] if isinstance(d,list) and d else "")
+' 2>/dev/null || true)"
+        [ -n "${existing:-}" ] && exit 0
+        bdq create \
+            "gate: budget exceeded — ${over}s over (${total}s vs ${budget}s); something must leave gate-suites before anything joins" \
+            --type chore --priority 2 \
+            --labels "spira,plan,repo:spira" \
+            --external-ref "$ref" \
+            --body - --silent >/dev/null 2>&1 <<'BODY'
+The gate has run longer than SPIRA_GATE_BUDGET. Before adding any suite to
+spira/gate-suites, one must leave: the budget is what forces that argument, and without
+it each suite was individually justified while the total reached 17 minutes unchecked.
+BODY
+    ) 2>/dev/null || true
+}
 
 # ---------------------------------------------------------------------------------------
 # 1. THE FENCES — first, and independently of everything below.
@@ -97,17 +131,32 @@ fi
 # not check" as all-clear would displace the suspicion that would have prompted a look
 # (law-alerts-must-be-actionable).
 # ---------------------------------------------------------------------------------------
-run() {                  # run <suite> — its output only when it matters
-    local s="$1" out st
+run() {                  # run <suite> — its output only when it matters; cost always
+    local s="$1" out st t0 t1 elapsed elapsed_s name
+    name="$(basename "$s")"
+    t0=$(date +%s 2>/dev/null) || t0=""
     out="$(timeout "${SPIRA_SUITE_TIMEOUT:-600}" bash "$s" 2>&1)"; st=$?
+    t1=$(date +%s 2>/dev/null) || t1=""
+    # COST IS MEASURED AROUND THE SUBPROCESS, never inferred. If date fails on either side
+    # the cost is unmeasurable; unmeasurable counts as over-budget rather than free
+    # (law-absence-needs-a-positive-control). The ? is rendered in the log so the reader
+    # knows the measurement failed rather than seeing a suspiciously small number.
+    if [ -n "$t0" ] && [ -n "$t1" ]; then
+        elapsed=$(( t1 - t0 ))
+        elapsed_s="${elapsed}s"
+        gate_total=$(( gate_total + elapsed ))
+    else
+        elapsed_s="?"
+        gate_unmeasurable=1
+    fi
     case "$st" in
-        0)  printf 'gate: %-22s ok\n' "$(basename "$s")" >&2 ;;
-        77) printf 'gate: %-22s SKIPPED — %s\n' "$(basename "$s")" \
+        0)  printf 'gate: %-22s ok   cost=%s\n' "$name" "$elapsed_s" >&2 ;;
+        77) printf 'gate: %-22s SKIPPED — cost=%s — %s\n' "$name" "$elapsed_s" \
                 "$(printf '%s' "$out" | sed -n 's/.*SKIP *//p' | head -1)" >&2 ;;
         124) printf '%s\n' "$out" >&2
-             say "$(basename "$s") was killed at ${SPIRA_SUITE_TIMEOUT:-600}s"; rc=1 ;;
+             say "$name was killed at ${SPIRA_SUITE_TIMEOUT:-600}s (cost=$elapsed_s)"; rc=1 ;;
         *)  printf '%s\n' "$out" >&2
-            say "$(basename "$s") FAILED (rc=$st)"; rc=1 ;;
+            say "$name FAILED (rc=$st, cost=$elapsed_s)"; rc=1 ;;
     esac
 }
 
@@ -137,5 +186,29 @@ done < "$SUITE_LIST"
 for s in $suites; do
     run "$s"
 done
+
+# ---------------------------------------------------------------------------------------
+# BUDGET CHECK. The gate times itself and reports what it cost, on every run, so the timed
+# run and the cockpit pane can both read it. Exceeding the budget is NOT a branch failure —
+# the branch did not cause the overrun. It is a failure of the gate, reported against the
+# harness: something must leave spira/gate-suites before anything else joins.
+#
+# AN UNMEASURABLE COST IS OVER BUDGET, NEVER FREE. A suite whose wall-clock cannot be
+# read renders `?` and the gate treats it as an overrun, because a measurement that reports
+# zero for the wrong reason is worse than one that flags uncertainty.
+# ---------------------------------------------------------------------------------------
+gate_budget="${SPIRA_GATE_BUDGET:-300}"
+if [ "$gate_unmeasurable" -eq 1 ]; then
+    say "cost total=?s budget=${gate_budget}s (one or more suite costs were unmeasurable)"
+    file_budget_bead "?" "$gate_budget" "?" || true
+elif [ "$gate_total" -gt "$gate_budget" ]; then
+    over=$(( gate_total - gate_budget ))
+    say "cost total=${gate_total}s budget=${gate_budget}s EXCEEDED by ${over}s"
+    say "this is a gate fault, not a branch fault — filing a bead against the harness"
+    say "something must leave spira/gate-suites before anything else joins it"
+    file_budget_bead "$gate_total" "$gate_budget" "$over" || true
+else
+    say "cost total=${gate_total}s budget=${gate_budget}s"
+fi
 
 exit "$rc"

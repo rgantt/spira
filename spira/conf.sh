@@ -70,7 +70,7 @@ SPIRA_ARCHIVE
 SPIRA_ARCHIVIST_EVERY SPIRA_ARCHIVIST_IDLE SPIRA_ARCHIVIST_MODEL SPIRA_ARCHIVIST_TIMEOUT
 SPIRA_ARCHIVIST_PER_PASS
 SPIRA_TESTDB_LIB SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT
-SPIRA_GATE_TIMEOUT
+SPIRA_GATE_TIMEOUT SPIRA_GATE_BUDGET
 SPIRA_GATE_SUITES SPIRA_SUITES_STATE SPIRA_SUITES_BUDGET SPIRA_SUITE_TIMEOUT
 SPIRA_SUITES_PRIORITY SPIRA_SUITES_STALE
 "
@@ -324,6 +324,16 @@ spira_conf_defaults() {
     # covers that with margin and is the value observed to pass unchanged branches that 900
     # killed mid-sweep (sp-gys, sp-snyj).
     : "${SPIRA_GATE_TIMEOUT:=2700}"
+    # THE GATE'S TIME BUDGET, in seconds. gate-spira.sh times itself per suite and in total;
+    # when the total exceeds this value the gate files a bead against the harness — it does
+    # NOT fail the branch, because the branch did not cause the overrun. The mechanism exists
+    # because the previous 43-suite gate was not built in a day: each suite was individually
+    # justified while the total grew to 17 minutes unchecked. A budget is the only thing that
+    # makes that argument explicit — adding a check that would push the gate over budget is
+    # caught on the timed run and on the gate's own self-check, not on the first innocent branch
+    # that trips it. Set against a measurement: gate-spira.sh measured ~210s when this key was
+    # added (2026-09-08); 300 gives headroom while still catching the next suite added without argument.
+    : "${SPIRA_GATE_BUDGET:=300}"
     # HOW LONG A LANDING PASS MAY RUN, and how much of that it keeps in reserve so it never
     # begins a gate it cannot finish. Settable because the right number is a fact about this
     # host's gate: 3600 was correct until the gate budget was raised to 2700 to cover the
