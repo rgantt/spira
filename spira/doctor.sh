@@ -306,6 +306,37 @@ while IFS= read -r l; do
          "If it is stale, remove it with $SPIRA_HOME/install-session-hook.sh prune <substring>."
 done <<< "$(printf '%s\n' "$hookout" | grep '^  other' || true)"
 
+# ORPHANED GAS TOWN WATCHER PROCESSES. When SPIRA_TOWN is set the operator had a predecessor
+# harness. Its watcher processes — daemon-kind rows started with nohup by its watchd.sh — are
+# not owned by systemd and survive indefinitely, invisible to every `is-active` check. They
+# write to logs nothing here reads, they cannot see new events from the Spira database, and
+# they look healthy in every process listing because they ARE running, just watching the wrong
+# thing. The discriminating check is /proc: a process whose argv[1] is a script under
+# $SPIRA_TOWN/settings/ is one the predecessor started, not this harness.
+#
+# NEVER pkill -f — the pattern is a substring of the caller's own command line.
+if [ -n "${SPIRA_TOWN:-}" ]; then
+    _wd_orphans=""
+    for _d in /proc/[0-9]*; do
+        [ -r "$_d/cmdline" ] || continue
+        _cmd="$(tr '\0' '\n' < "$_d/cmdline" 2>/dev/null)" || continue
+        # argv[1] is the second NUL-delimited field, which becomes the second line after tr.
+        _arg1="$(printf '%s\n' "$_cmd" | sed -n '2p')"
+        case "$_arg1" in
+            "$SPIRA_TOWN/settings/watch-"*)
+                _wd_orphans="${_wd_orphans}${_wd_orphans:+ }${_d##*/}" ;;
+        esac
+    done
+    if [ -n "$_wd_orphans" ]; then
+        WARN "$(printf '%s' "$_wd_orphans" | wc -w | tr -d ' ') Gas Town watcher process(es) still running under $SPIRA_TOWN" \
+             "Kill each by PID after confirming /proc/<pid>/cmdline — never pkill -f, whose pattern
+        matches the caller's own argv. PIDs: $_wd_orphans"
+    else
+        OK "no orphaned Gas Town watcher processes under $SPIRA_TOWN"
+    fi
+fi
+unset _wd_orphans _d _cmd _arg1
+
 echo
 echo "writable state"
 if mkdir -p "$SPIRA_RUN" 2>/dev/null && [ -w "$SPIRA_RUN" ]; then OK "runtime directory $SPIRA_RUN"
