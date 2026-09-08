@@ -9,7 +9,7 @@
 # of the eleven beads in the insights queue were outcomes wearing an insight's label
 # (sp-94h, hq-5enm). An insight is what an agent LEARNED and might become law; an outcome is
 # what HAPPENED. They are read by different people for different reasons and they now have
-# different bins (per Ryan, 2026-09-06).
+# different bins.
 #
 # So this is not a test of pilgrimage detection — `bd epic status` already answers that. It
 # is a test of what the notice IS, end to end through the real ask.sh onto a real bd, and of
