@@ -74,6 +74,8 @@ SPIRA_GATE_TIMEOUT SPIRA_GATE_BUDGET
 SPIRA_GATE_SUITES SPIRA_SUITES_STATE SPIRA_SUITES_BUDGET SPIRA_SUITE_TIMEOUT
 SPIRA_SUITES_PRIORITY SPIRA_SUITES_STALE
 SPIRA_PROD
+SPIRA_REVIEWER_MODEL SPIRA_REVIEWER_VERDICTS SPIRA_REVIEWER_TIMEOUT SPIRA_REVIEWER_DIFF_LIMIT
+SPIRA_REVIEW_LABEL
 "
 
 # --------------------------------------------------------------------------------------
@@ -599,6 +601,28 @@ spira_conf_defaults() {
     # default for a fresh clone that has no prod checkout yet).
     : "${SPIRA_PROD:=$SPIRA_WORKSPACES/${SPIRA_HOME_REPO}-prod/$(basename "$SPIRA_HOME")}"
 
+    # ---- THE REVIEWER: ADVERSARIAL REVIEW AT THE RELEASE-UNIT BOUNDARY -------------------
+    # THE MODEL IS STRONG BY DESIGN. The reviewer looks for intent violations, cross-commit
+    # interactions, and irreversible changes — the class of defect per-change review is worst
+    # at. A cheaper model here misses the findings the gate cannot catch.
+    # Verify the model id answers on this box before deploying: an id the CLI rejects does
+    # not fail loudly — the process exits non-zero, review.sh exits 2, and promote.sh refuses
+    # to promote the unreviewed unit (which is the safe failure mode).
+    : "${SPIRA_REVIEWER_MODEL:=claude-fable-5-1}"
+    # WHERE VERDICTS ARE WRITTEN. One file per release tag, named <tag>.verdict. The file
+    # carries verdict, cost, token counts and finding count so the reviewer's per-unit cost
+    # is readable without re-parsing the trace.
+    : "${SPIRA_REVIEWER_VERDICTS:=$SPIRA_RUN/review-verdicts}"
+    # HOW LONG ONE REVIEW MAY RUN, in seconds. A review that exceeds this exits 2 (error);
+    # promote.sh refuses to promote an unreviewed unit, so the unit waits for a successful run.
+    : "${SPIRA_REVIEWER_TIMEOUT:=300}"
+    # HOW MUCH OF A DIFF THE REVIEWER READS. Diffs larger than this are truncated with a
+    # note in the prompt; the reviewer still runs and may find what it can within the window.
+    : "${SPIRA_REVIEWER_DIFF_LIMIT:=80000}"
+    # THE LABEL APPLIED TO FINDING BEADS. The deployment controller (sp-gsmx.5) and the
+    # groomer query on this label to find open findings for a release unit.
+    : "${SPIRA_REVIEW_LABEL:=review-finding}"
+
     # THE MAP FALLS BACK TO THE EXAMPLE, and that is what makes a clean clone runnable at
     # all. The real map is one operator's inventory of checkouts and does not ship; the
     # example does. Resolution runs beside the config file first, because that is where an
@@ -742,7 +766,8 @@ export SPIRA_DB COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD SPIR
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \
        SPIRA_GATE_NOVERDICT SPIRA_GATE_BASEFAIL \
-       SPIRA_CONF_FILE SPIRA_PROD
+       SPIRA_CONF_FILE SPIRA_PROD \
+       SPIRA_REVIEWER_VERDICTS SPIRA_REVIEWER_MODEL SPIRA_REVIEW_LABEL
 
 # --------------------------------------------------------------------------------------
 # NAME WHAT IS MISSING. A harness that dies with `bd: command not found` from a timer has

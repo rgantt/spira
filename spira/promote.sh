@@ -94,6 +94,43 @@ if [ -n "$OLD_HEAD" ]; then
     fi
 fi
 
+# REVIEWER GATE. A release tag with a stored BLOCK verdict may not be promoted
+# to production. The reviewer files its findings as beads — resolve them, run
+# a fresh review (review.sh <tag>), and promote again once the verdict is ship.
+# A unit with no stored verdict passes silently: review.sh may not be configured
+# yet, or this may be a pre-review rollback to a previously-shipped tag.
+#
+# ONLY the release-tag path is gated. Arbitrary ref promotions (e.g. a direct
+# SHA or a branch tip without a release tag) pass through. That path exists for
+# the initial clone and for emergency rollbacks, which must not be blocked by a
+# gate that only knows about annotated release tags.
+_REVIEW_VDIR="${SPIRA_REVIEWER_VERDICTS:-$SPIRA_RUN/review-verdicts}"
+_REVIEW_TAG=""
+# First: if the ref is itself a release tag name, use it directly.
+case "$REF" in spira-release-*)
+    git -C "$SPIRA_REPO" rev-parse --verify "refs/tags/$REF" >/dev/null 2>&1 \
+        && _REVIEW_TAG="$REF" ;;
+esac
+# Second: look for release tags that point to the resolved commit.
+if [ -z "$_REVIEW_TAG" ]; then
+    _REVIEW_TAG="$(git -C "$SPIRA_REPO" tag -l 'spira-release-*' \
+        --points-at "$RESOLVED" 2>/dev/null | sort | tail -1)"
+fi
+if [ -n "${_REVIEW_TAG:-}" ] && [ -f "$_REVIEW_VDIR/$_REVIEW_TAG.verdict" ]; then
+    _REVIEW_STORED="$(grep '^verdict: ' "$_REVIEW_VDIR/$_REVIEW_TAG.verdict" \
+        | sed 's/^verdict: //')"
+    if [ "${_REVIEW_STORED:-}" = "block" ]; then
+        if [ "$DRY_RUN" = 1 ]; then
+            log "promote: DRY RUN: $_REVIEW_TAG has a BLOCK verdict — would refuse"
+        else
+            printf 'promote: release unit %s has a BLOCK verdict\n' "$_REVIEW_TAG" >&2
+            printf 'promote: resolve the findings (label: %s) and re-run: review.sh %s\n' \
+                "${SPIRA_REVIEW_LABEL:-review-finding}" "$_REVIEW_TAG" >&2
+            exit 1
+        fi
+    fi
+fi
+
 # --- find what changed in the harness subdir ---
 # Only scripts inside the harness directory (e.g. "spira/") affect which units to restart.
 HOME_SUB="$(basename "$PROD_HOME")"   # e.g. "spira"
