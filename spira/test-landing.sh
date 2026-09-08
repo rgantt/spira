@@ -200,6 +200,9 @@ echo "test-landing.sh"
 # --------------------------------------------------------------------------------------
 seed; branch sp-plain; out="$(landing)"
 want "an uncontested land is reported" "landed spira/sp-plain" "$out"
+# Landing pushes the base from the .landing worktree; the home checkout must be advanced in
+# the same pass or every hand-run script reads a past state (sp-wud).
+want "the same pass also advances the checkout humans read" "skew: refreshed to" "$out"
 drop_branch sp-plain
 
 # THE VERDICT CACHE IS PRUNED BY THE PASS, at the age the gate refuses to read at. The gate
@@ -695,6 +698,15 @@ git -C "$REPO" checkout -q -- . 2>/dev/null
     && ok "a modified tracked file blocks the refresh" \
     || bad "a modified tracked file blocks the refresh" "checkout moved anyway"
 want "and the decline names the condition" "tracked files are modified" "$out"
+
+# THE DECLINE IS NOT A GIVE-UP. A dirty checkout when a pass runs is just a busy session;
+# the next pass, once it is clean, must pick up what the dirty one deferred. The session
+# cleaned up above (checkout -q -- .) and $REPO is still behind origin/main.
+out="$(landing)"
+[ "$(checkout_current)" != "$before" ] \
+    && ok "the next pass advances the checkout once the session is clean" \
+    || bad "the next pass advances the checkout once the session is clean" "checkout did not move"
+want "and reports the refresh" "skew: refreshed to" "$out"
 
 # A BASE THAT MOVED WITH NO BRANCH LANDING IS PICKED UP WITHIN ONE PASS.
 # No spira/* branches at all — the old code returned early and never reached the refresh.
