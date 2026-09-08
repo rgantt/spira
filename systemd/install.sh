@@ -181,22 +181,7 @@ mkdir -p "$SPIRA_RUN"
 # starts and complains, it is a unit that fails instantly with a message about a path.
 mkdir -p "$SPIRA_RUN/watchd"
 
-# REFUSE IF AEONS ARE LIVE. daemon-reload terminates transient units: a transient unit's
-# on-disk file is gone once the session that started it ends, so reload finds no file and
-# stops the unit. Name the running aeons so the operator knows what to wait for; name the
-# override so they know how to proceed when they must act before every aeon has finished.
-if [ -z "${SPIRA_INSTALL_FORCE:-}" ]; then
-    live_aeons="$(systemctl --user list-units --state=active --no-legend \
-        'spira-aeon-*.service' 2>/dev/null \
-        | tr -s ' \t' '\n\n' | grep -E '^spira-aeon-[^[:space:]]+\.service$' | sort -u || true)"
-    if [ -n "$live_aeons" ]; then
-        printf 'install: refusing — daemon-reload would stop these live aeons:\n' >&2
-        printf '%s\n' "$live_aeons" | sed 's/^/    /' >&2
-        printf 'install: wait for them to finish, or set SPIRA_INSTALL_FORCE=1 to override.\n' >&2
-        exit 1
-    fi
-fi
-
+declare -A _CHANGED=()  # units whose rendered content differs from what is installed
 for u in "${UNITS[@]}"; do
     unit_text="$(render "$SRC/$u")" || { echo "install: $u FAILED" >&2; exit 1; }
     # REFUSE AN UNEXECUTABLE ExecStart TARGET before writing a single byte. The failure mode
@@ -217,6 +202,9 @@ for u in "${UNITS[@]}"; do
                 ;;
         esac
     done <<< "$unit_text"
+    if [ ! -f "$DEST/$u" ] || ! cmp -s <(printf '%s\n' "$unit_text") "$DEST/$u"; then
+        _CHANGED[$u]=1
+    fi
     printf '%s\n' "$unit_text" > "$DEST/$u.new"
     mv "$DEST/$u.new" "$DEST/$u" && chmod 0644 "$DEST/$u" && echo "installed $u"
 done
@@ -229,6 +217,25 @@ systemctl --user daemon-reload
 # variable after having written every unit and before enabling any of them.
 loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
 
+# Wait for a running oneshot service to finish before restarting it.
+# A long-running service is not drained — we restart it directly.
+# SPIRA_DRAIN_INTERVAL overrides the 2-second poll interval (set to 0 in tests).
+_drain_oneshot() {
+    local svc="$1" waited=0 max=300
+    local state type interval="${SPIRA_DRAIN_INTERVAL:-2}"
+    state="$(systemctl --user is-active "$svc" 2>/dev/null || true)"
+    [ "$state" = "active" ] || return 0
+    type="$(systemctl --user show -p Type --value "$svc" 2>/dev/null || true)"
+    [ "$type" = "oneshot" ] || return 0
+    printf 'install: %s is mid-pass — waiting for it to finish\n' "$svc"
+    while [ "$waited" -lt "$max" ]; do
+        state="$(systemctl --user is-active "$svc" 2>/dev/null || true)"
+        case "$state" in active|activating) ;; *) return 0 ;; esac
+        sleep "$interval"; waited=$(( waited + interval ))
+    done
+    printf 'install: warning — %s did not finish within %ss; proceeding\n' "$svc" "$max" >&2
+}
+
 # IF THE WORLD IS HALTED, install the units but leave them stopped. A routine install
 # restarting the loop is the worst shape: the operator believes the world is down, every
 # surface agrees, and it is running. An explicit world.sh start is how a halt is lifted.
@@ -240,7 +247,39 @@ if [ -f "$SPIRA_RUN/world.halted" ]; then
         systemctl --user enable "$u" 2>/dev/null && printf 'enabled   %s (stopped — world is halted)\n' "$u"
     done
 else
-    for u in "${ENABLE[@]}"; do systemctl --user enable --now "$u" && echo "enabled   $u"; done
+    # RESTART ONLY WHAT CHANGED. A no-op install touches nothing. An unchanged unit that is
+    # already active is skipped; a changed unit is drained (if it is a running oneshot) and
+    # then restarted. Transient spira-aeon-* units are never in UNITS or ENABLE, so they are
+    # structurally unreachable here — no explicit guard is needed.
+    #
+    # Template units (spira-watch@.service) cover all their instances: if the template
+    # changed, every instance derived from it is restarted.
+    for u in "${ENABLE[@]}"; do
+        tmpl="${u%%@*}@.service"
+        changed="${_CHANGED[$u]:-}${_CHANGED[$tmpl]:-}"
+        if [ -z "$changed" ]; then
+            state="$(systemctl --user is-active "$u" 2>/dev/null || true)"
+            if [ "$state" = "active" ]; then
+                printf 'unchanged %s (active, skipping)\n' "$u"
+                continue
+            fi
+        fi
+        # Drain the backing oneshot service if it is mid-pass.
+        case "$u" in
+            *.timer) _drain_oneshot "${u%.timer}.service" ;;
+            *)       _drain_oneshot "$u" ;;
+        esac
+        # Restart if already active and content changed; enable+start otherwise.
+        if [ -n "$changed" ]; then
+            state="$(systemctl --user is-active "$u" 2>/dev/null || true)"
+            if [ "$state" = "active" ]; then
+                systemctl --user enable "$u" >/dev/null 2>&1 || true
+                systemctl --user restart "$u" && echo "restarted $u"
+                continue
+            fi
+        fi
+        systemctl --user enable --now "$u" && echo "enabled   $u"
+    done
 fi
 
 # AND THE ONE PIECE OF WIRING THAT IS NOT A UNIT. The session hook is registered in the coding
