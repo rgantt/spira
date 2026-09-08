@@ -115,7 +115,7 @@ LANDREF=""
 # is the entire bug this file exists for.
 # --------------------------------------------------------------------------------------
 send_branch() {
-    local id="$1" br="$2" w held
+    local id="$1" br="$2" verb="${3:-SENT}" w held
     # Re-check liveness immediately before acting. The sentinel summons aeons in the same
     # pass that lands branches, so the gap between deciding and doing is a real window. Both
     # witnesses again, not just the pidfile: this recheck used to ask only `holder_alive`,
@@ -162,7 +162,7 @@ send_branch() {
     # so deleting it here would silently disable the closed-but-not-landed check for exactly
     # the beads that check exists for.
     sent=$((sent+1))
-    say "SENT $id  $REPONAME $br"
+    say "$verb $id  $REPONAME $br"
 }
 
 # ======================================================================================
@@ -239,10 +239,10 @@ if not d: sys.exit(1)
 sys.exit(0 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
                   for x in (d[0].get("dependencies") or [])) else 1)' 2>/dev/null; then
                 if [ "$DRY" = 1 ]; then
-                    say "WOULD  $id  send superseded branch $br$( [ -n "$(worktree_of "$br" "$REPO")" ] && printf ' and its worktree')"
+                    say "WOULD  $id  reap superseded branch $br$( [ -n "$(worktree_of "$br" "$REPO")" ] && printf ' and its worktree')"
                     continue
                 fi
-                send_branch "$id" "$br"
+                send_branch "$id" "$br" "REAPED"
                 continue
             fi
             n="$(git -C "$REPO" rev-list --count "$LANDREF..$br" 2>/dev/null || echo '?')"
