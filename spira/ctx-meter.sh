@@ -2,9 +2,12 @@
 # ctx-meter.sh — how much context this session is carrying, how close that is to the edge, and
 # how close the account's two rate-limit windows are to full.
 #
-#   ctx-meter.sh          read the status-line hook on stdin, print one coloured line
-#   ctx-meter.sh env      read no stdin, print SP_CTX_*/SP_LIMIT_* key=value for the collector
-#   ctx-meter.sh env <t>  the same, but about the transcript named rather than the newest
+#   ctx-meter.sh          read the status-line hook on stdin, print one coloured line,
+#                         and persist the operator's transcript path for `env` to read
+#   ctx-meter.sh env      read no stdin, print SP_CTX_*/SP_LIMIT_* key=value for the collector;
+#                         resolves the operator's session from the persisted pointer, not from
+#                         the newest transcript on the box
+#   ctx-meter.sh env <t>  the same, but about the transcript named rather than the operator's
 #
 # WHY. Context is re-read in full on every turn, so a long session costs many times a fresh one
 # for identical work: measured on this project, a session starts near 50,000 tokens and every
@@ -46,18 +49,33 @@ IN=""
 [ "$MODE" = "line" ] && IN="$(cat 2>/dev/null || true)"
 
 python3 - "$IN" "$SPIRA_CTX_WARN" "$SPIRA_CTX_HIGH" "$SPIRA_CTX_LIMIT" \
-              "$MODE" "$SPIRA_TOKEN_PROJECTS" "$SPIRA_RUN" "${2:-}" <<'PY'
+              "$MODE" "$SPIRA_TOKEN_PROJECTS" "$SPIRA_RUN" "${2:-}" \
+              "${SPIRA_ARCHIVIST_IDLE:-1800}" <<'PY'
 import json, sys, os, glob, time, hashlib, re
 
 raw, warn, high, limit = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
 mode, projects, run = sys.argv[5], sys.argv[6], sys.argv[7]
 # The transcript a caller named, if it named one. `env` mode only; see below.
-pick = sys.argv[8] if len(sys.argv) > 8 else ""
+pick = sys.argv[8] if len(sys.argv) > 8 and sys.argv[8] else ""
+idle_threshold = int(sys.argv[9]) if len(sys.argv) > 9 else 1800
 try: hook = json.loads(raw) if raw.strip() else {}
 except Exception: hook = {}
 if not isinstance(hook, dict): hook = {}
 
 state_dir = run or os.path.expanduser("~/.claude/spira")
+
+def _now():
+    # SPIRA_NOW IS THE TEST CLOCK, and it is deliberately absent from SPIRA_CONF_KEYS: a config
+    # file cannot pin the clock of a live installation, only a caller that exports it on purpose
+    # can. A frozen clock in production would make every projection a projection from a moment
+    # that has passed.
+    v = os.environ.get("SPIRA_NOW", "")
+    try:
+        return int(v) if v else int(time.time())
+    except ValueError:
+        return int(time.time())
+
+now = _now()
 
 # ---- which transcript is THIS session's ------------------------------------------------
 # THE HOOK NAMES A SESSION; HONOUR THE NAME. session_id is the session's identity, and the
@@ -81,21 +99,35 @@ hp  = hook.get("transcript_path") or ""
 named = bool(sid or hp)
 
 tp = ""
+# THE OPERATOR POINTER — how env mode knows which session belongs to the operator.
+# The status-line hook runs ctx-meter.sh on every assistant message AND on a timer, so it
+# writes a pointer file carrying the transcript it resolved. env mode reads that pointer
+# instead of guessing, and falls back to `-` when the pointer is older than the session-idle
+# threshold. The alternative — newest-mtime across all projects — reports an aeon's worktree
+# transcript every time one is running, which is most of the time.
+ptr_path = os.path.join(state_dir, "ctx-operator.ptr")
+ptr_age = -1   # -1 = no pointer; published as SP_CTX_AGE so the pane says how fresh it is
 if mode == "env":
     # A NAMED TRANSCRIPT WINS, because a caller that named one is not asking about "the live
     # session" — the archivist's sweep walks every live session in turn, and answering each of
     # them with the newest on disk would report one session's context under every name.
-    #
-    # OTHERWISE, NO HOOK MEANS "THE LIVE SESSION" IS THE TRANSCRIPT BEING WRITTEN RIGHT NOW —
-    # the newest across every project, not the one belonging to any particular directory. The
-    # collector cannot know which project the operator is sitting in, and guessing one would
-    # report a session that ended yesterday as though it were live. Its age is published
-    # alongside so a stale answer is legible as stale rather than as calm.
     if pick:
         tp = pick
     else:
-        cands = glob.glob(os.path.join(projects, "*", "*.jsonl"))
-        tp = max(cands, key=os.path.getmtime) if cands else ""
+        # READ THE OPERATOR POINTER. The status-line hook persists the operator's transcript
+        # path on every run; env mode reads that rather than scanning all projects, because
+        # the newest transcript on the box is almost always an aeon's.
+        try:
+            with open(ptr_path) as fh:
+                ptr = dict(l.rstrip("\n").split("=", 1) for l in fh if "=" in l)
+            ptr_tp = ptr.get("tp", "")
+            ptr_ts = int(ptr.get("ts", "0"))
+            ptr_age = max(0, _now() - ptr_ts)
+            if ptr_tp and os.path.exists(ptr_tp) and ptr_age <= idle_threshold:
+                tp = ptr_tp
+                named = True
+        except (OSError, ValueError):
+            pass
 else:
     cwd = (hook.get("workspace") or {}).get("current_dir") or hook.get("cwd") or os.getcwd()
     order = []
@@ -106,6 +138,19 @@ else:
     if not tp and not named:
         cands = glob.glob(os.path.join(projects, slug(cwd), "*.jsonl"))
         tp = max(cands, key=os.path.getmtime) if cands else ""
+    # PERSIST THE OPERATOR POINTER so that `env` mode knows which transcript is the operator's
+    # without scanning every project. Written on every status-line tick that resolved a
+    # transcript, which is what keeps its age meaningful: a session that stops speaking lets the
+    # pointer go stale, and env mode reads that staleness as "no live session".
+    if tp:
+        try:
+            os.makedirs(os.path.dirname(ptr_path), exist_ok=True)
+            tmp = ptr_path + ".%d" % os.getpid()
+            with open(tmp, "w") as fh:
+                fh.write("tp=%s\nts=%d\nsid=%s\n" % (tp, now, sid))
+            os.replace(tmp, ptr_path)
+        except OSError:
+            pass
 
 # ---- turns and growth, read forward from where the last run stopped ---------------------
 # A TRANSCRIPT IS APPEND-ONLY, so re-reading it whole on every run is work already done. That
@@ -269,18 +314,6 @@ LIM_MIN_MOVE = 2.0    # points the window must have climbed across that span
 # thresholds they are not a fact about one operator's plan and are not a config key.
 LIM_WARN, LIM_HIGH = 70.0, 90.0
 
-def _now():
-    # SPIRA_NOW IS THE TEST CLOCK, and it is deliberately absent from SPIRA_CONF_KEYS: a config
-    # file cannot pin the clock of a live installation, only a caller that exports it on purpose
-    # can. A frozen clock in production would make every projection a projection from a moment
-    # that has passed.
-    v = os.environ.get("SPIRA_NOW", "")
-    try:
-        return int(v) if v else int(time.time())
-    except ValueError:
-        return int(time.time())
-
-now = _now()
 lim_path = os.path.join(state_dir, "limits.samples")
 
 def limits_win(o):
@@ -492,8 +525,11 @@ if mode == "env":
     # this line — it exits non-zero and the collector writes `?` for the whole block. Zero would
     # be neither, and it reads as the best possible news.
     if ctx is None:
-        for k in ("NOW", "TURNS", "GROWTH", "NEXT", "HEADROOM", "TURNS_LEFT", "AGE"):
+        for k in ("NOW", "TURNS", "GROWTH", "NEXT", "HEADROOM", "TURNS_LEFT"):
             print(f"SP_CTX_{k}=-")
+        # The pointer age is published even with no session, so the pane can say whether the
+        # operator's status line has never fired (no pointer) or has gone idle (stale pointer).
+        print(f"SP_CTX_AGE={ptr_age if ptr_age >= 0 else '-'}")
         print("SP_CTX_ARCHIVIST=-")
         print("SP_CTX_ARCHIVIST_BEHIND=-")
         print("SP_CTX_ARCHIVIST_FILED=-")
@@ -511,8 +547,15 @@ if mode == "env":
         if ctx < at:
             nxt, head = name, at - ctx
             break
-    try: age = int(time.time() - os.path.getmtime(tp))
-    except OSError: age = -1
+    # IN ENV MODE, AGE IS THE POINTER'S AGE — how recently the operator's status-line hook
+    # last ran — not the transcript's mtime. The pointer going stale means the operator's
+    # session has stopped speaking, which is the actionable fact; the transcript's mtime
+    # says nothing about which session wrote it.
+    if ptr_age >= 0:
+        age = ptr_age
+    else:
+        try: age = int(time.time() - os.path.getmtime(tp))
+        except OSError: age = -1
     print(f"SP_CTX_NOW={ctx}")
     print(f"SP_CTX_TURNS={turns}")
     print(f"SP_CTX_GROWTH={growth_per_turn}")
