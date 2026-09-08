@@ -297,10 +297,30 @@ header_line() {
     [ -n "${SP_AT:-}" ] && age=$(( $(date +%s) - SP_AT ))
     [ "$age" != "?" ] && [ "$age" -gt 180 ] && stale="  ${C_BAD}STALE ${age}s${C_RST}"
     halt_banner
-    printf '%s%sSPIRA%s %s   %ssentinel%s %s %ss  %sops%s %s %ss%s\n' \
+    # AURON IS SHOWN WITH ITS AGE, NEVER OMITTED WHEN IT IS SILENT. It is the watchdog over
+    # the loop and its only power is speech, so a dead Auron and a healthy system produce
+    # the same pane unless its own pulse is on it — and the pane would render the healthy
+    # one (law-absence-needs-a-positive-control). `?` when it has never written a
+    # heartbeat, red past three minutes against a two-minute timer.
+    printf '%s%sSPIRA%s %s   %ssentinel%s %s %ss  %sops%s %s %ss  %sauron%s %s %s%s\n' \
         "$C_B" "$C_ACC" "$C_RST" "$(date +%H:%M)" \
         "$C_DIM" "$C_RST" "$(dot "${SP_SENTINEL_TIMER:-0}")" "${SP_SENTINEL_AGE:-?}" \
-        "$C_DIM" "$C_RST" "$(dot "${SP_OPS_TIMER:-0}")" "${SP_OPS_AGE:-?}" "$stale"
+        "$C_DIM" "$C_RST" "$(dot "${SP_OPS_TIMER:-0}")" "${SP_OPS_AGE:-?}" \
+        "$C_DIM" "$C_RST" "$(dot "${SP_AURON_TIMER:-0}")" \
+        "$(age_str "${SP_AURON_AGE:-?}" 180)" "$stale"
+
+    # WHAT AURON IS SAYING, on its own line and only when it is saying something. An alert
+    # is a condition that self-clears, so an empty line here is the ordinary case and must
+    # cost no space; a `?` is not empty, though — it means the heartbeat could not be read,
+    # which is a different thing from "nothing is wrong" and says so.
+    if [ "${SP_AURON_FIRING:-0}" = "?" ]; then
+        printf ' %sALERT%s  %s%s? — Auron'"'"'s heartbeat could not be read%s\n' \
+            "$C_DIM" "$C_RST" "$C_BAD" "$C_B" "$C_RST"
+    elif [ "${SP_AURON_FIRING:-0}" != "0" ]; then
+        printf ' %sALERT%s  %s%s%s firing%s  %s%s%s\n' \
+            "$C_DIM" "$C_RST" "$C_BAD" "$C_B" "${SP_AURON_FIRING}" "$C_RST" \
+            "$C_BAD" "$(printf '%s' "${SP_AURON_KEYS:-}" | tr ',' ' ')" "$C_RST"
+    fi
 }
 
 # TOKENS — what the account is spending, and which half of the system is spending it.

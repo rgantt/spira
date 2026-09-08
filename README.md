@@ -53,12 +53,13 @@ so a persistent role cannot be crowded out of it by workers holding slots for an
 
 ## The loop
 
-Six timers, each doing one thing, none waiting on another.
+Seven timers, each doing one thing, none waiting on another.
 
 | unit | cadence | what it does |
 |---|---|---|
 | `spira-sentinel.timer` | 2 min | reconcile the graph — the checks below |
 | `spira-ops.timer` | 5 min | summon the ops persona for any waiting incident |
+| `spira-auron.timer` | 2 min | watch the sentinel — escalate if the loop has stalled |
 | `spira-watchtower.timer` | 30 min | read the pipeline's vital signs and file them as work ops claims |
 | `spira-skew.timer` | 1 h | is the harness in force the harness that landed? |
 | `spira-suites.timer` | 1 h | run every test suite the landing gate does not |
@@ -91,6 +92,18 @@ Each is a deterministic predicate that names the single action closing its gap.
    running. Only here does a model get asked what is wrong. It gates on whether the graph
    actually *moved*, never on whether the pass wrote something: gating on writes lets every
    futile action mute the one check that notices paralysis.
+
+### Auron watches the sentinel
+
+`spira/auron.sh` is the watchdog over the loop. Its only power is speech: it reads timestamps
+and counters, compares them to thresholds, and raises or clears an alert bead. It repairs
+nothing, restarts nothing and summons nothing — a watchdog that can act is a second
+controller with no supervisor of its own. It fires on sentinel pass staleness (no completed
+pass in ten minutes), summon starvation (ready work, free capacity, nothing summoned across
+two consecutive checks), a database that has not been reachable, and an aeon holding a lease
+with no live process past expiry. It writes a heartbeat after every completed pass so the ops
+pane can show its own age — a silent watchdog and a healthy system are otherwise
+indistinguishable, and the pane would render the healthy reading.
 
 ### Landing is a separate process, and its unit name is the mutex
 

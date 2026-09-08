@@ -1,0 +1,41 @@
+[Unit]
+# The watchdog OVER the loop, not a second loop. Its only power is speech: it reads
+# timestamps and counters, compares them to thresholds, and raises or clears an alert
+# bead. It repairs nothing, restarts nothing and summons nothing, and it must not grow the
+# ability to — a watchdog that can act is a second controller with no supervisor of its
+# own, and the first thing it does wrong is fight the sentinel over the same resource.
+#
+# It is a separate unit from the sentinel and that is the entire point. A check cannot
+# observe the failure of the thing running it, so the one condition the sentinel can never
+# report is the one that matters most: that it has stopped.
+Description=Spira Auron — escalate a stalled loop, and do nothing else
+Documentation=file://@SPIRA_HOME@/auron.sh
+After=default.target
+
+[Service]
+Type=oneshot
+# Inert until the program exists on main. These units are installed by the same change
+# that ADDS auron.sh, so between arming the timer and the branch landing there is a window
+# in which ExecStart would fail every two minutes — and a unit that is red for reasons
+# nobody should act on is exactly the noise that hides the one that matters. An
+# ExecCondition that exits non-zero makes systemd SKIP the pass and record success, so the
+# timer sits silent and starts working by itself the moment the file is there. No step for
+# anyone to remember, which is the scar ops.fayth left: it landed complete and never ran.
+ExecCondition=/usr/bin/test -x @SPIRA_HOME@/auron.sh
+ExecStart=@SPIRA_HOME@/auron.sh
+# A pass is a handful of file reads and ONE bd query, and it is designed to finish in
+# about a second. Sixty is not a budget, it is a fence: whatever goes wrong here, Auron
+# must not become the thing that hangs. A killed run writes no heartbeat, and a missing
+# heartbeat is exactly what the ops pane renders as stale — so even this failure is
+# visible rather than silent.
+TimeoutStartSec=60
+# This box runs prod and the CI runner. Anything that polls in a loop on shared hardware
+# gets a quota (law-fence-loops-on-shared-hardware) — and a watchdog least of all deserves
+# to be the process that starves what it is watching.
+CPUQuota=10%
+Nice=15
+StandardOutput=append:@SPIRA_RUN@/auron.log
+StandardError=append:@SPIRA_RUN@/auron.log
+
+[Install]
+WantedBy=default.target

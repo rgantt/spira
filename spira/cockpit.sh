@@ -738,6 +738,27 @@ except Exception: print("")' 2>/dev/null)"
     done
     echo "SP_OPS_AGE=$_ops_age"
     unset _ops_pf _ops_age
+    # AURON'S OWN PULSE, and it is here for the same reason the two above are: a check
+    # cannot observe the failure of the thing running it. Auron watches the loop, so the
+    # one thing IT cannot report is that it has stopped — and a silent watchdog and a
+    # healthy system look identical, with the pane rendering the healthy reading
+    # (law-absence-needs-a-positive-control).
+    #
+    # THE HEARTBEAT, NOT THE LOG. auron.log is appended to by systemd on every run
+    # including a run that died on its first line; auron.status is written by auron.sh
+    # itself, last, only once a whole pass has completed. Only the second one distinguishes
+    # "it ran" from "it worked".
+    echo "SP_AURON_TIMER=$(unit_active spira-auron.timer)"
+    echo "SP_AURON_AGE=$(age_of "$SPIRA_RUN/auron.status")"
+    # What it is currently saying. A failed read renders `?`, never 0: "no alerts firing"
+    # is the reassuring answer and must never be the one a broken probe produces.
+    if [ -r "$SPIRA_RUN/auron.status" ]; then
+        echo "SP_AURON_FIRING=$(. "$SPIRA_RUN/auron.status" 2>/dev/null; printf '%s' "${SP_AURON_FIRING:-?}")"
+        echo "SP_AURON_KEYS='$(. "$SPIRA_RUN/auron.status" 2>/dev/null; printf '%s' "${SP_AURON_KEYS:-}")'"
+    else
+        echo "SP_AURON_FIRING=?"
+        echo "SP_AURON_KEYS=''"
+    fi
 
     # ---- the sphere grid ---------------------------------------------------------------
     # Scoped by LABEL, not by the goal epic's children: the goal epic is one pilgrimage, and
