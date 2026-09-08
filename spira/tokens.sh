@@ -2,9 +2,9 @@
 # tokens.sh — what the account actually spends, and on what.
 #
 # WHY IT EXISTS. The 5x plan hit its session limit in most five-hour windows and nobody could
-# say which half of the system was responsible — the harness or the interactive session. Guessing
-# wrong would have optimised the smaller half. This measures both from the transcripts that are
-# already on disk; it starts no session and spends nothing to answer.
+# say which half of the system was responsible — the harness or the interactive session. The
+# harness is the larger half. This measures both from the transcripts that are already on disk;
+# it starts no session and spends nothing to answer.
 #
 # WHAT COUNTS. Every assistant turn records a usage block: input_tokens (fresh), cache_creation
 # (writing the prompt cache), cache_read (re-reading it) and output_tokens. Cache read dominates
@@ -15,9 +15,13 @@
 # file; counting per file inflated this corpus by 11,600 turns. The id is the API call, so it is
 # the unit that was actually billed.
 #
-# TWO SOURCES, KEPT SEPARATE, because the point is to attribute:
-#   aeons    $SPIRA_RUN/*.log                  — stream-json from every aeon session
-#   session  $SPIRA_TOKEN_PROJECTS/*/*.jsonl   — the client's interactive transcripts
+# TWO HALVES, THREE INPUTS, because the point is to attribute:
+#   aeons    $SPIRA_RUN/*.log + worktree transcripts — every aeon session
+#   session  the remaining transcripts                — the interactive sessions
+# Aeons run in worktrees under $SPIRA_RUN, and the client writes their transcripts
+# into $SPIRA_TOKEN_PROJECTS too. A transcript whose project directory encodes a
+# path under $SPIRA_RUN/worktree belongs to aeons. Message ids are deduped across
+# all inputs so a turn is counted once.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/lib.sh" >/dev/null 2>&1
@@ -36,15 +40,21 @@ now = dt.datetime.now(dt.timezone.utc)
 cut = now - dt.timedelta(hours=window_h)
 KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 
-def scan(paths, want_assistant_only, window_only=False):
-    """-> (all_time, in_window) counters. Dedupes on message id across every file.
+# Aeons run in worktrees under $SPIRA_RUN/worktree. The client writes transcripts
+# for those sessions into $SPIRA_TOKEN_PROJECTS too, so without attribution they
+# appear in both halves of the split. Identify them by encoding the worktree root
+# the way the client encodes project directories: every / and . becomes -.
+wt_root = os.path.normpath(os.path.join(run, "worktree"))
+wt_prefix = wt_root.replace("/", "-").replace(".", "-") + "-"
+
+def scan(paths, want_assistant_only, seen, window_only=False):
+    """-> (all_time, in_window) counters. Dedupes on message id via the caller's seen set.
 
     window_only skips files untouched since the cutoff. A file whose last write predates the
     window cannot hold a turn inside it, and the corpus is 23 billion tokens of history that
     would otherwise be re-read on every collector pass — instrumentation that costs more than
     the thing it measures is its own bug. all_time is then partial and callers must not use it.
     """
-    seen = set()
     tot, win = collections.Counter(), collections.Counter()
     for f in paths:
         if window_only:
@@ -77,12 +87,18 @@ def scan(paths, want_assistant_only, window_only=False):
     return tot, win
 
 AEON_FILES = sorted(glob.glob(os.path.join(run, "*.log")))
-SESS_FILES = sorted(glob.glob(os.path.join(projects, "*", "*.jsonl")))
+ALL_SESS = sorted(glob.glob(os.path.join(projects, "*", "*.jsonl")))
+WT_SESS = [f for f in ALL_SESS if os.path.basename(os.path.dirname(f)).startswith(wt_prefix)]
+SESS_FILES = [f for f in ALL_SESS if not os.path.basename(os.path.dirname(f)).startswith(wt_prefix)]
 # env mode is the collector's path and runs constantly, so it reads only what the window can
 # touch. report mode is a human asking once, and reads everything.
 WIN_ONLY = (mode == "env")
-aeon_tot, aeon_win = scan(AEON_FILES, True,  WIN_ONLY)
-sess_tot, sess_win = scan(SESS_FILES, False, WIN_ONLY)
+seen = set()
+aeon_tot, aeon_win = scan(AEON_FILES, True, seen, WIN_ONLY)
+wt_tot, wt_win = scan(WT_SESS, False, seen, WIN_ONLY)
+aeon_tot += wt_tot
+aeon_win += wt_win
+sess_tot, sess_win = scan(SESS_FILES, False, seen, WIN_ONLY)
 
 def ctx(c): return c["cache_read_input_tokens"] // c["turns"] if c["turns"] else 0
 # What a rate limit actually meters is everything the request carried, cache reads included.
