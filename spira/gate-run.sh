@@ -140,7 +140,12 @@ unmanaged_gate() {      # unmanaged_gate -> 0 and prints the pid, if one is runn
     for p in /proc/[0-9]*; do
         p="${p#/proc/}"
         [ "$p" = "$$" ] && continue
-        cmd="$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)" || continue
+        # { ...; } 2>/dev/null rather than a redirect on tr alone: when a process exits
+        # between the glob and the read, bash itself prints "No such file or directory"
+        # to stderr — the redirect on tr only silences tr's own errors, not the shell's
+        # failed redirection. This polluted --status output and, since the snapshot is a
+        # KEY=value file the pane sources, the stray text broke the parse.
+        { cmd="$(tr '\0' ' ' < "/proc/$p/cmdline")"; } 2>/dev/null || continue
         [ -n "$cmd" ] || continue
         grep -qF 'gate.sh' <<< "$cmd" || continue
         grep -qF " $BR" <<< "$cmd" || continue

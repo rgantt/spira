@@ -875,6 +875,64 @@ standing_lines() {
         "$( [ "${SP_UNLANDED:-0}" = 0 ] && printf '%s' "$C_OK" || printf '%s' "$C_BAD$C_B")" "${SP_UNLANDED:-?}" "$C_RST"
     printf '        %snever landed = closed, no commit names it, no branch carries it%s\n' "$C_DIM" "$C_RST"
 
+    # LAND — the DONE-to-LANDED stretch. The operator (2026-09-07): "there's currently a
+    # lot that happens between 'DONE' and 'LANDED' and the ops dashboard shows none of it."
+    #
+    # The landing pass's own state renders from landing.status without the collector
+    # recomputing any of it; live gate runs render with their branch, age, and whether they
+    # are waiting on the tree lock or running suites.
+    local land_age="?"
+    if [ -n "${SP_LAND_AT:-}" ] && [ "${SP_LAND_AT:-?}" != "?" ]; then
+        land_age=$(( $(date +%s) - SP_LAND_AT ))
+    fi
+    local land_rc_col
+    case "${SP_LAND_RC:-?}" in
+        0) land_rc_col="$C_OK" ;;
+        '?') land_rc_col="$C_BAD$C_B" ;;
+        *) land_rc_col="$C_WARN" ;;
+    esac
+    printf ' %sLAND%s   %slast%s %s  %src%s %s%s%s  %sbranches%s %s  %smoved%s %s\n' \
+        "$C_DIM" "$C_RST" \
+        "$C_DIM" "$C_RST" "$(age_str "$land_age" 600)" \
+        "$C_DIM" "$C_RST" "$land_rc_col" "${SP_LAND_RC:-?}" "$C_RST" \
+        "$C_DIM" "$C_RST" "${SP_LAND_BRANCHES:-?}" \
+        "$C_DIM" "$C_RST" "${SP_LAND_MOVED:-?}"
+    if [ "${SP_GATE_LIVE:-0}" != "0" ] && [ "${SP_GATE_LIVE:-0}" != "?" ]; then
+        printf '        %s%s gate(s) running:%s\n' "$C_B" "${SP_GATE_LIVE}" "$C_RST"
+        local gi=0
+        while [ "$gi" -lt "${SP_GATE_N:-0}" ] 2>/dev/null; do
+            eval "local gs=\${SP_GATE${gi}_SLUG:-?} ga=\${SP_GATE${gi}_AGE:-?}"
+            eval "local gp=\${SP_GATE${gi}_PHASE:-?} gw=\${SP_GATE${gi}_WHY:-}"
+            local age_s
+            if [ "$ga" = "?" ]; then age_s="?"
+            elif [ "$ga" -lt 120 ] 2>/dev/null; then age_s="${ga}s"
+            else age_s="$(( ga / 60 ))m"; fi
+            local phase_col="$C_DIM"
+            [ "$gp" = waiting ] && phase_col="$C_WARN"
+            fit "${gw:+ · $gw}" $(( COLS - 30 - ${#gs} - ${#age_s} ))
+            printf '        %s%s%s  %s%-7s%s  %s%s%s%s\n' \
+                "$C_ACC" "$gs" "$C_RST" \
+                "$phase_col" "$gp" "$C_RST" \
+                "$C_DIM" "$age_s" "$C_RST" \
+                "$( [ -n "${gw:-}" ] && printf ' %s%s%s' "$C_DIM" "$FIT" "$C_RST" )"
+            gi=$((gi+1))
+        done
+    elif [ "${SP_GATE_LIVE:-?}" = "?" ]; then
+        printf '        %s%s? cannot read gate state%s\n' "$C_BAD" "$C_B" "$C_RST"
+    fi
+    # Landing progress — per-branch outcomes of the pass in flight.
+    if [ "${SP_LANDPROG_N:-0}" != "0" ] && [ "${SP_LANDPROG_N:-0}" != "?" ]; then
+        local li=0
+        while [ "$li" -lt "${SP_LANDPROG_N:-0}" ] 2>/dev/null; do
+            eval "local lp=\${SP_LANDPROG${li}:-}"
+            if [ -n "$lp" ]; then
+                fit "$lp" $(( COLS - 10 ))
+                printf '        %s%s%s\n' "$C_DIM" "$FIT" "$C_RST"
+            fi
+            li=$((li+1))
+        done
+    fi
+
     # GRAPH — the beads themselves, kept apart from sessions and asks so the counts cannot
     # be read as the same kind of thing.
     # STRANDED IS THE GHOST COUNT, NOT THE LEDGER SIZE. strands.json holds every disposition

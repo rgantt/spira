@@ -741,6 +741,96 @@ for i in awaiting_ids:
     fi
     fi
 
+    # ---- GATE: what is happening between DONE and LANDED --------------------------------
+    # The operator (2026-09-07): "there's currently a lot that happens between 'DONE' and
+    # 'LANDED' and the ops dashboard shows none of it."
+    #
+    # landing.status IS ALREADY SP_ KEY=VALUE FORM, written by the landing pass. Concatenate
+    # it into the snapshot rather than recomputing any of it — it is the landing pass's own
+    # word, and a collector that re-derived it would disagree exactly when it matters.
+    if [ -r "$SPIRA_RUN/landing.status" ]; then
+        cat "$SPIRA_RUN/landing.status"
+    else
+        for _k in SP_LAND_AT SP_LAND_RC SP_LAND_BRANCHES SP_LAND_MOVED; do
+            echo "$_k=?"
+        done
+    fi
+
+    # landing.progress — per-branch outcomes of the pass in flight, e.g.
+    #   "landed spira/sp-35pl"
+    #   "reopened sp-dvlq -- does not rebase onto origin/main"
+    # Sanitised for the snapshot: the content is freeform prose from the sentinel, and the
+    # snapshot is a KEY=value file the pane sources.
+    local lp_n=0
+    if [ -r "$SPIRA_RUN/landing.progress" ]; then
+        while IFS= read -r _lp; do
+            [ -n "$_lp" ] || continue
+            _lp="$(printf '%s' "$_lp" | tr -c 'A-Za-z0-9 ._/:,()#+-' ' ' | tr -s ' ')"
+            printf 'SP_LANDPROG%d=%s\n' "$lp_n" "${_lp:0:120}"
+            lp_n=$((lp_n+1))
+        done < "$SPIRA_RUN/landing.progress"
+    fi
+    echo "SP_LANDPROG_N=$lp_n"
+
+    # gate-run/ — live gate runs. LIVENESS FROM /proc ON argv, never from directory existence
+    # or pgrep -f (law-absence-needs-a-positive-control). Nothing prunes gate-run/, so stale
+    # directories are the trap: a pid file that points at a dead process, or one recycled by
+    # another program, must never render as a live gate.
+    local gate_n=0 gate_live=0
+    if [ -d "$SPIRA_RUN/gate-run" ]; then
+        for _gd in "$SPIRA_RUN/gate-run"/*/; do
+            [ -e "$_gd/pid" ] || continue
+            local _g_slug _g_pid _g_started _g_age _g_state _g_cmd _g_phase
+            _g_slug="$(basename "$_gd")"
+            _g_pid="$(cat "$_gd/pid" 2>/dev/null)"; [ -n "${_g_pid:-}" ] || continue
+            _g_started="$(cat "$_gd/started" 2>/dev/null)"
+
+            _g_state=dead
+            if [ -d "/proc/$_g_pid" ]; then
+                # The same stderr-safe pattern as gate-run.sh itself: the shell's failed
+                # redirection to a vanished /proc entry goes to stderr, which pollutes the
+                # snapshot if not suppressed.
+                { _g_cmd="$(tr '\0' ' ' < "/proc/$_g_pid/cmdline")"; } 2>/dev/null
+                # argv decides, not the directory. A recycled pid belongs to a different
+                # process whose cmdline will not contain 'gate'.
+                [[ "${_g_cmd:-}" == *gate* ]] && _g_state=live
+            fi
+
+            [ "$_g_state" = live ] || continue
+            gate_live=$((gate_live+1))
+
+            if [ -n "${_g_started:-}" ]; then
+                _g_age=$(( $(date +%s) - _g_started ))
+            else
+                _g_age="?"
+            fi
+
+            # Waiting on the tree lock vs running suites: gate.sh produces no output
+            # until after flock, so an empty out file means the gate is queued.
+            if [ -s "$_gd/out" ]; then
+                _g_phase=running
+            else
+                _g_phase=waiting
+            fi
+
+            # Why a run is slow — "selecting all" is the line that explains a 650s run.
+            local _g_why=""
+            if [ "$_g_phase" = running ] && [ -r "$_gd/out" ]; then
+                _g_why="$(grep -m1 'selecting' "$_gd/out" 2>/dev/null)"
+                _g_why="$(printf '%s' "${_g_why:-}" | tr -c 'A-Za-z0-9 ._/:,()#+-' ' ' | tr -s ' ')"
+                _g_why="${_g_why:0:100}"
+            fi
+
+            printf 'SP_GATE%d_SLUG=%s\n' "$gate_n" "$_g_slug"
+            printf 'SP_GATE%d_AGE=%s\n' "$gate_n" "${_g_age:-?}"
+            printf 'SP_GATE%d_PHASE=%s\n' "$gate_n" "$_g_phase"
+            [ -n "$_g_why" ] && printf 'SP_GATE%d_WHY=%s\n' "$gate_n" "$_g_why"
+            gate_n=$((gate_n+1))
+        done
+    fi
+    echo "SP_GATE_N=$gate_n"
+    echo "SP_GATE_LIVE=$gate_live"
+
     # ---- live aeons --------------------------------------------------------------------
     # /proc, never a directory count and never `pgrep -f`. `gt polecat list` counting
     # DIRECTORIES is the original scar; `pgrep -f` is the second one, where the pattern
