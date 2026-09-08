@@ -42,8 +42,8 @@ REAL_BD="$(PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" command -v bd)"
 # Two git repos. `alpha` is the home repo (listed first by spira_repos), `beta` is the second.
 ALPHA="$TMP/alpha"; BETA="$TMP/beta"
 for r in "$ALPHA" "$BETA"; do
-    git init -q "$r"
-    git -C "$r" commit --allow-empty -m "init" -q
+    git init -q "$r"                                   # hermetic-ok: throwaway fixture repos in $TMP
+    git -C "$r" commit --allow-empty -m "init" -q      # hermetic-ok: seed commit for the fixture
 done
 
 MAP="$TMP/repo-map"
