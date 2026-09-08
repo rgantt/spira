@@ -463,5 +463,21 @@ has "that unit is fenced with a CPU quota" \
     "$(cat "$ROOT/systemd/cockpit-ensure.service")" "CPUQuota="
 
 echo
+echo "an aeon session is told nothing"
+# AN AEON THAT SEES THE LATCH BLOCK OBEYS IT: it attaches a persistent Monitor, holds its
+# session open past the work, blocks landing for the life of the lease, and advances the
+# operator's cursor — consuming verdicts addressed to the brain session. SPIRA_AEON is
+# exported by aeon.sh into every session it summons and is the definitive marker.
+aout="$(hook SessionStart startup SPIRA_AEON=mindy)"
+is  "an aeon session gets no output at all"     "" "$aout"
+is  "and no Monitor command"                    "0" \
+    "$(printf '%s\n' "$aout" | grep -c 'Monitor:' || true)"
+# THE POSITIVE CONTROL: the same fixture without SPIRA_AEON still produces the latch block,
+# so the silence above is about the guard and not about the fixture
+# (law-absence-needs-a-positive-control).
+pout="$(hook SessionStart startup)"
+has "an operator session still gets the latch"  "$pout" "Monitor:"
+
+echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
