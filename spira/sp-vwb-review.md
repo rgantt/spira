@@ -58,7 +58,7 @@ replays exactly N; staleness restart within one period. None were written by any
 epic bead.
 
 **Finding 4 — non-goals maintained.**
-Gas Town log files at /workspaces/gt/.runtime/watchd/*.log untouched ✓. Cockpit
+Gas Town log files (watchd runtime dir) untouched ✓. Cockpit
 panel and collect.sh unchanged ✓. ask.sh/reply.sh unchanged ✓. cockpit-ensure not
 replaced ✓. Wiki not used for watcher state ✓. No general pub/sub ✓.
 
