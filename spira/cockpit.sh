@@ -50,10 +50,17 @@ INTERVAL="${SPIRA_COCKPIT_INTERVAL:-60}"
 cockpit_may_write() {
     [ "${SPIRA_COCKPIT_FORCE:-0}" = 1 ] && return 0
     [ -n "${INVOCATION_ID:-}" ] || return 1
-    local svc_id
-    svc_id="$(systemctl --user show spira-cockpit.service -p InvocationID --value 2>/dev/null)" \
-        || return 1
-    [ "$INVOCATION_ID" = "$svc_id" ]
+    # THE UNIT NAME IS PER-INSTANCE. install.sh renders spira-cockpit-<instance>.service, so
+    # comparing against the plain name refused every write from the moment the migration
+    # landed: 225 restarts and an hour of frozen snapshot, while the pane showed a STALE
+    # reading rather than a fault (2026-09-08). Both names are tried, so this works before a
+    # migration and after one, and on any instance.
+    local svc_id u
+    for u in "spira-cockpit${SPIRA_INSTANCE:+-$SPIRA_INSTANCE}.service" spira-cockpit.service; do
+        svc_id="$(systemctl --user show "$u" -p InvocationID --value 2>/dev/null)" || continue
+        [ -n "$svc_id" ] && [ "$INVOCATION_ID" = "$svc_id" ] && return 0
+    done
+    return 1
 }
 
 # Read partition definitions from the chamber without hardcoding a label list. A .fayth file
