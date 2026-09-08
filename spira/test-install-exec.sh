@@ -14,7 +14,7 @@
 #    than overriding it with the derived default (the colon form would have silently
 #    replaced SPIRA_PROD="" with a path from a layout that may not exist).
 #
-# defect: sp-82jo
+# defect: sp-ncxv
 # covers: systemd/install.sh spira/conf.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
