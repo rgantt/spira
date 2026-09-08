@@ -331,7 +331,7 @@ echo "the column is filled, and NOW is served before the sections that fill it"
     done
     printf 'SP_NEXT_N=25\n'
     for i in $(seq 0 13); do printf 'SP_NEXT%d=P1 builder sp-n%d A queued bead\n' "$i" "$i"; done
-    for i in $(seq 0 13); do printf 'SP_EVENT%d=%dm ago  sentinel    builder  landed sp-e%d\n' "$i" "$i" "$i"; done
+    for i in $(seq 0 13); do printf 'SP_EVENT%d=%-4s sentinel landed sp-e%d\n' "$i" "${i}m" "$i"; done
     printf 'SP_AWAITING_N=0\n'
 } | snap
 
@@ -418,7 +418,7 @@ is_n "a 20-row pane is filled to exactly 20 rows" 20 "$(printf '%s\n' "$busy" | 
     printf 'SP_AEON0_ACT=Bash %s\n' "$(printf 'a%.0s' $(seq 1 120))"
     printf 'SP_AEON0_SAID=%s\n' "$(printf 's%.0s' $(seq 1 120))"
     printf 'SP_NEXT_N=1\nSP_NEXT0=P1 builder sp-longtitle %s\n' "$(printf 'x%.0s' $(seq 1 120))"
-    printf 'SP_EVENT0=2m ago  sentinel    builder  landed sp-e0 %s\n' "$(printf 'y%.0s' $(seq 1 120))"
+    printf 'SP_EVENT0=2m   sentinel landed sp-e0 %s\n' "$(printf 'y%.0s' $(seq 1 120))"
     printf 'SP_AWAITING_N=0\n'
 } | snap
 # MEASURED IN CHARACTERS, WITH PYTHON, NOT WITH awk. The frame is full of multibyte

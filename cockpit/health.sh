@@ -667,7 +667,7 @@ pri_colour() {          # pri_colour P0 -> the escape for that priority
 verb_colour() {
     case "$1" in
         landed|finished|announced)      printf '%s' "$C_OK" ;;
-        reopened|poisoned|slain|sent)   printf '%s' "$C_BAD" ;;
+        reopened|poisoned|slain|reaped) printf '%s' "$C_BAD" ;;
         in_progress|ended|reclaimed)    printf '%s' "$C_WARN" ;;
         claimed)                        printf '%s' "$C_ACC" ;;
         *)                              printf '%s' "$C_DIM" ;;
@@ -707,18 +707,22 @@ unlanded_row() {
         "$age_col" "$age" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
 }
 
-# RECENT rows arrive as `<age> <actor> <partition> <verb> <bead> <title...>`. The actor
-# column shows who acted (sentinel, overseer, ryan, or fayth/aeon-name); the partition column
-# shows which queue the bead belongs to. Split rather than print flat: the verb and id are
-# what a reader is scanning for. A row that cannot be parsed is printed as-is.
-recent_row() {          # recent_row "<age> <actor> <partition> <verb> <bead> <title>" <indent-cols>
-    local raw="$1" pad="$2" age actor part verb id rest vw
-    # THREE FIXED FIELDS then body. The age is two words ("2m ago"), captured as one group
-    # by the leading digits. Actor may carry a slash (builder/bahamut). Body is verb + bead
-    # (or count) + optional title.
-    if [[ "$raw" =~ ^([0-9]+[smhd][[:space:]]+ago)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]*(.*)$ ]]; then
-        age="${BASH_REMATCH[1]}"; actor="${BASH_REMATCH[2]}"; part="${BASH_REMATCH[3]}"
-        verb="${BASH_REMATCH[4]}"; id="${BASH_REMATCH[5]}"; rest="${BASH_REMATCH[6]}"
+# RECENT rows arrive as `<age> <actor> <verb> <bead> <title...>` and are printed in the
+# operator order — TIME, STATE, PERSONA, BEAD, DESCRIPTION. The verb moves ahead of the
+# persona because the state is what a reader scans this section for; the persona answers
+# "whose" once the eye has stopped. Split rather than print flat. A row that cannot be
+# parsed is printed as-is.
+#
+# THE COLLECTOR NO LONGER EMITS A PARTITION and no longer suffixes the actor with the aeon
+# assignee: both said the same word the fayth name already said, and the truncation kept the
+# repetition while dropping the aeon name that made it worth having.
+recent_row() {          # recent_row "<age> <actor> <verb> <bead> <title>" <indent-cols>
+    local raw="$1" pad="$2" age actor verb id rest aw vw pw
+    # TWO FIXED FIELDS then body. The age is one word — "52s", not "52s ago" — so the leading
+    # group ends at the unit letter. Body is verb + bead (or count) + optional title.
+    if [[ "$raw" =~ ^([0-9]+[smhd])[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]*(.*)$ ]]; then
+        age="${BASH_REMATCH[1]}"; actor="${BASH_REMATCH[2]}"
+        verb="${BASH_REMATCH[3]}"; id="${BASH_REMATCH[4]}"; rest="${BASH_REMATCH[5]}"
     else
         # UNPARSED IS PRINTED AS IT CAME. A formatter must never drop content it could not
         # split — the event is the load-bearing half and the colour is the ornament.
@@ -729,39 +733,39 @@ recent_row() {          # recent_row "<age> <actor> <partition> <verb> <bead> <t
         printf '%s%s%s\n' "$C_DIM" "$FIT" "$C_RST"; return
     fi
     # THE FIFTH FIELD IS NOT ALWAYS A BEAD. Some sentinel ACTs are AGGREGATES over a pass —
-    # "escalated 3 stranded item(s)", "announced and ..." — where the word after the verb is a
-    # COUNT or a preposition. Dropped into the id column it wore the same accent colour every
-    # real id wears. A bead reference is an `sp-` id, optionally carrying its branch prefix
-    # (`spira/sp-d0c2`); anything else is prose, and prose is printed as prose across the id
-    # and title columns rather than being cut in half by them.
+    # "reaped 1 landed branch(es)", "escalated 3 stranded item(s)", "announced and ..." —
+    # where the word after the verb is a COUNT or a preposition. Dropped into the id column
+    # it wore the same accent colour every real id wears, so "reaped 1" read as a bead named
+    # `1` and the operator went looking for it. A bead reference is an `sp-` id, optionally
+    # carrying its branch prefix (`spira/sp-d0c2`); anything else is prose, and prose is
+    # printed as prose across the id and title columns rather than being cut in half by them.
+    aw=${#age};   if [ "$aw" -lt 4 ]; then aw=4; fi
+    # THE VERB IS PADDED, like the age and the persona either side of it. Unpadded, the
+    # columns after it began wherever the verb happened to end — `ended` to `reclaimed` is
+    # five columns of drift in the one section whose purpose is to be scanned straight down.
+    # Nine is the longest verb the collector emits; a longer one widens its own row rather
+    # than being cut, so the arithmetic below takes whichever is greater. Same for the
+    # persona: eight covers sentinel, overseer and every fayth name in the chamber.
+    vw=${#verb};  if [ "$vw" -lt 9 ]; then vw=9; fi
+    pw=${#actor}; if [ "$pw" -lt 8 ]; then pw=8; fi
     if [[ ! "$id" =~ (^|/)sp-[A-Za-z0-9._-]+$ ]]; then
         rest="$id${rest:+ $rest}"
-        vw=${#verb}; if [ "$vw" -lt 9 ]; then vw=9; fi
-        # fit width: 7(age)+1+12(actor)+1+8(part)+1+vw+1+fit = COLS-pad
-        # → fit = COLS - pad - 31 - vw
-        fit "$rest" $(( COLS - pad - 31 - vw ))
-        printf '%s%-7s%s %s%-12s%s %s%-8s%s %s%-9s%s %s%s%s\n' \
-            "$C_DIM" "$age" "$C_RST" \
-            "$C_DIM" "$actor" "$C_RST" \
-            "$(part_colour "$part")" "$part" "$C_RST" \
-            "$(verb_colour "$verb")" "$verb" "$C_RST" \
+        # fit width: aw+1+vw+1+pw+1+fit = COLS-pad  →  fit = COLS - pad - aw - vw - pw - 3
+        fit "$rest" $(( COLS - pad - aw - vw - pw - 3 ))
+        printf '%s%-*s%s %s%-*s%s %s%-*s%s %s%s%s\n' \
+            "$C_DIM" "$aw" "$age" "$C_RST" \
+            "$(verb_colour "$verb")" "$vw" "$verb" "$C_RST" \
+            "$(part_colour "$actor")" "$pw" "$actor" "$C_RST" \
             "$C_DIM" "$FIT" "$C_RST"
         return
     fi
-    # THE VERB IS PADDED, like the age and the id either side of it. Unpadded, the id and
-    # title columns began wherever the verb happened to end — `ended` to `reclaimed` is five
-    # columns of drift in the one section whose purpose is to be scanned straight down. Nine
-    # is the longest verb the collector emits; a longer one widens its own row rather than
-    # being cut, so the arithmetic below takes whichever is greater.
-    vw=${#verb}; if [ "$vw" -lt 9 ]; then vw=9; fi
-    # fit width: 7(age)+1+12(actor)+1+8(part)+1+vw+1+max(14,id)+1+fit = COLS-pad
-    # → fit = COLS - pad - 32 - vw - max(14, id_len)
-    fit "$rest" $(( COLS - pad - 32 - vw - (${#id} > 14 ? ${#id} : 14) ))
-    printf '%s%-7s%s %s%-12s%s %s%-8s%s %s%-9s%s %s%-14s%s %s%s%s\n' \
-        "$C_DIM" "$age" "$C_RST" \
-        "$C_DIM" "$actor" "$C_RST" \
-        "$(part_colour "$part")" "$part" "$C_RST" \
-        "$(verb_colour "$verb")" "$verb" "$C_RST" \
+    # fit width: aw+1+vw+1+pw+1+max(14,id)+1+fit = COLS-pad
+    # → fit = COLS - pad - aw - vw - pw - max(14, id_len) - 4
+    fit "$rest" $(( COLS - pad - aw - vw - pw - (${#id} > 14 ? ${#id} : 14) - 4 ))
+    printf '%s%-*s%s %s%-*s%s %s%-*s%s %s%-14s%s %s%s%s\n' \
+        "$C_DIM" "$aw" "$age" "$C_RST" \
+        "$(verb_colour "$verb")" "$vw" "$verb" "$C_RST" \
+        "$(part_colour "$actor")" "$pw" "$actor" "$C_RST" \
         "$C_ACC" "$id" "$C_RST" \
         "$C_DIM" "$FIT" "$C_RST"
 }

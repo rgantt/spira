@@ -338,19 +338,12 @@ now = datetime.datetime.now(datetime.timezone.utc)
 # to Dolt on a pass that runs every minute. --limit 0 because bd list truncates at 50 by
 # default, and a silently short map leaves later rows bare (law-bd-list-truncates-at-50).
 titles = {}
-titlemeta = {}
 try:
     for i in json.load(open(sys.argv[1])):
-        bid = i["id"]
-        titles[bid] = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))
-        titlemeta[bid] = i
+        titles[i["id"]] = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))
 except Exception:
-    titles = {}; titlemeta = {}
+    titles = {}
 
-try: part_map = json.loads(sys.argv[2])
-except Exception: part_map = {}
-
-NON_AEON = {"sentinel", "overseer", "ryan"}
 
 # DEDUPED ON THE EVENT, NOT THE LINE. `sort -u` above collapses byte-identical rows, which
 # is not what repeats here: slay.sh writes two `done` lines a SECOND apart, so the timestamps
@@ -386,31 +379,22 @@ for n, (ts_str, actor, body, verb, bead) in enumerate(rows[:40]):
         secs = int((now - t).total_seconds())
     except Exception:
         continue
-    if secs < 90: rel = "%ds ago" % secs
-    elif secs < 5400: rel = "%dm ago" % (secs // 60)
-    elif secs < 172800: rel = "%dh ago" % (secs // 3600)
-    else: rel = "%dd ago" % (secs // 86400)
+    # NO "ago" SUFFIX. Every value in this column is an age and the word said so on every
+    # row, spending three columns per row on a fact the column header already carries.
+    if secs < 90: rel = "%ds" % secs
+    elif secs < 5400: rel = "%dm" % (secs // 60)
+    elif secs < 172800: rel = "%dh" % (secs // 3600)
+    else: rel = "%dd" % (secs // 86400)
 
-    # ACTOR DISPLAY. Bare for non-aeon actors (sentinel, overseer, ryan). For aeon actors
-    # (fayth names like builder/ops/spike) append the bead assignee as the specific aeon;
-    # the assignee field in the titlemap is the name the aeon registered when it claimed work.
-    # If the bead is already closed and unassigned, we fall back to just the fayth name —
-    # knowing which persona did it is more useful than a question mark where a name was.
-    if actor in NON_AEON:
-        actor_disp = actor
-    else:
-        meta = titlemeta.get(bead, {})
-        assignee = (meta.get("assignee") or "").strip()
-        actor_disp = ("%s/%s" % (actor, assignee)) if assignee else actor
-
-    # PARTITION from bead labels against the chamber map. A bead matching no declared
-    # partition renders "?" and is still listed — never silently dropped.
-    bead_labels = set(titlemeta.get(bead, {}).get("labels") or [])
-    partition = "?"
-    for lset, pname in part_map.items():
-        if all(l in bead_labels for l in lset.split(",")):
-            partition = pname
-            break
+    # ONE PERSONA COLUMN, AND IT IS THE ACTOR. This row used to carry the persona twice: the
+    # actor as `builder/aeon-shiva`, and a partition column derived from the bead labels
+    # which, for every row an aeon wrote, resolves to that same fayth. Worse, the actor was
+    # cut at twelve columns, so what survived was `builder/aeon` — the redundant half kept
+    # and the one distinguishing part, the aeon name, thrown away. The operator, reading it:
+    # "the persona is listed twice". So the assignee suffix and the partition column are both
+    # gone and the fayth name stands alone. Non-aeon actors (sentinel, overseer, ryan) print
+    # as themselves, which is what they always did.
+    actor_disp = actor
 
     # The last word of an event is its bead id; look the title up and append it. A missing
     # title is left absent rather than filled with a placeholder, so the row still says what
@@ -433,8 +417,11 @@ for n, (ts_str, actor, body, verb, bead) in enumerate(rows[:40]):
         body = " ".join(toks[:-1])
     title = titles.get(bead, "")
     body_display = ("%s %s" % (body, title) if title else body)[:80].replace("=", "-")
-    print("SP_EVENT%d=%-7s %-12s %-8s %s" % (n, rel, actor_disp[:12], partition[:8], body_display))
-' "$TITLEMAP" "$_PART_MAP"
+    # FIELDS: age, persona, then the body (verb, bead, title) as one unit. The renderer
+    # splits the body and prints the verb BEFORE the persona — time, state, persona, bead,
+    # description — because the state is what a reader scans this section for.
+    print("SP_EVENT%d=%-4s %-8s %s" % (n, rel, actor_disp[:8], body_display))
+' "$TITLEMAP"
 
     # ---- AWAITING CI: parked on a run, and parked on nothing -----------------------------
     # A parked bead has no aeon and is not stranded — its review is open and the sweep is
