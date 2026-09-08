@@ -38,7 +38,7 @@
 # returned "no open bead" on every call would make a suite that always "passed"
 # (law-prefer-the-real-dependency).
 #
-# covers: spira/incident.sh
+# covers: spira/incident.sh spira/watchtower.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
@@ -147,6 +147,75 @@ n="$(count_open 'incident:the-test-sweep')"
 is "two concurrent filers create exactly one bead" "1" "$n"
 recur_count="$(grep -c 'recurred' "$ILOG" 2>/dev/null || true)"
 is "the second caller recorded a recurrence, not a second filing" "1" "$recur_count"
+
+testdb_reset
+mkdir -p "$RUN"
+> "$ILOG"
+
+# A separate wrapper that accepts extra env vars as leading positional args (env(1)
+# treats leading VAR=val tokens as environment assignments). Stdout is discarded; use
+# find_bead to locate what was filed.
+inc_env() {
+    env -i HOME="$HOME" PATH="$PATH" SPIRA_PATH="${SPIRA_PATH:-}" \
+        SPIRA_CONF="$TMP/nonexistent.conf" \
+        SPIRA_DB="$SPIRA_DB" \
+        SPIRA_SPOOL="$SPOOL" \
+        SPIRA_INCIDENT_LOG="$ILOG" \
+        SPIRA_INCIDENT_LOCK="$LOCK" \
+        SPIRA_RUN="$RUN" \
+        SPIRA_NOTIFY="$NOOP" \
+        SPIRA_ASK="$NOOP" \
+        "$@" \
+        bash "$HERE/incident.sh" file "harness repo test" - >/dev/null 2>&1
+}
+
+# Find the bead by its external ref (the ref incident.sh derives from the title).
+find_bead() {   # find_bead <external-ref> -> bead id or empty
+    bd -C "$SPIRA_DB" list --status open,in_progress --limit 1 \
+        --external-ref "$1" 2>/dev/null \
+      | grep -oE '\bsp-[a-z0-9]+\b' | head -1 || true
+}
+
+# ======================================================================================
+echo
+echo "the repo: label — a declared repo is stamped on the bead (positive control):"
+# ======================================================================================
+# POSITIVE CONTROL (law-absence-needs-a-positive-control). File an incident that names
+# the harness as its repository and assert the resulting bead carries repo:spira.
+# Without this, a mis-set SPIRA_DB, a broken label command, or an absent code path all
+# look like "no label" to an assertion that only checks for its absence.
+printf 'repo test payload\n' | inc_env SPIRA_INCIDENT_REPO=spira
+id_repo="$(find_bead 'incident:harness-repo-test')"
+if [ -n "${id_repo:-}" ]; then
+    labels_repo="$(bd -C "$SPIRA_DB" label list "$id_repo" 2>/dev/null || true)"
+    want "repo:spira on a bead filed with SPIRA_INCIDENT_REPO=spira" "repo:spira" "$labels_repo"
+else
+    bad "repo label: positive control" "incident.sh filed nothing (no bead at incident:harness-repo-test)"
+fi
+
+testdb_reset
+mkdir -p "$RUN"
+> "$ILOG"
+
+# ======================================================================================
+echo
+echo "the repo: label — an undeclared repo is marked needs-repo-triage, not silently defaulted:"
+# ======================================================================================
+# WHERE THE CALLER DECLARES NO REPO the bead must carry needs-repo-triage rather than
+# silently going to the home-repo fallback. A wrong repo is not indistinguishable from a
+# right one (sp-io5e, law-a-split-repoints-nothing).
+printf 'no-repo payload\n' | inc_env
+id_norep="$(find_bead 'incident:harness-repo-test')"
+if [ -n "${id_norep:-}" ]; then
+    labels_norep="$(bd -C "$SPIRA_DB" label list "$id_norep" 2>/dev/null || true)"
+    want "needs-repo-triage when no SPIRA_INCIDENT_REPO declared" "needs-repo-triage" "$labels_norep"
+    case "$labels_norep" in
+        *"repo:"*) bad "no-repo: must carry no repo: label when repo undeclared" "got: $labels_norep" ;;
+        *) ok "no-repo: no repo: label present when repo undeclared" ;;
+    esac
+else
+    bad "no-repo: positive control" "incident.sh filed nothing (no bead at incident:harness-repo-test)"
+fi
 
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"

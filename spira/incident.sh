@@ -48,6 +48,25 @@ set -uo pipefail
 # exact failure the dedupe exists to prevent, arriving silently.
 LABELS="${SPIRA_INCIDENT_LABELS:-spira,incident}"
 
+# THE REPOSITORY THIS INCIDENT BELONGS TO. Without a repo: label a bead is worked in the
+# home-repo fallback (brain), which has not contained the harness since sp-9tal. Callers
+# declare it via SPIRA_INCIDENT_REPO; a caller that already embeds repo: in
+# SPIRA_INCIDENT_LABELS is treated as having declared it. Where nothing is declared the
+# bead is marked needs-repo-triage and escalated so the wrong repo is not
+# indistinguishable from the right one (sp-io5e, law-a-split-repoints-nothing).
+case "$LABELS" in
+    *repo:*) INCIDENT_REPO_DECLARED=1 ;;
+    *)
+        _irepo="${SPIRA_INCIDENT_REPO:-}"
+        if [ -n "$_irepo" ]; then
+            LABELS="${LABELS},repo:${_irepo}"
+            INCIDENT_REPO_DECLARED=1
+        else
+            INCIDENT_REPO_DECLARED=0
+        fi
+        ;;
+esac
+
 SPOOL="${SPIRA_SPOOL:-$SPIRA_RUN/incident-spool}"
 ILOG="${SPIRA_INCIDENT_LOG:-$SPIRA_RUN/incident.log}"
 SIN_AT="${SPIRA_SIN_AT:-5}"
@@ -169,6 +188,20 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
         return 1
     fi
     ilog "filed $id for $ref"
+    # AN UNDECLARED REPO STAYS VISIBLE. Filed but labelled needs-repo-triage so an aeon
+    # that would claim it in the home-repo fallback is stopped by its own confusion rather
+    # than silently working in the wrong checkout. Escalated once so the operator can
+    # correct the label before any aeon touches it (sp-io5e, law-a-split-repoints-nothing).
+    if [ "${INCIDENT_REPO_DECLARED:-1}" = 0 ]; then
+        bdq label add "$id" "needs-repo-triage" >/dev/null 2>&1
+        bdq note "$id" "Repository not declared — SPIRA_INCIDENT_REPO was not set and LABELS carried no repo: label. An aeon claiming this bead works it in the home-repo fallback, which may be the wrong checkout. Add repo:<name> before claiming." >/dev/null 2>&1
+        [ -x "$ASK" ] && "$ASK" add \
+            "Incident filed with no repository declared: $title" \
+            --default "add repo:<name> to $id once you know which checkout owns the code this incident is about" \
+            --why "$id was filed without a repo: label. Without one an aeon works it in the home-repo fallback, which has not held the harness since sp-9tal." \
+            >/dev/null 2>&1
+        ilog "$ref labelled needs-repo-triage — repo undeclared"
+    fi
     printf '%s' "$id"
 }
 
