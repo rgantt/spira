@@ -1,785 +1,459 @@
 # Spira
 
-A small agent harness. Beads is the substrate, statutes are the shared spine, systemd is the
-outer loop. It runs one or two coding agents plus standing role personas across every
-repository you point it at, rather than one crew per repository.
+Spira is an unattended work loop. You decompose a design into issues in a dependency graph;
+it summons short-lived agent sessions that claim one issue each, do the work in their own git
+worktree, put the branch through a gate, land it, and reap what is left behind. Nothing is
+long-lived except a handful of systemd timers.
 
-A timer wakes every couple of minutes and runs a short list of deterministic checks over the
-bead graph — is anything ready, is a lease dead, did a branch land, did a gate go red — and
-reaches for a model only when every check has passed and the world is still wrong. Work is
-claimed by an *aeon*: a stateless session summoned from a persona file, holding one bead
-under a lease, doing the work, opening the pull request, and exiting. Nothing sits watching
-CI; the sweep does that, and brings the bead back when there is something to decide.
+It is built for a box that is not a build farm — one that may also be running production
+services, CI runners and the operator's own session — and for an account whose rate-limit
+window, not its CPU, is the real ceiling on throughput.
 
-## What you need
+The three properties that shape everything else:
 
-| program | why | without it |
+- **Deterministic before inference.** Every routine decision is a predicate over the issue
+  graph and the commit graph. Judgement by a model is the last tier, reached only when every
+  deterministic check has passed and work is still not moving. Adding a check is how the
+  system learns; inference is a cost centre, not a feature.
+- **Nothing durable lives in a session.** A worker holds a *lease*, not state. If it dies,
+  the lease goes stale and the issue returns to ready. Crash recovery is a property of the
+  substrate rather than of the agent.
+- **Detection outranks rejection.** A gate that refuses bad work is worth less than a watcher
+  that notices the pipeline has stopped. Thresholds only ever anticipate the outage you
+  already had.
+
+The substrate is **beads** (`bd`): a dependency-graph issue tracker over Dolt, which also
+holds the harness's knowledge base — the statutes every agent reads, and the runbooks the ops
+persona executes.
+
+---
+
+## Vocabulary
+
+The names are from Final Fantasy X, and they are load-bearing enough to learn once.
+
+| term | what it is |
+|---|---|
+| **bead** | one issue in the graph — the unit of work, with an id, labels, dependencies and a lease |
+| **fayth** | a persona *definition*: a predicate carving its partition out of the graph, the statutes it reads, the tools it may use, a model, and what wakes it |
+| **aeon** | one summoned *instance* of a fayth. It claims a bead, works it, closes or fails it, and exits |
+| **the chamber** | `spira/chamber/` — where the fayths live, one `.fayth` (the definition) and one `.md` (the brief) per persona |
+| **the sentinel** | the reconcile loop: compare current state to goal state, close the gap |
+| **the Cloister** | the landing gate a branch passes before it may merge |
+| **the Sending** | reaping the branch and worktree of work that has landed |
+| **a pilgrimage** | an epic; it completes when every child has closed |
+| **a Sin** | an incident class that keeps recurring because no runbook has broken the cycle |
+| **poison** | a bead that has failed its attempt ladder and will not be retried |
+
+A **party member** (`FAYTH_ROLE=party`) travels with you and is always around; a **task fayth**
+is summoned for one encounter and dismissed after it. Only task fayths draw on the aeon pool,
+so a persistent role cannot be crowded out of it by workers holding slots for an hour.
+
+---
+
+## The loop
+
+Six timers, each doing one thing, none waiting on another.
+
+| unit | cadence | what it does |
 |---|---|---|
-| `bd` ([beads](https://github.com/steveyegge/beads)) | the substrate — every unit of work, every statute | nothing runs |
-| `git` | every repository operation | nothing runs |
-| `python3` | every JSON payload the harness parses | nothing runs |
-| `dolt` | the SQL server beads stores its database in | `bd` cannot reach a database |
-| `gh` | opening and landing pull requests | repositories whose land mode is `pr` cannot land |
-| `claude` | the agent an aeon is a session of | no work is done, only reported |
-| `tmux` | the cockpit panes | no attention surface |
-| `cargo` | building the attention panel, once | no panel; the loop is unaffected |
-| `node` | gating the browser page's view model | that one suite skips; the loop is unaffected |
+| `spira-sentinel.timer` | 2 min | reconcile the graph — the checks below |
+| `spira-ops.timer` | 5 min | summon the ops persona for any waiting incident |
+| `spira-watchtower.timer` | 30 min | read the pipeline's vital signs and file them as work ops claims |
+| `spira-skew.timer` | 1 h | is the harness in force the harness that landed? |
+| `spira-suites.timer` | 1 h | run every test suite the landing gate does not |
+| `spira-archivist.timer` | 5 min | rescue a session's unfinished business before it is cleared |
 
-**Run `spira/doctor.sh` first.** It is read-only, it names every one of these that is missing
-and what that costs you, and it goes on to check the database, the repository map and the
-cockpit in the same pass. A harness that fails on a missing binary with a bare shell error is
-not shareable, and finding them one restart at a time is the alternative.
+`spira-archive.timer`, `spira-watch-refresh.timer`, `spira-watch-notify.timer`,
+`cockpit-ensure.timer` and `beads-push.timer` keep the surrounding machinery honest —
+transcripts archived, watchers running current code, unread events escalated, the operator's
+panes repaired, databases pushed to their remotes.
 
-## Getting started
+### The sentinel's checks
 
-```sh
-mkdir -p ~/.config/spira                           # the config lives outside the checkout
-cp spira.conf.example ~/.config/spira/spira.conf   # and edit it
-cp spira/repo-map.example spira/repo-map           # and write your own rows
-spira/exclude.sh install .                        # arm the pre-commit fence
-bd -C <your SPIRA_DB> init                         # if you have no database yet
-spira/doctor.sh                                    # until it says 0 fatal
-spira/seed.sh                                      # write the shipped statutes in
-systemd/install.sh                                 # render the units and start the timers
-```
+Each is a deterministic predicate that names the single action closing its gap.
 
-## Configuration
+1. **Completed pilgrimages** — an epic whose children have all closed is announced and closed.
+2. **Dead workers** — a stale lease is reclaimed. Three cases, because they fail differently:
+   a lease that has simply expired; a holder that `/proc` says is gone; and an orphaned claim
+   whose bead is held by nobody at all.
+3. **Stale blocked flags** — `is_blocked` is a cached column and goes wrong after an edit.
+4. **Poison** — a bead past its attempt ceiling stops being retried and is escalated instead.
+5. **Closed but not landed** — a bead closed with no commit naming it unblocks its dependents
+   on a promise nobody kept. It is reopened. *Closed is not landed*, and the gap between the
+   two is where most wrong answers about this system come from.
+6. **Landing** — dispatched to its own process (see below), plus the Sending, plus a sweep of
+   work parked on CI.
+7. **Idle capacity** — ready work and a free slot is the whole point. The pool
+   (`SPIRA_MAX_AEONS`) is drawn down in the order personas are named, and an *elastic* persona
+   takes whatever is left once everyone else is seated.
+8. **Judgement** — everything above passed, work remains, nothing is ready and nothing is
+   running. Only here does a model get asked what is wrong. It gates on whether the graph
+   actually *moved*, never on whether the pass wrote something: gating on writes lets every
+   futile action mute the one check that notices paralysis.
 
-**One file.** `spira.conf` — copy `spira.conf.example`, set the paths for your machine, and
-nothing else should need editing. The code carries a default for every key, derived from
-where the harness is installed, so a clean clone runs; the config carries your box.
+### Landing is a separate process, and its unit name is the mutex
 
-It is looked for in `$SPIRA_CONF`, then `<the checkout>/spira.conf`, then
-`${XDG_CONFIG_HOME:-$HOME/.config}/spira/spira.conf`, then `/etc/spira/spira.conf` — first
-hit wins. Outside the checkout is the better home: these are your paths, and none of them
-belong in a repository you might push.
+An ordinary sentinel pass is a handful of queries. A landing pass fetches, rebases, runs a
+repository's whole gate and pushes — minutes, not seconds. Left in the loop it starved the
+check below it, so a free slot sat empty with work ready. It runs as a transient systemd unit
+with a fixed name; systemd refuses to start a unit that is already active, so a pass arriving
+mid-landing declines and moves on. No lockfile, no pid file.
 
-Three properties are load-bearing.
+Fire-and-forget needs a positive control, because "nothing landed" and "the landing worker
+never ran" look identical from outside. So it writes a status file (when it finished, its exit
+code, how many branches it actually *saw*) and an append-only progress mailbox the sentinel
+drains on its next pass.
 
-- **It is not shell.** `KEY = value` lines, parsed, with an allowlist of keys; `~` and
-  `$HOME` expand and nothing else does. This file is read by the process that summons agents,
-  so `$( )` in it would be a command run as you. An unrecognised key is reported on stderr and
-  ignored, because a typo silently accepted is a setting you believe is in force.
-- **The environment wins over the file.** That is what keeps the test suites isolated: a suite
-  points `SPIRA_DB` at a throwaway database and no config file can point it back at yours.
-- **`SPIRA_HOME` and `SPIRA_REPO` are not settable.** Where the harness *is* is a fact about
-  where `conf.sh` sits, not a configuration question. Letting a file answer it breaks the
-  landing gate, which extracts a branch to a scratch tree and runs that tree's own suites: the
-  config would point them back at the installed copy, so the gate would test the code already
-  in force instead of the code being judged — and pass.
+---
 
-**The repository a bead belongs to comes from a `repo:` label on the bead**, resolved through
-your own `repo-map`. The shipped one is `repo-map.example`; its rows name repositories that do
-not exist, and the harness falls back to it only so a clean clone resolves to something. An
-unmapped `repo:` value is *refused, never guessed* — a default of the home repository is how
-another repository's bead gets "fixed" in the wrong tree while the aeon reports success.
+## The life of a bead
 
-**Do not assume `main`.** Each row declares the ref its work is cut from and lands on, because
-every automatic source for it is a local cache that can be stale, absent or answering whatever
-branch a human last looked at. On the box this harness was written for, three of seven
-repositories had no ref named `main` at all.
+1. **You file it.** Labels put it in a persona's partition; a `repo:<name>` label says which
+   repository the work belongs to. A bead may also name the persona it wants — that narrows,
+   it never widens: the partition still decides whether the work is yours, and the preference
+   decides only that it is not somebody else's.
+2. **An aeon claims it** atomically (`bd ready --claim`, never select-then-claim, which races
+   every other aeon) under a lease with a TTL the persona sets.
+3. **It gets a worktree** cut from that repository's declared base ref, and a brief assembled
+   from the persona's `.md`, the statutes in force, and the bead itself.
+4. **It works.** A heartbeat refreshes the lease, but only while something *observably moves*;
+   a persona that goes quiet for `FAYTH_STALL_BEATS` checks stops heartbeating and its lease
+   expires. There is deliberately no wall-clock ceiling on the worker persona — a clock cannot
+   tell slow from stuck, and killing on one charges an attempt for being legitimately long.
+5. **It commits, naming the bead id**, cuts the review, and **exits**. An aeon does not sit
+   watching CI. It labels the bead and the sweep raises its priority when CI comes back red or
+   releases it to land when green.
+6. **The gate judges the branch.** Four outcomes, and only one of them blames the branch.
+7. **The landing pass merges or opens a pull request**, per the repository's declared mode.
+8. **The Sending reaps** the branch and worktree once a commit on the base branch names the
+   bead — and nothing else.
+
+---
 
 ## Personas
 
-A *fayth* is a persona definition; an *aeon* is one summoned instance of it. A persona is four
-things — a predicate that carves its partition out of the bead graph, the statutes it must
-read, the tools it may use, and the lease it works under — and all four live in one file in
-`spira/chamber/`. **Landing a fayth is the whole of installing a persona:** the roster is
-discovered from that directory rather than listed anywhere, so a file that lands is a persona
-that runs.
-
-Three ship.
-
-| fayth | partition | what it is for |
-|---|---|---|
-| `builder` | `spira,plan` | the only persona that writes code: claims a ready plan bead, implements it, opens the pull request, exits |
-| `ops` | `spira,incident` | the only persona whose work arrives from outside the plan: matches a production event to an SOP, executes it or writes one. It is the only one that reads `sop-` as well as `law-` |
-| `spike` | `spira,` + `SPIRA_SPIKE_LABEL` | researches one question to a costed feasibility document, and carries no conversation |
-
-### Spikes
-
-Feasibility research is the worst thing to do inside a long conversation. It reads heavily,
-and almost nothing it reads is needed once the question is answered — only the conclusion is.
-Yet every page fetched stays in that conversation's context and is re-read on every later turn
-for the rest of its life. A spike aeon starts at the floor, reads what it needs, writes one
-document, and exits; the session that filed the bead gets the document, not the reading.
-
-Its document names the question, what was found, **two or more options each with a cost and a
-risk**, a recommendation with its one load-bearing assumption named, and a falsifier — what
-would have to be true for the recommendation to be wrong. A recommendation *against* is a
-complete answer, and often the most valuable one: a persona rewarded for producing plans
-always produces a plan, so the brief says so explicitly. Every source it fetched is kept
-verbatim beside the document, because a citation that cannot be re-read is not a citation.
-
-**It gets the full toolset, including a shell and an editor.** For most interesting questions
-the only honest answer to "is this feasible" comes from trying it, and a spike that may not
-build cannot tell "this is hard" from "I could not find out" — it would report the second as
-the first. The discipline is in the deliverable instead: **a spike may leave a branch and must
-not leave a merge.** A proof of concept is evidence *for* the document, kept on a branch of its
-own and named in it.
-
-That is a fence rather than a request. `spira/confine.sh` runs from the landing worker, ahead
-of the repository's gate, and refuses to merge a spike branch that changes anything outside
-`SPIRA_SPIKE_PATHS` — naming the offending paths, reopening the bead, and leaving the branch
-standing. Nothing else could hold that line: a merged experiment passes every downstream
-check, because the aeon committed, the commit names the bead and the gate went green. A bead
-that is not a spike passes through untouched, which is what makes it safe on the shared path.
-Widen `SPIRA_SPIKE_PATHS` if your notes and your preserved sources live in different trees.
-
-## Statutes
-
-Agents read their law from the beads KV store at summon, and that store is per-installation —
-so a clone of this repository carries the mechanism and none of the law that makes it behave.
-`spira/statutes/` holds the seed text, one file per statute, and `spira/seed.sh` writes them
-into your database. It never overwrites one already in force: an operator who amended a
-statute meant it.
-
-What ships is law about the **machinery** — how a tool actually behaves, which approach failed
-and why, the shape of a recurring hazard. Law that names a repository, a deploy path or an
-operator's own preferences stays in that operator's database. Every statute here carries its
-scar, stated generically, because the scar is the reason anyone believes the rule.
-
-## systemd
-
-`systemd/` holds **templates**, not units: every path in them is a placeholder filled from
-`spira.conf` by `systemd/install.sh`. A unit with a path baked in runs on exactly one box, and
-systemd gives no clue when the path is wrong — an `ExecStart=` that fails with a bare "No such
-file or directory" into a journal nobody is watching.
-
-Never edit an installed unit. Edit the template and re-run the installer; `install.sh --diff`
-is how you find out that somebody did.
-
-### One copy, and a check that says so
-
-The units execute one checkout. **Landed is not in effect** — a bead is judged against the
-branch it named, and nothing in that judgement asks whether the tree systemd runs is that
-branch. Keep exactly one copy of this harness on a box. If a second exists — vendored into
-another repository, left behind by a move — work aimed at the harness lands in one of them and
-the other goes on running, and nothing reports a fault: the tree that was edited is
-self-consistent, so its suites pass, its gate is satisfied, and its bead closes naming a real
-commit on a real branch.
-
-Two mechanisms, because a convention nobody can see is not one:
-
-- `spira/skew.sh check` runs hourly from `spira-skew.timer`, rendered to the copy systemd
-  actually executes, so it reports on itself. It escalates when that copy is behind the ref it
-  lands on, carries changes on no branch, or is not the only harness the repository map
-  reaches — once per distinct finding, never once per pass.
-- The landing gate refuses any branch that changes a copy of the harness in a repository that
-  is not this one, and names where the work belongs instead. Override it, if the vendored copy
-  is genuinely what you meant to change, with `SPIRA_ALLOW_FOREIGN_HARNESS=1`.
-
-`spira/doctor.sh` reports the count as part of its preflight, and `spira/skew.sh copies` names
-every copy the map can reach.
-
-## Watchers
-
-A watcher is a process that polls something and prints a line when it finds news. The
-temptation is to start one inside a coding-agent session, and that is the mistake: the session
-owns it, so it is made by hand, restarted by nobody, killed by the next context reset, and
-nothing outside that transcript knows it should exist. One here went on reading a database that
-had been retired underneath it for three days, looking perfectly healthy in every process
-listing, while a real answer given in the meantime reached nobody.
-
-So **systemd owns every watcher process, and a session latches onto two files**:
-
-```
-$SPIRA_RUN/watchd/<name>.log      newline-delimited events, append-only
-$SPIRA_RUN/watchd/<name>.cursor   an integer: lines already delivered
-```
-
-That is the whole contract, and it is deliberately dumb enough that `tail -n +$((cursor+1)) -F
-<log>` is a conforming client. Nothing about it is specific to one agent, one client or one
-machine — the unit's `StandardOutput=append:` writes the same file a reader indexes, which is
-the hinge that lets systemd own the process without a session needing anything but a filename.
-
-`spira/watchers` is the single source of truth for what should be watching — `name|kind|target`
-rows, where `daemon` is a process we own and `log` names a file something else already writes
-and therefore gets no unit. Adding a watcher is a row plus an install run, never a new unit
-file. `spira/watchd.sh` is the face over all of it:
-
-```
-watchd.sh status                 one line per watcher: is it running, can it see, is it mute
-watchd.sh drain [name] [--all]   print what nobody has read, and mark it read
-watchd.sh peek  [name] [--limit N]
-                                 the same reading, capped, marking NOTHING read
-watchd.sh tail <name> [--all]    replay from the cursor, then stream; this is a Monitor command
-watchd.sh restart [name]         restart the unit behind a watcher
-watchd.sh notify                 escalate events nobody has drained; this is what a timer runs
-watchd.sh health-ids <file>      assert a state file names at least one of this database's beads
-watchd.sh manifest | units       what the rows say, and the units they render
-```
-
-It owns no process. `status` asks systemd what is running and `restart` asks systemd to restart
-it; there is deliberately no second supervision scheme beside systemd's, because a second one
-is how the original defect survived being looked at.
-
-### Blindness is reported, not inferred from silence
-
-A watcher reading a database that was retired underneath it and a watcher with nothing to say
-are both **silent**, and a process listing, a unit state and an unread count agree on both.
-That is not hypothetical: one here looked healthy in all three for three days while seeing
-nothing, and an answer given in the meantime reached nobody.
-
-So a manifest row's fourth field is a **health assertion** — a command that must exit 0 — and
-`status` runs it. It runs only there, never on a timer, so it costs nothing in the steady
-state.
-
-```
-NAME           UNIT       HEALTH    UNREAD LAST-EVENT RESTARTS  LOG
-answers        active     OK             0         4m        0  …/watchd/answers.log
-sending        active     DEGRADED       0         6d        2  …/watchd/sending.log
-
-DEGRADED
-  sending: …/state.json names no sp- id at all — it is tracking some other database
-```
-
-Three columns, three different ways to be wrong, and none of them subsumes another. `HEALTH`
-says the watcher cannot see what it is watching. `LAST-EVENT` says it can see and has stopped
-producing — active, healthy and mute. `RESTARTS` counts the restarts this harness issued,
-which is the meter on the staleness check's use of mtime: if it climbs while nothing was
-edited, that is the evidence for moving to a content hash.
-
-**A probe that fails renders `DEGRADED` — never `OK`, never `0`, never blank.** Not found,
-killed, timed out, crashed: every one of them means nothing here *proved* the watcher can see,
-and a broken check displayed as an all-clear displaces the suspicion that would have prompted a
-look. A row with no assertion renders `-`, because "nobody checked" is a third fact and not a
-pass. Every value in the table is whitespace-free so a reader can address it by column, and the
-reason travels with the verdict — `DEGRADED` alone would send you off to re-run the probe by
-hand, which is the work this command has already done.
-
-**What an assertion should look for is its own ids, not foreign ones**, and getting that
-backwards is the trap the shipped one exists to demonstrate. A database here may legitimately
-hold beads imported under other prefixes — measured once at 145 of 1825 rows carrying the local
-one — so "this state names something that is not ours" is *true of a healthy watcher*, and
-would therefore have passed on the blind one too. What no healthy watcher can do is go a whole
-state file without naming a single local bead. `watchd.sh health-ids <file>` asks exactly that,
-against `SPIRA_ID_PREFIX`, which derives from your goal epic.
-
-**`drain` is filtered by default, and that is the point of it.** It is what you run into a
-context window that has just opened, so an unfiltered drain puts the whole backlog in the most
-expensive place it could go — one real session was offered a replay of 283 raw lines as the
-first thing in it. `SPIRA_ACTIONABLE` is the expression that decides, `tail` uses the same one
-so the two cannot disagree, and `--all` is how you ask for everything on purpose. The header
-carries both numbers — `(30 actionable of 300 new)` — because the suppressed lines are the cost
-of the filter, and a filter whose cost is invisible is one nobody can tell has gone wrong.
-
-### Delivery that does not need a reader
-
-A session hook fires at a **session boundary**, which is a property of one client. An event a
-watcher produced while nothing was running therefore waits for the next session to open — and
-for a headless agent that is never. `spira-watch-notify.timer` asks the question a boundary
-cannot: has anything actionable been sitting unread for longer than `SPIRA_NOTIFY_AGE`, and if
-so it escalates it through the channel that needs no session, carrying the events themselves as
-the ask's evidence.
-
-It **does not advance any cursor**. Escalating is an extra copy of the event, never a
-substitute for it, so the next reader to latch still gets everything — a notify that drained
-what it reported would make the ask the only delivery and would silently clear the condition it
-was reporting on.
-
-It escalates **once per backlog, never once per pass**. The suppression is keyed on the
-identity of the backlog — which watcher, which line, at which position — and never on a clock
-or a count, because the condition persists until somebody acts on it and an hourly repetition
-of a decision already in front of you is the noise that teaches you to scroll past the one that
-matters. Draining ends the condition and the suppression with it, so the same events recurring
-later are heard again. That keying is also what makes it loop-safe: raising an ask writes a
-bead, a watcher may well emit a line about that bead, and the key names the *oldest* unread
-event, which does not move when something lands behind it.
-
-Only lines matching `SPIRA_ACTIONABLE` count. A watcher's log is mostly progress, and waking
-somebody because a watcher was busy is the false alarm that makes the real one unreadable.
-
-Both commands advance the cursor by what was **read**, not by what was printed: a filtered line
-has been considered and rejected, not missed. Leaving it unread would keep every reader
-reporting a backlog that no amount of draining could clear.
-
-`peek` is `drain` that consumes nothing, and `--limit` caps it, keeping each watcher's most
-recent lines and saying how many it withheld. The two are one piece of arithmetic and two
-policies, which is why a cap is available only to the reader that records nothing: a capped
-read that marked the capped lines read would destroy them, and would do it precisely when there
-are most of them.
-
-### The session hook
-
-A coding-agent session should not have to be told what is watching it. `spira/hooks/session.sh`
-is a `SessionStart` hook that prints the status table, any watcher reported `DEGRADED`, a
-preview of what nobody has read, and the command that latches onto the rest:
-
-```
-spira/install-session-hook.sh install            register it in the client's settings file
-spira/install-session-hook.sh status             what is registered on the session events
-spira/install-session-hook.sh uninstall          remove it
-spira/install-session-hook.sh prune <substring>  remove some other command registered there
-```
-
-**A hook can only print.** It communicates through stdout, stderr and an exit code and cannot
-call a tool, so it cannot attach the Monitor that would deliver the events. That is the whole
-division of labour: systemd keeps the processes alive, and the hook prints the few facts a
-fresh context needs plus the command that re-latches. Nothing is lost in the gap, because the
-cursor is a file.
-
-**It is a summary, never a replay, and the budget is enforced by measurement.** Its output is
-prepended to a context window that has just opened, so `SPIRA_HOOK_LINES` is a ceiling: the
-table and the latch commands are printed whole, and the preview is given exactly what is left.
-It **peeks** rather than drains, because under a budget a consuming read would mark as
-delivered every line it had no room for.
-
-**It is registered with no matcher, on `SessionStart` and on `PostCompact`.** A matcher is a
-regular expression tested against the event's match query, and for `SessionStart` that query is
-its `source` — one of `startup`, `resume`, `clear`, `compact` or `fork`. Naming a subset is how
-a hook comes to be missing from exactly the case it was written for; an absent matcher takes
-all five, and survives a sixth being added. `PostCompact` is there because compaction does not
-reach the hook through `SessionStart` in every client build, and an automatic compaction is
-precisely the one nobody is present for. `SessionEnd` is deliberately **not** registered: with
-systemd owning the watchers there are no processes for a departing session to guarantee, and
-its output would go into the context being discarded.
-
-**With no watchers it prints nothing at all.** It is registered in the client's own settings
-file, so it runs in every session on the box whatever repository that session is in — and a
-banner in each of them for a thing you do not use is the noise it replaced. `doctor.sh` reports
-whether it is still registered, and names any other command registered on the same events
-rather than removing it.
-
-## Parking on a CI run
-
-An aeon that has opened a pull request labels its bead with `SPIRA_CI_LABEL` and exits, rather
-than paying a model session to sit on a test suite. The sweep watches the run and brings the
-bead back: green, it lands; red, it clears the label and raises the priority so the next aeon
-is handed the failure.
-
-That label is excluded from every persona's predicate **and** from the stranded-work report,
-which is what stops parked work looking abandoned — and is exactly why a park nothing can end
-is worse than a stall. It is not claimable, not reported, and shown as "in CI", the one
-description that stops anybody looking for the real cause.
-
-Two conditions end a park that would otherwise be permanent, and the `land` column in your
-`repo-map` decides the first. Only `pr` opens a pull request, so only `pr` has a run; under
-`push` and `hold` the landing gate is the whole gate and the sweep strips the label as soon as
-it sees it — which also covers a bead that moved repository while parked, a case no check made
-at the moment of parking could catch. The second is `SPIRA_CI_PARK_MAX`: past the longest run
-your CI can plausibly take, the promise that something else is watching is false, so the bead
-goes back into the report that would have found it.
-
-The ops pane reports the two populations separately, because "waiting on a run" is routine and
-"parked with no run to wait for" is a fault.
-
-## What the gate runs, and what runs everything else
-
-The landing gate is serialised and it dominates a landing pass, so what it costs is the cap on
-how fast finished work reaches the base ref — and the branches paying it most often are the
-ones least able to break anything. So the gate does not run every suite in the tree. It runs
-the pipeline's own: the fences over what a revert cannot undo, a soak over the merge queue,
-and the handful of suites covering the state the pipeline writes that nothing takes back.
-
-Which ones is `spira/gate-suites`, one repository-relative path per line with the reason it
-earns the wait beside it. That list is the ONLY hand-written list of suites in the harness.
-What suites EXIST is a glob over `spira/test-*.sh`, and never a list.
-
-Everything the glob finds that `gate-suites` does not name is run by `spira/suites.sh` on a
-schedule instead — so the two sets are complements by construction, a suite dropped from the
-gate moves to the timed run rather than out of the world, and neither can be edited into
-overlapping the other. That shape exists because the list used to live inside the gate where
-nothing else could read it, and nothing could then answer "which suites does the gate not
-run": measured once, nine suites, four gated, **five executed by nothing at all**, three of
-them landed the same night with their beads closed citing them as verification. A suite
-nobody runs is not a cheap test. It is a false record of coverage, and worse than no suite,
-because its existence is what stops anybody writing the check it was meant to be.
-
-`suites.sh run` files a bead per red — through the same intake a crashed unit uses, deduped on
-the suite and a fingerprint of the failure, so a persistent red bumps a recurrence rather than
-filing every cycle — and it blocks nothing, reopens nothing and refuses no branch. A failure
-caught twenty minutes after landing is fine when a revert undoes it. A green cycle leaves a
-timestamped record per suite, because "no bead was filed" otherwise reads identically whether
-everything passed or the runner has not run since the box came up.
-
-It runs INSIDE the Ops session, which is why it has no timer of its own: `watchtower.sh` names
-the scan on the sweep it files and the Ops aeon runs it within its budget. The watchtower may
-not run it, and that is not decoration — a detector's one obligation is to be cheap and
-deterministic, because the thing it must not be is another thing that is down during an
-outage.
-
-Each suite also declares what it covers, on a `# covers:` line naming path globs. Nothing
-selects on those yet; they are what a later selector will read, and a selector is only sound
-once a full run exists behind it — an unmapped file has to fall back to "run everything", and
-"everything" was exactly the hand-kept list that was already missing five of nine.
-`suites.sh list` prints every suite, where it runs, and what it claims; a suite that declares
-nothing is reported as an omission and is still run, because skipping it would rebuild the
-defect inside the program written to end it.
-
-### And it is run in bounded slices, because an agent's tool has a ceiling
-
-An agent's Bash tool moves a foreground command to the background at a fixed ceiling and
-hands the session a task id instead of a result. The gate outgrew that ceiling, and the
-sessions running it never saw a verdict: each ended its turn to wait, ending the turn ended
-the session, and the bead came back unfinished with an attempt charged for a race it was
-never given a chance to run. No `timeout` the session chooses moves that ceiling — the
-tool's fires first — so selection alone does not fix it, since a branch touching a shared
-file legitimately runs everything.
-
-`spira/gate-run.sh <branch> [repo]` is what an aeon runs instead of `gate.sh`. It starts the
-gate detached and waits a bounded slice per call: **0** when the gate passed, **1** when it
-failed, **2** when it is still deciding — on a 2 the same command is run again and picks up
-the same run rather than starting another. `SPIRA_GATE_POLL` is the slice, and it must stay
-under the ceiling it exists to respect. A verdict is keyed to the branch commit and the base
-it was judged against, so a rebase or a new commit starts a fresh run rather than handing
-back an answer about the tree before it, and a run whose process is gone without an exit code
-is reported as a failure — never as a pass and never as still deciding.
-
-The other half is the exit path. `aeon.sh` asks the runner, before it records anything, whether
-a gate is still deciding for this branch — from the runner's own state, and from the process
-table for a session that reached past the runner and ran `gate.sh` itself, which is the shape
-that produced the bug. If one is, the bead is released with a note and **no attempt is
-charged**: the same reading as a spent capacity window or an aeon the operator stopped. A
-session that closed its bead with a gate still running keeps the close — the landing pass
-gates that branch again before merging — but the bead says the close carried no verdict.
-
-### And its yield is measured, so a worthless gate is knowable before it costs a day
-
-A check may sit between work and its landings only while it is catching real defects. The gate
-that ran before this one was seventeen minutes a branch; on the morning the pipeline spent
-unable to land anything it found zero real defects and produced two failures that were its own
-suites reading the state of the box. Every one of those facts was derivable from data the
-harness was already writing, and none of them was known until the queue stopped and somebody
-went looking. That gate was not deleted because it was measured — it was deleted because it
-caused an outage.
-
-`spira/yield.sh` is the count that makes the rule actionable. Every gate red is recorded with
-its branch, its bead, the suite that refused it and one of three verdicts:
-
-| verdict | what it says |
+Three ship in the chamber. Adding a fourth is two files, not a code change.
+
+**Builder** — the only persona that writes code. Its partition is deliberate plan work and
+nothing else, so it can never claim beads imported from somewhere alongside them. Elastic, and
+therefore named last: it takes whatever the pool has left. It reads statutes only — runbooks
+are for a persona that will execute one, and a shelf of them would push the law it *does* have
+to obey off the end of the context budget.
+
+**Ops** — the healer, and the only persona whose work arrives from outside the plan. Incidents
+are filed by a systemd `OnFailure=` hook, never by hand; sweeps are filed by the watchtower. It
+reads both books, statutes and runbooks. It is a party member with its own summoner, so it is
+never starved by workers holding slots. Its session is walled to comfortably less than the
+sweep cadence: a session must end before the next snapshot arrives, and findings it cannot
+finish are cut into beads rather than lost.
+
+**Spike** — researches one question to a costed document and carries no conversation.
+Feasibility research is the worst thing to do inside a long-lived session: it reads heavily,
+almost nothing it reads is needed once the question is answered, and every page stays in
+context and is re-read on every later turn. A spike starts at the floor, reads, writes one
+document, and exits — the conversation gets the document, not the reading. It has the full
+toolset including an editor, because for most interesting questions the only honest answer to
+"is this feasible" comes from trying it; the discipline is in the deliverable, and
+`confine.sh` enforces it at the gate: **a spike may leave a branch and must not leave a merge.**
+
+### Two mechanisms worth knowing
+
+**The fence on the predicate.** An installation that imported a predecessor's beads has a ready
+queue full of work that predecessor is still doing. A persona whose predicate is too loose
+refuses to claim *at all* rather than trusting a config string to be right.
+
+**The closing rule.** A persona may declare that its work is not resolved until something is
+written back to the shelf. Ops does: an incident closed without a runbook coming out of it has
+its close undone, the bead reopened and marked poison, and the reason written on it. Recording
+the truth is always the cheapest way out — "it matched, it held, it taught us nothing new" is a
+complete outcome, and so is "it did not hold". Only silence is outlawed. That is declared in
+the persona, not keyed on a persona's name in the runner, so it binds the role rather than the
+string.
+
+---
+
+## Landing
+
+Each repository declares, in `repo-map`, the checkout an aeon may work in, the ref its work is
+cut from and judged against, how it lands, a formatter, and the gate command it must pass.
+
+**Never assume the base branch is `main`.** It is declared rather than derived because every
+automatic source is a local cache: the remote-HEAD ref is written at clone time and can be
+stale or absent, and the checkout's own HEAD answers whatever branch a human last looked at.
+This bug is worth fixing once rather than four times.
+
+**Three landing modes**, and the column also decides whether there is a CI run to wait for:
+
+- `push` — merge into base and push. The branch is the release.
+- `pr` — push, open a pull request, arm auto-merge, and let the repository's own CI be the
+  authority. Green pull requests merge themselves.
+- `hold` — gate it, note it once, and leave the branch for a human. For a repository this
+  harness has no business advancing.
+
+Only `pr` opens a pull request, so only `pr` has CI. A bead parked on CI under `push` or `hold`
+waits for an event that cannot occur — and because the park label is excluded from every
+persona's predicate *and* from the stranded-work report, that wait would be invisible as well
+as endless.
+
+**The gate is deliberately cheap and mechanical.** A gate that needs judgement is not a gate,
+it is a review. One layer is universal — a shell script that does not parse is the commonest
+way an unattended change breaks a harness — and everything else is the repository's own
+declared command.
+
+**It fails closed, and failing closed is not the same as blaming the branch.** Four exit
+outcomes: `PASS`, `FAIL`, `BASE_FAIL`, `NO_VERDICT`. Nothing lands under the last three, but
+only `FAIL` says the branch is at fault and only `FAIL` may cost it an attempt. Conflating them
+poisons good beads and pages the operator about work that was fine.
+
+This repository's own gate checks the *pipeline*, not the code. What this system **is** is N
+workers pulling from a graph into a merge queue, and every failure it has had is a property of
+that pipeline — two things running at once, a lock, a queue that stopped moving — never a
+function returning the wrong value. So the gate is the fences that guard the irreversible,
+which are sub-second and which nothing routes around, plus a soak that reproduces a merge-queue
+livelock against the old code and shows it gone.
+
+It replaced a 17-minute, 43-suite gate that, on the day the pipeline spent a morning unable to
+land anything, found zero real defects and produced two failures — both of them suites reading
+the state of the box rather than the code. Being 17 minutes long it was also most of the
+contention that made the shared worktree worth locking, and that lock is what livelocked the
+queue. The three real defects that day were found by tests written for the specific change, in
+minutes, and by a 20-second soak — neither of them in the 17 minutes.
+
+---
+
+## Keeping it inside its means
+
+| program | question it answers |
 |---|---|
-| `DEFECT` | the branch was genuinely wrong and the gate was right to refuse it |
-| `GATE_FAULT` | a suite read the box, the base was already broken, a fixture collided, a deadline fired — the branch did not cause it |
-| `UNKNOWN` | nobody ever said |
+| `governor.sh` | how much of this machine may Spira use, and what did it get for it |
+| `capacity.sh` | is the account's window shut, and which attempts did that cost |
+| `tokens.sh` | what the account actually spends, and on what |
+| `attempts.sh` | what every claimable bead is carrying on the retry ladder, and why |
+| `yield.sh` | what the gate is *worth*, recorded beside what it costs |
+| `ctx-meter.sh` | how much context a session is carrying and how close that is to the edge |
 
-**`UNKNOWN` is rendered and never folded into either.** A measurement that resolved its own
-unknowns towards "the gate was right" would be a gate grading its own homework, and a rising
-unknown count is how this measurement says it has itself stopped working.
+The governor is a deterministic function of what `/proc` says, averaged over the interval since
+the last pass and folded into a moving average across passes — a single two-second sample lands
+on or between a test suite at random and produces budgets of 0, 1 and 2 within minutes at a
+constant worker count. It only ever *withholds*: a persona's own concurrency stays the ceiling
+and the governor is the floor.
 
-Two of the three sources cost nobody anything, which is the only kind of measurement that
-survives. `BASE_FAIL` and `NO_VERDICT` already *mean* the branch is not at fault, so they are
-`GATE_FAULT` on arrival. A red followed by a pass classifies itself: an identical tree passing
-later is the gate contradicting itself, and a changed tree passing is a defect somebody fixed.
-The third is `yield.sh classify <branch> GATE_FAULT "<why>"`, which the aeon whose branch was
-refused runs when it knows better — one command, at the moment the knowledge exists — and a
-stated verdict always overrides an inferred one. `by=` records which of the three said it, and
-the report carries the inferred count separately, because a reader who cannot tell a stated
-verdict from a deduced one will eventually believe a deduction that was wrong.
+Attempts charged during an account outage are false attempts and are given back — but only
+where the evidence still exists. Reclassification refuses to reason about the rest, and prints
+the same evidence so the refusal is checkable rather than asserted.
 
-**The cost is reported as a distribution against concurrency, never as a number.** A landing
-gate never runs solo — every aeon runs one before it closes and the landing pass runs one per
-branch — so concurrency is its operating condition and a solo figure describes a state it is
-never in. Concurrency is derived from the meter log rather than recorded: each row carries the
-finish time, the seconds waited for the tree and the seconds run, so two runs of one repository
-were concurrent exactly when their intervals overlap. Reused verdicts are excluded, because a
-skipped gate is not a gate's cost.
+---
 
-The numbers reach the Ops sweep and the operator's pane, not a file somebody has to open.
-`yield.sh show` is the same thing for a person, and `yield.sh list` is one line per red.
+## Watching, and being answered
 
-**A field it cannot read renders `?`, never 0.** The way this measurement fails is that it
-silently stops being called and then reports a tidy zero forever, which is the reassuring one
-of the two readings. Its positive control is the gate meter, which writes a row on every exit
-whether or not anything is measuring: a window in which the meter saw reds and the record holds
-none is proof the recorder is not running, and the counts are withheld and the recorder named
-rather than a clean sheet published.
+**Watchers are rows in a manifest**, not unit files. `spira/watchers` is the single source of
+truth for what should be watching; the installer renders one systemd unit per row and disables
+any instance whose row has gone. The contract a reader latches onto is two files per watcher and
+nothing else — an append-only log and an integer cursor — so `tail -n +$((cursor+1)) -F` is a
+conforming client, and a session attaches to a file rather than owning a process.
 
-### Three counters, because poison must measure the work and nothing else
+A row may carry a **health assertion**: a command that must exit 0 for the watcher to be
+reported healthy. It exists because *a watcher reports silence identically whether nothing
+happened or it is looking at the wrong thing.* A process listing, an `is-active` and an unread
+count are all silent for a watcher reading a database that was retired underneath it. So the
+assertion asks what discriminates — does this watcher's own state name a single bead of *our*
+prefix — rather than whether the process is up.
 
-Three attempts poison a bead. A poisoned bead stays **open** while no persona may claim it,
-and the landing pass lands only a **closed** bead — so poisoning finished work is a permanent
-deadlock, reached by counting, on a branch that would have merged. That makes the counter's
-accuracy load-bearing rather than cosmetic, and one number cannot carry three facts:
+**The attention panel** (`cockpit/`) is a terminal UI over the beads that want a human:
+decisions, FYIs, notifications and alerts. It exists because chat is a log and a log cannot
+hold an open question. A verdict is written *into the bead* — the close reason is the answer —
+never to a side-channel log, so any session can read what was decided.
 
-| rung | what it says | feeds poison |
-|---|---|---|
-| `sp-attempt-N-<cause>` | the work was tried and did not land | yes |
-| `sp-reclaim-N-<cause>` | the worker died holding the bead | no |
-| `sp-requeue-N-<cause>` | the harness put finished work back | no |
+Nothing in that pane closes an alert. An alert is a condition that self-clears, so the only
+thing that may retract it is whatever asserted it; a hand-closed alert whose condition is still
+true comes straight back, which teaches the operator that acting on the pane does nothing —
+exactly how a pane becomes wallpaper.
 
-Charging is default-**deny**: `session_outcome` reads the session's own trace and only
-`unlanded` may charge, so an outcome the harness cannot classify is evidence about the worker
-rather than about the work. The third counter exists because the trace cannot see it — a
-session that committed, closed the bead and ran to its own end reads as `unlanded` whether or
-not the harness then reopened it over a rebase onto a base that had moved. That reopen was
-charged against the work every time round, and it is the aeon, not the trace, that knows.
+**An escalation is a decision request, not a problem report**: the decision as a question with
+a default, what is blocked until it is answered and what is not, and what it costs to reverse
+the wrong choice. `cockpit/ask.sh` files one. A default is close to mandatory — an ask without
+a recommendation makes the operator decide from scratch, which is what the escalation path
+exists to prevent.
 
-It is a counter and not merely an exemption because a bead that has cycled eight times is a
-fact worth seeing: the queue is manufacturing conflicts faster than the work absorbs them,
-and without a number nobody would know.
+The strongest dedupe is *is it already in front of them*, not a clock and not a stamp file. A
+clock re-asks a question already on the screen; a stamp file answers a question about this
+box's memory rather than about their queue. So the queue is asked. An ask they have already
+*closed* does not suppress a new one — a closed ask is an answered question, and the condition
+recurring after an answer is new information.
 
-`spira/attempts.sh audit` prints what every claimable bead is carrying and why. `reclassify`
-moves rungs that name no cause onto the reclaim counter and deliberately will not lift a
-poison. `deadlocked` is the one command that does, on much stronger evidence: a poisoned bead
-whose branch names it and merges cleanly into the base is finished, landable work that
-nothing will ever pick up again, and there is nothing left to judge about the approach.
+**A failed probe renders `?`, never 0.** A panel that reports a broken check as all-clear
+displaces the suspicion that would have prompted a look.
 
-The escalation poisoning raises is filed **once per (bead, attempt count), ever**. Not once
-per bead while unpoisoned: the ask's own remedy is to clear the poison label, so keying on the
-label made every application of the remedy re-arm the ask, once per pass, forever. Clearing
-the poison still allows the retry it is for; only a genuinely new failure asks again. And a
-bead that closed while the pass was running is neither poisoned nor asked about — that set is
-a snapshot, and a landing can finish inside it.
+**Loom** (`loom/`) is a read endpoint over the live graph and a page that renders it — one
+route, the raw rows plus their dependency edges, everything else derived in the browser. Its
+query carries a **budget**: a query that overruns is refused rather than served late, because
+serving a stale snapshot instead would be kinder to one reader and fatal to the design — it
+hides the one signal that says a query per request has stopped being cheap enough. It refuses
+to start without a database rather than letting `bd` discover one from its working directory,
+which would come up healthy serving a different harness's graph.
 
-
-## The browser page
-
-`loom/` is a browser surface over the live bead graph: where the work is, what blocks what,
-and how it has proceeded. `loom/src/` is the server and its one route; `loom/static/` is the
-page. Open `loom.html` beside that route, or point it at a saved payload with `?api=<path>`
-and no server at all.
-
-**The server returns beads; the page computes everything else.** No coordinates, no connected
-components, no execution layers, no histograms, no counts. That was the other way round in the
-prototype this grew from, and a measurement reversed it: the whole pass — treemap, packing,
-edge routing, components, layering and every bucket — is single-digit milliseconds at a few
-hundred beads and tens of milliseconds at twenty thousand, in the browser. Server-side layout
-buys nothing at that price and costs a rendering stack.
-
-| file | what it is |
-|---|---|
-| `static/model.js` | the derivation. No document, no network — which is what lets a suite load the shipped file under a bare JS runtime |
-| `static/app.js` | the painting, and the only thing that fetches |
-| `static/loom.html` | markup and style |
-| `static/fixture.py` / `fixture.json` | a synthetic corpus reproducing the shapes a real graph makes; the generator states the shapes, so a reader need not count records |
-| `static/render-check.sh` | drives the page in a headless browser and asserts it painted |
-
-The dependency records reach the page one of two ways and both give the same graph: on each
-bead, as the tracker writes them, or lifted into one flat `edges` array by a server that does
-not want to write each one twice. One parser reads both, because a second reader for the
-second arrangement is how the two come to disagree about which relations count.
-
-Two things it deliberately does not do. It has **no attention list** — whatever surface you
-already answer questions on keeps that job, because two surfaces answering "is anything wrong"
-differently is how one becomes wallpaper. And it shows **arrivals, never completions**: the
-read path is bounded to work in flight, which is what makes reading it on every request
-affordable, so completions per day and created-to-closed cycle time have no source in it. They
-are absent and labelled absent rather than approximated from the open population, where the
-number would be wrong and would still read as the number it is named after.
-
-`spira/test-loom-page.sh` holds the model and the page's structure: it derives the fixture
-under a bare JS runtime and requires the components, layers and counters the generator states,
-then plants a missing edge and requires the comparison to reject it. Its last arm seeds a
-throwaway database and derives from what `bd` actually emits, so the fixture's record shape
-cannot drift away from the tracker's in silence. It is in the timed set rather than the gate.
-
-The Rust endpoint beside it is **not run by anything here.** `loom/tests/endpoint.rs` holds
-real assertions over a real socket, and it deliberately fails rather than skips when its
-fixture is absent — so it needs the shell suite that builds that fixture, and there is none.
-A bare `cargo test` does not substitute for it; it reports the missing fixture as failures.
-
-`render-check.sh` is run by hand, because a browser is not something a clone has any reason to
-have. Every assertion in it is one the static markup cannot satisfy — an earlier version
-looked for a tag the legend supplies either way, and reported greens over a page whose render
-call the port had dropped.
-
-## Clearing a session without losing it
-
-Context is re-read in full on every turn, so a long session costs many times a fresh one for
-identical work. The fix is to clear it — and a session near the ceiling is also the one
-carrying the most that was never written down: questions asked and never answered, findings
-stated and never filed, verdicts acted on and never recorded. The expensive state is the
-sticky one, which is why nobody clears.
-
-The **archivist** makes clearing cheap. `spira-archivist.timer` sweeps the live sessions every
-five minutes. When a session's turn count has advanced by at least `SPIRA_ARCHIVIST_EVERY`
-(default 40) since the last successful archive, it summons an agent whose entire input is that
-session's transcript. The agent reads the log, rescues what is loose into asks, insights, notes
-and — sparingly — beads, and exits. Context depth is not in the trigger: a 74k session that has
-moved 40 turns is swept, a 900k session that has moved none is not.
-
-**It reads the transcript, not the conversation.** Everything it needs is already on disk, so
-it costs the session it is rescuing nothing: no turn, no tokens, no interruption. That is a
-design constraint rather than an optimisation. A persistence step that adds turns makes the
-problem it exists to solve slightly worse every time it runs, and would be worst in the
+**The archivist** (`archivist.sh`) rescues a session's unfinished business before it is thrown
+away — questions asked and never answered, findings stated and never filed, verdicts acted on
+and never recorded. Context is re-read in full on every turn, so a long session costs many times
+a fresh one for identical work, and the fix is exactly what nobody dares do: the session nearest
+the ceiling is also the one carrying the most that was never written down. It reads the
+transcript from disk rather than the conversation, so it costs the session it is rescuing no
+turn, no tokens and no interruption. That is the design constraint, not an optimisation — a
+persistence step that adds turns makes the problem worse every time it runs, and worst in the
 sessions that need it most.
 
-It is deliberately **not** a fayth. An aeon's subject is a bead — claimed under a lease,
-worked on a branch, judged by whether a commit names it. The archivist's subject is a
-transcript, and giving it a bead per session would have the machinery for rescuing unfinished
-business manufacture one unfinished bead per session.
+**`skew.sh`** asks the question nothing else does: is the harness in force the harness that
+landed? A second copy of the harness inside a repository is how work aimed at the harness can
+land in it, pass its gate, and never run.
 
-    spira/archivist.sh list        every live session, what it carries, what would happen
-    spira/archivist.sh now         archive the session you are in, right now — hibernate
-    spira/archivist.sh sweep       what the timer runs
+---
 
-`now` is the manual path, for a deliberate clear: same machinery, no threshold, no high-water
-mark, because you asking is the trigger.
+## The statute book and the shelf
 
-### What you see while it happens
+Two bodies of written knowledge, stored and delivered the same way — `bd remember` / `bd
+recall`, split by key prefix, injected into an agent's session at summon. A persona declares
+which prefixes it reads.
 
-One small file per session, `$SPIRA_RUN/archivist/<session>.state`, read by the status line
-and by the dashboard:
+- **Statutes** (`law-`) are how to behave. `rule.sh enact <slug> "<text>"` is one command,
+  because a rule that depends on remembering a second step is a resolution, not a mechanism.
+  `retire` is the other half, and retiring is as deliberate an act as enacting: a superseded
+  statute left standing with a correction attached is the same defect as a correction banner on
+  a stale page.
+- **SOPs** (`sop-`) are how to fix. `sop.sh` writes, matches, recalls and synthesises them.
+  An SOP has a *shape* — a match expression, checks, steps — and the program refuses prose,
+  because a runbook written as a paragraph cannot be matched to an incident by a program or
+  executed without being re-interpreted.
 
-    state=sweeping|archiving|safe|failed
-    at_turn=<the session's turn count when this state was computed>
-    items_filed=<how many items were written>
+Write them to be read a thousand times: one paragraph, imperative, the scar as a single clause
+rather than a narrative. Every agent pays that context on every session, and `enact` refuses
+anything over 130 words for exactly that reason.
 
-**`at_turn` is load-bearing.** "Safe to clear" is a statement about the session as the
-archivist saw it; forty turns later it describes a session that no longer exists, and acting on
-it discards everything said since. Both readers demote a stale verdict to "safe as of N turns
-ago" rather than repeating a green one. A verdict that cannot go stale is one that will
-eventually lie.
+The statutes in `spira/statutes/` are the seed set a fresh installation starts with; `seed.sh`
+writes them into your database on install and never overwrites a key you have amended. They
+cover the machinery only — a rule naming a repository, a deploy path or an operator's own
+preferences stays in that operator's database and does not ship.
 
-For any of it to be visible, the status line needs a **`refreshInterval`**. The client re-runs
-a status-line command on a session starting, a new assistant message, a compaction finishing, a
-mode change and a refresh timer — clearing is not on that list, and neither is anything the
-archivist does, all of which happens while the session is idle. Without the timer the pane can
-only show what was already true at the last assistant message, so a cleared session goes on
-displaying the discarded context: the instrument that exists to say whether clearing was worth
-doing, reporting that the clear did not work. That setting lives in the client's own settings
-file, outside every repository, so nothing here can set it — `spira/doctor.sh` reports its
-absence as a finding with the one-line fix.
+**A rule tightens when it is re-violated**, not when it is annoying: practice → written down
+once → statute every agent reads → a program that refuses. A program that refuses is a *fence*
+— a polite refusal, not a wall — so every guard names its own override, and every guard binds
+the actor that actually violated the rule. A guard on a shared path binds whoever is most
+disciplined about using that path, which is usually the automation, and misses the offender.
 
-Four keys, all with defaults: `SPIRA_ARCHIVIST_EVERY` (how many turns between sweeps),
-`SPIRA_ARCHIVIST_IDLE` (how recently a transcript must have been written to count as live),
-`SPIRA_ARCHIVIST_MODEL` and `SPIRA_ARCHIVIST_TIMEOUT`. Clearing a session also triggers an
-immediate archive of the discarded transcript via the session hook.
+---
 
-## Escalations, and their answers
+## Getting started
 
-An escalation has two halves — the ask and the answer — and both need a mechanism. Build the
-second when you build the first: a verdict that reaches nobody is worse than an unanswered
-question, because the decider believes they replied and the next session asks again.
+You need `bd`, `git`, `flock`, `python3`, and whichever coding-agent CLI your personas name.
+`cargo` is optional — without it you lose the attention panel, not the loop.
 
-The ask half is a bead labelled with `SPIRA_ASK_LABEL`. Every predicate that decides what an
-aeon may claim excludes it — the sentinel's ready count, the personas in `spira/chamber/`, and
-the stall sweep — so a question can never be claimed as if it were work, nor reported as work
-that has stalled. `cockpit/panel/` is the attention surface it renders on: a Rust TUI, built
-with `cargo build --release`, run from a tmux pane by `cockpit/layout.sh`.
+```sh
+git clone <this repo> spira && cd spira
 
-The answer half is `cockpit/watch-answers.sh`, over `spira/answers.py`. The panel writes a
-verdict **into the bead** — the close reason for a decision, a comment for a reply — so there
-is no file to tail, and a session watching one concludes that nothing was answered. It runs
-as a `spira/watchers` daemon row, and `watch-answers.sh loop` is equally a Monitor command for
-any session that escalates anything; `cockpit/answered-since.sh` is the same two legs at
-session start, for the answers given while nobody was home.
+mkdir -p ~/.config/spira
+cp spira.conf.example    ~/.config/spira/spira.conf    # then edit it
+cp spira/repo-map.example ~/.config/spira/repo-map     # your repositories, one row each
+$EDITOR ~/.config/spira/spira.conf
 
-Both legs are needed, because the operator speaks in two ways and only one of them moves the
-bead: a close carrying a reason, and a **comment**, including on a bead they can never close
-because an FYI is created closed. A comment does not bump `updated_at`, so each leg keeps its
-own high-water mark. A mark carries the timestamp **and** the keys already reported at it, so
-two writes in one second are each reported exactly once rather than replayed forever or lost;
-a mark missing while its sibling survives is read as *cleared*, not new, and takes the
-sibling's position rather than seeding at now and swallowing the window in between. Only a
-first arming with neither mark present seeds silently, so attaching a watcher does not replay
-every historical verdict as though it had just landed.
-
-Where it has read and whether it can SEE are different facts in different files. Each pass
-writes the ids its query returned to `SPIRA_ANSWER_STATE`, and the manifest's health assertion
-greps that for one of ours: a watcher reading a database retired underneath it holds rows,
-just not ours, and is otherwise indistinguishable from one with nothing to say. It cannot be
-the marks — a mark names a bead only in the instant one is reported, so a freshly armed
-watcher would read DEGRADED for days while working perfectly, and a false alarm is the
-expensive kind. Only the watcher writes it; a session hook refreshing the same file would let
-a dead watcher read healthy.
-
-A verdict is reported only when the operator's own actor is on the audit event beads records
-for the close. Nothing on the issue row distinguishes their close from an agent's — there is
-no `closed_by`, and the Dolt committer is the literal string `beads` whatever `BEADS_ACTOR`
-says — so without that filter a session acts on its own echo, silently, because the
-announcement reads exactly like a real answer.
-
-**Launch the panel through `cockpit/panel-run.sh`, never the binary.** tmux gives a new pane
-the environment of the tmux *server*, not of the process that ran `split-window`, so a bare
-binary starts without the database path or the ask label. The label's absence is the dangerous
-half: unset, it falls back to a default the installation does not use, matches nothing, and
-renders an **empty list** rather than an error. The launcher reads the configuration at
-launch, so every respawn picks up the current one.
-
-## The transcript archive
-
-The client writes each session to a transcript under its own directory, unversioned, on
-whatever volume the home directory sits on, with no retention promise to anyone. That file is
-the only record of every decision taken in conversation that never became a bead — which is
-exactly the material nothing else here keeps. `spira/archive.sh` copies it somewhere durable
-and indexes it, so a later "what did we decide that afternoon" is a command.
-
-```
-archive.sh sweep [--force]        archive what has changed and rewrite the index
-archive.sh hook                   a session-end payload on stdin; archive that one transcript
-archive.sh query --since T --until T [--lineage <id>] [--slug <glob>] [--json]
-archive.sh lineage <session-id>   the whole chain that session belongs to, oldest first
-archive.sh restore <id|path>      the original bytes on stdout, checked against their digest
-archive.sh verify [id|path ...]   re-hash every archived body against the index
-archive.sh where                  the root, the row count, and what it costs on disk
+bd -C <your SPIRA_DB> init   # a database, OUTSIDE any checkout
+spira/doctor.sh              # what is missing, all of it, in one read-only pass
+spira/seed.sh                # write the shipped statutes into that database
+systemd/install.sh           # render the unit templates for this box and start the timers
 ```
 
-**Index the lineage, or every consumer re-implements the same guess.** Clearing the context
-starts a *new* transcript with a new session id, so "the current session log" is only ever the
-tail of the conversation. The client records a stable `bridgeSessionId` in the first lines of
-every file in a lineage, unchanged across those clears — one field that turns a chain of files
-into one queryable conversation, which is what `lineage` reads. Subagent transcripts carry
-their parent session instead of a lineage id, so the index joins them onto it; without that
-they are in the archive and in no answer about it, which is the same as not having them.
+Keep the database outside every repository. It accumulates internal working notes and agent
+memories, and a path inside a checkout is one `git add -A` away from publishing them.
 
-`spira-archive.timer` sweeps every twenty minutes, and a pass that finds nothing changed
-writes nothing at all — no body recompressed, no index rewritten, no mtime touched, so "has
-anything happened since?" stays answerable from the archive itself. The fast path is the
-source's size and mtime; `verify` is what re-hashes the stored bytes, and `sweep --force` is
-what repairs whatever it finds, because a check with no remedy only produces alarm.
+`doctor.sh` is read-only and names every missing program, unreadable database and unmapped
+repository in one pass, distinguishing *fatal* (the loop cannot run) from *warn* (one feature
+is off). It exists because a harness that dies with `command not found` from a systemd timer
+has told you nothing: not which program, not what it is for, not where to get it, and not into
+a log anyone reads.
 
-For the ordinary case, archive at session end too, from the client's own hook:
+The units in `systemd/` are **templates**, not units — every path is a placeholder filled from
+your configuration. Never edit an installed unit; edit the template and re-run the installer.
+`install.sh --diff` tells you when somebody did.
 
-```json
-{ "hooks": { "SessionEnd": [ { "hooks": [
-    { "type": "command", "command": "/path/to/spira/archive.sh hook" } ] } ] } }
+### Running it
+
+```sh
+spira/world.sh status        # what is up, what is down, what is running
+spira/world.sh stop          # halt the loop: no summons, no landing, no live workers
+spira/world.sh start
+
+spira/sentinel.sh --report   # the gap, changing nothing
+spira/strand.sh report       # work that exists and is not moving, with the reason
+spira/watchtower.sh --show   # the pipeline's vital signs
+spira/suites.sh list         # every suite, where it runs, what it claims to cover
+
+spira/slay.sh <bead-id>      # stop one aeon cleanly and make its bead say what is true
+spira/hold.sh <bead-id>      # claim a bead for a non-aeon actor
+spira/release.sh <bead-id>
 ```
 
-**The bodies never go in a shared repository.** A transcript carries paths, credentials read
-aloud, and everything anyone ever said in it. `SPIRA_ARCHIVE` defaults under the runtime
-directory, which is gitignored for the same reason a beads database is. If something derived
-is ever wanted in git it is the *index* — metadata, no message content, and it is asserted to
-hold none — and even then only where a reader can see that it is derived.
+`world.sh` deliberately does not touch the databases — stopping the loop must never risk the
+data, and a stopped database makes every diagnostic you are about to run fail — nor the panes
+the operator is reading, because halting the loop must not also blind the person halting it.
 
-**Retention is a decision, not a default.** Nothing here deletes anything. When the volume
-eventually says otherwise that is yours to decide, and the index is what makes it answerable
-rather than a guess: bytes per lineage, per month, per project directory.
+---
 
-## Sharing it back
+## Configuration
 
-Two fences guard what leaves this repository, and both run from the landing gate.
+**One surface: `spira.conf`.** Every path, name and label the harness touches resolves through
+it. Three sources, first to speak wins: the **environment** (which is how every test suite
+drives a fixture, and what keeps a suite from pointing at your real database), then the
+**config file**, then a **default derived from where the harness is installed** — so a clean
+clone with no configuration at all still resolves to something coherent rather than to someone
+else's box.
 
-`spira/exclude.sh` keeps the **beads database** out — the store, an export of it, a `.beads/`
-directory pointing at your server. It holds internal working notes and agent memories, none of
-which are code, and a commit that publishes it cannot be undone by deleting the commit. Arm it
-once with `exclude.sh install .`; it also writes the ignore rules and the pre-commit hook.
+It is **parsed, not sourced.** A config file that is shell can set `PATH`, run a command, or
+shadow a library function, and it is read by a process that summons agents. `KEY = value`,
+`#` comments, an allowlist of keys, and an unrecognised key is *reported*, not obeyed — a typo
+silently ignored is a setting you believe is in force.
 
-`spira/inventory.sh` keeps **one operator's infrastructure** out — a repository name, a deploy
-path, a host, a person, the date an incident happened. It is not tidiness: a comment naming a
-box teaches somebody else's agent to reason about a machine that does not exist, and sometimes
-to act on it. Add your own names to `spira/inventory-deny`.
+Two keys are deliberately **not settable from the file**: where the harness *is* is a fact
+about where its loader sits, not a configuration question. The gate extracts a branch to a
+scratch tree and runs that tree's own suites; a config that could point them back at the
+installed copy would make the gate test the code already in force, and pass.
 
-What ships instead is the rule with its scar stated generically. *"A remote need not be called
-`origin`"* is worth reading anywhere; the same sentence naming three repositories is worth
-reading nowhere but the box it happened on. Keep every rule and every trap — a harness whose
-correctness looks arbitrary is one whose guards the next person deletes for being unexplained.
+The other files you own:
 
-## The boundary
+| file | what it says |
+|---|---|
+| `repo-map` | `repo:<label>` → checkout, base ref, landing mode, formatter, gate |
+| `spira/chamber/*.fayth` | your personas: partition, model, concurrency, lease, tools |
+| `spira/watchers` | what should be watching, one row per watcher |
+| `spira/inventory-deny` | extra names the publish fence must refuse. Ships empty |
+| `spira/actors`, `spira/prefix-map` | only what the graph cannot vote for itself |
 
-Spira was extracted from a personal wiki repository, and the line between the two is worth
-stating because it is the line between *the mechanism* and *one operator's use of it*.
+The last row is the rule the map files follow: **derive what can be derived, and keep a file
+only for what cannot.**
 
-**Two rules decide every case, including the ones not in the table.**
+---
 
-1. **The write target decides ownership.** A program belongs to the repository whose files it
-   writes, whatever it reads. Reading across the boundary is free; writing across it is what
-   makes ownership arguable.
-2. **Dependency runs one way — the wiki may depend on the harness, never the reverse.** This
-   repository must start from a clean clone with no wiki present anywhere on the machine.
-   Where the harness wants an effect on a wiki it calls a *configured* hook and carries on
-   when that hook is absent. An optional call is not a dependency; a hard path is.
+## Two fences on this repository
 
-**Nothing in the third group ever enters this repository.** A beads database accumulates
-internal working notes and agent memories, so it is never public and never committed — not
-the database, not an export of it, not a `.beads/` directory pointing at your Dolt server.
-The harness checkout and the beads project directory are deliberately separate checkouts, and
-a pre-commit hook refuses a commit that touches either.
+This repository is meant to be cloned by people whose infrastructure is not yours, and two
+checks run from its own gate to keep it that way.
 
-The table below is generated from `boundary`, which is the single source for it and for the
-copy in the wiki. **Editing this region does nothing** — the next run overwrites it. Amend
-`boundary` and run `boundary.sh write`.
+- `spira/exclude.sh` — a beads database is never public. It accumulates internal working notes,
+  agent memories and the operator's own judgement, and a path inside a checkout is one
+  `git add -A` away from publishing them. The check, a pre-commit hook, and the installer that
+  arms both.
+- `spira/inventory.sh` — refuse to ship one operator's infrastructure: absolute paths rooted in
+  a home or workspace directory, real e-mail addresses, provenance marks naming a person and a
+  date, plus whatever you add. **It scans comments rather than stripping them**, because that
+  is where all of it was: a version that stripped them passed a tree naming seven repositories,
+  a host and a person across ninety lines.
+
+Ship the **mechanism** — the rule, the trap, the reason a guard fails closed. Do not ship the
+**inventory** — a repository name, a deploy path, a host, a person, a bead id, the date an
+incident happened. Those teach a colleague's agent to reason about a machine that does not
+exist, and sometimes to act on it.
+
+---
+
+## Repository layout
 
 <!-- BOUNDARY:BEGIN -->
 
@@ -799,10 +473,9 @@ Generic mechanism. A colleague clones this and it carries none of the operator's
 | `spira/hooks/` | the pre-commit hook itself, TRACKED and armed by core.hooksPath. .git/hooks is not cloned, so a hook that lived there would reach a colleague missing and unannounced |
 | `spira/inventory.sh` | the fence that keeps one operator's infrastructure out of a repository meant to be cloned — repository names, hosts, paths, people, dates. It scans comments, which is where all of it was |
 | `spira/inventory-deny` | the tokens that fence refuses beyond the structural ones. Ships EMPTY: a list of somebody else's names is itself the inventory |
-| `spira/hermetic.sh` | the fence over the suites themselves: a static scan refusing a test that names `systemctl`, `gh` or an undirected `bd`/`git`. A suite that reads the box is green until the box changes, then refuses correct work with nothing pointing anywhere but at the branch. `# hermetic-ok: <why>` stands it down at the call |
 | `spira/actors.example` | commit author to harness, for authors the commit graph cannot vote on. Its rows are one installation's roster |
-| `spira/gate-suites` | which suites the landing gate runs, one path per line with the reason each earns the wait. The only hand-written list of suites here; what suites EXIST is a glob |
-| `spira/suites.sh` | runs everything that glob finds and `gate-suites` does not name, on a schedule, and files a bead per red. Blocks nothing. A suite nobody runs is a false record of coverage, which is worse than no suite |
+| `spira/gate-select.sh` | which suites a changed-file list needs, read from the `# covers:` line each suite declares about itself. Every uncertain case selects everything — the only wrong answer here is too few, and too few is green |
+| `spira/gate-full.sh` | the meter under that selection: runs the whole suite set against the ref everything lands on, daily, and escalates on red. A hand-kept map decays silently, so it is checked rather than trusted |
 | `spira/skew.sh` | is the harness in force the harness that landed — the hourly check that the executing copy is current, clean and the only one, and the landing gate's fence against work landing in a copy nothing executes |
 | `spira/doctor.sh` | read-only preflight — every missing program, unreadable database, unmapped repository and unbuilt panel, named in one pass |
 | `spira/statutes/` | the SEED statute book, one file per statute. Statutes live in the beads KV store, which is per-installation, so a clone gets the mechanism and none of the law unless it ships as text |
@@ -852,16 +525,50 @@ It belongs to whoever runs the harness. No shared repository holds it, and no be
 
 <!-- BOUNDARY:END -->
 
-## Statutes
+---
 
-The rules every agent obeys are rows in the beads KV store, which the harness injects into
-every session it starts. They are therefore **per-installation**: cloning this gets you the
-mechanism and none of the law that makes it behave, including the rules that exist because a
-check here was confidently wrong. The harness ships seed statutes — the ones about the
-machinery, true on any machine — for an installer to write into a fresh database. Statutes
-naming a particular operator's repositories, deploy paths and preferences stay with that
-operator.
+## Tests
 
-Enact one with `rule.sh enact <slug> "<statute>"`. Write them to be read a thousand times:
-one paragraph, imperative, about seventy words, with the scar that produced the rule as a
-single clause rather than a narrative. Every agent pays that context on every session.
+`spira/test-*.sh`, discovered by glob and never from a list — adding one puts it in the timed
+set automatically. `spira/gate-suites` names the few the landing gate runs on every branch, each
+with the reason it earns the wait; everything the glob finds that the list does not name is run
+by `suites.sh` on a schedule, which files a bead per failure and blocks nothing. The two sets
+cannot be edited into overlapping, and a deleted suite stops being run with no edit anywhere.
+
+Every suite declares what it covers on a `# covers:` line. Three properties the existing ones
+have and a new one should too:
+
+- **A check that finds nothing must first prove it could have found something.** Plant an
+  offender, require the matcher to say so, and only then believe it when it is silent.
+- **Test against the real dependency** on a throwaway instance (`spira/testdb.sh`), never a
+  hand-written model of it. A stub reproduces the surface you remember, so its gaps surface as
+  failures in correct code.
+- **Run in an explicit, minimal environment.** `hermetic.sh` refuses a suite that reaches the
+  real box: ambient configuration silently decides verdicts, and a suite that inherits a real
+  config is asserting about one machine.
+
+---
+
+## Four facts that most often produce a wrong answer
+
+- **A bead is closed when an agent says the work is done; it has landed when a commit on the
+  base branch names its id.** Different claims. Verify with an ancestry check, never by
+  comparing tip SHAs — a tip moves under you.
+- **The base branch is not always `main`.** Ask for it; never assume.
+- **Ready sees bead status, not merge state.** A bead can be ready while its prerequisite
+  exists only in an open pull request, so ready-but-unstarted is often correct sequencing.
+- **A check that reports success is not evidence the thing works.** Before believing a green
+  signal, ask what it would look like if the check itself were broken. On the day this system
+  took over, eleven of fourteen defects were in the checking machinery rather than the work.
+
+---
+
+## Prose, and why the comments are long
+
+Every comment in this codebase exists because something failed in a way that was not obvious
+from the code, and the next reader is entitled to know which. State the rule first, then the one
+clause of why. Never leave a correction on top of a wrong statement — say the thing as it now
+stands.
+
+`CLAUDE.md` is the guide for an agent working *on* this harness. The brief an aeon gets when the
+harness summons it comes from a persona in `spira/chamber/`, not from that file.
