@@ -296,6 +296,8 @@ cmd_run() {
     [ -n "$undeclared" ] && printf 'no `# covers:` declaration (run anyway, selection cannot see them):%s\n' "$undeclared"
 
     local ran=0 red=0 skipped=0 unreached=""
+    # Instrument: track which suites got results, and write unreached for any that didn't.
+    local suites_with_results=""
     for s in $order; do
         left=$(( deadline - $(date +%s) ))
         if [ "$left" -le 5 ]; then
@@ -317,6 +319,7 @@ cmd_run() {
         out="$(timeout "$slice" bash "$HERE/$s" 2>&1)"; rc=$?
         secs=$(( $(date +%s) - t0 ))
         ran=$(( ran + 1 ))
+        suites_with_results="$suites_with_results $s"
         case "$rc" in
             0)  status=ok
                 record_write "$s" ok "$secs" -
@@ -342,6 +345,18 @@ cmd_run() {
                 red=$(( red + 1 ))
                 id="$(file_red "$s" red "$rc" "$secs" "$fp" "$out" || true)"
                 printf '  %-26s RED      rc=%s after %ss  %s\n' "$s" "$rc" "$secs" "${id:-not filed}" ;;
+        esac
+    done
+
+    # INSTRUMENT THE PASS: write an unreached record for every suite in $timed that did not
+    # get a result file written. This makes visible which suites were skipped due to budget,
+    # so the invariant "every suite in the tree is in exactly one column (gated or timed with
+    # a result)" can be verified.
+    suites_with_results=" $suites_with_results "
+    for s in $timed; do
+        case "$suites_with_results" in
+            *" $s "*) ;; # Already has a result
+            *) record_write "$s" unreached 0 - ;; # Write unreached record
         esac
     done
 
