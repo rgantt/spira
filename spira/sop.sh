@@ -215,6 +215,18 @@ write)
         exit 1
     fi
 
+    # SOPs ship in this repository and are scanned by inventory.sh on every landing.
+    # A CHECK or FIX step that names an operator-specific absolute path would block every
+    # branch that calls `sop.sh write`. Use $SPIRA_DB, $SPIRA_HOME, or other env vars from
+    # conf.sh instead — those expand to the right paths on any clone.
+    inv_hits="$(printf '%s\n' "$text" | bash "$(dirname "$0")/inventory.sh" --scan /dev/stdin 2>/dev/null)"
+    if [ -n "$inv_hits" ]; then
+        echo "sop: refusing — SOP text names operator infrastructure:" >&2
+        printf '%s\n' "$inv_hits" | sed 's/^/     /' >&2
+        echo "     Use env vars (\$SPIRA_DB, \$SPIRA_HOME, …) instead of absolute paths." >&2
+        exit 1
+    fi
+
     bdq remember --key "$key" "$text" >/dev/null || {
         echo "sop: failed to write $key to $SPIRA_DB" >&2; exit 1; }
     echo "wrote $key (${words} words)"

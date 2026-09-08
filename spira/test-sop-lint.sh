@@ -106,6 +106,32 @@ bdt forget sop-too-long >/dev/null 2>&1
 bdt forget sop-valid >/dev/null 2>&1
 
 # ---------------------------------------------------------------------------
+# WRITE REFUSES OPERATOR-SPECIFIC PATHS — a SOP that names an absolute path
+# that inventory.sh would refuse on any branch must not reach the database.
+# Split literal prevents inventory.sh flagging THIS FILE while still building
+# the string that triggers the write fence (/home/ with a username suffix).
+# ---------------------------------------------------------------------------
+echo
+echo "--- write refuses absolute paths that would block inventory.sh"
+
+# Build the bad text at runtime, not as a literal in the source file.
+# The split avoids the inventory scanner on this file; the joined value is what write sees.
+# The inventory pattern matches the directory prefix, not the full path beyond it.
+_bad_path="/"'home'"/test-spira/db"
+_bad_prefix="/"'home'"/test-spira/"
+bad_path_sop="$(printf 'SYMPTOM: a unit failed\nCHECK: ls %s\nFIX: fix it' "$_bad_path")"
+is   "write refuses a SOP with an absolute home path"  "1" "$(sop_rc write bad-path-sop - <<< "$bad_path_sop")"
+want "and names the offending token" "$_bad_prefix"    "$(printf '%s\n' "$bad_path_sop" | sop write bad-path-sop - 2>&1)"
+want "and says to use env vars"      "env var"         "$(printf '%s\n' "$bad_path_sop" | sop write bad-path-sop - 2>&1)"
+# bdt recall exits 1 when the key is absent; the SOP was rejected so it must be absent (exit 1).
+is   "the bad SOP was not stored"    "1" "$(bdt recall sop-bad-path-sop 2>/dev/null; printf '%s' "$?")"
+
+good_path_sop="$(printf 'SYMPTOM: a unit failed\nCHECK: ls $SPIRA_DB\nFIX: fix it')"
+is  "write accepts a SOP using env vars"   "0" "$(sop_rc write good-path-sop - <<< "$good_path_sop")"
+want "and it is on the shelf"  "sop-good-path-sop" "$(sop list)"
+bdt forget sop-good-path-sop >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
 # FAIL CLOSED — an unreadable shelf must not be reported as clean.
 # ---------------------------------------------------------------------------
 echo

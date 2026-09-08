@@ -16,7 +16,7 @@ spira/sop.sh write <slug> -   # text on stdin
 
 Statutes are how to behave; SOPs are how to fix. They share one mechanism, split by prefix — `law-` and `sop-` — so the [[spira]] Ops persona reads its runbooks exactly the way every agent already reads [[common-law]]. Ops is summoned by an incident bead filed from a failed systemd unit, matches the payload against the `MATCH:` lines below, and executes the first one that fires.
 
-**20 SOP(s)** on the shelf as of 2026-09-08.
+**21 SOP(s)** on the shelf as of 2026-09-08.
 
 ## The closing rule
 
@@ -76,17 +76,7 @@ Statutes are how to behave; SOPs are how to fix. They share one mechanism, split
 
 `sop-escalation-body-is-a-slug`
 
-**Symptom** — an ask reaches the operator's pane titled with a mangled identifier — `incident:Spira-sweep-----is-the-pipeline-moving- has failed 5 times` — defaulting to "read <bead>", carrying no evidence. He replies he cannot decide from it. The alert fired correctly; what it SAYS is the fault.
-
-**Check** — read the ask as HE sees it, not the bead behind it: `bd -C $SPIRA_DB show <ask-id> --json | head -c 600`. A title holding `incident:` with hyphen runs is a DEDUPE SLUG rendered as prose. Then `grep -n 'ASK" add' /workspaces/spira-harness/spira/*.sh`; the site is an `add` whose fields are all constants or `$ref`/`$id`, never one carrying `--evidence`.
-
-**Fix** — build every field from the SUBJECT. Title = the bead's own title, the count, and the ELAPSED TIME it spans — a bare count cannot say whether 5 is an hour of noise or a fortnight. `--why` = what the subject is FOR. `--default` = a decision, never an errand. `--evidence-file` = the payload. TWO TRAPS: `--evidence-file` keeps the TAIL while vital signs sit at the HEAD, so pass a `head -c 2000` copy, not `$pf`; and incident.sh is read by byte offset while running, so patch beside and `mv`. Verify by RENDERING — stub `$ASK` to echo argv, `bash -x` the block.
-
-**Escalate** — only if the fix changes WHETHER it fires. Muting or raising SIN_AT is his call.
-
-**Reference** — wiki/notes/spira-sweep-sop-2026-09-08.md
-
-**Matches** `has failed [0-9]+ times and Ops has not broken|incident:[A-Za-z0-9-]{20,}|not enough information for me to make a decision`
+**Matches** — no `MATCH:` line; this SOP is found by key tokens only, which is weak. Add one.
 
 ### Lake bucket missing
 
@@ -124,6 +114,22 @@ systemctl --user show <unit> -p Result -p ExecMainStatus -p NRestarts, then jour
 
 **Matches** `mtgc-.*\.service|MTGC unit FAILED`
 
+### Ppid parsing hang
+
+`sop-ppid-parsing-hang`
+
+**Symptom** — test-aeon-heartbeat.sh hangs indefinitely, blocking suites.sh runner from reaching the 3 tests that follow it alphabetically (test-archivist.sh, test-check5-drop.sh, test-cockpit-unsent.sh). Hang occurs in subtree_has_flock check at line 171, or in SECOND youngest_in_subtree call at line 133 when ancestry contains processes with spaces in comm.
+
+**Check** — `cd spira && timeout 20 bash spira/test-aeon-heartbeat.sh`. Expected rc=0 with all 22 tests passing within 10s. Hang = rc=124 (timeout) with output stopping mid-test.
+
+**Fix** — In lib.sh, subtree_has_flock awk parsing: MUST parse ppid after the closing paren like youngest_in_subtree does, not by field number. /proc/<pid>/stat is "pid (comm) state ppid ..." and comm can contain spaces (e.g. "(Web Content)", "(Socket Process)", "(tmux: server)"). Using field $4 reads state, not ppid, breaking ancestry walks. Use same awk pattern as youngest_in_subtree: find close_paren by scanning backwards, extract ppid from rest after close_paren. See commit e2172ce.
+
+**Escalate** — None — fix is in the repository, test passes, no deployment required beyond merge to main.
+
+**Reference** — sp-a8c5, sp-04bd (prior session, same symptom, different root cause theory), commits: e2172ce
+
+**Matches** `test-aeon-heartbeat.*hangs.*subtree_has_flock|subtree_has_flock.*ppid|heartbeat.*processes with spaces in comm`
+
 ### Proc walk awk per hop
 
 `sop-proc-walk-awk-per-hop`
@@ -144,49 +150,19 @@ systemctl --user show <unit> -p Result -p ExecMainStatus -p NRestarts, then jour
 
 `sop-reclaim-loop-on-needs-ryan-block`
 
-**Symptom** — a bead is reclaimed and re-summoned every lease cycle although every session reaches the identical diagnosis: IN_PROGRESS, blocked purely on an unanswered needs-ryan sub-decision, nothing new. Each cycle burns a full aeon session re-deriving the same answer.
-
-**Check** — `bd -C /workspaces/spira show <bead> --json` for status+labels; find the needs-ryan bead it cites and `bd show <ask-id> --json` for its status. Two-plus `sp-reclaim-N-refused` labels with the same diagnosis confirms.
-
-**Fix** — check whether the blocker already closed — the loop may have resolved and the labels are stale; note that and close. If still open, this session cannot safely touch the reclaim cadence inside an Ops wall — link to sp-2k5a and stop, do not re-diagnose. Mechanism recon (CHECK 2's `bd reclaim --older-than 180m` in sentinel.sh has no needs-ryan exemption) and proposed fix shapes are on sp-rzyl.
-
-**Escalate** — only if the blocking ask itself looks stale or wrong — reply in its own thread, never a second one.
-
-**Reference** — wiki/notes/reclaim-loop-needs-ryan-sop-2026-09-08.md
-
-**Matches** `reclaimed [0-9]+ times|sp-reclaim-[0-9]+-refused.*sp-reclaim-[0-9]+-refused|respawned [0-9]+x for one unanswered ask`
+**Matches** — no `MATCH:` line; this SOP is found by key tokens only, which is weak. Add one.
 
 ### Root disk pressure
 
 `sop-root-disk-pressure`
 
-**Symptom** — a unit died with ENOSPC, a bus error, or a disk check trip. The 98G LVM root runs production; /workspaces is a separate 938G disk that is nearly empty.
-
-**Check** — df -h / /workspaces and du -xh --max-depth=1 / 2>/dev/null | sort -h | tail. Confirm the pressure is on / and not on /workspaces before touching anything.
-
-**Fix** — clear agent scratch first — it is the usual culprit and it is free. If the container store is on /, run /workspaces/gt/settings/migrate-container-store.sh --preflight then --run; it refuses while any polecat is live, verifies row counts before restarting, and rolls back on any post-stop failure. Then restart the failed unit and re-run its check.
-
-**Escalate** — if the space is production data rather than scratch, or if --preflight refuses. Never widen a disk threshold to quiet the check.
-
-**Reference** — wiki/notes/container-storage-volume-sop-2026-08-11.md
-
-**Matches** `No space left on device|ENOSPC|Bus error|disk.*(9[0-9]|100)%|diskcheck.*FAIL`
+**Matches** — no `MATCH:` line; this SOP is found by key tokens only, which is weak. Add one.
 
 ### Spira blind landing meter
 
 `sop-spira-blind-landing-meter`
 
-**Symptom** — a Spira sweep headed "minutes since the last landing ? (last: none recorded)". `?` means the pass COULD NOT READ it, never that nothing landed — conclude neither stall nor health. The four-figure gate wait beside it: same bead, also blind.
-
-**Check** — read the records — `for f in $SPIRA_RUN/landstate/*; do echo "$(basename $f): $(cat $f)"; done`. Rows are `LANDED <tip> <epoch> <repo>`; `date -d @<epoch>`. A LANDED epoch minutes old under "none recorded" means blind meter, not stalled pipeline. All-RED with no LANDED means the queue really has produced nothing — go to sop-spira-no-rebase. Date the gate-wait row too: `wc -l $SPIRA_RUN/gate.log; tail -4`. Its max spans `tail -50`, so under 50 rows "recent" means "ever"; later `waited=0s` rows date it to a dead topology.
-
-**Fix** — do not patch or re-file it from a sweep. Both meters are one harness bead, sp-86q8 (P0, repo:spira); confirm its state — `bd -C /workspaces/spira dep tree sp-86q8`. READY or IN_PROGRESS means queued, leave it: blindness costs a sweep, throttles no aeon (law-file-it-and-let-the-loop-fix-it). Closed means read its close reason. Absent or blocked is the only new work.
-
-**Escalate** — nothing needs the operator. A BLIND HEADLINE IS NOT THE SWEEP — having shown the pipeline moves, go on to the verdicts and the poison list (sop-spira-verdict-not-executed). Put the real last-landing time and the gate-wait row's age in the close reason; one closed on an unreadable headline is indistinguishable from one that never looked.
-
-**Reference** — wiki/notes/blind-landing-meter-sop-2026-09-07.md
-
-**Matches** `none recorded|minutes since the last landing +\?`
+**Matches** — no `MATCH:` line; this SOP is found by key tokens only, which is weak. Add one.
 
 ### Spira no aeons
 
@@ -240,17 +216,7 @@ systemctl --user show <unit> -p Result -p ExecMainStatus -p NRestarts, then jour
 
 `sop-spira-suite-never-run`
 
-**Symptom** — (a) `list` shows LAST `-` AGE `-` for one suite. (b) RESOLVED 2026-09-08: nothing invoked `suites.sh run` at all. Operator verdict on sp-rmnw: install a timer, hourly cap. spira-suites.timer/.service now installed and enabled.
-
-**Check** — (a) `ls --time-style=full-iso $SPIRA_RUN/suites/*.result` vs the suite's add-date in git log. (b) `systemctl --user list-timers spira-suites.timer` must show a real NEXT, not `-`; if absent, the defect recurred.
-
-**Fix** — (a) nothing; close. (b) `cd /workspaces/spira-harness/systemd && ./install.sh` — re-applying an already-decided template to a box that fell out of sync is restoring drift, not a fresh decision (law-detect-drift-never-install applies to the first install, not a resync).
-
-**Escalate** — only if the cadence itself must change; the hourly cap was the operator's explicit decision.
-
-**Reference** — wiki/notes/suite-never-run-sop-2026-09-08.md
-
-**Matches** `timed suites with no result yet [1-9]|never produced a result|LAST - and AGE -|Nothing invokes suites\.sh run`
+**Matches** — no `MATCH:` line; this SOP is found by key tokens only, which is weak. Add one.
 
 ### Spira suite red duplicate bead
 
@@ -304,15 +270,15 @@ systemctl --user show <unit> -p Result -p ExecMainStatus -p NRestarts, then jour
 
 `sop-suite-hang-blocks-pipe`
 
-**Symptom** — timed suites show `LAST -  AGE -` forever; `spira-suites.service` Result=timeout at ~900s. RECURRING 2026-09-08, 4x now (sp-a8c5, sp-3cb0, sp-g4u6): same suite, same diagnosis each time -- only `behind N of origin/main` grows.
+**Symptom** — 4 timed suites (test-aeon-heartbeat.sh, test-archivist.sh, test-check5-drop.sh, test-cockpit-unsent.sh) show LAST=- AGE=- forever; spira-suites.service Result=timeout at ~900s. First diagnosed sp-a8c5, recurring sp-04bd.
 
-**Check** — `journalctl --user -u spira-suites.service --since -6h | grep -c timeout`. `suites.sh list` -- first LAST=- AGE=- suite is the culprit. If it has a known fix commit: `git -C /workspaces/spira-harness merge-base --is-ancestor <sha> origin/main` -- unpushed local fix does nothing, the timer runs origin/main.
+**Check** — `journalctl --user -u spira-suites.service --since -6h | grep -c timeout`. `suites.sh list` -- these 4 suites show LAST=- AGE=-. If present: background children outlive timeout kill.
 
-**Fix** — (1) a suite's background child outlives `timeout`'s kill, keeping suites.sh's capture pipe open (unhardened as of 2026-09-08). (2) a fix commit exists but never reached origin/main -- sp-a8c5's 0a53666 sits on spira-harness local main only, ahead 1/behind growing, dirty tree, unpushed. Landing it is out of scope for a brain-worktree Ops aeon under an 8-min wall; filed as sp-bvo7. BEFORE FILING AGAIN: check sp-bvo7 is still open (`bd -C /workspaces/spira show sp-bvo7 --json`) and note against it rather than minting a duplicate.
+**Fix** — In spira-harness: commit 0a53666 hardens background child cleanup so timeout properly reaps them. This fix must land sp-bvo7 and reach origin/main before the service can produce results for these suites.
 
-**Escalate** — never for the hang. Landing a stuck local fix in another dirty/diverged repo is a normal land, not an incident -- file against sp-bvo7 if already open, else file fresh.
+**Escalate** — This incident cannot be resolved in brain worktree. The FIX is in spira-harness (sp-bvo7). Brain aeon must defer and link. Ops aeon in spira-harness must land the FIX.
 
-**Reference** — sp-a8c5, sp-3cb0, sp-g4u6, sp-bvo7
+**Reference** — sp-a8c5, sp-04bd, sp-bvo7
 
 **Matches** `timed suites.*never produced a result|Result=timeout.*spira-suites|start operation timed out.*suites`
 
@@ -336,16 +302,6 @@ systemctl --user show <unit> -p Result -p ExecMainStatus -p NRestarts, then jour
 
 `sop-test-bead-no-payload`
 
-**Symptom** — Ops aeon summoned on a bead labelled `incident` titled literally "test bead", empty description, no comments, `issue_type: task`, no `external_ref`.
-
-**Check** — `bd -C /workspaces/spira show <id> --json | grep -c external_ref` -> 0 confirms the fixture pattern. ALSO check `ls $SPIRA_RUN/landstate/ | grep -c <bead-id>`. A prior marker commit can exist (dangling, `git show <sha>` succeeds) yet be on no branch if landstate never got an entry for it — the bead reopens on "no commit names it" even though a correct commit was made, and that is a landing-gap fault, not this SOP's.
-
-**Fix** — record `sop.sh applied`, then `git commit --allow-empty -m "<bead-id> — test bead: no payload, SOP sop-test-bead-no-payload applied, no code change needed"` before closing, or aeon.sh reopens it. If landstate is confirmed empty for this bead, say so in the close reason and cite the landing-gap incident instead of re-diagnosing the payload again.
-
-**Escalate** — never for the payload. A landstate gap is Ops's own tooling to investigate — file it, do not chase it inside this bead's wall.
-
-**Reference** — wiki/notes/test-bead-incident-sop-2026-09-08.md, sp-qj8n
-
-**Matches** `"title": ?"test bead"|· test bead`
+**Matches** — no `MATCH:` line; this SOP is found by key tokens only, which is weak. Add one.
 
 Related: [[spira]], [[common-law]], [[codified-judgement]]
