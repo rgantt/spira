@@ -1657,6 +1657,21 @@ three")]);
         );
     }
 
+    /// The thread is above the body in the actual frame, not only in detail_lines.
+    ///
+    /// `frame()` applies the detail_scroll and the split, so a test through `detail_lines`
+    /// alone does not prove the full pipeline. At default scroll the thread must be in the
+    /// visible window before the ask.
+    #[test]
+    fn the_thread_precedes_the_body_in_the_frame() {
+        let items = Ok(vec![threaded()]);
+        let rows = frame(&a_frame(&items, 107, 40));
+        assert!(
+            at(&rows, "NEWEST reply") < at(&rows, "THE-ASK first"),
+            "thread not visible before the body in the frame"
+        );
+    }
+
     /// A threaded item still fits its pane exactly, at every geometry the pane is used at.
     #[test]
     fn a_threaded_item_fits_the_pane() {
