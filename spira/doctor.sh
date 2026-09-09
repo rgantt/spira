@@ -485,6 +485,52 @@ else
 fi
 
 echo
+echo "installed units"
+# DUPLICATE UNIT DETECTION. Before per-instance naming, spira-* units were installed under
+# their plain names (e.g., spira-sentinel.service). install.sh migrates them: it disables the
+# old name and removes the file. If a plain-named unit file coexists with its instance-named
+# successor, the migration's rm step was absent or the file was placed by hand — and
+# `systemctl list-unit-files` then shows two units claiming the same service.
+#
+# The discriminating check: for each plain spira-<name>.<ext> in the user unit directory,
+# check whether spira-<name>-<instance>.<ext> also exists. That coexistence is the defect.
+# The shared-unit exceptions (cockpit-ensure, concierge, beads-push, dolt-beads) install
+# under their plain names permanently and are excluded by the `spira-` prefix requirement.
+#
+# SPIRA_SYSTEMCTL is the override used by tests to substitute a fake systemctl.
+_dr_sc="${SPIRA_SYSTEMCTL:-systemctl}"
+_dr_unit_dir="${HOME}/.config/systemd/user"
+_dr_dup_found=0
+if [ -d "$_dr_unit_dir" ] && [ -n "${SPIRA_INSTANCE:-}" ]; then
+    for _dr_f in "$_dr_unit_dir"/spira-*.service "$_dr_unit_dir"/spira-*.timer; do
+        [ -e "$_dr_f" ] || continue
+        _dr_base="$(basename "$_dr_f")"
+        # Skip the watcher template (spira-watch@.service) — it is never a duplicate.
+        case "$_dr_base" in spira-watch@*) continue ;; esac
+        # Skip units that already carry an instance suffix: we are looking for plain names.
+        # A plain name ends in .service or .timer with no preceding -<instance> segment.
+        # The instance suffix is SPIRA_INSTANCE, which is [A-Za-z0-9_-] by construction.
+        _dr_ext="${_dr_base##*.}"       # service | timer
+        _dr_stem="${_dr_base%.*}"       # spira-sentinel
+        _dr_inst_name="${_dr_stem}-${SPIRA_INSTANCE}.${_dr_ext}"
+        # If this file IS already the instance-named variant, skip it.
+        [ "$_dr_base" = "$_dr_inst_name" ] && continue
+        # If it ends with -<instance>.<ext> for any instance, it is already suffixed; skip.
+        # (Handles the case where SPIRA_INSTANCE differs from what was installed.)
+        case "$_dr_stem" in *"-${SPIRA_INSTANCE}") continue ;; esac
+        # Check for a sibling with the instance suffix.
+        if [ -e "$_dr_unit_dir/$_dr_inst_name" ]; then
+            _dr_dup_found=$((_dr_dup_found + 1))
+            WARN "duplicate unit pair: $_dr_base and $_dr_inst_name both exist in $_dr_unit_dir" \
+                 "The plain-named file is a stale legacy copy. Re-run install.sh to remove it,
+        or delete it by hand: rm $_dr_unit_dir/$_dr_base && systemctl --user daemon-reload"
+        fi
+    done
+fi
+[ "$_dr_dup_found" -eq 0 ] && OK "no duplicate plain/instance unit pairs"
+unset _dr_sc _dr_unit_dir _dr_dup_found _dr_f _dr_base _dr_ext _dr_stem _dr_inst_name
+
+echo
 echo "writable state"
 if mkdir -p "$SPIRA_RUN" 2>/dev/null && [ -w "$SPIRA_RUN" ]; then OK "runtime directory $SPIRA_RUN"
 else FAIL "cannot write $SPIRA_RUN" "Leases, logs and worktrees live here. Set SPIRA_RUN in ${CONF:-spira.conf}."; fi

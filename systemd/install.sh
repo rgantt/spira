@@ -607,15 +607,23 @@ _migrate_legacy() {
         # beads-push): those plain names ARE their installed names and must not be treated
         # as legacy names here.
         [ "$(inst_name "$u")" = "$u" ] && continue
-        systemctl --user disable --now "$old" 2>/dev/null \
-            && { printf 'migrated  %s (disabled; superseded by %s)\n' \
+        # DISABLE AND DELETE. `disable --now` stops and unlinks the unit; `rm` removes the
+        # file from the installed unit directory so the plain name does not survive as a
+        # stale copy alongside its instance-named successor. A disable that fails because the
+        # unit was never installed is silent; a file delete is safe to run even on a missing
+        # file. Both must happen: disable without rm leaves the file visible in
+        # `list-unit-files`, making two units appear to claim the same service.
+        systemctl --user disable --now "$old" 2>/dev/null && \
+            { rm -f "$DEST/$old"
+              printf 'migrated  %s (disabled and removed; superseded by %s)\n' \
                      "$old" "$(inst_name "$old")"; disabled=$((disabled+1)); }
     done
     # Old per-watcher units also lacked the instance suffix.
     for _wn in "${_watch_names[@]}"; do
         old="spira-watch-${_wn}.service"
-        systemctl --user disable --now "$old" 2>/dev/null \
-            && { printf 'migrated  %s (disabled; superseded by %s)\n' \
+        systemctl --user disable --now "$old" 2>/dev/null && \
+            { rm -f "$DEST/$old"
+              printf 'migrated  %s (disabled and removed; superseded by %s)\n' \
                      "$old" "$(inst_watch_name "$_wn")"; disabled=$((disabled+1)); }
         # Before per-instance naming, watchers were started via the spira-watch@.service
         # systemd template, so running units were named spira-watch@<name>.service (with @),
@@ -624,8 +632,9 @@ _migrate_legacy() {
         # new per-instance unit tries to start — which produces a crash-looping new unit
         # racing a still-running old one.
         old_at="spira-watch@${_wn}.service"
-        systemctl --user disable --now "$old_at" 2>/dev/null \
-            && { printf 'migrated  %s (disabled; superseded by %s)\n' \
+        systemctl --user disable --now "$old_at" 2>/dev/null && \
+            { rm -f "$DEST/$old_at"
+              printf 'migrated  %s (disabled and removed; superseded by %s)\n' \
                      "$old_at" "$(inst_watch_name "$_wn")"; disabled=$((disabled+1)); }
     done
     [ "$disabled" -gt 0 ] && \
