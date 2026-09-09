@@ -362,18 +362,19 @@ echo "a halted world shows the halt in --show and files nothing:"
 # the running path — asserting only the halted case would leave the alarm the watchtower
 # exists for untested (law-absence-needs-a-positive-control).
 #
-# wt_file: runs watchtower WITHOUT --show, injecting a mock incident.sh so the filing
-# path can be probed without a real database. SPIRA_INCIDENT_SH carries the override;
-# the mock writes a sentinel file when called and exits 0.
-wt_file() {   # wt_file [VAR=val ...] -> touches $TMP/incident-called if incident.sh fires
+# wt_file: runs watchtower WITHOUT --show. Injects a mock incident.sh (for escalation
+# checks) and a dedicated SPIRA_WATCH_PROMPT_FILE so prompt writes are visible without
+# touching the real runtime. SPIRA_INCIDENT_SH carries the incident.sh override.
+wt_file() {   # wt_file [VAR=val ...] -> $TMP/ops-prompt written; $TMP/incident-called if incident.sh fires
     local mock="$TMP/mock-inc.sh"
     printf '#!/usr/bin/env bash\nprintf called > "%s"\ncat > /dev/null\n' \
         "$TMP/incident-called" > "$mock"
     chmod +x "$mock"
-    rm -f "$TMP/incident-called"
+    rm -f "$TMP/incident-called" "$TMP/ops-prompt"
     env -i PATH="$PATH" HOME="$TMP" \
         SPIRA_CONF=/nonexistent SPIRA_RUN="$TMP/run" \
         SPIRA_WATCH_GATE_WINDOW="$GATE_WINDOW" \
+        SPIRA_WATCH_PROMPT_FILE="$TMP/ops-prompt" \
         SPIRA_INCIDENT_SH="$mock" \
         "$@" bash "$HERE/watchtower.sh" 2>/dev/null
 }
@@ -394,7 +395,9 @@ fresh
 mkdir -p "$TMP/run/landstate"
 printf '2026-09-08T01:23:45Z\nwhy: deliberate halt for testing\n' > "$TMP/run/world.halted"
 wt_file
-is "the filing path does not call incident.sh when halted" "" \
+is "a halted world does not write the prompt file" "" \
+   "$([ -f "$TMP/ops-prompt" ] && echo written || echo "")"
+is "a halted world does not call incident.sh" "" \
    "$([ -f "$TMP/incident-called" ] && cat "$TMP/incident-called" || echo "")"
 
 # ======================================================================================
@@ -411,7 +414,11 @@ nowant "and no 'no incidents' line"              "No incidents are filed" "$snap
 fresh
 mkdir -p "$TMP/run/landstate"
 wt_file
-is "the filing path calls incident.sh when running" "called" \
+is "a running world writes the prompt file" "1" \
+   "$([ -f "$TMP/ops-prompt" ] && echo 1 || echo 0)"
+want "and the prompt contains the snapshot" "N workers pull" \
+   "$(cat "$TMP/ops-prompt" 2>/dev/null || echo "")"
+is "a running world does not call incident.sh for the routine sweep" "" \
    "$([ -f "$TMP/incident-called" ] && cat "$TMP/incident-called" || echo "")"
 
 # ======================================================================================
@@ -458,7 +465,9 @@ fresh
 mkdir -p "$TMP/run/landstate"
 printf '2026-09-08 20:02:00 UTC\nsummons gated.\n' > "$TMP/run/world.draining"
 wt_file
-is "a draining world still calls incident.sh" "called" \
+is "a draining world still writes the prompt file" "1" \
+   "$([ -f "$TMP/ops-prompt" ] && echo 1 || echo 0)"
+is "a draining world does not call incident.sh for the routine sweep" "" \
    "$([ -f "$TMP/incident-called" ] && cat "$TMP/incident-called" || echo "")"
 
 # ======================================================================================
@@ -483,7 +492,8 @@ echo "drain escalation: a bead is cut once the threshold is exceeded:"
 # wt_file_multi: runs watchtower without --show, collecting ALL incident.sh calls.
 # incident.sh is invoked as: incident.sh file "<subject>" -
 # so $1=file, $2=subject, $3=-. The mock appends $2 to a file so we can inspect subjects.
-wt_file_multi() {   # wt_file_multi [VAR=val ...] -> appends subjects to $TMP/inc-subjects
+# Also writes the prompt file to $TMP/ops-prompt (via SPIRA_WATCH_PROMPT_FILE).
+wt_file_multi() {   # wt_file_multi [VAR=val ...] -> appends incident subjects to $TMP/inc-subjects; writes $TMP/ops-prompt
     local mock="$TMP/mock-inc-multi.sh"
     printf '#!/usr/bin/env bash\nprintf "%%s\n" "$2" >> "%s"\ncat > /dev/null\n' \
         "$TMP/inc-subjects" > "$mock"
@@ -491,31 +501,36 @@ wt_file_multi() {   # wt_file_multi [VAR=val ...] -> appends subjects to $TMP/in
     env -i PATH="$PATH" HOME="$TMP" \
         SPIRA_CONF=/nonexistent SPIRA_RUN="$TMP/run" \
         SPIRA_WATCH_GATE_WINDOW="$GATE_WINDOW" \
+        SPIRA_WATCH_PROMPT_FILE="$TMP/ops-prompt" \
         SPIRA_INCIDENT_SH="$mock" \
         "$@" bash "$HERE/watchtower.sh" 2>/dev/null
 }
 
-# Below threshold: only the normal sweep fires, no drain escalation.
+# Below threshold: the prompt file is written, but no drain escalation incident is filed.
 fresh
 mkdir -p "$TMP/run/landstate"
 printf '2026-09-08 20:02:00 UTC\nsummons gated.\n' > "$TMP/run/world.draining"
 touch -d "@$(( NOW - 600 ))" "$TMP/run/world.draining" 2>/dev/null || true   # 10m < 15m threshold
-rm -f "$TMP/inc-subjects"
+rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
 wt_file_multi SPIRA_DRAIN_WARN_MINS=15
 subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
-want   "below threshold still files the sweep"     "Spira sweep"  "$subjects"
-nowant "but does not file the drain escalation"    "DRAINING:"    "$subjects"
+is "below threshold writes the prompt file" "1" \
+   "$([ -f "$TMP/ops-prompt" ] && echo 1 || echo 0)"
+nowant "below threshold does not file the drain escalation" "DRAINING:" "$subjects"
+nowant "and does not file a routine sweep bead" "Spira sweep" "$subjects"
 
-# At or above threshold: both the sweep AND the drain escalation fire.
+# At or above threshold: the prompt file is written AND the drain escalation incident fires.
 fresh
 mkdir -p "$TMP/run/landstate"
 printf '2026-09-08 20:02:00 UTC\nsummons gated.\n' > "$TMP/run/world.draining"
 touch -d "@$(( NOW - 1200 ))" "$TMP/run/world.draining" 2>/dev/null || true   # 20m > 15m threshold
-rm -f "$TMP/inc-subjects"
+rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
 wt_file_multi SPIRA_DRAIN_WARN_MINS=15
 subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
-want "above threshold files the sweep"             "Spira sweep"       "$subjects"
-want "and also files the drain escalation"         "DRAINING:"         "$subjects"
+is "above threshold writes the prompt file" "1" \
+   "$([ -f "$TMP/ops-prompt" ] && echo 1 || echo 0)"
+nowant "above threshold does not file a routine sweep bead" "Spira sweep" "$subjects"
+want "above threshold files the drain escalation"  "DRAINING:"         "$subjects"
 want "with a fixed subject for dedup"              "world.sh summons"  "$subjects"
 
 # Threshold is configurable: zero means escalate immediately.
@@ -523,20 +538,21 @@ fresh
 mkdir -p "$TMP/run/landstate"
 printf '2026-09-08 20:02:00 UTC\nsummons gated.\n' > "$TMP/run/world.draining"
 touch -d "@$(( NOW - 60 ))" "$TMP/run/world.draining" 2>/dev/null || true   # 1m
-rm -f "$TMP/inc-subjects"
+rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
 wt_file_multi SPIRA_DRAIN_WARN_MINS=0
 subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
 want "SPIRA_DRAIN_WARN_MINS=0 escalates immediately" "DRAINING:" "$subjects"
 
-# No drain stamp means no escalation, even with a zero threshold.
+# No drain stamp means no escalation, even with a zero threshold; prompt file is written.
 fresh
 mkdir -p "$TMP/run/landstate"
-rm -f "$TMP/run/world.draining"
-rm -f "$TMP/inc-subjects"
+rm -f "$TMP/run/world.draining" "$TMP/inc-subjects" "$TMP/ops-prompt"
 wt_file_multi SPIRA_DRAIN_WARN_MINS=0
 subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
-want   "no stamp still files the sweep"         "Spira sweep"   "$subjects"
-nowant "no stamp means no drain escalation"     "DRAINING:"     "$subjects"
+is "no stamp still writes the prompt file"  "1" \
+   "$([ -f "$TMP/ops-prompt" ] && echo 1 || echo 0)"
+nowant "no stamp means no drain escalation" "DRAINING:" "$subjects"
+nowant "and no routine sweep bead"          "Spira sweep" "$subjects"
 
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"

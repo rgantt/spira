@@ -426,58 +426,50 @@ if [ -n "$halt_since" ]; then
 fi
 
 # ---------------------------------------------------------------------------------------
-# HAND IT TO OPS. Through incident.sh, which is the intake that already exists — it spools
-# write-ahead before touching the database, dedupes on the ref so a sweep filed while the
-# last one is still open bumps a recurrence rather than filing a second, and escalates a
-# class that keeps returning without ever being fixed. None of that is worth reimplementing.
+# WRITE THE SNAPSHOT AS THE SWEEP PROMPT. The ops unit hands this file to `aeon.sh --sweep`
+# so Ops starts with the current pipeline picture rather than gathering it again minutes
+# later. Written atomically (tmp + mv) so the reader never sees a partial file.
 #
-# THE BEAD CARRIES THE NUMBERS. An incident that says "go and look" makes the aeon spend its
-# first minutes gathering what this pass has already gathered, and it would gather it a few
-# minutes later — so a sweep about a stall would describe a slightly different stall
-# (law-escalations-carry-their-evidence).
+# THE BEAD CARRIES THE NUMBERS (law-escalations-carry-their-evidence). An Ops session that
+# starts without context gathers the same data a few minutes later — describing a slightly
+# different stall during an outage when the data is changing fastest.
 # ---------------------------------------------------------------------------------------
-# SPIRA_INCIDENT_SH overrides the path so test suites can inject a mock without reaching
-# a real database. Same seam sentinel.sh carries for systemctl.
-INC="${SPIRA_INCIDENT_SH:-$(dirname "$0")/incident.sh}"
-[ -x "$INC" ] || [ -r "$INC" ] || { log "watchtower: $INC is missing — the sweep reaches nobody"; exit 1; }
-# FILED AS A CHORE BY THE WATCHTOWER, not as a bug by whoever ran the timer. The intake
-# defaults to `--type bug --priority 1` because its original caller was a crashed unit; a
-# ten-minute health sweep is routine, and filing it that way put a chore in the operator's
-# own queue wearing his name and a defect's type.
-# The prefix must sit on the READER, not the writer: in `VAR=x cmd1 | cmd2`, the
-# assignment scopes to cmd1 only — each side of a pipeline forks its own subshell
-# before the assignment is applied, so a left-side prefix never reaches incident.sh
-# and it silently falls back to --type bug --priority 1, actor unset (sp-b9qs).
-snapshot | SPIRA_INCIDENT_TYPE=chore \
-SPIRA_INCIDENT_PRIORITY=2 \
-SPIRA_INCIDENT_ACTOR=watchtower \
-SPIRA_SIN_EXEMPT=1 \
-SPIRA_INCIDENT_REPO=spira \
-bash "$INC" file "Spira sweep — is the pipeline moving?" - >/dev/null || {
-    log "watchtower: could not file the sweep"; exit 1; }
-log "watchtower: swept — ${since_land}m since the last landing, $(g SP_UNLANDED) unlanded, ${aeons_live} aeons"
+PROMPT_FILE="${SPIRA_WATCH_PROMPT_FILE:-$SPIRA_RUN/ops-sweep-prompt.txt}"
+if snapshot > "${PROMPT_FILE}.tmp" 2>/dev/null && mv -f "${PROMPT_FILE}.tmp" "$PROMPT_FILE"; then
+    log "watchtower: swept — ${since_land}m since the last landing, $(g SP_UNLANDED) unlanded, ${aeons_live} aeons"
+else
+    rm -f "${PROMPT_FILE}.tmp"
+    log "watchtower: could not write the prompt file ($PROMPT_FILE)"
+    exit 1
+fi
 
-# DRAIN ESCALATION. The sweep above already carries the drain state as a vital sign. When
+# DRAIN ESCALATION. The prompt above already carries the drain state as a vital sign. When
 # the drain has been armed longer than the threshold, file a dedicated bead so it reaches
-# Ops even if the sweep itself is already open (the dedup bumps a recurrence rather than
-# filing a second). Filed as P1 task, not a routine chore — a forgotten drain is a live
-# condition that is starving the worker pool.
+# Ops even if the sweep itself is already open. Filed as P1 task, not a routine chore — a
+# forgotten drain is a live condition that is starving the worker pool.
 #
 # ONLY WHEN DRAINING AND NUMERIC. A `?` drain_mins means the probe failed; filing an
 # escalation on an unreadable probe would sound the alarm without evidence
 # (law-absence-needs-a-positive-control). The halt guard above already exited when halted,
 # so this branch only runs when the world is still moving.
+# SPIRA_INCIDENT_SH overrides the path so test suites can inject a mock without reaching
+# a real database. Same seam sentinel.sh carries for systemctl.
+INC="${SPIRA_INCIDENT_SH:-$(dirname "$0")/incident.sh}"
 if [ -n "$drain_since" ] && [ "$drain_mins" != "?" ] && \
    [ "$drain_mins" -ge "$DRAIN_WARN_MINS" ] 2>/dev/null; then
-    printf 'DRAINING for %sm — summons gated since %s\n\nNew aeons cannot be summoned while world.draining exists. Loop, landing and reaping continue.\n\nLift with: world.sh resume\n' \
-        "$drain_mins" "$drain_since" | \
-    SPIRA_INCIDENT_TYPE=task \
-    SPIRA_INCIDENT_PRIORITY=1 \
-    SPIRA_INCIDENT_ACTOR=watchtower \
-    SPIRA_SIN_EXEMPT=1 \
-    SPIRA_INCIDENT_REPO=spira \
-    bash "$INC" file "DRAINING: world.sh summons gated" - >/dev/null || true
-    log "watchtower: drain escalation filed (${drain_mins}m >= ${DRAIN_WARN_MINS}m threshold)"
+    if [ -x "$INC" ] || [ -r "$INC" ]; then
+        printf 'DRAINING for %sm — summons gated since %s\n\nNew aeons cannot be summoned while world.draining exists. Loop, landing and reaping continue.\n\nLift with: world.sh resume\n' \
+            "$drain_mins" "$drain_since" | \
+        SPIRA_INCIDENT_TYPE=task \
+        SPIRA_INCIDENT_PRIORITY=1 \
+        SPIRA_INCIDENT_ACTOR=watchtower \
+        SPIRA_SIN_EXEMPT=1 \
+        SPIRA_INCIDENT_REPO=spira \
+        bash "$INC" file "DRAINING: world.sh summons gated" - >/dev/null || true
+        log "watchtower: drain escalation filed (${drain_mins}m >= ${DRAIN_WARN_MINS}m threshold)"
+    else
+        log "watchtower: $INC is missing — drain escalation not filed"
+    fi
 fi
 
 # ---------------------------------------------------------------------------------------
