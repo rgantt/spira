@@ -86,7 +86,7 @@ TMP="$(mktemp -d)"
 # shellcheck disable=SC1090
 . "$HERE/testdb.sh"
 testdb_require test-timeout
-trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
+trap 'testdb_drop; rm -rf "$TMP"' EXIT; trap 'exit 143' INT TERM
 testdb_up timeout || { echo "test-timeout: could not build a fixture database"; exit 1; }
 # shellcheck disable=SC1090
 . "$HERE/lib.sh"
@@ -195,10 +195,12 @@ rm -f "$PF"
 # Start a background process named so that its argv[1] contains 'aeon.sh'.
 cat > "$TMP/aeon.sh" <<'STUB'
 #!/usr/bin/env bash
-# On SIGTERM, kill the sleep child so this process exits cleanly and leaves no
-# orphan in the suite's process group — same pattern as aeon.sh's heartbeat.
+# On SIGTERM, kill the sleep child and wait for it before exiting — ensures the
+# grandchild is reaped before this bash exits; otherwise it outlives the stub in
+# the suite's process group and the harness orphan-check fires even though all
+# test assertions passed.
 _s=""
-trap 'kill "$_s" 2>/dev/null; exit 0' TERM INT
+trap 'kill "$_s" 2>/dev/null; wait "$_s" 2>/dev/null; exit 0' TERM INT
 sleep 120 &
 _s=$!
 wait "$_s" 2>/dev/null
