@@ -366,5 +366,29 @@ want "branch with one commit reports its count" "1 commit" "$(cat "$ASK_LOG")"
 nowant "and does not say no commits" "no commits" "$(cat "$ASK_LOG")"
 git -C "$REPO" branch -D "spira/sp-orphan" 2>/dev/null || true
 
+# --------------------------------------------------------------------------------------
+# STALE POISON CLEAR (sp-fx1p): a bead whose attempt count drops below the threshold
+# must have its spira-poison label removed automatically. Without this the label becomes
+# permanent: dispatchable_open excludes poisoned beads, so CHECK 4 never evaluates them
+# again, and nothing can clear the label — a circular dependency (defect sp-9szt).
+#
+# TWO BEADS, ONE CLEARED AND ONE NOT. If both were cleared, a sentinel that blindly
+# removes all poison would pass. If neither were cleared, a sentinel that clears nothing
+# would pass. The pair proves the predicate: count < threshold -> clear; count >= threshold
+# -> hold (law-absence-needs-a-positive-control).
+#
+# The beads START with spira-poison already on them — as if an operator removed some
+# attempt labels from a previously-poisoned bead but did not remove the poison label.
+# --------------------------------------------------------------------------------------
+seed; rm -rf "$RUN/poison-asked"
+testdb_seed <<'JSONL'
+{"id":"sp-stale","title":"stale poison — count below threshold","status":"open","issue_type":"task","labels":["spira","plan","spira-poison","sp-attempt-1-unlanded"],"updated_at":"2026-09-04T00:00:00Z"}
+{"id":"sp-live","title":"live poison — count at threshold","status":"open","issue_type":"task","labels":["spira","plan","spira-poison","sp-attempt-3-unlanded"],"updated_at":"2026-09-04T00:00:00Z"}
+JSONL
+out="$(SPIRA_POISON_AT=3 sentinel)"
+notpoisoned "a poisoned bead with count below threshold has its label cleared"  sp-stale
+ispoisoned  "a poisoned bead with count at threshold keeps its label"           sp-live
+want        "the pass records the stale clear" "stale poison cleared" "$out"
+
 printf '\ntest-poison.sh: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

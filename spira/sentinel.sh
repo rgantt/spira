@@ -363,6 +363,31 @@ $(trace_tail "$SPIRA_RUN/$id.log" 25)"
     fi
 done
 
+# STALE POISON CLEAR. spira-poison is added when a bead's attempt count reaches the
+# threshold; the operator clears it after changing the approach. But the label also becomes
+# stale when someone removes attempt labels and the count drops below the threshold: the
+# label makes the bead invisible to dispatchable_open, so CHECK 4 never evaluates it, and
+# nothing can clear it — a circular dependency that makes the hold permanent (defect sp-9szt).
+#
+# Scan all poisoned non-closed beads. Any whose count is now below the threshold is
+# released: the condition that warranted the hold is gone.
+while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    n="$(attempts_of "$id")"; n="${n:-0}"
+    [ "$n" -lt "$POISON_AT" ] || continue
+    [ "$(spira_bead_status "$id")" = closed ] && continue
+    bdq label remove "$id" spira-poison >/dev/null 2>&1
+    progress "CHECK4 $id: stale poison cleared — $n attempt(s), below threshold $POISON_AT"
+done < <(bdjson list --limit 0 --label spira-poison 2>/dev/null \
+    | python3 -c '
+import json, sys
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for i in (d if isinstance(d, list) else [d]):
+    if i.get("status") != "closed" and i.get("issue_type") not in ("epic", "event"):
+        print(i["id"])
+' 2>/dev/null || true)
+
 # ======================================================================================
 # CHECK 5 — closed but not landed. A bead closed with no commit naming it unblocks its
 # dependents on a lie, and everything downstream then builds on work that is not there.
