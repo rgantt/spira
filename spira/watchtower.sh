@@ -435,6 +435,9 @@ fi
 # starts without context gathers the same data a few minutes later — describing a slightly
 # different stall during an outage when the data is changing fastest.
 # ---------------------------------------------------------------------------------------
+# SPIRA_INCIDENT_SH overrides the path so test suites can inject a mock without reaching
+# a real database. Same seam sentinel.sh carries for systemctl.
+INC="${SPIRA_INCIDENT_SH:-$(dirname "$0")/incident.sh}"
 PROMPT_FILE="${SPIRA_WATCH_PROMPT_FILE:-$SPIRA_RUN/ops-sweep-prompt.txt}"
 if snapshot > "${PROMPT_FILE}.tmp" 2>/dev/null && mv -f "${PROMPT_FILE}.tmp" "$PROMPT_FILE"; then
     log "watchtower: swept — ${since_land}m since the last landing, $(g SP_UNLANDED) unlanded, ${aeons_live} aeons"
@@ -442,6 +445,19 @@ else
     rm -f "${PROMPT_FILE}.tmp"
     log "watchtower: could not write the prompt file ($PROMPT_FILE)"
     exit 1
+fi
+
+# FILE THE SWEEP AS AN INCIDENT. incident.sh dedupes on the external ref, so a sweep arriving
+# while the previous one is still open bumps a recurrence on the existing bead rather than
+# filing a second. SPIRA_SIN_EXEMPT=1 keeps the routine sweep from reaching the SIN threshold
+# — N counts intervals nobody closed a routine health report, not unremediated failures
+# ($18/day to re-derive "the pipeline is fine", sp-kufh).
+if [ -x "$INC" ] || [ -r "$INC" ]; then
+    snapshot | \
+    SPIRA_INCIDENT_ACTOR=watchtower \
+    SPIRA_SIN_EXEMPT=1 \
+    SPIRA_INCIDENT_REPO=spira \
+    bash "$INC" file "Spira sweep" - >/dev/null || true
 fi
 
 # DRAIN ESCALATION. The prompt above already carries the drain state as a vital sign. When
@@ -453,9 +469,6 @@ fi
 # escalation on an unreadable probe would sound the alarm without evidence
 # (law-absence-needs-a-positive-control). The halt guard above already exited when halted,
 # so this branch only runs when the world is still moving.
-# SPIRA_INCIDENT_SH overrides the path so test suites can inject a mock without reaching
-# a real database. Same seam sentinel.sh carries for systemctl.
-INC="${SPIRA_INCIDENT_SH:-$(dirname "$0")/incident.sh}"
 if [ -n "$drain_since" ] && [ "$drain_mins" != "?" ] && \
    [ "$drain_mins" -ge "$DRAIN_WARN_MINS" ] 2>/dev/null; then
     if [ -x "$INC" ] || [ -r "$INC" ]; then
