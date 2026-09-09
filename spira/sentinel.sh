@@ -404,6 +404,8 @@ for i in (d if isinstance(d, list) else [d]):
 # the delivers branch for every closed bead that had no delivers: label at all, charged an
 # attempt, and reopened it. Eleven beads were poisoned in ninety seconds on 2026-09-09 —
 # every one of them with commits on the base naming it, every one with no delivers: label.
+# The poison also caused eleven ask beads to be filed questioning whether each should be
+# dropped; all eleven were false and were closed during the operational recovery (sp-dj19i).
 # \x1f is not IFS whitespace, so empty columns survive it. Verified directly:
 #   printf 'a\tb\t\tc\n' | while IFS=$'\t' read -r w x y z; do echo "[$y]"; done   -> [c]
 while IFS=$'\x1f' read -r id r_name superseded dropped sentcontent delivers started_at; do
