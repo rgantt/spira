@@ -123,6 +123,12 @@ done
 # So: render each brief the way its filler does, then check that the first word of every
 # fenced/indented command line that looks like a path resolves to a real executable.
 # law-absence-needs-a-positive-control — the control is the deliberately broken path below.
+#
+# SPIRA_COCKPIT MAY NOT BE SET in a minimal test environment — conf.sh derives it from
+# SPIRA_HOME, but suites run without sourcing conf.sh. Derive the same default from HERE
+# so the sed substitution below has a real path to fill {{ASK}} with, and the command-exist
+# check means something rather than silently checking a path that starts with "/ask.sh".
+: "${SPIRA_COCKPIT:=$(dirname "$HERE")/cockpit}"
 for f in "$HERE"/chamber/*.md; do
     n="$(basename "$f" .md)"
     missing=""

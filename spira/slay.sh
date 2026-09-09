@@ -131,7 +131,10 @@ if [ "$st" = in_progress ]; then
     # and spira_holder_witnesses reads in_progress as "held", so the worktree/branch removal
     # below is refused. Reopen first: it moves the status to open, making the holder check
     # see nobody home, which is what is actually true at this point.
-    bdq reopen "$ID" >/dev/null 2>&1 || true
+    # THROUGH bead_reopen, LIKE EVERY OTHER REOPEN. bead_reopen clears the assignee as well
+    # as changing the status, so the unclaim below is redundant but harmless; keeping it as
+    # a belt-and-suspenders fallback costs nothing and the belt is already documented above.
+    bead_reopen "$ID"
     bdq unclaim "$ID" --force >/dev/null 2>&1 \
         || bdq update "$ID" --status open --assignee "" >/dev/null 2>&1 \
         || true
