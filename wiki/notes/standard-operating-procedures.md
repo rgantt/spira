@@ -16,13 +16,33 @@ spira/sop.sh write <slug> -   # text on stdin
 
 Statutes are how to behave; SOPs are how to fix. They share one mechanism, split by prefix — `law-` and `sop-` — so the [[spira]] Ops persona reads its runbooks exactly the way every agent already reads [[common-law]]. Ops is summoned by an incident bead filed from a failed systemd unit, matches the payload against the `MATCH:` lines below, and executes the first one that fires.
 
-**21 SOP(s)** on the shelf as of 2026-09-08.
+**22 SOP(s)** on the shelf as of 2026-09-08.
 
 ## The closing rule
 
 **An incident resolved without an SOP must produce one.** This is `law-bake-rules-into-tools` applied to production, and it is enforced rather than asked for: writing an SOP is what regenerates this page, the regenerated page is the commit that names the incident bead, and a bead closed with no commit naming it is reopened by `aeon.sh`. An incident fixed by hand and forgotten does not close.
 
 ## The shelf
+
+### Beads schema recovery
+
+`sop-beads-schema-recovery`
+
+**Symptom** — `bd` commands and health sweep fail due to schema version drift; beads was migrated by accidental v1.2.0/v1.2.1 release and database cursor is 8 migrations ahead
+
+**Check**
+
+```
+bd migrate schema | grep "database is at v61, binary knows up to v53"
+```
+
+**Fix** — Follow recovery guide to roll schema cursor from v61 to v53 (documented in beads v1.2.2 release as 2-minute procedure at https://github.com/gastownhall/beads/blob/v1.2.2/docs/RECOVERY-1.2.1.md)
+
+**Escalate** — Ops lead must access external recovery guide and execute schema rollback procedure; bindings to local rollback mechanism not yet documented
+
+**Reference** — wiki/notes/incident-sp-m0s7.md
+
+**Matches** `schema version mismatch.*database is at v61.*binary knows up to v53`
 
 ### Content landed reopen
 
@@ -270,15 +290,15 @@ systemctl --user show <unit> -p Result -p ExecMainStatus -p NRestarts, then jour
 
 `sop-suite-hang-blocks-pipe`
 
-**Symptom** — 4 timed suites (test-aeon-heartbeat.sh, test-archivist.sh, test-check5-drop.sh, test-cockpit-unsent.sh) show LAST=- AGE=- forever; spira-suites.service Result=timeout at ~900s. First diagnosed sp-a8c5, recurring sp-04bd.
+**Symptom** — 4 timed suites (test-aeon-heartbeat.sh, test-archivist.sh, test-check5-drop.sh, test-cockpit-unsent.sh) show LAST=- AGE=- forever; spira-suites.service Result=timeout at ~900s.
 
-**Check** — `journalctl --user -u spira-suites.service --since -6h | grep -c timeout`. `suites.sh list` -- these 4 suites show LAST=- AGE=-. If present: background children outlive timeout kill.
+**Check** — `journalctl --user -u spira-suites.service --since -6h | grep -c timeout`. `suites.sh list` -- if these 4 suites show LAST=- AGE=-: leaked grandchildren blocking cmd_run.
 
-**Fix** — In spira-harness: commit 0a53666 hardens background child cleanup so timeout properly reaps them. This fix must land sp-bvo7 and reach origin/main before the service can produce results for these suites.
+**Fix** — cmd_run in spira/suites.sh (line ~319) uses command substitution `out="$(timeout ... bash $s 2>&1)"` which blocks on EOF. Suite that backgrounds a child inheriting stdout keeps write end open. Replace with file redirect: `timeout $s bash $s > $tmp 2>&1; rc=$?; out=$(cat $tmp)`. Leaked grandchild in any suite can then no longer wedge the runner.
 
-**Escalate** — This incident cannot be resolved in brain worktree. The FIX is in spira-harness (sp-bvo7). Brain aeon must defer and link. Ops aeon in spira-harness must land the FIX.
+**Escalate** — If this matched and was committed to origin/main but symptoms persist, inherited suite infrastructure may be backgrounding children. Audit suites to add cleanup (wait, kill, process group) and add test that backgrounds a long sleep inheriting stdout to prevent silent regression.
 
-**Reference** — sp-a8c5, sp-04bd, sp-bvo7
+**Reference** — sp-8x36 (root cause), sp-a8c5 (ppid parse, separate fix), sp-04bd
 
 **Matches** `timed suites.*never produced a result|Result=timeout.*spira-suites|start operation timed out.*suites`
 
