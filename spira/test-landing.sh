@@ -164,7 +164,12 @@ landing() {
     # unset, so an aeon session that exports it hands this pass the name of a real repository
     # — and the incident below is labelled `repo:<name>`, so the suite would file a fixture's
     # finding against somebody's actual checkout and then assert against whatever leaked.
-    SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
+    # SPIRA_BD IS PINNED TO THE FIXTURE'S EMBEDDED BINARY. conf.sh resolves it from PATH when
+    # unset; the test's counter-script section temporarily exports SPIRA_BD and then unsets it,
+    # and PATH-resolution after that depends on TESTDB_BIN existing in PATH. Pinning here
+    # removes the dependency: the pass always uses the binary testdb_up chose regardless of
+    # what the counter-script section left in the environment.
+    SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_BD="${SPIRA_BD:-$TESTDB_BD}" SPIRA_REPO="$REPO" \
     SPIRA_HOME_REPO="$REPONAME" \
     SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GH="$SH/gh" \
     SPIRA_NOTIFY="$SH/ask.sh" SPIRA_ASK="$SH/ask.sh" \
@@ -610,7 +615,7 @@ SHIM
 chmod +x "$TMP/bd-counter.sh"
 export BD_CALL_LOG="$TMP/bd-calls.log" BD_REAL="${SPIRA_BD:-bd}" SPIRA_BD="$TMP/bd-counter.sh"
 landing >/dev/null 2>&1
-unset BD_CALL_LOG BD_REAL; unset SPIRA_BD
+SPIRA_BD="$BD_REAL"; export SPIRA_BD; unset BD_CALL_LOG BD_REAL
 show_calls="$(grep -c '^show' "$TMP/bd-calls.log" 2>/dev/null || echo 0)"
 # One bulk show for the scan, plus one re-read per branch that reaches the gate (three
 # here). The scan must not grow with the branch count — three branches and eleven must
@@ -921,7 +926,7 @@ chmod +x "$TMP/ask.sh"
 landing_pr() {
     rm -f "$RUN/landing.progress"
     : > "$ASK_LOG"
-    SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
+    SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_BD="${SPIRA_BD:-$TESTDB_BD}" SPIRA_REPO="$REPO" \
     SPIRA_HOME_REPO="$REPONAME" \
     SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GH="$SH/ghpr" \
     SPIRA_NOTIFY="$TMP/ask.sh" SPIRA_ASK="$TMP/ask.sh" \
