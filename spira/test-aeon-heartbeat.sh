@@ -18,6 +18,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+_bg_pids=()   # all background PIDs spawned here; checked for cleanup at suite exit
 
 is() {
     if [ "$2" = "$3" ]; then
@@ -108,6 +109,7 @@ echo "youngest_in_subtree — process subtree advancement"
 # Spawn a short-lived child whose subtree we can measure.
 sleep 3600 &
 child_pid=$!
+_bg_pids+=("$child_pid")
 # Give /proc a moment to populate.
 sleep 0.1
 
@@ -129,6 +131,7 @@ fi
 # Start a subprocess whose only child is one `sleep` — a tree we fully control.
 bash -c 'sleep 3600 & wait' &
 outer=$!
+_bg_pids+=("$outer")
 sleep 0.2
 youngest_outer="$(yis "$outer")"
 if [ "$youngest_outer" -gt 0 ]; then
@@ -136,9 +139,13 @@ if [ "$youngest_outer" -gt 0 ]; then
 else
     fail=$((fail+1)); printf '  FAIL  youngest_in_subtree missed the nested sleep (got %s)\n' "$youngest_outer"
 fi
+# Save children BEFORE killing outer; once outer dies they reparent to PID 1 and
+# pkill -P can no longer find them by parent — which is how they leaked.
+outer_children=$(pgrep -P "$outer" 2>/dev/null || true)
+_bg_pids+=($outer_children)
 kill "$outer" 2>/dev/null; wait "$outer" 2>/dev/null || true
-# After killing the parent, the orphaned sleep may be reparented. Clean it up.
-pkill -P "$outer" 2>/dev/null || true
+for _p in $outer_children; do kill "$_p" 2>/dev/null || true; done
+for _p in $outer_children; do wait "$_p" 2>/dev/null || true; done
 
 # A PID that does not exist.
 youngest_none="$(yis "99999999")"
@@ -165,6 +172,7 @@ fi
 touch "$TMP/lockfile"
 flock "$TMP/lockfile" sleep 3600 &
 flock_parent=$!
+_bg_pids+=("$flock_parent")
 sleep 0.1
 
 if shf "$$"; then
@@ -173,7 +181,32 @@ else
     fail=$((fail+1)); printf '  FAIL  subtree_has_flock missed a flock child\n'
 fi
 
+# flock forks its command as a child rather than exec'ing it, so killing flock leaves
+# the sleep child alive. Save children first and kill them after.
+flock_children=$(pgrep -P "$flock_parent" 2>/dev/null || true)
+_bg_pids+=($flock_children)
 kill "$flock_parent" 2>/dev/null; wait "$flock_parent" 2>/dev/null || true
+for _p in $flock_children; do
+    kill "$_p" 2>/dev/null || true
+    # kill is async; poll until dead since the child is now orphaned (not our descendant).
+    _i=0; while kill -0 "$_p" 2>/dev/null && [ "$_i" -lt 20 ]; do sleep 0.01; _i=$((_i+1)); done
+done
+
+echo
+echo "subprocess cleanup — no background children outlive the suite"
+_leaked=0
+for _pid in "${_bg_pids[@]}"; do
+    if kill -0 "$_pid" 2>/dev/null; then
+        _leaked=$((_leaked + 1))
+        fail=$((fail + 1))
+        printf '  FAIL  subprocess %s still alive after cleanup\n' "$_pid"
+        kill "$_pid" 2>/dev/null || true
+    fi
+done
+if [ "$_leaked" -eq 0 ]; then
+    pass=$((pass + 1))
+    printf '  ok    all spawned subprocesses cleaned up\n'
+fi
 
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
