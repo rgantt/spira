@@ -6,9 +6,9 @@
 #   sop.sh show <slug>               one SOP's full text
 #   sop.sh list                      what is on the shelf
 #   sop.sh match [-|<file>]          which SOPs match an incident payload
-#   sop.sh applied <slug> --bead <id> --check pass|fail --held yes|no|unknown [--why -|<file>]
+#   sop.sh applied <slug> --bead <id>|--pass <id> --check pass|fail --held yes|no|unknown [--why -|<file>]
 #                                    record that a runbook was consulted, and what came of it
-#   sop.sh log [--bead <id>] [--sop <slug>] [--check pass|fail] [--since <epoch>]
+#   sop.sh log [--bead <id>] [--pass <id>] [--sop <slug>] [--check pass|fail] [--since <epoch>]
 #                                    the applications ledger, oldest first
 #   sop.sh digest                    one `<key> <hash>` line per SOP — what the shelf holds now
 #   sop.sh ledger-init               create an empty applications ledger if there is none
@@ -289,12 +289,19 @@ applied)
     # THE RECORD. Written between the CHECK and the FIX with `--held unknown`, and again once
     # the fix has been verified. See the header for why it goes to two places and why almost
     # nothing here is a refusal.
+    #
+    # --bead IS FOR INCIDENT BEADS; --pass IS FOR BEADLESS SWEEP PASSES. The join target
+    # changes — a sweep pass has a stable pass id but no bead — so the ledger carries either
+    # `"bead"` or `"pass"` as the identity key, never both. Two records from the same sweep
+    # pass carry the same pass id and join on it. A record with neither is still refused: the
+    # reasoning that a record nobody can join back to something counts nothing still applies.
     [ $# -ge 2 ] || usage
     key="$(slugify "$2")"; shift 2
-    bead=""; check=""; held=""; why_src=""; have_why=0
+    bead=""; passid=""; check=""; held=""; why_src=""; have_why=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --bead)  need $# --bead;  bead="$2";    shift 2 ;;
+            --pass)  need $# --pass;  passid="$2";  shift 2 ;;
             --check) need $# --check; check="$2";   shift 2 ;;
             --held)  need $# --held;  held="$2";    shift 2 ;;
             --why)   need $# --why;   why_src="$2"; have_why=1; shift 2 ;;
@@ -302,7 +309,7 @@ applied)
         esac
     done
 
-    [ -n "$bead" ] || { echo "sop: applied needs --bead <id> — a record nobody can join back to an incident counts nothing" >&2; exit 1; }
+    [ -n "$bead" ] || [ -n "$passid" ] || { echo "sop: applied needs --bead <id> or --pass <id> — a record nobody can join back to an incident counts nothing" >&2; exit 1; }
     case "$check" in
         pass|fail) ;;
         *) echo "sop: applied needs --check pass|fail — did the SOP's CHECK confirm this really is that failure?" >&2; exit 1 ;;
@@ -367,39 +374,58 @@ sys.exit(0 if os.environ["SOP_KEY"] in d else 1)' <<< "$raw"; then
         pass:unknown) verdict="The CHECK confirmed. Whether the FIX held is not known yet." ;;
     esac
 
-    note_state="ok"
-    {
-        printf 'SOP %s applied — CHECK %s, held=%s.\n\n%s\n' "$key" "$check" "$held" "$verdict"
-        [ -n "${why//[[:space:]]/}" ] && printf '\n%s\n' "$why"
-        printf '\nRecorded %s by %s. Ledger: %s\n' "$ts" "$actor" "$LEDGER"
-    } | bdq note "$bead" --stdin >/dev/null 2>&1 || note_state="failed"
+    # THE BEAD NOTE IS ONLY FOR BEAD-BACKED RECORDS. A sweep pass has no bead and nowhere
+    # to put one. `note_state` is "n/a" for pass records so the ledger line is honest about
+    # why it carries no note, and callers that check for "failed" can still trust it.
+    if [ -n "$bead" ]; then
+        note_state="ok"
+        {
+            printf 'SOP %s applied — CHECK %s, held=%s.\n\n%s\n' "$key" "$check" "$held" "$verdict"
+            [ -n "${why//[[:space:]]/}" ] && printf '\n%s\n' "$why"
+            printf '\nRecorded %s by %s. Ledger: %s\n' "$ts" "$actor" "$LEDGER"
+        } | bdq note "$bead" --stdin >/dev/null 2>&1 || note_state="failed"
+    else
+        note_state="n/a"
+    fi
 
     # THE LEDGER LINE IS WRITTEN LAST, so it can say whether the note landed. A half-written
     # record that admits which half is missing is worth more than one that does not.
+    # THE IDENTITY KEY IS EITHER "bead" OR "pass" — never both, never absent. Downstream
+    # readers (sop.sh log --bead, sop.sh log --pass) filter on whichever key is present.
     mkdir -p "$(dirname "$LEDGER")" 2>/dev/null
-    line="$(SOP_TS="$ts" SOP_EPOCH="$epoch" SOP_SOP="$key" SOP_BEAD="$bead" \
+    line="$(SOP_TS="$ts" SOP_EPOCH="$epoch" SOP_SOP="$key" SOP_BEAD="$bead" SOP_PASS="$passid" \
             SOP_CHECK="$check" SOP_HELD="$held" SOP_WHY="$why" SOP_CAP="$WHY_CAP" \
             SOP_ACTOR="$actor" SOP_SHELF="$shelf_state" SOP_NOTE="$note_state" \
             python3 -c '
 import os, json
 w = " ".join(os.environ.get("SOP_WHY", "").split())[: int(os.environ["SOP_CAP"])]
-print(json.dumps({
+bead = os.environ.get("SOP_BEAD", "")
+passid = os.environ.get("SOP_PASS", "")
+rec = {
     "ts":    os.environ["SOP_TS"],
     "epoch": int(os.environ["SOP_EPOCH"]),
     "sop":   os.environ["SOP_SOP"],
-    "bead":  os.environ["SOP_BEAD"],
+}
+# Identity key: "bead" for incident-backed records, "pass" for beadless sweep passes.
+if bead:
+    rec["bead"] = bead
+else:
+    rec["pass"] = passid
+rec.update({
     "check": os.environ["SOP_CHECK"],
     "held":  os.environ["SOP_HELD"],
     "actor": os.environ["SOP_ACTOR"],
     "shelf": os.environ["SOP_SHELF"],
     "note":  os.environ["SOP_NOTE"],
     "why":   w,
-}, separators=(",", ":"), ensure_ascii=False))')"
+})
+print(json.dumps(rec, separators=(",", ":"), ensure_ascii=False))')"
     [ -n "$line" ] || { echo "sop: failed to render the ledger line — nothing recorded" >&2; exit 1; }
     printf '%s\n' "$line" >> "$LEDGER" || {
         echo "sop: failed to append to $LEDGER" >&2; exit 1; }
 
-    echo "recorded $key on $bead — check=$check held=$held"
+    target="${bead:-pass=$passid}"
+    echo "recorded $key on $target — check=$check held=$held"
     echo "  $verdict"
     if [ "$note_state" = failed ]; then
         echo "sop: the ledger line was written but the note on $bead was NOT — the human reading" >&2
@@ -428,10 +454,11 @@ log)
     # would be a second parser of this format, and it would also lose the three-valued exit —
     # which is the only thing that separates "no such record" from "cannot read the ledger".
     shift || true
-    fb=""; fs=""; fc=""; fsince=""
+    fb=""; fp=""; fs=""; fc=""; fsince=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --bead)  need $# --bead;  fb="$2";               shift 2 ;;
+            --pass)  need $# --pass;  fp="$2";               shift 2 ;;
             --sop)   need $# --sop;   fs="$(slugify "$2")";  shift 2 ;;
             --check) need $# --check; fc="$2";               shift 2 ;;
             --since) need $# --since; fsince="$2";           shift 2 ;;
@@ -452,9 +479,10 @@ log)
         echo "sop: no ledger at $LEDGER — nothing has ever been recorded, or it is not where this program looks." >&2
         exit 2
     fi
-    SOP_FB="$fb" SOP_FS="$fs" SOP_FC="$fc" SOP_FSINCE="$fsince" python3 -c '
+    SOP_FB="$fb" SOP_FP="$fp" SOP_FS="$fs" SOP_FC="$fc" SOP_FSINCE="$fsince" python3 -c '
 import sys, os, json
-fb, fs = os.environ.get("SOP_FB", ""), os.environ.get("SOP_FS", "")
+fb, fp = os.environ.get("SOP_FB", ""), os.environ.get("SOP_FP", "")
+fs = os.environ.get("SOP_FS", "")
 fc, fsince = os.environ.get("SOP_FC", ""), os.environ.get("SOP_FSINCE", "")
 fsince = int(fsince) if fsince else None
 seen = bad = shown = 0
@@ -469,6 +497,7 @@ for ln in fh:
     try: r = json.loads(ln)
     except Exception: bad += 1; continue
     if fb and r.get("bead") != fb: continue
+    if fp and r.get("pass") != fp: continue
     if fs and r.get("sop")  != fs: continue
     if fc and r.get("check") != fc: continue
     # A LINE WITH NO PARSEABLE EPOCH IS OUTSIDE EVERY --since WINDOW, never inside one. A

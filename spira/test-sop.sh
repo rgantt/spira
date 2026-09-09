@@ -206,7 +206,8 @@ echo "--- the refusals, each one a typo that would poison the count"
 
 is "an unknown slug is refused"            "1" "$(sop_rc applied no-such-sop --bead sp-t1 --check pass --held yes)"
 want "and it says so"  "no such SOP" "$(sop applied no-such-sop --bead sp-t1 --check pass --held yes)"
-is "a missing --bead is refused"           "1" "$(sop_rc applied disk-full --check pass --held yes)"
+is "a missing --bead AND --pass is refused" "1" "$(sop_rc applied disk-full --check pass --held yes)"
+want "and it names both alternatives"      "or --pass" "$(sop applied disk-full --check pass --held yes)"
 is "an unspellable --check is refused"     "1" "$(sop_rc applied disk-full --bead sp-t1 --check maybe --held yes)"
 is "an unspellable --held is refused"      "1" "$(sop_rc applied disk-full --bead sp-t1 --check pass --held sortof)"
 is "--check fail --held yes is refused"    "1" "$(sop_rc applied disk-full --bead sp-t1 --check fail --held yes)"
@@ -219,6 +220,32 @@ is "a flag with no value is refused rather than hanging" "1" \
 
 n_after="$(wc -l < "$LEDGER")"
 is "and not one refusal wrote a line" "$((n_before + 1))" "$n_after"
+
+echo
+echo "--- --pass: beadless sweep records"
+
+# A SWEEP PASS HAS NO BEAD. The join target is the pass id — stable within one aeon run,
+# so two ledger lines from one pass can be correlated. The ledger carries "pass" (not "bead"),
+# and log --pass filters on it. The bead note is omitted (note=n/a).
+PASS_ID="sweep-$(date -u +%s)-testops"
+out="$(sop applied disk-full --pass "$PASS_ID" --check pass --held yes)"
+is  "recording with --pass exits 0"                   "0" "$(sop_rc applied disk-full --pass "$PASS_ID" --check pass --held unknown)"
+want "it says what it recorded"                        "recorded sop-disk-full on pass=$PASS_ID" "$out"
+
+pass_line="$(grep "\"pass\"" "$LEDGER" | tail -1)"
+want "the ledger line carries the pass key"   '"pass"'   "$pass_line"
+nowant "and not the bead key"                 '"bead"'   "$pass_line"
+want "shelf is still verified"                '"shelf":"ok"' "$pass_line"
+want "note is n/a — no bead to annotate"      '"note":"n/a"' "$pass_line"
+
+is "log --pass finds it"           "0" "$(sop_rc log --pass "$PASS_ID")"
+is "log --bead does NOT find it"   "1" "$(sop_rc log --bead "$PASS_ID")"
+want "log --pass prints the line"  "$PASS_ID" "$(sop log --pass "$PASS_ID")"
+is "two records share a pass id"   "2" "$(sop log --pass "$PASS_ID" | wc -l)"
+
+# MISSING BOTH IS STILL REFUSED: the reasoning that a record nobody can join back to
+# something counts nothing still applies — only the join target has changed.
+is "missing both --bead and --pass still refused" "1" "$(sop_rc applied disk-full --check pass --held yes)"
 
 echo
 echo "--- the record survives the day the harness itself is broken"
