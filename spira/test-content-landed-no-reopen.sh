@@ -92,14 +92,20 @@ sentinel() {
 
 status_of() { B show "$1" --json 2>/dev/null | python3 -c '
 import json, sys
-d = json.load(sys.stdin); d = d if isinstance(d, list) else [d]
-print(d[0].get("status") or "")'; }
+try:
+    d = json.load(sys.stdin); d = d if isinstance(d, list) else [d]
+    print(d[0].get("status") or "")
+except Exception:
+    pass'; }
 
 echo "test-content-landed-no-reopen.sh"
 
 seed() {
-    testdb_reset
-    testdb_seed <<JSONL
+    testdb_reset || { echo "seed: testdb_reset failed" >&2; exit 1; }
+    # A silent import failure produces wrong state — status_of returns empty and
+    # assertions fail as "wanted [closed] got []" rather than "seed failed". Exit
+    # loudly here so a broken bd or fixture is immediately visible (sp-4nk93).
+    testdb_seed <<JSONL || { echo "seed: testdb_seed (bd import) failed" >&2; exit 1; }
 {"id":"sp-goal","title":"goal","status":"open","issue_type":"epic","labels":["spira"],"updated_at":"2026-09-08T00:00:00Z"}
 {"id":"sp-bare","title":"bare closed — no commit, no exemption","status":"closed","issue_type":"task","labels":["spira","plan","repo:$HOME_REPO"],"updated_at":"2026-09-08T00:00:00Z","dependencies":[{"issue_id":"sp-bare","depends_on_id":"sp-goal","type":"parent-child"}]}
 {"id":"sp-cont","title":"reaped by content","status":"closed","issue_type":"task","labels":["spira","plan","content-landed","repo:$HOME_REPO"],"updated_at":"2026-09-08T00:00:00Z","dependencies":[{"issue_id":"sp-cont","depends_on_id":"sp-goal","type":"parent-child"}]}
