@@ -47,6 +47,14 @@ start)
         exit 0
     fi
     command -v claude >/dev/null || { echo "concierge: claude not on PATH" >&2; exit 1; }
+    # THE SERVER BELOW INHERITS THIS PROCESS'S ENVIRONMENT AND KEEPS IT FOR LIFE. Started from
+    # inside another Claude session — which is exactly how it gets started — it would hand that
+    # session's identity to the concierge, and a client that thinks it is a child session does
+    # not write a transcript. Clear them before the fork; scrub an existing server for the case
+    # where this socket is already up. See cockpit/tmux-env.sh.
+    _tmuxenv="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/cockpit/tmux-env.sh"
+    bash "$_tmuxenv" scrub -L "$SOCKET" 2>/dev/null
+    unset $(bash "$_tmuxenv" names) 2>/dev/null || true
     $TM new-session -d -s "$SESSION" -c "$BRAIN" \
         "claude --remote-control '$SESSION' --dangerously-skip-permissions"
     sleep 3

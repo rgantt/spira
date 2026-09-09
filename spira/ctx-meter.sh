@@ -142,7 +142,28 @@ else:
     # without scanning every project. Written on every status-line tick that resolved a
     # transcript, which is what keeps its age meaningful: a session that stops speaking lets the
     # pointer go stale, and env mode reads that staleness as "no live session".
-    if tp:
+    # ONE POINTER, MORE THAN ONE INTERACTIVE SESSION. The concierge is a second Claude client
+    # in this same project, and its status line ticks on a TIMER whether or not anyone is
+    # talking to it. Both sessions therefore write this pointer, and the last writer wins — so
+    # an idle session's timer tick would take the pointer away from the operator between his
+    # turns, and the pane would flip to `-` (or to the idle session's context) and back on
+    # every pass. YIELD TO WHOEVER SPOKE MORE RECENTLY: a transcript's mtime is when its
+    # session last wrote a turn, which is the only available measure of "at the keyboard".
+    # A stale holder is never deferred to, so a session that ends cannot hold the pointer.
+    def _hold(tp):
+        try:
+            with open(ptr_path) as fh:
+                old = dict(l.rstrip("\n").split("=", 1) for l in fh if "=" in l)
+            otp, ots = old.get("tp", ""), int(old.get("ts", "0"))
+            if not otp or otp == tp or not os.path.exists(otp):
+                return False
+            if now - ots > idle_threshold:
+                return False          # the holder has gone quiet; the pointer is ours
+            return os.path.getmtime(otp) > os.path.getmtime(tp)
+        except (OSError, ValueError):
+            return False
+
+    if tp and not _hold(tp):
         try:
             os.makedirs(os.path.dirname(ptr_path), exist_ok=True)
             tmp = ptr_path + ".%d" % os.getpid()

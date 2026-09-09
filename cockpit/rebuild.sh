@@ -64,6 +64,15 @@ CWD="${COCKPIT_CWD:-$SPIRA_REPO}"
 # recreated because it died with the server, but nothing depends on it.
 SESSIONS="brain hunk chat"
 
+# THE SERVER THIS SCRIPT IS ABOUT TO FORK INHERITS THIS PROCESS'S ENVIRONMENT, AND KEEPS IT
+# FOR LIFE. tmux hands every new pane the environment the server was started with, so running
+# rebuild.sh from inside a Claude session would stamp that session's identity onto every pane
+# the cockpit ever opens. That is not hypothetical: this script was first run by an archivist
+# aeon, the server captured CLAUDE_CODE_CHILD_SESSION=1, and the operator's own session —
+# opened hours later in a pane of that server — stopped writing a transcript and vanished from
+# the CTX meter. Clear them here, before the fork. See cockpit/tmux-env.sh.
+unset $(bash "$HERE/tmux-env.sh" names) 2>/dev/null || true
+
 say()  { printf '%s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
 warn() { printf 'rebuild: %s\n' "$*" >&2; }
@@ -203,6 +212,12 @@ for s in $SESSIONS; do
             || { warn "could not create session '$s'"; exit 1; }
     fi
 done
+
+# --- 2b. the server's environment -----------------------------------------------------------
+# A server we did NOT fork — one that was already up when this ran — may still be carrying a
+# session identity from whoever started it. Scrubbing the global environment fixes every pane
+# opened from here on; panes that already exist keep what they were given.
+bash "$HERE/tmux-env.sh" scrub 2>/dev/null | sed 's/^/  /'
 
 # --- 3. the dashboards, in brain:0 ----------------------------------------------------------
 # --window is passed EXPLICITLY. layout.sh's default_window() falls back to the first pane

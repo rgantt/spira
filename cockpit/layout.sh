@@ -535,6 +535,16 @@ repair_dashboards() {
     tmux select-pane -t "$sess" 2>/dev/null || true
 }
 
+# EVERY PANE THIS SCRIPT OPENS TAKES THE SERVER'S ENVIRONMENT, not this process's, and the
+# server's was frozen when it was forked. If it was forked from inside a Claude session it is
+# still handing that session's identity to every new pane — which stops the operator's own
+# client writing a transcript and empties the CTX meter. Scrubbing on `up` and `ensure` makes
+# the one-minute timer the repair: the poison cannot outlive a minute of a healthy cockpit.
+# Silent when there is nothing to remove. See cockpit/tmux-env.sh.
+case "$ACTION" in
+    up|ensure) bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/tmux-env.sh" scrub 2>/dev/null ;;
+esac
+
 case "$ACTION" in
 
 up)

@@ -154,6 +154,57 @@ printf 'this is garbage\n' > "$PTR"
 E="$(meter env "$EPOCH")"
 is "a corrupt pointer reports no session" "-" "$(val SP_CTX_NOW <<<"$E")"
 
+# ==========================================================================================
+echo
+echo "a second interactive session's idle tick does not steal the pointer"
+# ==========================================================================================
+# THE CASE. The concierge is a second Claude client in the same project and its status line
+# ticks on a TIMER, whether or not anyone is talking to it. Both sessions write this pointer.
+# Before the fix the last writer won, so the idle session took the pointer between the
+# operator's turns and the pane flipped to `-` and back on every pass. IDLE_TP stands in for
+# the concierge: a real transcript that stopped growing.
+IDLE_TP="$T/projects/-operator-project/idle-session.jsonl"
+printf '{"type":"assistant","message":{"id":"m-idle-1","usage":{"input_tokens":9000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":10}}}\n' > "$IDLE_TP"
+sleep 0.05
+# The operator speaks last, so his transcript is the newer one by mtime.
+printf '{"type":"assistant","message":{"id":"m-op-20","usage":{"input_tokens":6000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":10}}}\n' >> "$OP_TP"
+
+rm -f "$PTR"
+blob "op-session" "$OP_TP" 115000 | meter line "$EPOCH" >/dev/null
+has "the operator holds the pointer" "$(cat "$PTR")" "$OP_TP"
+
+# POSITIVE CONTROL FIRST: the idle session's tick must be capable of writing the pointer at
+# all, or "it did not steal it" proves nothing. With no pointer present, it takes it.
+rm -f "$PTR"
+blob "idle-session" "$IDLE_TP" 9000 | meter line "$EPOCH" >/dev/null
+has "POSITIVE CONTROL — the idle session can write the pointer" "$(cat "$PTR")" "$IDLE_TP"
+
+# Now the real case: the operator holds it, and the idle session ticks.
+rm -f "$PTR"
+blob "op-session" "$OP_TP" 115000 | meter line "$EPOCH" >/dev/null
+blob "idle-session" "$IDLE_TP" 9000 | meter line "$EPOCH" >/dev/null
+has "an idle tick does not take the pointer from the operator" "$(cat "$PTR")" "$OP_TP"
+hasnt "and the pointer does not name the idle session" "$(cat "$PTR")" "$IDLE_TP"
+E="$(meter env "$EPOCH")"
+[ "$(val SP_CTX_NOW <<<"$E")" != "-" ] \
+    && ok "env still reports a live session" \
+    || bad "env still reports a live session" "got [-]"
+
+# THE HOLDER MUST NOT BE ABLE TO KEEP IT FOREVER. Once its tick is older than the idle
+# threshold it has stopped speaking, and the next session to tick takes the pointer.
+rm -f "$PTR"
+blob "op-session" "$OP_TP" 115000 | meter line "$EPOCH" >/dev/null
+blob "idle-session" "$IDLE_TP" 9000 | meter line "$((EPOCH + IDLE + 60))" >/dev/null
+has "a stale holder yields the pointer" "$(cat "$PTR")" "$IDLE_TP"
+
+# AND THE HOLDER MAY ALWAYS REFRESH ITS OWN. Yielding is about OTHER transcripts; a session
+# writing the pointer it already holds must still advance its timestamp, or its own pointer
+# goes stale while it is talking.
+rm -f "$PTR"
+blob "op-session" "$OP_TP" 115000 | meter line "$EPOCH" >/dev/null
+blob "op-session" "$OP_TP" 115000 | meter line "$((EPOCH + 30))" >/dev/null
+has "the holder refreshes its own timestamp" "$(cat "$PTR")" "ts=$((EPOCH + 30))"
+
 echo
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
