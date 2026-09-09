@@ -43,21 +43,23 @@ mkfifo "$GHOST_FIFO" "$LIVE_FIFO"
 cleanup() {
     # Kill the fixture server FIRST. tmux kill-server disconnects every attached
     # client (tmux attach-session), which causes script(1) to see its child exit
-    # and exit in turn. Killing script before the server leaves the tmux attach-session
-    # subprocess orphaned in the suite's process group, where the harness finds it
-    # after the test exits and marks the suite red.
+    # and exit in turn.
     [ "$FIXTURE_UP" -eq 1 ] && TMUX_TMPDIR="$TMUXDIR" tmux kill-server 2>/dev/null || true
     # Closing the <> fds drops the last write-end reference on each FIFO; belt-and-suspenders
     # in case script is still waiting on stdin after the server dies.
     { exec 3>&-; } 2>/dev/null || true
     { exec 4>&-; } 2>/dev/null || true
-    # Allow time for the server→client→script exit cascade to propagate before we check
-    # for stragglers. On a local machine this takes milliseconds; 0.2 s is conservative.
+    # Allow time for the server→client→script exit cascade to propagate.
     sleep 0.2
-    # Kill any script process that did not exit in time after the server shutdown.
-    [ "${GHOST_PID:-0}" -gt 0 ] && kill "$GHOST_PID" 2>/dev/null || true
-    [ "${LIVE_PID:-0}" -gt 0 ]  && kill "$LIVE_PID"  2>/dev/null || true
-    # Reap any background jobs the shell still tracks so the harness sees no orphans on exit.
+    # Kill the entire process GROUP of each client stub, not just the script process.
+    # script spawns sh which spawns tmux attach-session; killing script alone orphans
+    # those grandchildren in the suite's process group (PGID is inherited and survives
+    # reparenting), where suites.sh finds them with kill -0 -- -pgid and marks the suite
+    # red. Each stub was spawned with setsid so its PGID = its PID; kill -- -$PID reaches
+    # all descendants.
+    [ "${GHOST_PID:-0}" -gt 0 ] && kill -- -"$GHOST_PID" 2>/dev/null || true
+    [ "${LIVE_PID:-0}" -gt 0 ]  && kill -- -"$LIVE_PID"  2>/dev/null || true
+    # Reap the direct bash-tracked background jobs (the script processes themselves).
     wait 2>/dev/null || true
     rm -rf "$TMP"
 }
@@ -92,8 +94,11 @@ TMUX_TMPDIR="$TMUXDIR" tmux set-option -t cockpit window-size largest
 # fd 3 is open. When cleanup closes fd 3 the FIFO write end drops to zero
 # references and script gets EOF, which propagates to tmux and detaches the client.
 exec 3<>"$GHOST_FIFO"
+# setsid gives script its own process group (PGID = script's PID) so cleanup can
+# kill the whole group — script + sh + tmux attach-session — without touching the
+# suite's own group.
 TMUX= TMUX_TMPDIR="$TMUXDIR" \
-    script -q -c "TERM=xterm-256color tmux attach-session -t cockpit" /dev/null \
+    setsid script -q -c "TERM=xterm-256color tmux attach-session -t cockpit" /dev/null \
     < "$GHOST_FIFO" >/dev/null 2>&1 &
 GHOST_PID=$!
 sleep 0.5
@@ -111,7 +116,7 @@ sleep 2.1
 # Attach the live client — most recently active.
 exec 4<>"$LIVE_FIFO"
 TMUX= TMUX_TMPDIR="$TMUXDIR" \
-    script -q -c "TERM=xterm-256color tmux attach-session -t cockpit" /dev/null \
+    setsid script -q -c "TERM=xterm-256color tmux attach-session -t cockpit" /dev/null \
     < "$LIVE_FIFO" >/dev/null 2>&1 &
 LIVE_PID=$!
 sleep 0.5
