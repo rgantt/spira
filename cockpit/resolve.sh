@@ -41,8 +41,17 @@ printf '%s\n' "$id" >> "$SELF"
 
 # --force because rig beads are usually assigned to the mayor, and closing one as `claude`
 # is refused otherwise. The assignee check is right for work; this is a verdict on an ask.
-if BEADS_ACTOR=claude "$BD" -C "$db" close "$id" --force --reason "$reason" >/dev/null 2>&1; then
+#
+# Both streams are merged into one variable because bd exits 0 when it refuses, printing the
+# complaint to stdout rather than stderr (the "bd exits 0 when it refuses" paragraph in
+# spira.md). Discarding stdout was how the schema-mismatch refusal on 2026-09-08 hid behind
+# a generic "failed to close" line instead of naming the database-wide write outage.
+bd_out=$(BEADS_ACTOR=claude "$BD" -C "$db" close "$id" --force --reason "$reason" 2>&1)
+bd_rc=$?
+if [ "$bd_rc" -eq 0 ]; then
   echo "resolved $id (${db##*/})"
 else
-  echo "resolve.sh: failed to close $id in $db" >&2; exit 1
+  printf 'resolve.sh: failed to close %s in %s\n' "$id" "$db" >&2
+  printf '%s\n' "$bd_out" | sed 's/^/  bd: /' >&2
+  exit 1
 fi
