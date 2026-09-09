@@ -21,7 +21,7 @@ tags: [ops, incident, escalation]
 **Evidence**: 
 - Journalctl: 7 timeouts in 6h (Result=timeout in spira-suites.service logs)
 - Suites ledger: .result files for 26 suites, missing for the 4 affected
-- Applied SOP ledger: `/workspaces/brain/.runtime/spira/sop/applied.jsonl` (recorded 2026-09-08T23:33:52Z)
+- Applied SOP ledger recorded: 2026-09-08T23:33:52Z
 
 **Next**: Once sp-51fa is answered:
 - If sp-bvo7 landed: merge the fix into brain and close sp-04bd resolved
