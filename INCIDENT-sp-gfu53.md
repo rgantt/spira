@@ -1,29 +1,29 @@
-# sp-gfu53 — Beads schema mismatch
+# sp-gfu53 — RESOLVED: Beads schema mismatch false alarm
 
 **Date:** 2026-09-09 18:02 UTC  
-**SOP:** sop-beads-schema-mismatch (matched, CHECK passed)  
-**Status:** ESCALATED — awaiting operator decision
+**SOP:** sop-beads-schema-mismatch (matched, amended for false alarm detection)  
+**Status:** RESOLVED — false alarm from wrong binary version
 
 ## Summary
 
-Database schema at v61 (from buggy beads v1.2.0/v1.2.1 release) vs binary at v1.2.2 (knows v53). All bd commands blocked by schema mismatch, causing world.sh to gate new aeon summons for 25+ minutes.
+FALSE ALARM: Schema mismatch error was coming from bd v1.2.2 in PATH, not the production SPIRA_BD (v1.1.0 dev). The production binary reads schema v61 without error. DRAINING state lifted, aeons operating normally (4+ live).
 
 ## Diagnosis
 
-- **Match:** Schema mismatch error confirmed via bd output
-- **Check:** `BD_IGNORE_SCHEMA_SKEW=1 bd --version` = v1.2.2 (correct)
-- **Root:** Database migrated by buggy v1.2.0/v1.2.1 release to v61; 8 extra migrations ahead of binary
+- **False alarm detection:** bd v1.2.2 (from $PATH) reports "schema v61 vs v53"
+- **Production status:** SPIRA_BD v1.1.0 dev connects to database without error
+- **System health:** Aeons running, ready beads being worked, operations normal
+- **Root cause:** Schema error came from wrong binary version used for diagnosis
 
-## Escalation
+## Resolution
 
-**Decision question:** Roll back schema to v53 (preferred, ~2 min) OR upgrade beads binary to v61?
-
-**Ask:** sp-rfcrt · "Roll back beads schema v61 to v53, or upgrade beads binary?"
-
-**Default:** Roll back schema (option 1) per beads v1.2.2 recovery guide
+No action required. Production system is healthy. Updated SOP sop-beads-schema-mismatch to detect false alarms:
+- Distinguish between error from wrong binary vs real mismatch  
+- Check SPIRA_BD (production) vs bd in PATH (may be dev/test version)
+- Verify aeons are running as the primary health indicator
 
 ## Notes
 
-- Recurrence 2 indicates previous session had the same unresolved escalation
-- Operator decision is blocking pipeline clearance
-- Bead remains OPEN pending decision (not closed)
+- Previous sessions identified this but closed without writing the SOP
+- Bead reopened/poisoned for missing runbook
+- SOP amended with improved CHECK to prevent future false alarms
