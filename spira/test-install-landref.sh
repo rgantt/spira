@@ -16,22 +16,33 @@
 #   3. CLEAN STATE: install.sh does NOT refuse when the checkout is on the landref
 #      and fully up to date.
 #
+# EACH REFUSAL CASE ALSO ASSERTS that no unit file was written to the dest directory.
+# The fence fires before any directory creation or file write, so a refusal must leave
+# the box exactly as it was.
+#
 # THE FENCE IS TESTED IN ISOLATION by making watchd.sh a stub (exits 0, no output),
 # so the only failure path that can fire before the fence is the path-collision check
 # (skipped via SPIRA_CONF=/nonexistent). The fence fires; everything after it would need
 # a full systemctl environment and is not what this suite covers.
 #
-# defect: sp-mlcd
+# defect: sp-mlcd sp-y9zp
 # covers: systemd/install.sh spira/lib.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 pass=0; fail=0
-ok()     { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
-bad()    { fail=$((fail+1)); printf '  FAIL  %s: %s\n' "$1" "$2"; }
-is()     { [ "$2" = "$3" ] && ok "$1" || bad "$1" "wanted [$2] got [$3]"; }
-want()   { [[ "$3" == *"$2"* ]] && ok "$1" || bad "$1" "wanted [$2] in [$3]"; }
-nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3]"; }
-nonzero(){ [ "$2" != 0 ] && ok "$1" || bad "$1" "wanted non-zero exit, got 0"; }
+ok()       { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
+bad()      { fail=$((fail+1)); printf '  FAIL  %s: %s\n' "$1" "$2"; }
+is()       { [ "$2" = "$3" ] && ok "$1" || bad "$1" "wanted [$2] got [$3]"; }
+want()     { [[ "$3" == *"$2"* ]] && ok "$1" || bad "$1" "wanted [$2] in [$3]"; }
+nowant()   { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3]"; }
+nonzero()  { [ "$2" != 0 ] && ok "$1" || bad "$1" "wanted non-zero exit, got 0"; }
+dest_empty() {
+    local name="$1" dest="$TMP/home/.config/systemd/user"
+    local count; count=$(find "$dest" -maxdepth 1 \( -name '*.service' -o -name '*.timer' \) 2>/dev/null | wc -l)
+    [ "$count" -eq 0 ] \
+        && ok "$name" \
+        || bad "$name" "$count file(s) written to dest on refusal path"
+}
 
 echo "test-install-landref.sh"
 
@@ -152,10 +163,11 @@ echo "POSITIVE CONTROL — wrong branch: fence fires and cannot be silent."
 git -C "$REPO" checkout -qb feature/sp-test 2>/dev/null
 
 out="$(inst "$REPO")"; rc=$?
-nonzero "wrong branch: exit non-zero"                                                "$rc"
-want    "wrong branch: names the current branch in refusal"                          "feature/sp-test" "$out"
-want    "wrong branch: names the landref"                                            "main" "$out"
-want    "wrong branch: names the override"                                           "SPIRA_INSTALL_FORCE=1" "$out"
+nonzero   "wrong branch: exit non-zero"                                              "$rc"
+want      "wrong branch: names the current branch in refusal"                        "feature/sp-test" "$out"
+want      "wrong branch: names the landref"                                          "main" "$out"
+want      "wrong branch: names the override"                                         "SPIRA_INSTALL_FORCE=1" "$out"
+dest_empty "wrong branch: no unit file written to dest on refusal path"
 
 # ===========================================================================
 echo
@@ -185,9 +197,10 @@ else
 fi
 
 out_behind="$(inst "$REPO")"; rc_behind=$?
-nonzero "behind: exit non-zero"                                                      "$rc_behind"
-want    "behind: mentions being behind in refusal"                                   "behind" "$out_behind"
-want    "behind: names the override"                                                 "SPIRA_INSTALL_FORCE=1" "$out_behind"
+nonzero   "behind: exit non-zero"                                                    "$rc_behind"
+want      "behind: mentions being behind in refusal"                                 "behind" "$out_behind"
+want      "behind: names the override"                                               "SPIRA_INSTALL_FORCE=1" "$out_behind"
+dest_empty "behind: no unit file written to dest on refusal path"
 
 # ===========================================================================
 echo
