@@ -245,7 +245,7 @@ PAYLOAD
 # pass begins with, so the set is covered by rotation over cycles however long it grows.
 # --------------------------------------------------------------------------------------
 cmd_run() {
-    local started deadline s out rc secs fp t0 left slice status id next_cursor=""
+    local started deadline s out rc secs fp t0 left slice status id next_cursor="" _td_shared=0
     started="$(date +%s)"; deadline=$(( started + BUDGET ))
     mkdir -p "$STATE" 2>/dev/null
 
@@ -294,6 +294,44 @@ cmd_run() {
     for s in $(all_suites); do is_gated "$s" && gated_here="$gated_here $s"; done
     [ -n "$gated_here" ] && printf 'skipped — the landing gate already runs these on every branch:%s\n' "$gated_here"
     [ -n "$undeclared" ] && printf 'no `# covers:` declaration (run anyway, selection cannot see them):%s\n' "$undeclared"
+
+    # --------------------------------------------------------------------------------------
+    # SHARED TESTDB FIXTURE. Build once; suites that call testdb_up get the fast reset
+    # path (~6ms via directory swap) rather than each building their own fresh database
+    # (~7s). Without this, 56+ non-gated suites each pay the init cost every pass —
+    # over 6 minutes of a 7-minute budget, and the last suites in the rotation are
+    # cut short or killed. A suite killed mid-run by a tight slice fires its EXIT trap
+    # (rm -rf its temp dir), which cascades failures in subsequent assertions.
+    #
+    # Vars are exported so every setsid'd suite subprocess inherits them. suites.sh's
+    # own SPIRA_DB and PATH are restored immediately after the build so incident.sh and
+    # bd calls here continue to reach the production store.
+    #
+    # BORROWERS DO NOT DROP. testdb_drop inside each suite's EXIT trap is a no-op when
+    # TESTDB_SHARED=1 — only this shell drops at the end of cmd_run.
+    # testdb_reset inside testdb_up clears the fixture to a clean baseline at the top
+    # of every suite's testdb_up call, so each suite starts with an empty store.
+    # --------------------------------------------------------------------------------------
+    if . "$HERE/testdb.sh" 2>/dev/null && testdb_available 2>/dev/null; then
+        local _td_real_db="$SPIRA_DB"
+        local _td_real_bd="${SPIRA_BD:-}"
+        local _td_had_bd; [ -n "${SPIRA_BD+x}" ] && _td_had_bd=1 || _td_had_bd=0
+        local _td_real_path="$PATH"
+        local _td_real_spath="${SPIRA_PATH:-}"
+        local _td_had_spath; [ -n "${SPIRA_PATH+x}" ] && _td_had_spath=1 || _td_had_spath=0
+        if testdb_up suites 2>/dev/null; then
+            export TESTDB_SHARED=1 TESTDB_NAME TESTDB_DIR TESTDB_BASELINE \
+                   TESTDB_BIN TESTDB_MODE TESTDB_BD TESTDB_STARTED_SERVICE
+            # Restore production vars — the fixture is for suite subprocesses, not us.
+            SPIRA_DB="$_td_real_db"; export SPIRA_DB
+            PATH="$_td_real_path"; export PATH
+            if [ "$_td_had_bd" = 1 ]; then SPIRA_BD="$_td_real_bd"; export SPIRA_BD
+            else unset SPIRA_BD 2>/dev/null || true; fi
+            if [ "$_td_had_spath" = 1 ]; then SPIRA_PATH="$_td_real_spath"; export SPIRA_PATH
+            else unset SPIRA_PATH 2>/dev/null || true; fi
+            _td_shared=1
+        fi
+    fi
 
     local ran=0 red=0 skipped=0 unreached=""
     # Instrument: track which suites got results, and write unreached for any that didn't.
@@ -373,6 +411,9 @@ cmd_run() {
                 printf '  %-26s RED      rc=%s after %ss  %s\n' "$s" "$rc" "$secs" "${id:-not filed}" ;;
         esac
     done
+
+    # Drop the shared fixture this shell owns; borrowers (suites) already no-op'd their drop.
+    [ "$_td_shared" = 1 ] && { TESTDB_SHARED=0 testdb_drop 2>/dev/null || true; }
 
     # INSTRUMENT THE PASS: write an unreached record for every suite in $timed that did not
     # get a result file written. This makes visible which suites were skipped due to budget,
