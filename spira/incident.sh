@@ -43,9 +43,11 @@ set -uo pipefail
 # external ref, the recurrence bump, the Sin escalation — is the same either way, and is the
 # reason a second implementation of "file a bead, but only once" does not exist.
 #
-# THE OPEN-BEAD LOOKUP USES THE SAME VALUE. Filing under one label set and deduping under
-# another would find no open bead every time and file a fresh one on every pass, which is the
-# exact failure the dedupe exists to prevent, arriving silently.
+# THE OPEN-BEAD LOOKUP MUST EXCLUDE FILER-SPECIFIC LABELS. The authoritative dedupe key is
+# external_ref, compared client-side; the --label filter is only a cheap prefilter to keep
+# the result set small. A label that varies between filers of the same event (e.g. repo:)
+# must be excluded from that filter: including it silently partitions the candidate set so
+# two callers declaring different repos never find each other's open incident (sp-jvlrs).
 LABELS="${SPIRA_INCIDENT_LABELS:-spira,incident}"
 
 # THE REPOSITORY THIS INCIDENT BELONGS TO. Without a repo: label a bead is worked in the
@@ -95,7 +97,13 @@ open_incident() {        # open_incident <ref> -> bead id or empty
     # creating one fresh bead per filing instead of bumping recurrences.  The JSON
     # payload has always carried external_ref, so filtering in Python works with every
     # version.  The label filter keeps the result set small in practice.
-    bdjson list --status open,in_progress --limit 0 --label "$LABELS" \
+    #
+    # DEDUPE LABELS EXCLUDE repo: — a repo: label identifies the filer, not the event.
+    # Two callers declaring different repos must still find each other's open incident;
+    # including repo: in the filter silently partitions dedup so they cannot (sp-jvlrs).
+    local _dedupe_labels
+    _dedupe_labels="$(printf '%s' "$LABELS" | tr ',' '\n' | grep -v '^repo:' | paste -sd, -)"
+    bdjson list --status open,in_progress --limit 0 --label "$_dedupe_labels" \
           2>/dev/null \
       | python3 -c '
 import sys, json

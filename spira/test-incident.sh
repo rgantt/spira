@@ -248,6 +248,54 @@ mkdir -p "$RUN"
 
 # ======================================================================================
 echo
+echo "cross-repo dedup — same ref, different repo: labels resolve to ONE incident (sp-jvlrs):"
+# ======================================================================================
+# THE PROPERTY a61a110 HAD NO WAY TO OBSERVE. open_incident formerly filtered on the
+# caller's full LABELS including repo:, so two filers declaring different repos produced
+# disjoint candidate sets and each filed a fresh bead. The fix strips repo: from the dedup
+# filter (DEDUPE_LABELS), making external_ref the effective key regardless of which repo
+# the caller declared.
+#
+# POSITIVE CONTROL: one filing with repo:brain creates a bead. A second filing of the same
+# title with repo:fixture-repo must find that bead and record a recurrence.
+_cross_title="cross repo dedup test"
+_cross_ref="incident:cross-repo-dedup-test"
+_cross_env() {
+    env -i HOME="$HOME" PATH="$PATH" SPIRA_PATH="${SPIRA_PATH:-}" \
+        SPIRA_CONF="$TMP/nonexistent.conf" \
+        SPIRA_DB="$SPIRA_DB" \
+        SPIRA_REPO_MAP="$REPO_MAP" \
+        SPIRA_SPOOL="$SPOOL" \
+        SPIRA_INCIDENT_LOG="$ILOG" \
+        SPIRA_INCIDENT_LOCK="$LOCK" \
+        SPIRA_RUN="$RUN" \
+        SPIRA_NOTIFY="$NOOP" \
+        SPIRA_ASK="$NOOP" \
+        "$@" \
+        bash "$HERE/incident.sh" file "$_cross_title" - >/dev/null 2>&1
+}
+printf 'first filer\n'  | _cross_env SPIRA_INCIDENT_REPO=brain
+printf 'second filer\n' | _cross_env SPIRA_INCIDENT_REPO=fixture-repo
+n="$(bd -C "$SPIRA_DB" list --status open,in_progress --limit 0 --json 2>/dev/null \
+  | python3 -c '
+import sys, json
+target = sys.argv[1]; count = 0
+try: d = json.load(sys.stdin)
+except Exception: print(0); raise SystemExit(0)
+for i in (d if isinstance(d, list) else [d]):
+    if i.get("external_ref") == target: count += 1
+print(count)
+' "$_cross_ref")"
+is "same ref with different repo: labels resolves to one incident, not two" "1" "$n"
+recur_cross="$(grep -c 'recurred' "$ILOG" 2>/dev/null || true)"
+is "second cross-repo filer was recorded as a recurrence, not a new filing" "1" "$recur_cross"
+
+testdb_reset
+mkdir -p "$RUN"
+> "$ILOG"
+
+# ======================================================================================
+echo
 echo "undeclared-repo ask dedupe — multiple incidents for the same ref produce ONE ask:"
 # ======================================================================================
 # THE BLEED THIS SUITE EXERCISES. 21 distinct test files produced 57 open asks by 16:07
