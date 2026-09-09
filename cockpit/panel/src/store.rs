@@ -873,7 +873,13 @@ pub fn view_items(
                     }
                 })
                 .collect();
-            out.reverse();
+            // DECISIONS renders newest-first: bd list returns beads in that order, so
+            // reversing would put the ten-hour-old row on top. For all other views the
+            // oldest item is the most relevant (longest-unanswered insight, oldest
+            // notification not yet archived), so the reverse stays.
+            if view != View::Decisions {
+                out.reverse();
+            }
             Ok(out)
         }
     }
@@ -1446,5 +1452,64 @@ mod tests {
         ]);
         let who: Vec<&str> = got.iter().map(|(a, _, _)| a.as_str()).collect();
         assert_eq!(who, ["operator", "claude"]);
+    }
+
+    // ── VIEW ORDERING: decisions newest-first, alerts oldest-first ───────────────────
+    //
+    // bd list returns newest-first. The general view builder used to reverse that unconditionally,
+    // making every view oldest-first. Decisions should be newest-first — a ten-hour-old row on top
+    // is the one most likely to have been overtaken by everything under it (sp-dyh80). Alerts stay
+    // oldest-first because the condition that has been true longest is the one not fixing itself.
+    // Both directions are pinned here so a future refactor cannot silently swap them.
+
+    fn ask_bead(id: &str, created: &str) -> Value {
+        serde_json::json!({
+            "id": id,
+            "title": format!("{id} question"),
+            "description": "what to do?",
+            "status": "open",
+            "issue_type": "task",
+            "labels": ["needs-operator", "overseer"],
+            "created_at": created,
+            "comment_count": 0,
+        })
+    }
+
+    /// DECISIONS renders newest-first. bd list returns beads newest-first; before sp-dyh80
+    /// the unconditional reverse put the oldest bead on top, which was the one most likely to
+    /// have been overtaken by everything below it.
+    #[test]
+    fn decisions_are_newest_first() {
+        // bd list returns newest-first, so we give the snapshot rows in that order and
+        // assert the view preserves it rather than reversing it.
+        let s = snap(vec![
+            ask_bead("sp-newest", "2026-09-09T16:00:00Z"),
+            ask_bead("sp-middle", "2026-09-09T10:00:00Z"),
+            ask_bead("sp-oldest", "2026-09-01T09:00:00Z"),
+        ]);
+        assert_eq!(
+            ids(view_items(&s, View::Decisions, false, NOW)),
+            ["sp-newest", "sp-middle", "sp-oldest"],
+        );
+    }
+
+    /// ALERTS renders oldest-first. The condition that has been true longest is the one that is
+    /// not fixing itself. This direction is deliberately opposite to DECISIONS and must stay so.
+    #[test]
+    fn alerts_ordering_is_opposite_to_decisions() {
+        let s = snap(vec![
+            firing("sp-new", "2026-09-09T16:00:00Z"),
+            firing("sp-old", "2026-09-01T09:00:00Z"),
+        ]);
+        // Alerts: oldest on top.
+        let alert_ids = ids(view_items(&s, View::Alerts, false, NOW));
+        assert_eq!(alert_ids, ["sp-old", "sp-new"], "alerts must be oldest-first");
+        // Decisions: newest on top (positive control — same store, different view).
+        let d = snap(vec![
+            ask_bead("sp-new-d", "2026-09-09T16:00:00Z"),
+            ask_bead("sp-old-d", "2026-09-01T09:00:00Z"),
+        ]);
+        let decision_ids = ids(view_items(&d, View::Decisions, false, NOW));
+        assert_eq!(decision_ids, ["sp-new-d", "sp-old-d"], "decisions must be newest-first");
     }
 }
