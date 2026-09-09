@@ -51,8 +51,11 @@ REAL_MKDIR="$(command -v mkdir)"
 # configuration, units or watchers and report a pass it did not earn.
 CLONE="$TMP/clone"
 mkdir -p "$CLONE/spira" "$CLONE/cockpit"
-cp "$HERE/conf.sh" "$HERE/watchd.sh" "$HERE/watch-refresh.sh" "$CLONE/spira/"
+cp "$HERE/conf.sh" "$HERE/watchd.sh" "$HERE/watch-refresh.sh" "$HERE/auron.sh" "$CLONE/spira/"
 cp -r "$ROOT/systemd" "$CLONE/systemd"
+# beads-push.sh and concierge.sh live at repo root (@SPIRA_REPO@); the ExecStart fence in
+# install.sh requires them to be executable. SPIRA_REPO derives to $CLONE (parent of $CLONE/spira).
+cp "$ROOT/beads-push.sh" "$ROOT/concierge.sh" "$CLONE/"
 
 # EVERY CONFIGURED VALUE PINNED TO A NON-DEFAULT. SPIRA_COCKPIT would derive to
 # $CLONE/cockpit and SPIRA_RUN to $CLONE/.runtime/spira; both are moved somewhere unrelated,
@@ -63,7 +66,10 @@ printf '#!/bin/sh\nsleep 3600\n' > "$COCKPIT/watch-answers.sh"
 printf '#!/bin/sh\n: library\n'   > "$COCKPIT/db.sh"          # the library beside the target
 printf '{}\n'                     > "$COCKPIT/state.json"     # what the watcher writes while running
 printf 'event\n'                  > "$COCKPIT/scratch.log"
-chmod +x "$COCKPIT/watch-answers.sh"
+# layout.sh is the ExecStart target for cockpit-ensure.service (@SPIRA_COCKPIT@/layout.sh);
+# the ExecStart fence in install.sh requires it to be executable.
+printf '#!/bin/sh\n: stub\n'      > "$COCKPIT/layout.sh"
+chmod +x "$COCKPIT/watch-answers.sh" "$COCKPIT/layout.sh"
 CONF="$TMP/spira.conf"
 printf 'SPIRA_COCKPIT = %s\nSPIRA_RUN = %s\n' "$COCKPIT" "$RUN" > "$CONF"
 
@@ -477,26 +483,27 @@ printf '#!/bin/bash\nexit 0\n' > "$STUB/loginctl"
 chmod +x "$STUB/systemctl" "$STUB/loginctl"
 IHOME="$TMP/ihome"; mkdir -p "$IHOME"
 : > "$TMP/install.log"
-printf 'SPIRA_COCKPIT = %s\nSPIRA_RUN = %s\nSPIRA_WATCHERS = %s\nSPIRA_PATH = %s\n' \
-    "$COCKPIT" "$RUN" "$MAN" "$STUB" > "$TMP/install.conf"
+printf 'SPIRA_COCKPIT = %s\nSPIRA_RUN = %s\nSPIRA_WATCHERS = %s\nSPIRA_PATH = %s\nSPIRA_PROD = %s\n' \
+    "$COCKPIT" "$RUN" "$MAN" "$STUB" "$HERE" > "$TMP/install.conf"
 env -i HOME="$IHOME" PATH="$STUB:$PATH" SPIRA_CONF="$TMP/install.conf" \
+    SPIRA_INSTALL_FORCE=1 \
     bash "$CLONE/systemd/install.sh" > "$TMP/install.out" 2>&1
 ilog="$(cat "$TMP/install.log")"
 has "the stub recorded an install"      "$ilog" "daemon-reload"
-has "the refresh timer is enabled"      "$ilog" "enable --now spira-watch-refresh.timer"
+has "the refresh timer is enabled"      "$ilog" "enable --now spira-watch-refresh-prod.timer"
 # The .service behind a .timer is started BY the timer; enabling it as well runs it once at
 # boot, outside the schedule.
-hasnt "and the service behind it is not" "$ilog" "enable --now spira-watch-refresh.service"
+hasnt "and the service behind it is not" "$ilog" "enable --now spira-watch-refresh-prod.service"
 
-U="$IHOME/.config/systemd/user/spira-watch-refresh.service"
+U="$IHOME/.config/systemd/user/spira-watch-refresh-prod.service"
 unit="$(cat "$U" 2>/dev/null)"
-has "the service is installed"  "$(ls "$IHOME/.config/systemd/user" 2>/dev/null)" "spira-watch-refresh.service"
+has "the service is installed"  "$(ls "$IHOME/.config/systemd/user" 2>/dev/null)" "spira-watch-refresh-prod.service"
 # law-fence-loops-on-shared-hardware: anything that polls is fenced BEFORE it is enabled.
 has "it is CPU-fenced"          "$unit" "CPUQuota="
 has "and it is niced"           "$unit" "Nice="
 has "and it cannot hang forever" "$unit" "TimeoutStartSec="
 hasnt "no placeholder survives into it" "$unit" "@"
-T="$IHOME/.config/systemd/user/spira-watch-refresh.timer"
+T="$IHOME/.config/systemd/user/spira-watch-refresh-prod.timer"
 has "the timer fires every minute" "$(cat "$T" 2>/dev/null)" "OnUnitActiveSec=1min"
 
 # NO PATH IS HARDCODED. Every absolute path in the rendered units must lie under a value
