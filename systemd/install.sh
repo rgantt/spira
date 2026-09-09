@@ -128,9 +128,13 @@ else
     echo "      Start your Dolt server yourself, or set it in ${SPIRA_CONF_FILE:-spira.conf}." >&2
 fi
 
-# dolt-beads-test.service is a second Dolt server for test fixtures, gated identically.
+# dolt-beads-test.service is a second Dolt server for test fixtures. It is installed so
+# that `systemctl --user start dolt-beads-test.service` works, but NOT enabled: script
+# activation from testdb.sh replaces always-on (WantedBy=default.target is intentionally
+# absent from the unit file). A box with no suite running pays nothing.
 if [ -n "$SPIRA_TESTDB_DATA" ]; then
-    UNITS+=(dolt-beads-test.service); ENABLE+=(dolt-beads-test.service)
+    UNITS+=(dolt-beads-test.service)
+    # Not in ENABLE — installed but not enabled at login; testdb.sh starts on demand.
 else
     OPTIONAL+=(dolt-beads-test.service)
 fi

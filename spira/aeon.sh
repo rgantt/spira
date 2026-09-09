@@ -983,19 +983,22 @@ if [ -f "$WORK/$SPIRA_TESTDB_LIB" ]; then
     # reason for a failure that had none.
     fixture_out="$( {
         . "$WORK/$SPIRA_TESTDB_LIB" && testdb_up "aeon${BEAD_ID//[^a-zA-Z0-9]/}" >&2 &&
-        printf '%s\n%s\n%s\n%s\n' \
-            "$TESTDB_NAME" "$TESTDB_DIR" "$TESTDB_BASELINE" "${TESTDB_BIN:-}"
+        printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+            "$TESTDB_NAME" "$TESTDB_DIR" "$TESTDB_BASELINE" "${TESTDB_BIN:-}" \
+            "${TESTDB_STARTED_SERVICE:-0}" "${TESTDB_MODE:-embedded}"
     } 2>"$fixture_err" )"
     fixture_ms=$(( $(date +%s%3N) - fixture_t0 ))
     if [ -n "$fixture_out" ]; then
-        { read -r TESTDB_NAME; read -r TESTDB_DIR; read -r TESTDB_BASELINE; read -r TESTDB_BIN; } <<< "$fixture_out"
-        export TESTDB_SHARED=1 TESTDB_NAME TESTDB_DIR TESTDB_BASELINE TESTDB_BIN
+        { read -r TESTDB_NAME; read -r TESTDB_DIR; read -r TESTDB_BASELINE; read -r TESTDB_BIN
+          read -r TESTDB_STARTED_SERVICE; read -r TESTDB_MODE; } <<< "$fixture_out"
+        export TESTDB_SHARED=1 TESTDB_NAME TESTDB_DIR TESTDB_BASELINE TESTDB_BIN \
+               TESTDB_STARTED_SERVICE TESTDB_MODE
         # The PATH shim lets bare `bd` resolve to the embedded binary in every suite that
         # inherits this fixture. The subshell that built the fixture added it to its own PATH
         # but that did not propagate; add it here so child processes see it.
         [ -n "$TESTDB_BIN" ] && export PATH="$TESTDB_BIN:$PATH"
         FIXTURE_LIB="$WORK/$SPIRA_TESTDB_LIB"
-        log "$FAYTH: $BEAD_ID shares one test fixture $TESTDB_NAME, built in ${fixture_ms}ms"
+        log "$FAYTH: $BEAD_ID shares one test fixture $TESTDB_NAME (${TESTDB_MODE:-embedded}), built in ${fixture_ms}ms"
     else
         # A FIXTURE THAT WILL NOT BUILD IS NOT A REFUSAL TO WORK. The suites fall back to
         # building their own, which is slow and correct; what must not happen is a bead going
@@ -1080,6 +1083,13 @@ fi
 # fixture is already built" would be wrong more often than right — and an instruction that is
 # visibly false about something checkable is a reason to distrust the rest of the brief.
 if [ -n "$FIXTURE_LIB" ]; then
+    if [ "${TESTDB_MODE:-embedded}" = server ]; then
+        _fixture_engine="the dolt-beads-test server (port ${SPIRA_TESTDB_PORT:-3308})"
+        _fixture_cleanup="testdb_drop (which stops dolt-beads-test.service if this session started it)"
+    else
+        _fixture_engine="the embedded Dolt engine — no shared server, no external port"
+        _fixture_cleanup="\`rm -rf\` on the fixture directory"
+    fi
     FIXTURE_BRIEF="**The fixture is already built.** One throwaway database was created for this
 session and exported into your environment (\`TESTDB_SHARED=1\`, \`TESTDB_NAME=$TESTDB_NAME\`),
 so a suite that sources \`$SPIRA_TESTDB_LIB\` and calls \`testdb_up\` resets it in a fraction of
@@ -1087,8 +1097,7 @@ a second instead of spending the ${fixture_ms}ms that build cost. Never unset th
 and never build a database of your own: a suite that reaches past \`testdb_up\` pays the build
 again on every run, and nothing anywhere reports that it did.
 
-The fixture uses the embedded Dolt engine — no shared server, no external port. Cleanup is
-\`rm -rf\` on the fixture directory."
+The fixture uses $_fixture_engine. Cleanup is $_fixture_cleanup."
 else
     FIXTURE_BRIEF="This repository has no shared test fixture, so a suite that needs one builds
 its own. If that turns out to be the slowest thing in your session, say so when you close the

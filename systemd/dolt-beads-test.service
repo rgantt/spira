@@ -22,6 +22,12 @@
 # ITS STORE IS DISPOSABLE, and that is the point. Nothing here is data. If it is wiped, the
 # next suite rebuilds what it needs, so a leak is no longer a slow poison — it is garbage on
 # a disk nobody reads.
+#
+# ON-DEMAND: this unit is NOT enabled at login (no WantedBy=default.target). testdb.sh starts
+# it before its first use and stops it after the last test fixture is dropped. On boxes where
+# embedded bd is available, testdb.sh uses that instead and never starts this unit at all.
+# KillSignal=SIGTERM and TimeoutStopSec=120 are load-bearing: dolt writes its working set
+# on SIGTERM, and a store killed early has a dirty chunk journal.
 Description=Dolt SQL server for test fixtures (disposable; never holds real data)
 Documentation=file://@SPIRA_HOME@/README.md
 After=default.target
@@ -30,10 +36,8 @@ After=default.target
 Type=simple
 ExecStart=@DOLT@ sql-server --config @SPIRA_TESTDB_DATA@/dolt-server.yaml
 WorkingDirectory=@SPIRA_TESTDB_DATA@
-Restart=always
-RestartSec=5
-# Same flush discipline as the real server: dolt writes its working set on SIGTERM, and a
-# store killed early has a dirty chunk journal. Cheaper to honour here than to debug.
+# No Restart= here: testdb.sh owns the lifecycle. A restart policy would fight the stop
+# that testdb_drop issues when the last fixture is dropped.
 KillSignal=SIGTERM
 TimeoutStopSec=120
 # Half the production server's ceiling. Fixtures are bursty and this box also runs prod, CI
@@ -44,4 +48,5 @@ StandardOutput=append:@SPIRA_REPO@/.runtime/dolt-beads-test.log
 StandardError=append:@SPIRA_REPO@/.runtime/dolt-beads-test.log
 
 [Install]
-WantedBy=default.target
+# Intentionally empty: this unit is installed (so systemctl start works) but never enabled
+# (no WantedBy=default.target). Script activation from testdb.sh replaces always-on.

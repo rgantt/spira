@@ -281,8 +281,10 @@ echo
 . "$HERE/testdb.sh"
 if ! testdb_available; then
     printf '\n  %d passed, %d failed (classifier)\n' "$pass" "$fail"
-    printf 'SKIP test-auron: no Dolt server at %s:%s — the reconcile cases need a real bd.\n' \
-        "$TESTDB_HOST" "$TESTDB_PORT" >&2
+    printf 'SKIP test-auron: no bd engine available — the reconcile cases need a real bd.\n' \
+        >&2
+    printf '  embedded: install bd-embedded  server: set SPIRA_TESTDB_DATA in spira.conf\n' \
+        >&2
     # A SKIP MUST NOT SWALLOW A FAILURE. Everything above ran without a server; if any of
     # it failed, this suite failed, and 77 would hide that behind the gate's "SKIPPED".
     [ "$fail" -eq 0 ] || exit 1
