@@ -442,10 +442,11 @@ while IFS=$'\t' read -r id r_name superseded dropped nopayload sentcontent; do
     r_path="$(repo_root "${r_name:-}")" || {
         log "CHECK5 $id: repo:$r_name is not in repo-map — cannot say whether it landed"
         continue; }
-    # ONE `git log` PER REPO, not per bead. `landed` walks 400 commits every call, so 36
-    # closed beads meant 36 full walks of the same history — the bulk of a pass that had
-    # grown to four minutes against a two-minute timer, so passes overlapped. This is
-    # `landed` inlined over a cached walk, so it must keep landed's THREE outcomes.
+    # ONE `git log` PER REPO, not per bead. `landed` walks all commits on the base branch;
+    # a 400-commit window caused beads older than that to be incorrectly marked unlanded and
+    # reopened repeatedly (sp-a9g at 401, sp-37q at 400). Searching %B (full message) not
+    # %s (subject only) catches bead IDs in commit bodies (sp-m0s7 case). This is `landed`
+    # inlined over a cached walk, so it must keep landed's THREE outcomes.
     if [ "$r_path" != "${subj_repo:-}" ]; then
         subj_repo="$r_path"
         # spira_landrefs is the base plus its local counterpart, both verified to resolve.
@@ -454,7 +455,7 @@ while IFS=$'\t' read -r id r_name superseded dropped nopayload sentcontent; do
         subj_base="${subj_refs%% *}"
         # shellcheck disable=SC2086
         [ -n "$subj_refs" ] \
-            && subjects="$(git -C "$r_path" log --format='%s' -n "${SPIRA_VERDICT_WINDOW:-400}" $subj_refs 2>/dev/null)" \
+            && subjects="$(git -C "$r_path" log --format='%B' $subj_refs 2>/dev/null)" \
             || subjects=""
     fi
     # CANNOT TELL IS NOT "NOT LANDED". Reading an unresolvable base as "no commit names it"
