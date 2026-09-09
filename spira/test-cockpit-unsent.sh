@@ -35,9 +35,14 @@ trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
 BASE_PATH="$PATH"
 # conf.sh (sourced by testdb.sh) knows where bd lives; pass it through so the probe can find it.
 BD_PATH="${SPIRA_PATH:-}"
-# The real bd binary, not the shim — the shim resolves through $HOME/.local/bin which does
-# not exist under env -i's temporary HOME. Resolve the real binary now, while HOME is real.
-REAL_BD="$(PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" command -v bd)"
+# Resolve the binary testdb_up selected (bd-embedded for embedded mode, bd for server mode)
+# to an absolute path now, while PATH is still expanded to include TESTDB_BIN. An absolute
+# path is required because env -i strips PATH; a bare command name would fail to resolve.
+# Using SPIRA_BD (set by testdb_up) is the correct choice: it is already the binary that can
+# open the testdb. The original `command -v bd` found the CGO_ENABLED=0 binary, which cannot
+# open the embedded store and caused conf.sh's `bd migrate schema` to fail at startup —
+# killing the probe before it emitted a single key (defect sp-gzufi).
+REAL_BD="$(command -v "${SPIRA_BD:-bd}" 2>/dev/null)"
 [ -n "$REAL_BD" ] || { echo "SKIP cockpit-unsent: no bd binary" >&2; exit 77; }
 
 # Two git repos. `alpha` is the home repo (listed first by spira_repos), `beta` is the second.
