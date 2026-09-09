@@ -20,7 +20,7 @@
 # proves the check could have seen something by running the positive first — an assertion of
 # absence from a probe that was never pointed at anything is indistinguishable from a pass
 # (law-absence-needs-a-positive-control).
-# defect: sp-obd
+# defect: sp-obd sp-1wzp
 # covers: spira/pilgrimage.sh cockpit/ask.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -126,6 +126,104 @@ nowant "an epic without the spira label is skipped" "PILGRIMAGE COMPLETE" "$out"
 eq     "and nothing is written about it"            "0" "$(n_events)"
 eq     "it is left open for whoever owns it"        "open" "$(status_of sp-alien)"
 
+# ======================================================================================
 echo
-printf '%d passed, %d failed\n' "$pass" "$fail"
+echo "landstate assertion — a live push-mode branch blocks the close until landing records it"
+#
+# The defect (sp-qj8n): sp-scbi's branch was present in the repo, its bead was closed,
+# but landing.sh had never written LANDED to landstate — marker commits were lost.
+# Pilgrimage closed the epic over this and left the branch permanently unlanded.
+#
+# The assertion: before closing an epic, every child with a live spira/* branch in a
+# push-mode repo must appear in landstate as LANDED. If any is missing or non-LANDED,
+# the close is deferred until the next landing pass records it.
+#
+# A REAL GIT REPO is used here — the assertion calls `git show-ref`, so a mock would only
+# prove the check can read a file we wrote (law-prefer-the-real-dependency).
+
+testdb_reset
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+LREPO="$TMP/lrepo"
+git init -q --bare -b main "$LREPO"
+git_work="$TMP/lrepo-work"
+git init -q -b main "$git_work"
+git -C "$git_work" commit -q --allow-empty -m base
+git -C "$git_work" remote add origin "$LREPO"
+git -C "$git_work" push -q origin main
+git -C "$git_work" fetch -q origin
+
+LMAP="$TMP/lrepo-map"
+printf 'lrepo | %s | push | origin/main | |\n' "$git_work" > "$LMAP"
+
+export SPIRA_RUN="$TMP/lrun"; mkdir -p "$SPIRA_RUN/landstate"
+
+run_repo() {
+    SPIRA_DB="$DB" SPIRA_NOTIFY="$HERE/../cockpit/ask.sh" \
+    SPIRA_HOME="$HERE" \
+    SPIRA_HOME_REPO=lrepo \
+    SPIRA_REPO="$git_work" \
+    SPIRA_REPO_MAP="$LMAP" \
+    SPIRA_RUN="$TMP/lrun" \
+        "$HERE/pilgrimage.sh" check 2>&1
+}
+
+testdb_seed <<JSONL
+{"id":"sp-assert-epic","title":"assertion epic","description":"d","status":"open","issue_type":"epic","labels":["spira","plan"]}
+$(child sp-assert-c1 closed sp-assert-epic)
+$(child sp-assert-c2 closed sp-assert-epic)
+JSONL
+
+# Create a branch for sp-assert-c1 in the push-mode repo but write NO landstate entry.
+git -C "$git_work" worktree add -q -b "spira/sp-assert-c1" "$TMP/lrun/wt-c1" main
+printf 'c1\n' > "$TMP/lrun/wt-c1/c1.txt"
+git -C "$TMP/lrun/wt-c1" add -A
+git -C "$TMP/lrun/wt-c1" commit -q -m "feat: sp-assert-c1 — work"
+
+out="$(run_repo)"
+want "a live branch with no landstate entry blocks the close" \
+     "ASSERTION — spira/sp-assert-c1 in lrepo is live but landstate reads 'missing'" "$out"
+want "and the epic is deferred"   "deferring — not all child branches are in landstate" "$out"
+eq   "and stays open"             "open" "$(status_of sp-assert-epic)"
+
+# A non-LANDED state (e.g. GATED) also blocks the close.
+printf 'GATED abc123 1234567890 fixture\n' > "$SPIRA_RUN/landstate/sp-assert-c1"
+out="$(run_repo)"
+want "a GATED landstate entry also blocks the close" \
+     "landstate reads 'GATED'" "$out"
+eq   "and the epic still stays open" "open" "$(status_of sp-assert-epic)"
+
+# Once the LANDED entry exists, the epic may close.
+printf 'LANDED abc123 1234567890 lrepo\n' > "$SPIRA_RUN/landstate/sp-assert-c1"
+out="$(run_repo)"
+want "with a LANDED entry, the epic closes"  "PILGRIMAGE COMPLETE" "$out"
+eq   "and the epic is now closed"            "closed" "$(status_of sp-assert-epic)"
+
+# sp-assert-c2 had no branch and needed no landstate entry — the close still went through.
+git -C "$git_work" worktree remove --force "$TMP/lrun/wt-c1" 2>/dev/null
+git -C "$git_work" branch -q -D spira/sp-assert-c1 2>/dev/null
+
+# A CHILD IN A PR-MODE REPO IS NOT CHECKED — landing.sh does not write landstate for pr.
+testdb_reset
+testdb_seed <<JSONL
+{"id":"sp-pr-epic","title":"pr-mode epic","description":"d","status":"open","issue_type":"epic","labels":["spira","plan"]}
+$(child sp-pr-c1 closed sp-pr-epic)
+JSONL
+PRMAP="$TMP/prrepo-map"
+printf 'lrepo | %s | pr | origin/main | |\n' "$git_work" > "$PRMAP"
+git -C "$git_work" worktree add -q -b "spira/sp-pr-c1" "$TMP/lrun/wt-pr-c1" main
+printf 'pr\n' > "$TMP/lrun/wt-pr-c1/pr.txt"
+git -C "$TMP/lrun/wt-pr-c1" add -A
+git -C "$TMP/lrun/wt-pr-c1" commit -q -m "feat: sp-pr-c1 — work"
+# No landstate entry for sp-pr-c1.
+rm -f "$SPIRA_RUN/landstate/sp-pr-c1"
+out="$(SPIRA_DB="$DB" SPIRA_NOTIFY="$HERE/../cockpit/ask.sh" \
+       SPIRA_HOME="$HERE" SPIRA_HOME_REPO=lrepo \
+       SPIRA_REPO="$git_work" SPIRA_REPO_MAP="$PRMAP" SPIRA_RUN="$TMP/lrun" \
+       "$HERE/pilgrimage.sh" check 2>&1)"
+want "a pr-mode branch is not checked — the epic closes regardless" "PILGRIMAGE COMPLETE" "$out"
+eq   "and the epic is closed" "closed" "$(status_of sp-pr-epic)"
+git -C "$git_work" worktree remove --force "$TMP/lrun/wt-pr-c1" 2>/dev/null
+git -C "$git_work" branch -q -D spira/sp-pr-c1 2>/dev/null
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
