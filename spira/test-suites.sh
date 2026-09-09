@@ -484,6 +484,54 @@ rm -f "$GT/spira/gate-suites"
 gout="$(gate)"; grc=$?
 is   "and a missing list is refused too" "1" "$grc"
 
+# ======================================================================================
+echo
+echo "a suite that leaks a background child does not wedge the pass (sp-04bd, sp-8x36):"
+# ======================================================================================
+# THE DEFECT THIS PINS. cmd_run used out="$(timeout ... bash $s 2>&1)". Command substitution
+# reads until EOF ON THE PIPE, not until the child exits, so a suite that backgrounds anything
+# inheriting stdout keeps the write end open after the suite itself has finished — and the
+# runner blocks on a suite that already SUCCEEDED. timeout kills the script and never touches
+# an orphaned grandchild, so the wall does not rescue it either.
+#
+# Measured before the fix: test-aeon-heartbeat.sh passes 22/0 standalone, yet the hourly pass
+# recorded no result for it and none for the three suites alphabetically after it. Killing
+# exactly the two orphaned `sleep` pids released a wedged reader within 2 seconds.
+#
+# 16031d8 fixed it by redirecting to a file and reading the file. It landed WITHOUT a test,
+# which is why this exists: the failure is silent, it looks exactly like a slow suite, and the
+# next leak would reproduce it with nothing to say so.
+#
+# THE SECOND SUITE IS THE ASSERTION THAT MATTERS. A leaker that merely takes its own timeout
+# costs one result; a leaker that wedges the RUNNER costs every suite after it, which is the
+# shape actually observed. So plant a name that sorts after the leaker and require its record.
+clear_results
+plant test-fx-leaky.sh <<'L'
+#!/usr/bin/env bash
+# Leaks a child holding stdout open far beyond the suite's own life.
+sleep 300 &
+echo "leaky ran"
+exit 0
+L
+plant test-fx-zafter.sh <<'L'
+#!/usr/bin/env bash
+echo "the suite after the leaker ran"
+exit 0
+L
+
+leak_out="$(sut run SPIRA_SUITES_BUDGET=60 SPIRA_SUITE_TIMEOUT=10)"; leak_rc=$?
+
+is "the pass returns rather than hanging on the leaked child" "0" "$leak_rc"
+is "the leaker gets a result" "ok" \
+   "$( { read -r ls _ < "$STATE/test-fx-leaky.sh.result"; printf '%s' "${ls:-MISSING}"; } 2>/dev/null )"
+is "and so does the suite after it" "ok" \
+   "$( { read -r zs _ < "$STATE/test-fx-zafter.sh.result"; printf '%s' "${zs:-MISSING}"; } 2>/dev/null )"
+want "the pass names the suite after the leaker" "test-fx-zafter.sh" "$leak_out"
+
+# Do not leave the fixture's own leaked child running for the rest of the suite.
+pkill -P $$ -x sleep 2>/dev/null; true
+rm -f "$SH/test-fx-leaky.sh" "$SH/test-fx-zafter.sh"
+
 echo
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
