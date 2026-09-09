@@ -273,6 +273,7 @@ want "and the pane says so" "stranded (claimed, nobody home)     2" \
 # THE INCIDENT ITSELF. One childless epic: nobody claimed it, no lease expired, no worker
 # died. The ledger has one entry and the ghost count is zero, and it is the zero that is the
 # whole point — reverting the renderer to the ledger size fails here and nowhere else.
+# defect: sp-3cm3
 INCIDENT='{"spira,plan:empty:sp-jj88":{"first":1788811865,"acted":0,"escalated":1788812834}}'
 k="$(ledger "$INCIDENT")"
 is "an empty epic is not a ghost"   "0" "$(key "$k" SP_STRAND_GHOST)"
