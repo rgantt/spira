@@ -52,6 +52,21 @@ set -uo pipefail
 # the registered command must be an absolute path.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/conf.sh"
 
+# NOR MUST A HARNESS THAT IS NOT IN FORCE. This hook is registered in the CLIENT's settings
+# file, so it runs in every session on the box — and a second harness checkout that registers
+# itself gets its banner printed into every one of the operator's real sessions alongside the
+# real harness's. That happened: a second checkout kept for testing had registered itself on
+# SessionStart and PostCompact, so each context reset printed two watcher tables and offered
+# two sets of Monitor commands, the second pointing at fixture runtime paths whose state files
+# do not exist — the duplicate-reader defect this file was just fixed for, arriving by a route
+# the reader lock cannot see because the two harnesses have separate runtime directories.
+#
+# SPIRA_PROD IS THE HARNESS systemd ExecStarts FROM, which is the definition of in force. A
+# checkout that is not it may be tested, landed and read; it may not print into the operator's
+# sessions. Silent, because a second harness is a legitimate thing to have and a warning in
+# every session is the noise this whole file exists to have replaced.
+[ -n "${SPIRA_PROD:-}" ] && [ "${SPIRA_HOME:-}" != "$SPIRA_PROD" ] && exit 0
+
 WATCHD="$SPIRA_HOME/watchd.sh"
 [ -x "$WATCHD" ] || exit 0
 
@@ -134,6 +149,26 @@ degraded="$(printf '%s\n' "$status" | awk '/^DEGRADED$/ { f=1; next } f && /^[[:
 # indistinguishable from a watcher that is running and quiet.
 latchable="$("$WATCHD" manifest 2>/dev/null | awk -F'|' '$1 != "" && $2 != "off" { print $1 }')"
 
+# AND A WATCHER SOMEBODY IS ALREADY TAILING IS NOT OFFERED. This is the half that was missing,
+# and its absence is what made every context reset expensive.
+#
+# A Monitor SURVIVES a clear, a compact and a fork — the process keeps running and keeps
+# delivering into the rebuilt context. So the honest instruction after a reset is usually
+# "attach nothing"; what stood here instead was "run ListAgents first, and attach only the
+# streams not already listed there", which cannot be done: ListAgents enumerates agents and
+# sessions, and no tool at all enumerates a session's own Monitors. The check therefore
+# reported "none attached" every single time, and a session cleared four times ended up
+# holding four tails on `answers` — Ryan's verdicts arriving in quadruplicate, in the one
+# place in this harness where a duplicated line costs the most.
+#
+# THE LOCK IS THE FACT, so it is what is asked. `watchd.sh tailers` reports the watchers a live
+# reader holds, from the kernel rather than from a pid file, so a holder that has died since is
+# reported as free rather than blocking the offer forever.
+held="$("$WATCHD" tailers 2>/dev/null | awk -F'|' '$1 != "" { print $1 }')"
+if [ -n "$held" ]; then
+    latchable="$(printf '%s\n' "$latchable" | grep -Fxv -f <(printf '%s\n' "$held") || true)"
+fi
+
 budget="${SPIRA_HOOK_LINES:-40}"
 case "$budget" in ''|*[!0-9]*) budget=40 ;; esac
 
@@ -168,14 +203,25 @@ if [ -n "$latchable" ]; then
     echo
     printf '%s\n' "$latchable" | awk -v w="$WATCHD" '{ printf "    Monitor: %s tail %s\n", w, $1 }'
     echo
-    # MONITORS SURVIVE /clear. A session that has been cleared already holds any it attached
-    # before the clear, so attaching without checking first duplicates the Monitor and delivers
-    # every future event once per duplicate. The instruction below names the check so the agent
-    # does not need to know the hazard independently.
-    echo "Monitors survive /clear: run ListAgents first, and attach only the streams not"
-    echo "already listed there. \`tail\` resumes from the cursor, so it replays what was"
-    echo "missed and then streams. Nothing above was marked read."
+    # THE DEDUPLICATION IS NOT ASKED OF THE READER. Every watcher already being tailed has
+    # been removed from the list above, and `tail` itself refuses a second reader, so this
+    # block never names a stream that is already arriving and obeying it cannot duplicate one.
+    # What stood here was an instruction to check with ListAgents, which lists no Monitors.
+    echo "\`tail\` resumes from the cursor, so it replays what was missed and then streams."
+    echo "Nothing above was marked read. Anything already being tailed is omitted from that"
+    echo "list, and a second tail on one watcher refuses itself, so just run what is listed."
 } > "$TMP/tail"
+fi
+
+# WHAT IS ALREADY ARRIVING IS SAID OUT LOUD, and not merely left off the list. A fresh context
+# has no way to know an event stream is still being delivered into it; told nothing, it reads
+# the absence as "not watching" and goes looking for a way to attach one — which is the same
+# duplicate arriving by reasoning instead of by instruction.
+if [ -n "$held" ]; then
+{   echo "Already streaming into this context from before the reset — do NOT re-attach:"
+    printf '%s\n' "$held" | sed 's/^/    /'
+    echo
+} >> "$TMP/tail"
 fi
 
 # THE PREVIEW GETS WHAT IS LEFT, MEASURED. The table and the latch commands are printed whole

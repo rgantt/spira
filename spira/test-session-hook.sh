@@ -72,6 +72,10 @@ MANIFEST="$TMP/elsewhere/watchers"
 BUDGET=26
 CONF="$TMP/spira.conf"
 cat > "$CONF" <<EOF
+# THE FIXTURE DECLARES ITSELF IN FORCE. The hook refuses to print from a harness that is not
+# the one systemd runs, so a clone that left SPIRA_PROD at its derived default would be silent
+# here and every assertion below would pass on an empty string.
+SPIRA_PROD = $CLONE/spira
 SPIRA_RUN = $RUN
 SPIRA_WATCHERS = $MANIFEST
 SPIRA_HOOK_LINES = $BUDGET
@@ -147,12 +151,14 @@ is  "one latch line per row, and no more" "2" \
     "$(printf '%s\n' "$out" | grep -c 'Monitor: ' || true)"
 has "the hook says why it cannot latch itself" "$out" "cannot attach"
 has "and that nothing was consumed" "$out" "Nothing above was marked read"
-# THE CHECK-FIRST INSTRUCTION. Monitors survive /clear, so a session that has been cleared
-# already holds any it attached before the clear. The hook must name this and tell the session
-# to run ListAgents first — then attach only what is missing — so the agent does not need to
-# know the hazard independently (acceptance: sp-vv4p).
-has "the hook warns that Monitors survive clear" "$out" "survive /clear"
-has "and to check ListAgents before attaching"   "$out" "ListAgents"
+# IT NEVER SENDS THE READER TO ListAgents. That was the instruction here, and asserting it
+# is how a control nobody could follow survived in a green suite: ListAgents enumerates agents
+# and sessions and no tool enumerates a session's own Monitors, so "attach only the streams not
+# already listed there" reported nothing attached every time. A cleared session ended up with
+# four tails on one watcher. Deduplication is the lock's job now (test-watchd-tail.sh), and the
+# only thing asserted here is that the unfollowable instruction is gone (sp-vv4p, superseded).
+hasnt "it does not send the reader to ListAgents" "$out" "ListAgents"
+has  "it says a duplicate tail refuses itself"    "$out" "refuses itself"
 
 echo
 echo "the newest lines are the ones kept"

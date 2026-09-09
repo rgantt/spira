@@ -11,7 +11,11 @@
 #   watchd.sh drain [name] [--all]  print what nobody has read, and mark it read
 #   watchd.sh peek [name] [--all] [--limit N]
 #                                   the same, capped, and marking NOTHING read
-#   watchd.sh tail <name> [--all]   replay from the cursor, then stream; for a Monitor
+#   watchd.sh tail <name> [--all] [--takeover]
+#                                   replay from the cursor, then stream; for a Monitor.
+#                                   ONE AT A TIME per watcher — a second refuses unless
+#                                   --takeover is given, which ends the incumbent first
+#   watchd.sh tailers               name|pid|since for every watcher being tailed now
 #   watchd.sh restart [name]        restart the unit behind a watcher
 #   watchd.sh notify                escalate events nobody has drained; for a timer
 #   watchd.sh health-ids <file>     assert a state file names at least one of our own beads
@@ -88,6 +92,49 @@ _wd_logfile() {
     esac
 }
 _wd_cursorfile() { printf '%s/%s.cursor' "$(watchd_dir)" "$1"; }
+
+# _wd_tail_lockfile <name> — the file whose exclusive flock IS the right to tail this watcher.
+#
+# ONE READER PER WATCHER IS THE CONTRACT, NOT A CONVENIENCE. A watcher has exactly one cursor
+# and the cursor is what makes a re-latch replay only what was missed; two concurrent tails
+# share it, so each one marks lines read on the other's behalf and both deliver every line.
+# There is no coherent reading of two readers over one cursor, so the cardinality is enforced
+# here rather than left as advice.
+#
+# THE ADVICE COULD NOT HAVE WORKED. The session hook told a fresh context to "run ListAgents
+# first and attach only the streams not already listed there" — but ListAgents enumerates
+# agents and sessions, never Monitors, and no tool enumerates a session's own Monitors at all.
+# So the check always reported nothing attached, and a session that had been cleared four
+# times held four tails on `answers`, delivering Ryan's verdicts in quadruplicate into the one
+# place they cost the most. An instruction that cannot be followed is not a control.
+#
+# flock, SO THERE IS NO SUCH THING AS A STALE LOCK. The kernel drops it when the holder's last
+# fd closes, which covers the crash, the kill and the session that simply went away — the
+# three cases a pid file gets wrong, and gets wrong by locking everyone out forever.
+_wd_tail_lockfile() { printf '%s/%s.tail.lock' "$(watchd_dir)" "$1"; }
+
+# _wd_tail_holder <name> — the pid holding this watcher's tail, or nothing if it is free.
+#
+# ASKED OF THE KERNEL, NOT OF THE FILE'S CONTENTS. `flock -n` on a copy of the descriptor is
+# the only question whose answer cannot be stale; the pid recorded inside the file is a
+# courtesy for the message and is never what decides. It is also read through /proc rather
+# than trusted, because a pid written by a process that has since died names whatever the
+# kernel handed out next (law-pgrep-is-not-identity).
+_wd_tail_holder() {
+    local lk pid
+    lk="$(_wd_tail_lockfile "$1")"
+    [ -f "$lk" ] || return 1
+    # A lock we can take is a lock nobody holds; taking and dropping it in a subshell answers
+    # the question without disturbing anything.
+    if ( exec 9>>"$lk" && flock -n 9 ) 2>/dev/null; then
+        return 1
+    fi
+    pid="$(head -n1 "$lk" 2>/dev/null)"
+    case "$pid" in ''|*[!0-9]*) pid="" ;; esac
+    [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] || pid="?"
+    printf '%s' "$pid"
+    return 0
+}
 
 # _wd_total <logfile> — lines in the log, and 0 for a log that is not there yet.
 #
@@ -470,12 +517,13 @@ cmd_exec() {
 # and it does so precisely when there are most of them — which is when losing them matters
 # most. Capping is therefore only available to the reader that consumes nothing.
 _wd_args() {
-    _wd_name=""; _wd_all=""; _wd_peek=""; _wd_limit=0
+    _wd_name=""; _wd_all=""; _wd_peek=""; _wd_limit=0; _wd_takeover=""
     local v
     while [ $# -gt 0 ]; do
         case "$1" in
             --all)  _wd_all=1 ;;
             --peek) _wd_peek=1 ;;
+            --takeover) _wd_takeover=1 ;;
             --limit|--limit=*)
                     if [ "$1" = --limit ]; then shift; v="${1-}"; else v="${1#--limit=}"; fi
                     case "$v" in ''|*[!0-9]*)
@@ -492,6 +540,13 @@ _wd_args() {
     done
     if [ "$_wd_limit" != 0 ] && [ -z "$_wd_peek" ]; then
         echo "watchd: --limit only applies to 'peek' — a capped read that marks the capped lines read would lose them" >&2
+        return 2
+    fi
+    # `--takeover` ENDS ANOTHER READER, so it is refused anywhere it would not: `drain` and
+    # `peek` hold no lock, and silently accepting it there would teach the flag as a general
+    # incantation to be sprinkled on any watchd command.
+    if [ -n "$_wd_takeover" ] && [ -n "$_wd_peek" ]; then
+        echo "watchd: --takeover only applies to 'tail' — nothing else holds a reader lock" >&2
         return 2
     fi
     return 0
@@ -741,6 +796,49 @@ cmd_tail() {
     lf="$(_wd_logfile "$_wd_name" "$_wd_kind" "$_wd_target")"
     cf="$(_wd_cursorfile "$_wd_name")"
     mkdir -p "$(watchd_dir)" || return 1
+
+    # THE READER LOCK, TAKEN BEFORE THE CURSOR IS READ. Two tails that both read the position
+    # and then both stream is the duplicate-delivery bug itself; the lock has to close that
+    # window, so it is held before `_wd_pos` rather than merely before `tail`.
+    #
+    # A FENCE, NOT A WALL. It refuses an accidental second reader — the fresh context obeying
+    # a latch instruction it has no way to check — and names its own override in the refusal.
+    # `--takeover` is the deliberate form: this session wants the stream and the incumbent may
+    # go. Nothing here decides that on its own, because the incumbent may be the session the
+    # operator is actually reading.
+    local lkf lkpid
+    lkf="$(_wd_tail_lockfile "$_wd_name")"
+    exec {_wd_lkfd}>>"$lkf" || { echo "watchd: cannot open $lkf" >&2; return 1; }
+    if ! flock -n "$_wd_lkfd"; then
+        lkpid="$(_wd_tail_holder "$_wd_name")" || lkpid="?"
+        if [ -z "$_wd_takeover" ]; then
+            echo "watchd: '$_wd_name' is already being tailed by pid $lkpid — not attaching a second reader." >&2
+            echo "  Its events are still being delivered to whoever holds it; a second tail would deliver" >&2
+            echo "  every line twice and corrupt the shared cursor. If this session should have the stream" >&2
+            echo "  instead, re-run with --takeover." >&2
+            return 3
+        fi
+        # THE INCUMBENT IS ADDRESSED BY PID FROM ITS OWN LOCK, never by a pattern over command
+        # lines: `pkill -f 'watchd.sh tail'` matches the shell that ran it, including this one
+        # (law-pgrep-is-not-identity). Then the lock is WAITED for rather than re-polled, so a
+        # takeover cannot race a slow exit into a third reader.
+        case "$lkpid" in
+            ''|'?'|*[!0-9]*) : ;;
+            *) kill -TERM "$lkpid" 2>/dev/null || : ;;
+        esac
+        # WAITED FOR, because the incumbent's `tail` and `awk` hold the same descriptor and
+        # therefore the same lock. The wrapper dying is not the incumbent letting go; the last
+        # of its processes closing the fd is. Ten seconds is far longer than that teardown
+        # takes and short enough to fail loudly rather than hang a Monitor forever.
+        if ! flock -w 10 "$_wd_lkfd"; then
+            echo "watchd: '$_wd_name' is still held by pid $lkpid ten seconds after TERM — refusing rather than running beside it" >&2
+            return 3
+        fi
+    fi
+    # Recorded for the message another reader will print, and for `tailers`. The kernel, not
+    # this line, is what holds the claim.
+    printf '%s\n' "$$" >"$lkf" 2>/dev/null || :
+
     pos="$(_wd_pos "$_wd_name" "$(_wd_total "$lf")")"
     # A LOG THAT IS NOT THERE YET IS SAID OUT LOUD, then waited for. `-F` retries by name, so
     # attaching before the unit has started is legitimate and works; what is not acceptable is
@@ -752,14 +850,82 @@ cmd_tail() {
     # ABSOLUTE line number after every line and closes the file each time, so a reader killed
     # mid-stream loses at most the line it was on. `print` is flushed for the same reason a
     # Monitor exists at all: a line buffered is a line not delivered.
+    # THE STREAM RUNS IN THE BACKGROUND AND THE SCRIPT WAITS ON IT, which looks like a
+    # detour and is the only arrangement that can be stopped. bash runs a trap only between
+    # commands, so a script sitting in a FOREGROUND `tail -F | awk` never handles the SIGTERM
+    # at all — the signal is noted and the handler waits for a command that by construction
+    # never returns. `wait` is interruptible, so backgrounding the pipeline is what makes the
+    # trap below reachable.
+    #
+    # AND THE TRAP IS NOT HYGIENE. `tail -F` and `awk` are separate processes that survive
+    # their parent, so killing this script leaves them streaming into a stdout nobody is
+    # reading, still holding the reader lock through the inherited descriptor. That is a
+    # takeover that reports success and changes nothing: the incumbent's wrapper dies, its
+    # pipeline goes on delivering, and the challenger has to be refused a second time by a
+    # lock whose recorded pid now names a process that no longer exists.
+    local pidf; pidf="$(watchd_dir)/$_wd_name.tail.pid"
+    : > "$pidf" 2>/dev/null || pidf=""
+    # shellcheck disable=SC2064
+    trap "_wd_tail_stop '$pidf'" TERM INT HUP EXIT
+
     if [ -n "$_wd_all" ]; then
-        tail -n +$(( pos + 1 )) -F "$lf" \
-            | awk -v c="$cf" -v p="$pos" '{ n=p+NR; print; fflush(); print n > c; close(c) }'
+        { tail -n +$(( pos + 1 )) -F "$lf" & [ -n "$pidf" ] && echo $! > "$pidf"; wait; } \
+            | awk -v c="$cf" -v p="$pos" '{ n=p+NR; print; fflush(); print n > c; close(c) }' &
     else
-        tail -n +$(( pos + 1 )) -F "$lf" \
+        { tail -n +$(( pos + 1 )) -F "$lf" & [ -n "$pidf" ] && echo $! > "$pidf"; wait; } \
             | awk -v c="$cf" -v p="$pos" -v re="$re" \
-                '{ n=p+NR; if ($0 ~ re) { print; fflush() } print n > c; close(c) }'
+                '{ n=p+NR; if ($0 ~ re) { print; fflush() } print n > c; close(c) }' &
     fi
+    _wd_tail_pipe=$!
+    wait "$_wd_tail_pipe"
+}
+
+# _wd_tail_stop <pidfile> — end the stream this process started, children first.
+#
+# THE `tail` IS KILLED AND THE `awk` IS NOT. Closing the pipe is what makes awk exit, and it
+# exits having finished the line it was on — so the cursor it is mid-write on is completed
+# rather than truncated. Signalling awk directly would save nothing and could lose the
+# position of the last line delivered, which is the one a re-latch must not replay.
+#
+# ADDRESSED BY THE PID IT WROTE DOWN ITSELF, never by a pattern: `pkill -f 'tail -F'` on this
+# box matches every other watcher's stream and the shell that invoked it
+# (law-pgrep-is-not-identity).
+_wd_tail_stop() {
+    local pidf="${1:-}" tp
+    trap - TERM INT HUP EXIT
+    if [ -n "$pidf" ] && [ -r "$pidf" ]; then
+        tp="$(head -n1 "$pidf" 2>/dev/null)"
+        case "$tp" in ''|*[!0-9]*) tp="" ;; esac
+        [ -n "$tp" ] && kill -TERM "$tp" 2>/dev/null
+        rm -f "$pidf" 2>/dev/null
+    fi
+    [ -n "${_wd_tail_pipe:-}" ] && wait "$_wd_tail_pipe" 2>/dev/null
+    return 0
+}
+
+# cmd_tailers — `name|pid|since` for every watcher a live `tail` currently holds.
+#
+# THIS IS THE ANSWER THE SESSION HOOK NEEDED AND COULD NOT GET. A fresh context cannot
+# enumerate its own Monitors, so it cannot tell a stream it is already receiving from one it
+# is not, and the hook that told it to check with ListAgents was naming a tool that lists
+# neither. The lock is the fact, so the lock is what is reported.
+#
+# IT IS DELIBERATELY NOT PER-SESSION. What matters to a reader is whether the events are being
+# delivered SOMEWHERE, because the cardinality is one and a second reader is wrong regardless
+# of who owns the first. A pid is printed so that a holder which is not this session can be
+# identified — and taken over, on purpose — rather than guessed at.
+cmd_tailers() {
+    local rows; rows="$(watchd_rows)" || return 1
+    local name kind target health pid since
+    while IFS='|' read -r name kind target health; do
+        [ -n "$name" ] || continue
+        [ "$kind" = off ] && continue
+        pid="$(_wd_tail_holder "$name")" || continue
+        since=""
+        [ "$pid" != "?" ] && since="$(stat -c %y "/proc/$pid" 2>/dev/null | cut -d. -f1)"
+        printf '%s|%s|%s\n' "$name" "$pid" "$since"
+    done <<< "$rows"
+    return 0
 }
 
 # cmd_restart [name] — hand the restart to systemd, which is the only thing that owns one.
@@ -1140,11 +1306,12 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         drain)    shift; cmd_drain "$@" ;;
         peek)     shift; cmd_drain --peek "$@" ;;
         tail)     shift; cmd_tail "$@" ;;
+        tailers)  cmd_tailers ;;
         restart)  shift; cmd_restart "${1:-}" ;;
         notify)   shift; cmd_notify "$@" ;;
         health-ids) shift; cmd_health_ids "${1:-}" ;;
         health-view) shift; cmd_health_view "${1:-}" "${2:-}" ;;
-        *) echo "usage: watchd.sh manifest|units|keys|exec <name>|status|drain [name] [--all]|peek [name] [--all] [--limit N]|tail <name> [--all]|restart [name]|notify|health-ids <file>|health-view <program> <session>" >&2
+        *) echo "usage: watchd.sh manifest|units|keys|exec <name>|status|drain [name] [--all]|peek [name] [--all] [--limit N]|tail <name> [--all] [--takeover]|tailers|restart [name]|notify|health-ids <file>|health-view <program> <session>" >&2
            exit 2 ;;
     esac
 fi
