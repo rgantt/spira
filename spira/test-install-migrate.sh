@@ -208,5 +208,29 @@ nowant  "clean install: no 'migrated' in output" "migrated" "$clean_out"
 
 # ==========================================================================
 echo
+echo "--NO-MIGRATE-WATCHERS — legacy units present but skip flag suppresses disable:"
+# ==========================================================================
+
+rm -rf "$DEST"; mkdir -p "$DEST"
+
+skip_out="$(MOCK_LEGACY_UNITS="spira-sentinel.service spira-sentinel.timer" \
+    MOCK_AEONS= MOCK_IS_ACTIVE=active MOCK_WATCH_LIST= \
+    inst --no-migrate-watchers)"
+skip_rc=$?
+skip_log="$(cat "$MOCK_LOG")"
+
+iszero  "--no-migrate-watchers: install.sh exits 0" "$skip_rc"
+# The flag must suppress disable calls for legacy units even when MOCK_LEGACY_UNITS is set.
+nowant  "--no-migrate-watchers: no disable call for spira-sentinel.service" \
+        "disable --now spira-sentinel.service" "$skip_log"
+# install.sh should announce that the skip is in effect.
+want    "--no-migrate-watchers: output notes the skip" \
+        "no-migrate-watchers" "$skip_out"
+# Normal units still get installed — the flag touches nothing else.
+want    "--no-migrate-watchers: sentinel per-instance unit still enabled" \
+        "spira-sentinel-test" "$skip_log"
+
+# ==========================================================================
+echo
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 # install.sh — render the unit TEMPLATES for this box, install them, and start their timers.
 #
-#   ./install.sh [<instance>]          render, install, enable and start for the named
-#                                      instance (default: $SPIRA_INSTANCE from conf.sh,
-#                                      which is 'prod' on a clean install)
-#   ./install.sh [<instance>] --diff   show how the installed units differ from what this
-#                                      instance would render, and change nothing
-#   ./install.sh [<instance>] --render show the rendered units on stdout and change nothing
+#   ./install.sh [<instance>]                      render, install, enable and start for the
+#                                                  named instance (default: $SPIRA_INSTANCE
+#                                                  from conf.sh, which is 'prod' on a clean
+#                                                  install)
+#   ./install.sh [<instance>] --diff               show how the installed units differ from
+#                                                  what this instance would render, and change
+#                                                  nothing
+#   ./install.sh [<instance>] --render             show the rendered units on stdout and change
+#                                                  nothing
+#   ./install.sh [<instance>] --no-migrate-watchers  install and enable/restart units but skip
+#                                                  _migrate_legacy, leaving any running watchers
+#                                                  untouched. Use when the migration is unsafe
+#                                                  (e.g., the replacement unit is unstable) and
+#                                                  you still need other unit changes to reach the
+#                                                  box.
 #
 # THE FILES HERE ARE TEMPLATES, NOT UNITS. Every path in them is a placeholder — @SPIRA_HOME@,
 # @SPIRA_DB@ and so on — filled from spira.conf. A unit file with a path baked into it runs on
@@ -32,12 +41,14 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # PARSE THE INSTANCE ARGUMENT AND THE MODE FLAG BEFORE SOURCING conf.sh SO THAT conf.sh
 # DERIVES SPIRA_RUN, SPIRA_DB, ETC. FOR THE CORRECT INSTANCE. conf.sh reads SPIRA_INSTANCE
 # from the environment before the config file, so setting it here in the environment wins.
-_install_mode=""      # --diff | --render | empty (install)
-_install_instance=""  # explicit instance arg, empty means use conf.sh default
+_install_mode=""             # --diff | --render | empty (install)
+_install_instance=""         # explicit instance arg, empty means use conf.sh default
+_skip_migrate_watchers=0     # 1 when --no-migrate-watchers is passed
 for _a in "$@"; do
     case "$_a" in
-        --diff|--render) _install_mode="$_a" ;;
-        --*)             ;;
+        --diff|--render)       _install_mode="$_a" ;;
+        --no-migrate-watchers) _skip_migrate_watchers=1 ;;
+        --*)                   ;;
         *) [ -z "$_install_instance" ] && _install_instance="$_a" ;;
     esac
 done
@@ -559,7 +570,9 @@ _migrate_legacy() {
     [ "$disabled" -gt 0 ] && \
         printf 'install: migrated %d legacy unit(s) to per-instance naming\n' "$disabled"
 }
-_migrate_legacy
+[ "$_skip_migrate_watchers" = 1 ] \
+    && echo "install: --no-migrate-watchers set; skipping legacy watcher migration" \
+    || _migrate_legacy
 
 # Wait for a running oneshot service to finish before restarting it.
 # A long-running service is not drained — we restart it directly.
