@@ -316,7 +316,11 @@ cmd_run() {
         fi
         slice="$PER_SUITE"; [ "$left" -lt "$slice" ] && slice="$left"
         t0="$(date +%s)"
-        out="$(timeout "$slice" bash "$HERE/$s" 2>&1)"; rc=$?
+        local tmp
+        tmp="$(mktemp)" || return 1
+        timeout "$slice" bash "$HERE/$s" > "$tmp" 2>&1; rc=$?
+        out="$(cat "$tmp")" || rc=$?
+        rm -f "$tmp"
         secs=$(( $(date +%s) - t0 ))
         ran=$(( ran + 1 ))
         suites_with_results="$suites_with_results $s"
