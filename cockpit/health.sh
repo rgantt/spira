@@ -573,6 +573,26 @@ model_short() {
     esac
 }
 
+# Count aeons that are genuinely live right now, from /proc. This is cheap (file reads only)
+# and exact: unlike the snapshot count, it sees aeons that started or stopped during the
+# collector's 120s pass. The same /proc check lib.sh's aeon_alive runs; duplicated here
+# because health.sh does not source lib.sh (law-absence-needs-a-positive-control).
+#
+# Capture cmdline THEN match: `tr | grep -q` under pipefail returns 141 on the first
+# match (grep closes the read end of the pipe, the writer dies of SIGPIPE), so the live
+# case is exactly the one that could read as dead (law-no-grep-q-under-pipefail).
+_live_aeon_n() {
+    local _n=0 _pf _pid _cmd
+    for _pf in "$SPIRA_RUN"/aeon-*.pid; do
+        [ -f "$_pf" ] || continue
+        _pid="$(cat "$_pf" 2>/dev/null)"; [ -n "${_pid:-}" ] || continue
+        [ -d "/proc/$_pid" ] || continue
+        { _cmd="$(tr '\0' ' ' < "/proc/$_pid/cmdline")"; } 2>/dev/null
+        grep -qF 'aeon.sh' <<< "${_cmd:-}" && _n=$((_n+1))
+    done
+    printf '%d' "$_n"
+}
+
 # NOW — who is working, on what, HOW THE SESSION IS DOING, and the last thing it said.
 #
 # FOUR ROWS PER AEON, because three of them answered "is it alive" and none answered "is it
@@ -584,15 +604,45 @@ model_short() {
 #
 # It is therefore the section that grows fastest, and the one the round-robin share exists to
 # keep in its lane. It is NOT the section the generic cap trims — see `frame`.
+#
+# LIVE COUNT FIRST: a live /proc read for the aeon count, because the snapshot is up to 120s
+# stale when it lands. A 182s aeon can start and finish inside one pass — it reads as absent
+# for its whole life. An aeon that started just after the collector's NOW loop also reads as
+# absent. The snapshot data (per-aeon rows) still comes from the snapshot because trace stats
+# require a file read the pane cannot afford on every repaint; the COUNT is cheap and is
+# always current (law-absence-needs-a-positive-control, sp-e9sbi).
 now_section() {
+    local _live_n
+    _live_n="$(_live_aeon_n)"
+
     if [ -z "${SP_AEON_N:-}" ] || [ "${SP_AEON_N:-}" = "?" ]; then
-        unread_row NOW "cannot read the aeon roster"
+        # Snapshot unreadable — fall back to live count if any are visible.
+        if [ "${_live_n:-0}" -gt 0 ] 2>/dev/null; then
+            printf ' %sNOW%s    %s%s aeon(s) live%s %s— details pending snapshot%s\n' \
+                "$C_DIM" "$C_RST" "$C_OK$C_B" "$_live_n" "$C_RST" "$C_DIM" "$C_RST"
+        else
+            unread_row NOW "cannot read the aeon roster"
+        fi
         return
     fi
-    if [ "${SP_AEON_N}" -eq 0 ] 2>/dev/null; then
+
+    local _snap_n="${SP_AEON_N}"
+
+    # Neither the snapshot nor /proc show any aeons.
+    if [ "$_snap_n" -eq 0 ] 2>/dev/null && [ "$_live_n" -eq 0 ] 2>/dev/null; then
         printf ' %sNOW%s    %sno aeon working%s\n' "$C_DIM" "$C_RST" "$C_DIM" "$C_RST"
         return
     fi
+
+    # INVERSION CASE: /proc has aeons the snapshot does not know about. They started during
+    # the collector's pass, after it stamped SP_AEON_N=0. Show the live count; per-aeon
+    # detail rows arrive on the next pass when the snapshot catches up.
+    if [ "$_snap_n" -eq 0 ] 2>/dev/null && [ "$_live_n" -gt 0 ] 2>/dev/null; then
+        printf ' %sNOW%s    %s%s aeon(s) live%s %s— not yet in snapshot%s\n' \
+            "$C_DIM" "$C_RST" "$C_OK$C_B" "$_live_n" "$C_RST" "$C_DIM" "$C_RST"
+        return
+    fi
+
     local i=0
     while [ "$i" -lt "${SP_AEON_N}" ]; do
         eval "local nm=\${SP_AEON${i}_NAME:-?} fy=\${SP_AEON${i}_FAYTH:-?}"
@@ -717,6 +767,15 @@ now_section() {
         fi
         i=$((i+1))
     done
+
+    # If more aeons are live in /proc than the snapshot captured, the extras started during
+    # the collector pass. Show a one-line notice so the operator sees them immediately
+    # rather than on the next snapshot (which may be 60–120s away).
+    local _extra=$(( _live_n - _snap_n ))
+    if [ "$_extra" -gt 0 ] 2>/dev/null; then
+        printf '        %s+%d more aeon(s) live — not yet in snapshot%s\n' \
+            "$C_DIM" "$_extra" "$C_RST"
+    fi
 }
 
 # "P0 sp-id Title..." -> aligned id + dim title, matching NOW.

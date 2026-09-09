@@ -110,7 +110,6 @@ unit_active() {
 }
 
 probe() {
-    echo "SP_AT=$(date +%s)"
     echo "SP_WINDOW_HOURS=$WINDOW_HOURS"
 
     # Partition map — derived from the chamber once per pass, used by NOW, NEXT and RECENT.
@@ -1135,6 +1134,13 @@ for i in awaiting_ids:
 
     # ---- RATE LIMIT WINDOWS: utilisation from live aeon traces ---------------------------
     ratelim_keys
+
+    # SP_AT LAST: stamped at pass END so the snapshot age the pane computes is the time since
+    # the data was actually collected, not since the pass started. A pass takes ~120s; stamping
+    # at the start made a fresh snapshot read as 120s older than it was the moment it landed —
+    # the STALE warning fired on arrival, and a 182s aeon that started and finished within one
+    # pass read as always-absent because SP_AEON_N was already zero before it was summoned.
+    echo "SP_AT=$(date +%s)"
 }
 
 # The sphere-grid keys: plan-bead counts (open, in-progress, needs-op) and the poison count.

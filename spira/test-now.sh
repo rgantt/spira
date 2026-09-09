@@ -568,6 +568,69 @@ else
     pass=$((pass+1)); printf '  ok    no marker when FAYTH_MODEL is ? (unreadable)\n'
 fi
 
+echo
+echo "live aeon count — pane reads /proc directly, not only the snapshot"
+
+# THE POSITIVE CONTROL: no PIDs and SP_AEON_N=0 → "no aeon working".
+# Must fire before the live-count tests so we know the branch is reachable.
+printf 'SP_AEON_N=0\nSP_NEXT_N=0\nSP_AWAITING_N=0\n' | snap
+no_aeon="$(pane 0)"
+if grep -q 'no aeon working' <<< "$no_aeon"; then
+    pass=$((pass+1)); printf '  ok    no PIDs and SP_AEON_N=0 renders "no aeon working"\n'
+else
+    fail=$((fail+1)); printf '  FAIL  no PIDs and SP_AEON_N=0 did not say "no aeon working":\n%s\n' "$no_aeon"
+fi
+
+# INVERSION CASE: a live aeon that the snapshot does not know about. This is the failure
+# described in sp-e9sbi: the aeon started AFTER the collector stamped SP_AEON_N=0, so the
+# snapshot is honest but useless — the pane read 0 while three aeons were working.
+#
+# Create a fake aeon process whose argv[0] is 'aeon.sh', which is what _live_aeon_n checks.
+# exec -a renames argv[0] so /proc/<pid>/cmdline looks exactly like a real aeon.
+bash -c 'exec -a "aeon.sh" sleep 999' &
+LIVE_PID="$!"
+echo "$LIVE_PID" > "$PD/repo/.runtime/spira/aeon-builder-sp-live.pid"
+
+# SP_AEON_N=0 in snapshot but one live PID → the inversion row.
+printf 'SP_AEON_N=0\nSP_NEXT_N=0\nSP_AWAITING_N=0\n' | snap
+live_inv="$(pane 0)"
+if grep -q 'aeon(s) live' <<< "$live_inv"; then
+    pass=$((pass+1)); printf '  ok    SP_AEON_N=0 with a live PID renders the inversion row\n'
+else
+    fail=$((fail+1)); printf '  FAIL  SP_AEON_N=0 with live PID did not say "aeon(s) live":\n%s\n' "$live_inv"
+fi
+# THE INVERSION ROW MUST NOT SAY "no aeon working" — that is the confident wrong reading.
+if grep -q 'no aeon working' <<< "$live_inv"; then
+    fail=$((fail+1)); printf '  FAIL  inversion row still said "no aeon working" despite live PID\n'
+else
+    pass=$((pass+1)); printf '  ok    "no aeon working" suppressed when a live PID exists\n'
+fi
+
+# EXTRA AEON CASE: snapshot knows about one aeon (LIVE_PID), and a SECOND live PID exists
+# that the snapshot does not know about. The pane should show the snapshot rows AND a
+# "+1 more aeon(s) live" note below them. The snapshot PID matches the known aeon exactly.
+bash -c 'exec -a "aeon.sh" sleep 999' &
+LIVE_PID2="$!"
+echo "$LIVE_PID2" > "$PD/repo/.runtime/spira/aeon-builder-sp-live2.pid"
+# Snapshot claims SP_AEON_N=1 (knows about LIVE_PID). /proc has 2 (LIVE_PID + LIVE_PID2).
+{ printf 'SP_AEON_N=1\nSP_AEON0_NAME=valefor\nSP_AEON0_FAYTH=builder\nSP_AEON0_BEAD=sp-x\n'
+  printf 'SP_AEON0_MIN=5\nSP_AEON0_TURNS=10\nSP_AEON0_CTX=50000\nSP_AEON0_FILES=3\n'
+  printf 'SP_AEON0_QUIET=30\nSP_AEON0_ACT=Bash cargo test\n'
+  printf 'SP_AEON0_TITLE=first bead\nSP_NEXT_N=0\nSP_AWAITING_N=0\n'; } | snap
+live_extra="$(pane 0)"
+is_n "the snapshot aeon row still renders (positive control)" 1 \
+     "$(printf '%s\n' "$live_extra" | grep -c '^ NOW ')"
+if grep -q '+1 more aeon(s) live' <<< "$live_extra"; then
+    pass=$((pass+1)); printf '  ok    extra live aeon renders "+1 more aeon(s) live" note\n'
+else
+    fail=$((fail+1)); printf '  FAIL  extra live aeon did not show "+1 more aeon(s) live":\n%s\n' "$live_extra"
+fi
+
+# Clean up both fake aeons.
+kill "$LIVE_PID" "$LIVE_PID2" 2>/dev/null || true
+rm -f "$PD/repo/.runtime/spira/aeon-builder-sp-live.pid" \
+      "$PD/repo/.runtime/spira/aeon-builder-sp-live2.pid"
+
 fi
 
 # ---------------------------------------------------------------------------------------
