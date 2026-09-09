@@ -220,6 +220,10 @@ is "the hung suite's result says timeout, not ok" "timeout" "$hung_st"
 # THE RUNNER REPORTED THE TIMEOUT.
 want "the pass output names the hung suite as TIMEOUT" "TIMEOUT" "$out"
 want "and names the suite"                             "test-fx-hung.sh" "$out"
+# FILING WAS ATTEMPTED AND DID NOT SILENTLY FAIL. file_red prints "${id:-not filed}" on
+# the TIMEOUT line; "not filed" means incident.sh ran but returned no bead id — the
+# original defect (sp-hk7bt): bead count was 0 while nothing in the pass output said why.
+nowant "the timeout line does not say 'not filed'" "not filed" "$out"
 
 # THE RUNNER CONTINUED AFTER THE TIMEOUT.
 after_st="$( { read -r s _ < "$STATE/test-fx-after-hang.sh.result"; printf '%s' "${s:-MISSING}"; } 2>/dev/null )"
