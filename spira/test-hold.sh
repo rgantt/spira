@@ -25,7 +25,7 @@ is()  { [ "$2" = "$3" ] && ok "$1" || bad "$1" "wanted [$2] got [$3]"; }
 # shellcheck disable=SC1090
 . "$HERE/testdb.sh"
 testdb_require test-hold
-TMP="$(mktemp -d)"; trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
+TMP="$(mktemp -d)"; trap 'testdb_drop; rm -rf "$TMP"' EXIT; trap 'exit 143' INT TERM
 testdb_up hold || { echo "test-hold: could not build a fixture database"; exit 1; }
 
 export SPIRA_RUN="$TMP/run"; mkdir -p "$SPIRA_RUN"
