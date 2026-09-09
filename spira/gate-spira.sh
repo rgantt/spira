@@ -65,6 +65,9 @@ say() { printf 'gate: %s\n' "$*" >&2; }
 # SPIRA_DB from the environment wins by conf.sh's env-first rule, so a test database set
 # before this script was invoked is the one that receives the bead — not the operator's live
 # store. In production, HOME is set (by gate.sh's env -i) so conf.sh finds spira.conf.
+# THE BEAD CARRIES repo:spira. The test harness must supply a repo-map that lists "spira"
+# so _bdq_check_repo_label allows the create: test-gate-budget.sh creates $SH/repo-map for
+# this. Without it the check refuses quietly (no bead filed, gate still exits cleanly). (sp-2kpk2)
 file_budget_bead() {
     local total="$1" budget="$2" over="$3"
     (
