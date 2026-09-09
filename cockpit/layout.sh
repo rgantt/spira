@@ -83,6 +83,15 @@ set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../spira" && pwd -P)/conf.sh"
 COCK="$SPIRA_COCKPIT"
 RUN="$SPIRA_REPO/.runtime"
+
+# SPIRA_CONF, when set, points to the config file for this instance. Pane commands carry it
+# in the command string so a respawn — from tmux itself or from the ensure timer — uses the
+# same config as the original `up` did. The tmux server's environment is set once at server
+# start and cannot be updated per-pane, so a var only in the spawning shell's environment
+# is lost the moment the pane respawns. Single-quoting is safe: config paths are always
+# simple filesystem paths with no embedded single quotes.
+_CONF_PREFIX=""
+[ -n "${SPIRA_CONF:-}" ] && _CONF_PREFIX="SPIRA_CONF='${SPIRA_CONF}' "
 # The panes open where the operator works — COCKPIT_CWD, a spira.conf key.
 CWD="$COCKPIT_CWD"
 # Pane geometry is the operator's, not the code's: a 13-inch laptop and a 32-inch monitor
@@ -312,8 +321,8 @@ restart_if_stale() { # pane_tag script_path
     [ "$mtime" -gt "$started" ] || return 0
     heal_log "$WINDOW: $tag is running code older than $src — respawning"
     case "$tag" in
-        panel) tmux respawn-pane -k -t "$pane" "$COCK/panel-run.sh" 2>/dev/null ;;
-        health)    tmux respawn-pane -k -t "$pane" "$COCK/health.sh loop" 2>/dev/null ;;
+        panel) tmux respawn-pane -k -t "$pane" "${_CONF_PREFIX}$COCK/panel-run.sh" 2>/dev/null ;;
+        health)    tmux respawn-pane -k -t "$pane" "${_CONF_PREFIX}$COCK/health.sh loop" 2>/dev/null ;;
     esac
     tag_pane "$pane" "$tag"
 }
@@ -412,14 +421,14 @@ restart_loom_if_stale() {
 # window height whatever the target looks like, so `up` and every repair path agree.
 split_health() {   # split_health <any pane in the left column> -> pane id on stdout
     tmux split-window -P -F '#{pane_id}' -d -h -f -l "${RIGHT_PCT}%" -t "$1" -c "$CWD" \
-        "$COCK/health.sh loop"
+        "${_CONF_PREFIX}$COCK/health.sh loop"
 }
 # NO `-f` HERE, and that is deliberate: a full-window `-v` split would run under the health
 # column too and cut it off at the knees. The panel divides the LEFT column only, which is
 # what splitting the session pane in place does.
 split_panel() {    # split_panel <session pane> -> pane id on stdout
     tmux split-window -P -F '#{pane_id}' -d -v -l "${BOTTOM_PCT}%" -t "$1" -c "$CWD" \
-        "$COCK/panel-run.sh"
+        "${_CONF_PREFIX}$COCK/panel-run.sh"
 }
 
 geom() { tmux display-message -p -t "$1" "$2" 2>/dev/null; }
