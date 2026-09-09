@@ -178,7 +178,7 @@ want   "but it IS in the set the summoner can dispatch" \
 out="$(sentinel)"
 ispoisoned  "a dispatchable bead at the threshold is poisoned"  sp-orphan
 want        "and the pass says so"          "poisoned sp-orphan after 3 attempts" "$out"
-want        "and the operator is asked what to do about it"  "failed 3 times" "$(cat "$ASK_LOG")"
+want        "and the operator is asked what to do about it"  "unrecorded x3 (3 attempts)" "$(cat "$ASK_LOG")"
 # THE POISONING IS RECORDED AS AN EVENT, separate from the ask. The ask is read and answered;
 # the event is an outcome, recorded by the machinery, moved on from. The transition fires once
 # — on entry to poisoned; the label is now on the bead, so every later pass takes the other
@@ -282,10 +282,10 @@ want   "the same bead unpoisoned is ready for its fayth" "t: 1 ready" "$out"
 # --------------------------------------------------------------------------------------
 seed_poison; : > "$ASK_LOG"; out="$(sentinel)"
 is "the first pass over the threshold asks exactly once" "1" \
-   "$(grep -c 'sp-orphan failed 3 times' "$ASK_LOG")"
+   "$(grep -cE 'sp-orphan.*3 attempts' "$ASK_LOG")"
 out="$(sentinel)"
 is "a second pass over the same count asks nothing more" "1" \
-   "$(grep -c 'sp-orphan failed 3 times' "$ASK_LOG")"
+   "$(grep -cE 'sp-orphan.*3 attempts' "$ASK_LOG")"
 
 # THE REMEDY IS APPLIED, exactly as the ask instructs. Nothing else changes: the count still
 # stands, which is the state the old code re-asked from on every pass.
@@ -293,7 +293,7 @@ B label remove sp-orphan spira-poison >/dev/null 2>&1
 out="$(sentinel)"
 ispoisoned "the bead is poisoned again, because it is still over the threshold" sp-orphan
 is "but clearing the label did NOT re-arm the ask" "1" \
-   "$(grep -c 'sp-orphan failed 3 times' "$ASK_LOG")"
+   "$(grep -cE 'sp-orphan.*3 attempts' "$ASK_LOG")"
 
 # ...and a genuinely NEW failure does ask again, which is the positive control on all of the
 # above: a suppression that never lifts is indistinguishable from an ask that never fires.
@@ -301,7 +301,7 @@ B label remove sp-orphan spira-poison >/dev/null 2>&1
 B label add sp-orphan sp-attempt-4-unlanded >/dev/null 2>&1
 out="$(sentinel)"
 is "a fourth attempt is a new fact and asks again" "1" \
-   "$(grep -c 'sp-orphan failed 4 times' "$ASK_LOG")"
+   "$(grep -cE 'sp-orphan.*4 attempts' "$ASK_LOG")"
 
 # --------------------------------------------------------------------------------------
 # A CLOSED BEAD NEVER POISONS AND NEVER ASKS. dispatchable_open excludes closed beads, but it
@@ -321,7 +321,7 @@ out="$(ASK_CLOSES=sp-late sentinel)"
 is          "the fixture really did close it mid-pass" "closed" "$(status_of sp-late)"
 ispoisoned  "the bead that was still open is poisoned" sp-orphan
 notpoisoned "the one that closed mid-pass is not"      sp-late
-nowant "and the operator is not asked to drop landed work" "sp-late failed" "$(cat "$ASK_LOG")"
+nowant "and the operator is not asked to drop landed work" "Spira bead sp-late" "$(cat "$ASK_LOG")"
 want   "the pass says why it declined" "sp-late: 3 attempts, but it closed while this pass ran" "$out"
 
 # A chamber that declares no partition dispatches nothing and examines nothing, and SAYS so.
@@ -329,6 +329,42 @@ want   "the pass says why it declined" "sp-late: 3 attempts, but it closed while
 seed_poison; out="$(ROSTER=nosuchfayth sentinel)"
 notpoisoned "an empty chamber poisons nothing" sp-orphan
 want "and says no bead is being examined" "no bead is dispatchable" "$out"
+
+# --------------------------------------------------------------------------------------
+# ACCEPTANCE (sp-njwb): ask title leads with charge reason; BRANCH line shows commit count.
+#
+# Two defects: (1) the title said "failed N times" whether the charge was closed-not-landed
+# or a genuine fault — sending the operator looking for an error that may not exist; (2) the
+# BRANCH line used show-ref, which returns true for a branch with no commits ahead of base,
+# and rendered "with work on it" when none existed.
+#
+# The repo fixture has origin/main set up from the test preamble. spira_landref resolves it
+# for the commit-count check.
+# --------------------------------------------------------------------------------------
+seed_poison; rm -rf "$RUN/poison-asked"; : > "$ASK_LOG"
+# Create the branch with no commits ahead of main.
+git -C "$REPO" checkout -q -b "spira/sp-orphan" 2>/dev/null
+git -C "$REPO" checkout -q main 2>/dev/null
+out="$(sentinel)"
+want "ask title leads with charge reason not 'failed'" \
+     "unrecorded x3 (3 attempts)" "$(cat "$ASK_LOG")"
+nowant "title does not contain 'failed N times'" \
+       "failed 3 times" "$(cat "$ASK_LOG")"
+want "BRANCH line says no commits when branch is empty" \
+     "no commits" "$(cat "$ASK_LOG")"
+nowant "BRANCH line does not claim work exists" \
+       "with work on it" "$(cat "$ASK_LOG")"
+
+# Positive control: a branch with one commit shows the count, not "no commits".
+# seed_poison resets the database so sp-orphan loses spira-poison and is again dispatchable.
+git -C "$REPO" checkout -q "spira/sp-orphan" 2>/dev/null
+git -C "$REPO" commit -q --allow-empty -m "one unit of work" 2>/dev/null
+git -C "$REPO" checkout -q main 2>/dev/null
+seed_poison; rm -rf "$RUN/poison-asked"
+: > "$ASK_LOG"; out="$(sentinel)"
+want "branch with one commit reports its count" "1 commit" "$(cat "$ASK_LOG")"
+nowant "and does not say no commits" "no commits" "$(cat "$ASK_LOG")"
+git -C "$REPO" branch -D "spira/sp-orphan" 2>/dev/null || true
 
 printf '\ntest-poison.sh: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

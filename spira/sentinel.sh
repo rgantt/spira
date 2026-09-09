@@ -318,20 +318,42 @@ for id in $dispatchable; do
     # is sitting on a branch in another checkout, and the operator would be deciding whether
     # to drop a bead on the strength of a fact from the wrong disk.
     r_name="$(bead_repo "$id")"; r_path="$(repo_root "$r_name")" || r_path=""
+    # COMMIT COUNT AND DIFFSTAT, NOT REF EXISTENCE. show-ref returns true for a branch
+    # that exists but has zero commits ahead of base — reporting "with work on it" when
+    # none exists sends the operator looking for output that was never written (sp-njwb).
+    branch_info='none — nothing was committed'
+    if [ -n "$r_path" ] && git -C "$r_path" show-ref --verify -q "refs/heads/spira/$id" 2>/dev/null; then
+        _base="$(spira_landref "$r_path" 2>/dev/null)" || _base=""
+        _range="${_base:+${_base}..}spira/$id"
+        _nc="$(git -C "$r_path" rev-list --count "$_range" 2>/dev/null)" || _nc="?"
+        if [ "${_nc}" = 0 ] || [ "${_nc}" = "?" ]; then
+            branch_info="spira/$id exists, no commits${_base:+ ahead of $_base}"
+        else
+            _ds="$(git -C "$r_path" diff --stat "$_range" 2>/dev/null | tail -1)"
+            branch_info="spira/$id — ${_nc} commit(s)${_ds:+; $_ds}"
+        fi
+    fi
+    # CHARGE REASON, NOT THE WORD "FAILED". "failed N times" sends the operator looking for
+    # an error; the reason says what happened — "closed-not-landed" differs from "gate-fault"
+    # and only one of them asks for a code change (sp-njwb).
+    charge_summary="$(echo "${charges:-}" | tr ' ' '\n' | sed 's/^[0-9]*#//' \
+        | grep -v '^$' | sort | uniq -c \
+        | awk '{printf "%s%s x%s", sep, $2, $1; sep=", "} END{printf "\n"}')" || true
+    [ -n "${charge_summary:-}" ] || charge_summary="unrecorded"
     ev="$ev
 
 REPO      $r_name${r_path:+ ($r_path)}
 ATTEMPTS  $n (poison threshold $POISON_AT) — charged by: ${charges:-unrecorded}
 RECLAIMS  $(reclaims_of "$id" || true) — times the aeon died holding it; these do NOT count toward poison
 REQUEUES  $(requeues_of "$id" || true) — times the harness reopened finished work over a rebase; these do NOT count toward poison
-BRANCH    $( [ -n "$r_path" ] && git -C "$r_path" show-ref --verify -q "refs/heads/spira/$id" && echo "spira/$id exists, with work on it" || echo 'none — nothing was committed')
+BRANCH    $branch_info
 
 --- last session log (tail) ---
 $(trace_tail "$SPIRA_RUN/$id.log" 25)"
     # MARKED ONLY IF THE ASK WAS ACCEPTED. Stamping first would let an escalation path that
     # is down silently swallow the one notification this count will ever produce.
     if "$SPIRA_NOTIFY" add \
-          "Spira bead $id failed $n times — change the approach or drop it?" \
+          "Spira bead $id — ${charge_summary} (${n} attempts) — change the approach or drop it?" \
           --default "read the charges above first — an attempt is only a reason to stop if it names an outcome about the WORK. If they are genuine, rewrite the bead's description to change the approach and clear the spira-poison label; or close it if it is not worth doing" \
           --why "nothing downstream of it can proceed, and no aeon will take it again while it is poisoned" \
           --evidence "$ev" >/dev/null 2>&1; then
