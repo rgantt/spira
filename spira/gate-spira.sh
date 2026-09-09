@@ -146,10 +146,27 @@ fi
 # (law-alerts-must-be-actionable).
 # ---------------------------------------------------------------------------------------
 run() {                  # run <suite> — its output only when it matters; cost always
-    local s="$1" out st t0 t1 elapsed elapsed_s name
+    local s="$1" out st t0 t1 elapsed elapsed_s name suite_pid killer tmp
     name="$(basename "$s")"
     t0=$(date +%s 2>/dev/null) || t0=""
-    out="$(timeout "${SPIRA_SUITE_TIMEOUT:-600}" bash "$s" 2>&1)"; st=$?
+    tmp="$(mktemp)" || { say "could not create temp file for $name"; rc=1; return; }
+    # PROCESS GROUP ISOLATION. The original command substitution creates a pipe; a background
+    # job inheriting that pipe's write end blocks the gate until it exits or is killed. Running
+    # via setsid (suite gets PGID = suite_pid) lets us sweep survivors with kill -- -$suite_pid
+    # after the suite exits, so no orphan can hold any descriptor open (sp-a8c5).
+    setsid bash "$s" > "$tmp" 2>&1 &
+    suite_pid=$!
+    ( sleep "${SPIRA_SUITE_TIMEOUT:-600}" && kill -- -"$suite_pid" 2>/dev/null ) &
+    killer=$!
+    wait "$suite_pid" 2>/dev/null; st=$?
+    kill "$killer" 2>/dev/null; wait "$killer" 2>/dev/null || true
+    [ "$st" -ge 128 ] && st=124
+    if kill -0 -- -"$suite_pid" 2>/dev/null; then
+        printf '\nFAIL: %s left background jobs after exit — killed by gate harness\n' "$name" >> "$tmp"
+        kill -- -"$suite_pid" 2>/dev/null || true
+        [ "$st" -eq 0 ] && st=1
+    fi
+    out="$(cat "$tmp")"; rm -f "$tmp"
     t1=$(date +%s 2>/dev/null) || t1=""
     # COST IS MEASURED AROUND THE SUBPROCESS, never inferred. If date fails on either side
     # the cost is unmeasurable; unmeasurable counts as over-budget rather than free

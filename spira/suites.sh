@@ -316,10 +316,32 @@ cmd_run() {
         fi
         slice="$PER_SUITE"; [ "$left" -lt "$slice" ] && slice="$left"
         t0="$(date +%s)"
-        local tmp
+        local tmp suite_pid killer
         tmp="$(mktemp)" || return 1
-        timeout "$slice" bash "$HERE/$s" > "$tmp" 2>&1; rc=$?
-        out="$(cat "$tmp")" || rc=$?
+        # PROCESS GROUP ISOLATION. setsid makes the suite the leader of its own process
+        # group (PGID = suite_pid), so kill -- -suite_pid reaches every descendant it leaves
+        # running. Without this, a suite that hangs before its own cleanup lines keeps
+        # orphaned children alive past the harness timeout (sp-a8c5).
+        setsid bash "$HERE/$s" > "$tmp" 2>&1 &
+        suite_pid=$!
+        # Watchdog: send SIGTERM to the whole process group if the suite overruns its slice.
+        ( sleep "$slice" && kill -- -"$suite_pid" 2>/dev/null ) &
+        killer=$!
+        wait "$suite_pid" 2>/dev/null; rc=$?
+        kill "$killer" 2>/dev/null; wait "$killer" 2>/dev/null || true
+        # A suite killed by SIGTERM exits 128+15=143; map to 124 (timeout's convention).
+        [ "$rc" -ge 128 ] && rc=124
+        # SWEEP SURVIVORS. If any process remains in the suite's process group after it
+        # exited, the suite has a cleanup defect. Kill them and, if the suite otherwise
+        # passed, mark it red so the defect surfaces rather than being silently absorbed.
+        if kill -0 -- -"$suite_pid" 2>/dev/null; then
+            kill -- -"$suite_pid" 2>/dev/null || true
+            if [ "$rc" -eq 0 ]; then
+                printf 'FAIL: %s left background jobs after exit — killed by harness\n' "$s" >> "$tmp"
+                rc=1
+            fi
+        fi
+        out="$(cat "$tmp")" || true
         rm -f "$tmp"
         secs=$(( $(date +%s) - t0 ))
         ran=$(( ran + 1 ))
