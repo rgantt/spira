@@ -811,7 +811,8 @@ fi
 # moved. The rule the scar teaches: bd's version string does not order against release tags.
 # A dev build from main knows MORE migrations than a tagged release (v1.2.2 knows only 53),
 # so pin by migration count, never by version string. See spira/bd-pin.sh and SPIRA_BD_PIN.
-# The revert evidence is in $SPIRA_RUN/reaped/sp-6ylz.schema-rollback-*.md.
+# The revert is in the dolt log of database spira: commit piud5v03ri22ktnshufhl5dk09m24f5b,
+# 'revert: restore schema cursor to v61 — rollback broke writes (bd 1.1.0 knows 61, not 53)'.
 
 # --------------------------------------------------------------------------------------
 # WHAT IS EXPORTED, AND WHAT MUST NEVER BE.
