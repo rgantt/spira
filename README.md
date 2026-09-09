@@ -295,6 +295,12 @@ box's memory rather than about their queue. So the queue is asked. An ask they h
 *closed* does not suppress a new one — a closed ask is an answered question, and the condition
 recurring after an answer is new information.
 
+**A session that escalates something must watch for the answer.** A verdict is written into
+the bead — not to a log — so a session watching a file concludes that nothing was answered.
+Run `cockpit/watch-answers.sh loop` as a Monitor in any session that files an ask; it polls
+for closes and comments since its cursor, emits one line per event, and is silent when nothing
+is new. The cursor lives under `.runtime/` so it never replays a verdict already delivered.
+
 **A failed probe renders `?`, never 0.** A panel that reports a broken check as all-clear
 displaces the suspicion that would have prompted a look.
 
