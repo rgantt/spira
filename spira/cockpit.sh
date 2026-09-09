@@ -805,26 +805,7 @@ except Exception: print("")' 2>/dev/null)"
     # law-spira-is-a-replica-until-cutover — imported beads are a snapshot of work another
     # system's workers are still doing, and counting them here would report that system's
     # backlog as this one's.
-    bdq list --limit 0 --label spira,plan --json 2>/dev/null | json_only | python3 -c '
-import os, sys, json
-# The escalation label is one configured key, read from the environment rather than written
-# in: five literals in five files is how the panel, the gate and the predicates come to
-# disagree about which beads are waiting on anyone.
-ASK = os.environ["SPIRA_ASK_LABEL"]
-try: d = json.load(sys.stdin)
-except Exception:
-    for k in ("OPEN", "INPROG", "POISON", "NEEDSOP"): print("SP_%s=?" % k)
-    raise SystemExit
-d = d if isinstance(d, list) else [d]
-def has(i, lab): return lab in (i.get("labels") or [])
-# Epics are containers, not work; counting the pilgrimage itself as an open bead makes the
-# graph look one item further from done than it is, forever.
-work = [i for i in d if i.get("issue_type") != "epic"]
-print("SP_OPEN=%d"      % sum(1 for i in work if i.get("status") != "closed"))
-print("SP_INPROG=%d"    % sum(1 for i in work if i.get("status") == "in_progress"))
-print("SP_POISON=%d"    % sum(1 for i in work if i.get("status") != "closed" and has(i, "spira-poison")))
-print("SP_NEEDSOP=%d"  % sum(1 for i in work if i.get("status") != "closed" and has(i, ASK)))
-' 2>/dev/null || { echo "SP_OPEN=?"; echo "SP_INPROG=?"; echo "SP_POISON=?"; echo "SP_NEEDSOP=?"; }
+    sphere_keys
 
     # ---- closed versus landed ----------------------------------------------------------
     # law-closed-is-not-landed as a 24h figure matching the header it sits under. The
@@ -1153,6 +1134,59 @@ for i in awaiting_ids:
 
     # ---- RATE LIMIT WINDOWS: utilisation from live aeon traces ---------------------------
     ratelim_keys
+}
+
+# The sphere-grid keys: plan-bead counts (open, in-progress, needs-op) and the poison count.
+#
+# SP_POISON IS A SEPARATE QUERY, independent of the spira,plan scoping. Poison is applied
+# only by aeon.sh's closing rule when SOP_REQUIRED=1, which fires for ops and qa personas
+# whose beads are labelled `incident`, not `plan`. Counting SP_POISON inside the spira,plan
+# filter therefore produced a counter that was structurally always zero: of eleven open
+# poisoned beads measured on 2026-09-08, not one carried the plan label, so the filter and
+# the population were disjoint by construction (defect sp-b3ub).
+#
+# The remaining three keys (OPEN, INPROG, NEEDSOP) remain scoped to spira,plan, which is
+# correct: law-spira-is-a-replica-until-cutover is a good reason for that scope and only
+# SP_POISON does not belong inside it.
+#
+# Broken out as a function so the test suite can drive the exact code the collector runs —
+# the same reason strand_keys and sop_keys are functions, not inlined.
+sphere_keys() {
+    # SP_POISON: non-closed beads carrying spira-poison, across ALL partitions.
+    # A failed probe renders ?, never 0 (law-failed-probe-renders-question).
+    local _poison_raw
+    _poison_raw="$(bdjson list --all --limit 0 --label spira-poison 2>/dev/null)"
+    if [ -z "$_poison_raw" ]; then
+        echo "SP_POISON=?"
+    else
+        printf '%s\n' "$_poison_raw" | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: print("SP_POISON=?"); raise SystemExit
+d = d if isinstance(d, list) else [d]
+print("SP_POISON=%d" % sum(1 for i in d if i.get("status") != "closed"))' 2>/dev/null \
+            || echo "SP_POISON=?"
+    fi
+
+    bdjson list --limit 0 --label spira,plan 2>/dev/null | python3 -c '
+import os, sys, json
+# The escalation label is one configured key, read from the environment rather than written
+# in: five literals in five files is how the panel, the gate and the predicates come to
+# disagree about which beads are waiting on anyone.
+ASK = os.environ["SPIRA_ASK_LABEL"]
+try: d = json.load(sys.stdin)
+except Exception:
+    for k in ("OPEN", "INPROG", "NEEDSOP"): print("SP_%s=?" % k)
+    raise SystemExit
+d = d if isinstance(d, list) else [d]
+def has(i, lab): return lab in (i.get("labels") or [])
+# Epics are containers, not work; counting the pilgrimage itself as an open bead makes the
+# graph look one item further from done than it is, forever.
+work = [i for i in d if i.get("issue_type") != "epic"]
+print("SP_OPEN=%d"      % sum(1 for i in work if i.get("status") != "closed"))
+print("SP_INPROG=%d"    % sum(1 for i in work if i.get("status") == "in_progress"))
+print("SP_NEEDSOP=%d"  % sum(1 for i in work if i.get("status") != "closed" and has(i, ASK)))
+' 2>/dev/null || { echo "SP_OPEN=?"; echo "SP_INPROG=?"; echo "SP_NEEDSOP=?"; }
 }
 
 # THE SERIES, because a gauge cannot answer "over time". The question the token meter exists
@@ -1653,5 +1687,10 @@ sops)
 ratelim)
     ratelim_keys
     ;;
-*) echo "usage: cockpit.sh [once|loop|history|strands|sops|ratelim]" >&2; exit 1 ;;
+# The sphere-grid keys alone, taking no other reading. This is the seam the suite drives:
+# it is the same function probe calls, so what is tested is what runs.
+sphere)
+    sphere_keys
+    ;;
+*) echo "usage: cockpit.sh [once|loop|history|strands|sops|ratelim|sphere]" >&2; exit 1 ;;
 esac
