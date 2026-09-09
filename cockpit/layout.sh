@@ -669,7 +669,7 @@ status)
     # The collector is not this script's to report on: systemctl is the authority,
     # and a second opinion here would drift. FROM $SPIRA_RUN, NOT DERIVED — the same
     # reason health.sh reads it from there.
-    local _svc="spira-cockpit${SPIRA_INSTANCE:+-$SPIRA_INSTANCE}.service"
+    _svc="spira-cockpit${SPIRA_INSTANCE:+-$SPIRA_INSTANCE}.service"
     if [ -f "$SPIRA_RUN/cockpit.env" ]; then
         echo "snapshot:  $(( $(date +%s) - $(stat -c %Y "$SPIRA_RUN/cockpit.env") ))s old ($_svc)"
     else
