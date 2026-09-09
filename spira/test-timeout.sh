@@ -193,25 +193,25 @@ rm -f "$PF"
 
 # A pidfile whose process is alive AND runs aeon.sh → age = 0.
 # Start a background process named so that its argv[1] contains 'aeon.sh'.
+# The stub blocks on a FIFO read with no children, so there is no grandchild
+# process left in the suite's process group after cleanup. Closing the write
+# end of the FIFO (exec 3>&-) delivers EOF to the stub's read, which exits
+# cleanly without needing SIGTERM or any kill/wait sequence.
+mkfifo "$TMP/hold"
 cat > "$TMP/aeon.sh" <<'STUB'
 #!/usr/bin/env bash
-# On SIGTERM, kill the sleep child and wait for it before exiting — ensures the
-# grandchild is reaped before this bash exits; otherwise it outlives the stub in
-# the suite's process group and the harness orphan-check fires even though all
-# test assertions passed.
-_s=""
-trap 'kill "$_s" 2>/dev/null; wait "$_s" 2>/dev/null; exit 0' TERM INT
-sleep 120 &
-_s=$!
-wait "$_s" 2>/dev/null
+read -r || true
 STUB
 chmod +x "$TMP/aeon.sh"
-( exec bash "$TMP/aeon.sh" ) &
+( exec bash "$TMP/aeon.sh" < "$TMP/hold" ) &
 STUB_PID=$!
+exec 3>"$TMP/hold"        # open write end; unblocks stub's stdin open
 printf '%d' "$STUB_PID" > "$PF"
 age_live="$(ops_age_of "$RUN")"
-kill "$STUB_PID" 2>/dev/null; wait "$STUB_PID" 2>/dev/null; rm -f "$PF"
+exec 3>&-                 # close write end; stub's read returns EOF; stub exits
+wait "$STUB_PID" 2>/dev/null; rm -f "$PF"
 is "live pidfile: SP_OPS_AGE is 0" "0" "$age_live"
 
 printf '\ntest-timeout.sh: %d passed, %d failed\n' "$pass" "$fail"
+wait  # reap zombie subshells from earlier command substitutions before exit
 [ "$fail" -eq 0 ]
