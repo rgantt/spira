@@ -521,8 +521,8 @@ L
 
 leak_out="$(sut run SPIRA_SUITES_BUDGET=60 SPIRA_SUITE_TIMEOUT=10)"; leak_rc=$?
 
-is "the pass returns rather than hanging on the leaked child" "0" "$leak_rc"
-is "the leaker gets a result" "ok" \
+is "the pass returns rather than hanging on the leaked child (rc=1: cleanup defect)" "1" "$leak_rc"
+is "the leaker is marked red for leaving a background job" "red" \
    "$( { read -r ls _ < "$STATE/test-fx-leaky.sh.result"; printf '%s' "${ls:-MISSING}"; } 2>/dev/null )"
 is "and so does the suite after it" "ok" \
    "$( { read -r zs _ < "$STATE/test-fx-zafter.sh.result"; printf '%s' "${zs:-MISSING}"; } 2>/dev/null )"
