@@ -171,6 +171,47 @@ else
 fi
 
 # --------------------------------------------------------------------------------------
+# A SUPERSEDED BRANCH THAT ADDS UNIQUE CONTENT IS KEPT, NOT REAPED. (sp-bxd0)
+#
+# The supersedes edge is a claim, not proof. If the superseded branch would merge without
+# conflict — meaning it adds content not on the base — the Sending must not reap it.
+# Reaping would silently destroy work the successor never carried.
+#
+# This is the shape of the near-miss on 2026-09-08 (sp-r6wf): a branch marked superseded
+# on the strength of matching titles, but carrying a 115-line test file that existed
+# nowhere else.
+#
+# The positive control is the previous case (REAPED sp-sup): a truly superseded branch
+# DOES get reaped. The distinction: sp-sup conflicts with the base (same file changed by
+# both successor and superseded branch), while sp-unique adds a new file that creates no
+# conflict.
+# --------------------------------------------------------------------------------------
+seed
+git -C "$REPO" worktree add -q -b "spira/sp-unique" "$RUN/worktree/sp-unique" main
+printf 'unique content never seen elsewhere\n' > "$RUN/worktree/sp-unique/unique-file.txt"
+git -C "$RUN/worktree/sp-unique" add -A
+git -C "$RUN/worktree/sp-unique" commit -q -m "feat: sp-unique — add file not in base"
+# Mark it superseded (same structure as superseded_branch, but the base is NOT advanced
+# with conflicting content — so merge-tree will exit 0 for this branch).
+printf '{"id":"sp-unique","title":"sp-unique","status":"closed","issue_type":"task","labels":[],"updated_at":"2026-09-04T00:00:00Z","closed_at":"2026-09-04T00:00:00Z","dependencies":[{"issue_id":"sp-unique","depends_on_id":"sp-goal","type":"parent-child"},{"issue_id":"sp-unique","depends_on_id":"sp-succ","type":"supersedes"}]}\n' \
+    | testdb_seed
+git -C "$REPO" fetch -q origin
+out="$(sending)"
+echo "$out" | head -20 >&2
+
+want "superseded branch with unique content is kept"  "KEEP   sp-unique" "$out"
+nowant "it is not reaped"                              "REAPED sp-unique" "$out"
+want "and the reason names the unlanded commits"       "unlanded" "$out"
+# Branch must still exist — its unique file would be lost if reaped.
+if git -C "$REPO" show-ref --verify --quiet "refs/heads/spira/sp-unique" 2>/dev/null; then
+    ok "branch with unique content survives a sending pass"
+else
+    bad "branch with unique content survives a sending pass" "branch was reaped — unique-file.txt would be lost"
+fi
+git -C "$REPO" worktree remove --force "$RUN/worktree/sp-unique" >/dev/null 2>&1 || true
+git -C "$REPO" branch -D "spira/sp-unique" >/dev/null 2>&1 || true
+
+# --------------------------------------------------------------------------------------
 # THE POSITIVE CONTROL FOR SENDING: a non-superseded unlanded branch is KEPT, not reaped.
 # --------------------------------------------------------------------------------------
 seed; branch sp-kept kept.txt "kept branch"

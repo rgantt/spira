@@ -238,6 +238,18 @@ d = d if isinstance(d, list) else [d]
 if not d: sys.exit(1)
 sys.exit(0 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
                   for x in (d[0].get("dependencies") or [])) else 1)' 2>/dev/null; then
+                # SAFETY CHECK: the supersedes edge is a human or agent claim, not a
+                # mechanical proof. If merge-tree exits 0 (no conflict), the branch adds
+                # content absent from the base — a wrong or premature supersede mark, and
+                # reaping would silently destroy that work. A non-zero exit (conflict) means
+                # the base already holds the same content from the successor's commits, which
+                # is the case this arm was written for. Only reap on a conflict; keep
+                # otherwise and let landing.sh or a corrected supersede handle it. (sp-bxd0)
+                if git -C "$REPO" merge-tree --write-tree "$LANDREF" "$br" >/dev/null 2>&1; then
+                    n="$(git -C "$REPO" rev-list --count "$LANDREF..$br" 2>/dev/null || echo '?')"
+                    say "KEEP   $id  superseded but $n unlanded commit(s) add content absent from $LANDREF — unsafe to reap; check that the supersede mark is correct"
+                    continue
+                fi
                 if [ "$DRY" = 1 ]; then
                     say "WOULD  $id  reap superseded branch $br$( [ -n "$(worktree_of "$br" "$REPO")" ] && printf ' and its worktree')"
                     continue
