@@ -190,7 +190,12 @@ sleep 0.1
 if holder_alive sp-h2; then bad "hold is dead after holder dies" "returned 0"
 else ok "hold is dead after holder dies"; fi
 
-# Clean up.
+# Clean up — kill the heartbeat before removing files.  The heartbeat sleeps for
+# SPIRA_HOLD_HEARTBEAT seconds between liveness checks, so removing the pidfile
+# alone leaves it alive in the suite's process group until the harness kills it,
+# which the harness counts as a test defect even when all assertions pass.
+hbpid2="$(cat "$SPIRA_RUN/hold-sp-h2.hb" 2>/dev/null)"
+[ -n "$hbpid2" ] && kill "$hbpid2" 2>/dev/null || true
 rm -f "$SPIRA_RUN/hold-sp-h2.pid" "$SPIRA_RUN/hold-sp-h2.hb"
 
 # ======================================================================================
