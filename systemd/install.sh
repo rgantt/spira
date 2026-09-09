@@ -443,6 +443,35 @@ mkdir -p "$SPIRA_RUN"
 # a path.
 mkdir -p "$SPIRA_RUN/watchd"
 
+# SEED THE TEST PROD CHECKOUT'S CONFIG. A non-prod sentinel runs from $SPIRA_PROD/sentinel.sh.
+# That conf.sh resolves SPIRA_REPO as the git root of $SPIRA_PROD, then looks for
+# $SPIRA_REPO/spira.conf BEFORE ~/.config/spira/spira.conf. Without that file the sentinel
+# falls through to the prod config — using the prod database, prod runtime tree, and
+# SPIRA_INSTANCE=prod — so the containment fence never fires (it is a no-op for prod).
+# Writing SPIRA_INSTANCE=<instance> to dirname($SPIRA_PROD)/spira.conf closes the gap: every
+# path the sentinel derives from it (SPIRA_DB, SPIRA_RUN, etc.) inherits the instance
+# qualifier automatically, and the containment check fires as intended.
+# APPEND, NOT OVERWRITE. The file may already exist with operator settings; appending
+# SPIRA_INSTANCE at the end overrides any earlier value (spira_conf_read: last write wins)
+# without disturbing lines the operator placed before it.
+if [ "$SPIRA_INSTANCE" != "prod" ] && [ -n "${SPIRA_PROD:-}" ]; then
+    _prod_root="$(dirname "$SPIRA_PROD")"
+    _home_root="$(dirname "$SPIRA_HOME")"
+    # GUARD: skip when the prod checkout shares the same parent as the dev checkout.
+    # That only happens when SPIRA_PROD was not set to a separate checkout — a test
+    # fixture or a no-split install. In real usage the prod tree lives in a sibling
+    # directory (e.g. spira-harness-test/) and the two parents differ.
+    if [ "$_prod_root" != "$_home_root" ]; then
+        _prod_repo_conf="$_prod_root/spira.conf"
+        if ! { [ -f "$_prod_repo_conf" ] && grep -qxF "SPIRA_INSTANCE=$SPIRA_INSTANCE" "$_prod_repo_conf"; }; then
+            printf 'SPIRA_INSTANCE=%s\n' "$SPIRA_INSTANCE" >> "$_prod_repo_conf"
+            printf 'install: seeded %s with SPIRA_INSTANCE=%s\n' "$_prod_repo_conf" "$SPIRA_INSTANCE"
+        fi
+        unset _prod_repo_conf
+    fi
+    unset _prod_root _home_root
+fi
+
 # REFUSE IF THIS INSTANCE'S AEONS ARE LIVE. Scoped to the named instance so that installing
 # 'test' does not refuse because 'prod' aeons are running — isolation between instances is the
 # whole point of per-instance naming. Under per-instance naming, a prod aeon is
