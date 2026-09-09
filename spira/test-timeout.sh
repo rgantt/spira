@@ -195,7 +195,13 @@ rm -f "$PF"
 # Start a background process named so that its argv[1] contains 'aeon.sh'.
 cat > "$TMP/aeon.sh" <<'STUB'
 #!/usr/bin/env bash
-sleep 120
+# On SIGTERM, kill the sleep child so this process exits cleanly and leaves no
+# orphan in the suite's process group — same pattern as aeon.sh's heartbeat.
+_s=""
+trap 'kill "$_s" 2>/dev/null; exit 0' TERM INT
+sleep 120 &
+_s=$!
+wait "$_s" 2>/dev/null
 STUB
 chmod +x "$TMP/aeon.sh"
 ( exec bash "$TMP/aeon.sh" ) &
