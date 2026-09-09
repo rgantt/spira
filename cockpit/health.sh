@@ -1259,14 +1259,15 @@ standing_lines() {
     fi
 
     # OPS — the SOP shelf. Which runbooks have never been exercised (dead weight in context),
-    # and which have been applied but did not hold within the window.
-    # `?` for either field means the shelf or the ledger could not be read; see sop_keys() in
-    # cockpit.sh. A recurrence of 0 is the healthy state; never-fired >0 is expected on a new
-    # install and becomes a signal as the shelf ages.
-    printf ' %sOPS%s    %snever-fired%s %s · %srecurred (no hold)%s %s\n' \
+    # which have been applied but did not hold within the window, and how long ago the last
+    # sweep pass ran. `?` for any field means the shelf, ledger, or read failed; see sop_keys()
+    # in cockpit.sh. SP_SWEEP_AGE=? distinguishes "sweep never ran" from "ran and found nothing"
+    # (law-arm-before-you-retire): a quiet sweep and a stopped one are the same pixels without it.
+    printf ' %sOPS%s    %snever-fired%s %s · %srecurred (no hold)%s %s · %ssweep-last%s %s\n' \
         "$C_DIM" "$C_RST" \
         "$C_DIM" "$C_RST" "$(num "${SP_SOP_NEVER_FIRED:-?}" 5)" \
-        "$C_DIM" "$C_RST" "$(bad_unless_zero "${SP_SOP_RECURRED:-?}")"
+        "$C_DIM" "$C_RST" "$(bad_unless_zero "${SP_SOP_RECURRED:-?}")" \
+        "$C_DIM" "$C_RST" "$(age_str "${SP_SWEEP_AGE:-?}" 1800)"
 }
 
 # share <rows> <fixed> <base:max...> -> one allocation per section, on its own line

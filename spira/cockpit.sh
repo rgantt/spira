@@ -1469,15 +1469,17 @@ sop_keys() {
     if [ -z "${_sop_raw//[[:space:]]/}" ]; then
         echo "SP_SOP_NEVER_FIRED=?"
         echo "SP_SOP_RECURRED=?"
+        echo "SP_SWEEP_AGE=?"
         return
     fi
     printf '%s\n' "$_sop_raw" | python3 -c '
-import sys, json, os
+import sys, json, os, time
 from datetime import datetime, timedelta, timezone
 
 ledger_path = sys.argv[1]
 window_h = float(sys.argv[2]) if len(sys.argv) > 2 else 24.0
 since = datetime.now(timezone.utc) - timedelta(hours=window_h)
+now_epoch = int(time.time())
 
 try:
     shelf = json.load(sys.stdin)
@@ -1485,10 +1487,15 @@ try:
 except Exception:
     print("SP_SOP_NEVER_FIRED=?")
     print("SP_SOP_RECURRED=?")
+    print("SP_SWEEP_AGE=?")
     raise SystemExit
 
 ledger_sops = set()
 recurred_sops = set()
+# NEWEST ENTRY IN THE LEDGER, by epoch field. An empty ledger means the sweep has never run
+# and renders ?, not 0 — a stopped sweep and a quiet one must be distinguishable
+# (law-arm-before-you-retire, law-absence-needs-a-positive-control).
+newest_epoch = None
 
 # A MISSING LEDGER IS A VALID STATE, NOT AN ERROR: no SOP has ever been applied, so every
 # SOP on the shelf is never-fired. An UNREADABLE ledger (present but cannot be opened)
@@ -1517,16 +1524,27 @@ if os.path.exists(ledger_path):
                             recurred_sops.add(k)
                     except Exception:
                         pass
+                ep = r.get("epoch")
+                if isinstance(ep, (int, float)) and ep > 0:
+                    ep = int(ep)
+                    if newest_epoch is None or ep > newest_epoch:
+                        newest_epoch = ep
     except Exception:
         print("SP_SOP_NEVER_FIRED=?")
         print("SP_SOP_RECURRED=?")
+        print("SP_SWEEP_AGE=?")
         raise SystemExit
 
 print("SP_SOP_NEVER_FIRED=%d" % len(sop_keys - ledger_sops))
 print("SP_SOP_RECURRED=%d" % len(recurred_sops))
+if newest_epoch is not None:
+    print("SP_SWEEP_AGE=%d" % max(0, now_epoch - newest_epoch))
+else:
+    print("SP_SWEEP_AGE=?")
 ' "$_sop_ledger" "$WINDOW_HOURS" 2>/dev/null || {
         echo "SP_SOP_NEVER_FIRED=?"
         echo "SP_SOP_RECURRED=?"
+        echo "SP_SWEEP_AGE=?"
     }
 }
 
