@@ -71,11 +71,13 @@ file_budget_bead() {
         . "$HERE/lib.sh" 2>/dev/null || exit 0
         local ref="gate:budget"
         # Dedupe: only file if no open bead with this ref already exists.
+        # --external-ref is a create flag, not a bd list flag — filter by the field in JSON.
         local existing
-        existing="$(bdq list --external-ref "$ref" --status open --json 2>/dev/null \
+        existing="$(bdq list --status open --limit 0 --json 2>/dev/null \
             | python3 -c 'import sys,json
 d=json.load(sys.stdin)
-print(d[0]["id"] if isinstance(d,list) and d else "")
+match=[x for x in (d if isinstance(d,list) else []) if x.get("external_ref")=="gate:budget"]
+print(match[0]["id"] if match else "")
 ' 2>/dev/null || true)"
         [ -n "${existing:-}" ] && exit 0
         bdq create \

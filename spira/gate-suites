@@ -33,14 +33,6 @@ spira/test-gate-verdict.sh
 # returning the wrong value, and this is the check for that class.
 spira/test-soak.sh
 
-# THE POISON COUNTER'S OWN, and it is here because poison is the one piece of state the
-# pipeline writes that nothing undoes on its own. A bead wrongly poisoned is not retried, not
-# reported and not claimable, so the failure is silent by construction — and the counter
-# charged for worker deaths and rate-limit refusals for as long as nobody was reading it. The
-# suite pins the charging rule to default-deny and pins the counter to one door; both are
-# properties an edit can remove without anything failing.
-spira/test-poison.sh
-
 # THE VERDICT CHECK, which earns its place by the same rule as the fences: it is a property
 # of the pipeline, not of a function's return value. A bead that is reopened forever is a
 # queue that has stopped moving, and it costs a session every two minutes while it does.

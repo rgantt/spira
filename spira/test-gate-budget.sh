@@ -40,8 +40,11 @@ testdb_up budgetgate || { echo "test-gate-budget: could not build fixture databa
 SH="$TMP/spira"
 mkdir -p "$SH"
 cp "$HERE/gate-spira.sh" "$HERE/lib.sh" "$HERE/conf.sh" \
-   "$HERE/exclude.sh" "$HERE/inventory.sh" "$HERE/hermetic.sh" "$SH/"
+   "$HERE/exclude.sh" "$HERE/inventory.sh" "$HERE/hermetic.sh" "$HERE/sop.sh" "$SH/"
 [ -f "$HERE/inventory-deny" ] && cp "$HERE/inventory-deny" "$SH/"
+# A REPO-MAP so _bdq_check_repo_label allows repo:spira when file_budget_bead fires. The
+# check only tests that "spira" is a known name — the path is not used by the check.
+printf 'spira | %s\n' "$TMP" > "$SH/repo-map"
 
 # A MINIMAL GIT REPOSITORY that satisfies exclude.sh (which calls `git ls-files`) and
 # inventory.sh (which scans tracked files). One harmless file committed.
@@ -86,11 +89,13 @@ run_gate() {
 }
 
 # Count open beads with the budget external-ref in the fixture database.
+# --external-ref is not a bd list flag — filter by the JSON field instead.
 beads_open() {
-    bd -C "$SPIRA_DB" list --external-ref "gate:budget" --status open --json 2>/dev/null \
+    "${SPIRA_BD:-bd}" -C "$SPIRA_DB" list --status open --limit 0 --json 2>/dev/null \
         | python3 -c 'import sys,json
 d=json.load(sys.stdin)
-print(len(d) if isinstance(d,list) else 0)
+match=[x for x in (d if isinstance(d,list) else []) if x.get("external_ref")=="gate:budget"]
+print(len(match))
 ' 2>/dev/null || echo 0
 }
 
