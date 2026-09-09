@@ -49,6 +49,8 @@ cleanup() {
     { exec 3>&-; } 2>/dev/null || true
     { exec 4>&-; } 2>/dev/null || true
     [ "$FIXTURE_UP" -eq 1 ] && TMUX_TMPDIR="$TMUXDIR" tmux kill-server 2>/dev/null || true
+    # Reap any background jobs the shell still tracks so the harness sees no orphans on exit.
+    wait 2>/dev/null || true
     rm -rf "$TMP"
 }
 trap cleanup EXIT
