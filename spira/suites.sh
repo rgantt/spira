@@ -363,10 +363,13 @@ cmd_run() {
         setsid bash "$HERE/$s" > "$tmp" 2>&1 &
         suite_pid=$!
         # Watchdog: send SIGTERM to the whole process group if the suite overruns its slice.
-        ( sleep "$slice" && kill -- -"$suite_pid" 2>/dev/null ) &
+        # KILLER IN ITS OWN PROCESS GROUP so that `kill -- -$killer` sweeps both the bash
+        # and the `sleep` child in one shot.  Without setsid the `sleep` orphans in the
+        # caller's PGID — the harness detects it as a background job left after exit (sp-pdwve).
+        setsid bash -c "sleep ${slice} && kill -- -${suite_pid} 2>/dev/null" &
         killer=$!
         wait "$suite_pid" 2>/dev/null; rc=$?
-        kill "$killer" 2>/dev/null; wait "$killer" 2>/dev/null || true
+        kill -- -"$killer" 2>/dev/null; wait "$killer" 2>/dev/null || true
         # A suite killed by SIGTERM exits 128+15=143; map to 124 (timeout's convention).
         [ "$rc" -ge 128 ] && rc=124
         # SWEEP SURVIVORS. If any process remains in the suite's process group after it

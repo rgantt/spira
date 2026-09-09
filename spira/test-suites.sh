@@ -471,10 +471,7 @@ git -C "$GT" add -A
 git -C "$GT" -c user.email=t@t -c user.name=t commit -q -m base
 
 gate() {
-    # SPIRA_SUITE_TIMEOUT=5: the gate's watchdog spawns `sleep $timeout` in a
-    # background subshell; killing the subshell leaves sleep as an orphan holding
-    # the command-substitution pipe open until sleep expires. 5s keeps the test
-    # responsive while still exercising the gate's suite-running path.
+    # SPIRA_SUITE_TIMEOUT=5 keeps the watchdog short so the test stays responsive.
     env -i PATH="$PATH" HOME="$TMP/home" SPIRA_SUITE_TIMEOUT=5 bash "$GT/spira/gate-spira.sh" 2>&1
 }
 
