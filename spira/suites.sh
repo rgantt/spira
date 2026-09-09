@@ -198,7 +198,7 @@ file_red() {             # file_red <basename> <status> <rc> <seconds> <fp> <out
     out_inc="$(SPIRA_INCIDENT_TYPE=bug \
           SPIRA_INCIDENT_PRIORITY="$(priority_of "$s")" \
           SPIRA_INCIDENT_ACTOR=suites \
-          SPIRA_INCIDENT_LABELS="spira,plan,repo:$SPIRA_HOME_REPO" \
+          SPIRA_INCIDENT_LABELS="spira,plan" \
           SPIRA_INCIDENT_REF="suite:$s:$fp" \
           bash "$INC" file "$s is $status in the timed suite run" - <<PAYLOAD
 The timed full run — every \`spira/test-*.sh\` the landing gate does not run — found this
