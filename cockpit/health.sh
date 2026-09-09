@@ -1211,6 +1211,46 @@ standing_lines() {
     printf '        %s%s%s\n' \
         "$( [ "${SP_POISON:-0}" = 0 ] && printf '%s' "$C_DIM" || printf '%s' "$C_WARN")" "$FIT" "$C_RST"
 
+    # LIVELOCK — open beads that cannot make progress, and closed beads with bad records.
+    # The count alone is the line; individual bead rows live in SP_LIVELOCK0..N-1 and
+    # SP_INVCLSD0..N-1 (rendered only when non-zero to avoid a permanent noise floor).
+    # SP_LIVELOCKED=? means the probe failed; that is not all-clear.
+    local _ll="${SP_LIVELOCKED:-?}" _ic="${SP_INVALID_CLOSED:-?}"
+    local _ll_col _ic_col
+    case "$_ll" in
+        0)   _ll_col="$C_DIM" ;;
+        '?') _ll_col="$C_BAD$C_B" ;;
+        *)   _ll_col="$C_WARN$C_B" ;;
+    esac
+    case "$_ic" in
+        0)   _ic_col="$C_DIM" ;;
+        '?') _ic_col="$C_BAD$C_B" ;;
+        *)   _ic_col="$C_WARN$C_B" ;;
+    esac
+    if [ "$_ll" != 0 ] || [ "$_ic" != 0 ]; then
+        printf ' %sLOCK%s   %slivelocked%s %s%s%s · %sinvalid-closed%s %s%s%s\n' \
+            "$C_DIM" "$C_RST" \
+            "$C_DIM" "$C_RST" "$_ll_col" "$_ll" "$C_RST" \
+            "$C_DIM" "$C_RST" "$_ic_col" "$_ic" "$C_RST"
+        local _ll_i=0 _ic_i=0
+        while [ "$_ll_i" -lt "${SP_LIVELOCK_N:-0}" ] 2>/dev/null && [ "$_ll_i" -lt 5 ]; do
+            eval "local _ll_row=\${SP_LIVELOCK${_ll_i}:-}"
+            if [ -n "$_ll_row" ]; then
+                fit "$_ll_row" $(( COLS - 12 ))
+                printf '        %s  %s%s%s\n' "$C_DIM" "$C_WARN" "$FIT" "$C_RST"
+            fi
+            _ll_i=$(( _ll_i + 1 ))
+        done
+        while [ "$_ic_i" -lt "${SP_INVCLSD_N:-0}" ] 2>/dev/null && [ "$_ic_i" -lt 5 ]; do
+            eval "local _ic_row=\${SP_INVCLSD${_ic_i}:-}"
+            if [ -n "$_ic_row" ]; then
+                fit "$_ic_row" $(( COLS - 12 ))
+                printf '        %s  %s%s%s\n' "$C_DIM" "$C_WARN" "$FIT" "$C_RST"
+            fi
+            _ic_i=$(( _ic_i + 1 ))
+        done
+    fi
+
     # GATE — is the check between work and its landings buying anything? The pane already
     # instruments what the harness COSTS; this is the only line that says whether one of its
     # costs is earning its place (law-gate-earns-its-place). It is here because the previous

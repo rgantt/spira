@@ -1086,6 +1086,9 @@ for i in awaiting_ids:
     # ---- fiends ------------------------------------------------------------------------
     strand_keys
 
+    # ---- livelocked and invalid-closed beads -------------------------------------------
+    livelock_keys
+
     # ---- SOP: which runbooks never fire, and which do not hold -------------------------
     sop_keys
 
@@ -1488,6 +1491,69 @@ PY
     done
 }
 
+# Livelocked and invalid-closed bead counts, broken out as their own function so the
+# test suite can drive the exact code the collector runs — the same reason strand_keys and
+# sop_keys are functions and not inlined.
+#
+# SP_LIVELOCKED: count of open beads no mechanism will ever resolve — structural, not timing.
+# SP_INVALID_CLOSED: count of closed beads whose close reason admits the work is unfinished.
+# Both render ? when the underlying query fails; ? and 0 must not look the same
+# (law-absence-needs-a-positive-control: "no livelocked beads" and "the check is broken"
+# must not be the same pixels, because the whole value here is the suspicion).
+#
+# INDIVIDUAL ROWS are emitted alongside the counts so the panel can show which beads are
+# affected and why. SP_LIVELOCK_N and SP_INVCLSD_N carry the row counts; individual rows
+# are SP_LIVELOCK0..N-1 and SP_INVCLSD0..N-1. Both cap at 20 rows to stay pane-friendly.
+livelock_keys() {
+    local _ll_out _ic_out _n
+    _ll_out="$(detect_livelocked 2>/dev/null)"
+    _ic_out="$(detect_invalid_closed 2>/dev/null)"
+
+    # LIVELOCKED count and rows
+    if [ -z "$_ll_out" ] && ! bdjson list --limit 1 >/dev/null 2>&1; then
+        # A genuinely empty database and a failed query both produce empty output.
+        # Distinguish by probing the database; a failure renders ?.
+        echo "SP_LIVELOCKED=?"
+        echo "SP_LIVELOCK_N=?"
+    else
+        _n=0
+        if [ -n "$_ll_out" ]; then
+            while IFS= read -r _line; do
+                [ -n "$_line" ] || continue
+                case "$_line" in LIVELOCK\ *)
+                    _line="$(printf '%s' "$_line" | tr -c 'A-Za-z0-9 ._/:,()#+-' ' ' | tr -s ' ')"
+                    printf 'SP_LIVELOCK%d=%s\n' "$_n" "${_line:0:120}"
+                    _n=$((_n+1))
+                    [ "$_n" -ge 20 ] && break
+                ;; esac
+            done <<< "$_ll_out"
+        fi
+        echo "SP_LIVELOCKED=$_n"
+        echo "SP_LIVELOCK_N=$_n"
+    fi
+
+    # INVALID-CLOSED count and rows
+    if [ -z "$_ic_out" ] && ! bdjson list --status closed --limit 1 >/dev/null 2>&1; then
+        echo "SP_INVALID_CLOSED=?"
+        echo "SP_INVCLSD_N=?"
+    else
+        _n=0
+        if [ -n "$_ic_out" ]; then
+            while IFS= read -r _line; do
+                [ -n "$_line" ] || continue
+                case "$_line" in INVALID-CLOSED\ *)
+                    _line="$(printf '%s' "$_line" | tr -c 'A-Za-z0-9 ._/:,()#+-' ' ' | tr -s ' ')"
+                    printf 'SP_INVCLSD%d=%s\n' "$_n" "${_line:0:120}"
+                    _n=$((_n+1))
+                    [ "$_n" -ge 20 ] && break
+                ;; esac
+            done <<< "$_ic_out"
+        fi
+        echo "SP_INVALID_CLOSED=$_n"
+        echo "SP_INVCLSD_N=$_n"
+    fi
+}
+
 # The strand ledger, BROKEN OUT BY KIND. strands.json holds every disposition strand.sh
 # classifies — ghost, empty, starved, stuck, cycle and the rest — and only `ghost` is the
 # labelled failure of a claimed bead whose holder is gone. Reporting its SIZE under that
@@ -1758,5 +1824,10 @@ sphere)
 repo_labels)
     repo_label_keys
     ;;
-*) echo "usage: cockpit.sh [once|loop|history|strands|sops|ratelim|sphere|repo_labels]" >&2; exit 1 ;;
+# The livelocked/invalid-closed keys alone, taking no other reading. This is the seam
+# the suite drives: it is the same function probe calls, so what is tested is what runs.
+livelock)
+    livelock_keys
+    ;;
+*) echo "usage: cockpit.sh [once|loop|history|strands|sops|ratelim|sphere|repo_labels|livelock]" >&2; exit 1 ;;
 esac

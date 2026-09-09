@@ -2408,6 +2408,189 @@ for bead in beads:
 ' 2>/dev/null
 }
 
+# detect_livelocked -> one LIVELOCK line per open bead that cannot make progress.
+#
+# THE PROBLEM. A bead is livelocked when it is open but will never advance unless a human
+# intervenes — not merely "blocked" by an open dependency (correct sequencing), but stuck
+# for a structural reason the harness cannot resolve on its own. "Nothing ready" and "beads
+# ready but stuck" look identical to the sentinel; this check names each bead and why.
+#
+# FOUR CATEGORIES, each found by a different predicate:
+#
+#   unclaimable          no persona can claim it: fayth: preference does not match the
+#                        partition, or the bead carries no partition label at all. The
+#                        sentinel reports every queue empty, truthfully; this names which
+#                        beads are responsible. (Reuses detect_unclaimable_ready logic.)
+#
+#   needs-ryan-no-overseer  carries needs-ryan (excluded from every fayth predicate) but
+#                        lacks overseer (the label the decisions pane selects on). The bead
+#                        is invisible to both the loop and to Ryan — it cannot be answered
+#                        and cannot be dispatched.
+#
+#   ci-stuck             carries awaiting-ci (excluded from every fayth predicate, and from
+#                        the stranded-work report) but the repository's land mode is not `pr`,
+#                        so no run will ever report back. The label is a permanent hold that
+#                        no mechanism will ever clear.
+#
+#   unmapped-repo        carries repo:<name> where <name> is not in the repo-map. aeon.sh
+#                        refuses to claim it at claim time and leaves it open forever.
+#
+# SKIPS beads that are merely BLOCKED (open dependency), since those are correct
+# sequencing — bd ready does not surface them and they need no action.
+#
+# OUTPUT: "LIVELOCK <id> <category> — <reason>"
+# Each category uses its own slug so the rendering can group or colour by kind.
+#
+# A FAILED QUERY RETURNS NOTHING AND EXITS 0 (law-absence-needs-a-positive-control is
+# handled by the caller: livelock_keys emits SP_LIVELOCKED=? when this returns nothing).
+detect_livelocked() {
+    # ---- unclaimable: reuse detect_unclaimable_ready output, prefixed as LIVELOCK ----
+    local unc
+    unc="$(detect_unclaimable_ready 2>/dev/null)"
+    if [ -n "$unc" ]; then
+        printf '%s\n' "$unc" | while IFS= read -r line; do
+            # detect_unclaimable_ready prints "UNCLAIMABLE <id> — <reason>"
+            # rewrite to "LIVELOCK <id> unclaimable — <reason>"
+            case "$line" in UNCLAIMABLE\ *)
+                rest="${line#UNCLAIMABLE }"
+                bid="${rest%% *}"
+                reason="${rest#* — }"
+                printf 'LIVELOCK %s unclaimable — %s\n' "$bid" "$reason"
+            ;; esac
+        done
+    fi
+
+    # ---- needs-ryan-no-overseer: open beads with needs-ryan but without overseer ----
+    # The decisions pane selects on `overseer`; without it, the bead is invisible to Ryan.
+    # The loop excludes needs-ryan from every predicate, so no aeon can claim it either.
+    local _nr_raw
+    _nr_raw="$(bdjson list --limit 0 --label "${SPIRA_ASK_LABEL:-needs-ryan}" 2>/dev/null)"
+    if [ -n "$_nr_raw" ]; then
+        printf '%s\n' "$_nr_raw" | python3 -c '
+import sys, json, re
+try: d = json.load(sys.stdin)
+except Exception: raise SystemExit
+for i in (d if isinstance(d, list) else [d]):
+    L = set(i.get("labels") or [])
+    if "needs-ryan" not in L:
+        continue
+    if "overseer" in L:
+        continue
+    title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:60]
+    print("LIVELOCK %s needs-ryan-no-overseer — missing overseer label; "
+          "the decisions pane cannot see this bead and no aeon can claim it; "
+          "add overseer label. title: %s" % (i["id"], title))
+' 2>/dev/null
+    fi
+
+    # ---- ci-stuck: awaiting-ci beads in a repo whose land mode is not `pr` ----
+    local _ci_raw
+    _ci_raw="$(bdjson list --all --limit 0 --label "${SPIRA_CI_LABEL:-awaiting-ci}" 2>/dev/null)"
+    if [ -n "$_ci_raw" ]; then
+        printf '%s\n' "$_ci_raw" | python3 -c '
+import sys, json, re
+home = sys.argv[1]
+try: d = json.load(sys.stdin)
+except Exception: raise SystemExit
+for i in (d if isinstance(d, list) else [d]):
+    if i.get("status") == "closed":
+        continue
+    repo = next((l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")), home)
+    title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:60]
+    # Report all awaiting-ci beads; the shell below checks the land mode.
+    print("%s\t%s\t%s" % (i["id"], repo, title))
+' "$(spira_home_repo)" 2>/dev/null | while IFS=$'\t' read -r _cid _crepo _ctitle; do
+            [ -n "$_cid" ] || continue
+            # We only want the STRUCTURAL case: the repo's land mode is not `pr` so no run
+            # will ever report back. spira_ci_park_state also checks timing and exits 2 on an
+            # empty timestamp, which would trigger `|| _state=no-ci` even for pr-mode repos.
+            # Use repo_land directly — it is the one test that names the structural fault.
+            _land="$(repo_land "$_crepo" 2>/dev/null)"
+            if [ "${_land:-push}" != pr ]; then
+                printf 'LIVELOCK %s ci-stuck — repo %s land mode is not pr; awaiting-ci will never clear; strip the label or change the repo land mode. title: %s\n' \
+                    "$_cid" "$_crepo" "$_ctitle"
+            fi
+        done
+    fi
+
+    # ---- unmapped-repo: open beads with repo: label not in the repo-map ----
+    if [ -r "${SPIRA_REPO_MAP:-}" ]; then
+        local _valid_names _open_raw
+        _valid_names="$(awk 'BEGIN{FS="|"} /^[ \t]*#/{next}
+            {n=$1; gsub(/^[ \t]+|[ \t]+$/,"",n); if(n!=""&&NF>1) print n}' \
+            "$SPIRA_REPO_MAP" 2>/dev/null)"
+        _open_raw="$(bdjson list --limit 0 2>/dev/null)"
+        if [ -n "$_open_raw" ]; then
+            printf '%s\n' "$_open_raw" | VALID_NAMES="$_valid_names" python3 -c '
+import os, sys, json, re
+try: d = json.load(sys.stdin)
+except Exception: raise SystemExit
+valid = set(os.environ.get("VALID_NAMES", "").split())
+for i in (d if isinstance(d, list) else [d]):
+    L = i.get("labels") or []
+    # Skip beads already handled by the unclaimable or needs-ryan checks.
+    if "needs-ryan" in L or "spira-poison" in L:
+        continue
+    repo_labels = [l[5:] for l in L if l.startswith("repo:")]
+    if not repo_labels:
+        continue
+    bad = [r for r in repo_labels if r not in valid]
+    if not bad:
+        continue
+    title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:60]
+    print("LIVELOCK %s unmapped-repo — repo:%s not in repo-map; aeon.sh refuses to claim it; "
+          "fix the label or add the repo to repo-map. title: %s" % (i["id"], ", ".join(bad), title))
+' 2>/dev/null
+        fi
+    fi
+}
+
+# detect_invalid_closed -> one INVALID-CLOSED line per closed bead whose close reason
+# admits the work is unfinished.
+#
+# THE PROBLEM. law-no-close-reason-admits-unfinished says a bead must not be closed with
+# a reason that says the work is partial: "PERMANENT FIX NEEDED", "temporary",
+# "mitigated-only", a "TODO". The statute is prospective; nothing detects the ones already
+# in the store, and a grep of close reasons finds them cheaply.
+#
+# A SECOND FAMILY alongside LIVELOCK in the sweeper's output. Both are surfaced on the
+# dashboard so the count reaches Ryan's screen; both are categorised so the fix is obvious.
+# The families are kept separate because LIVELOCK is open beads and INVALID-CLOSED is closed
+# ones — the lifecycle is different, and mixing them produces a count that means two things.
+#
+# OUTPUT: "INVALID-CLOSED <id> — <reason>"
+detect_invalid_closed() {
+    local _closed_raw
+    _closed_raw="$(bdjson list --status closed --label spira --limit 0 2>/dev/null)"
+    [ -n "$_closed_raw" ] || return 0
+    printf '%s\n' "$_closed_raw" | python3 -c '
+import sys, json, re
+
+RED_FLAGS = [
+    "PERMANENT FIX NEEDED",
+    "permanent fix needed",
+    "mitigated-only",
+    "mitigated only",
+    "TODO",
+    "temporary fix",
+    "workaround",
+]
+
+try: d = json.load(sys.stdin)
+except Exception: raise SystemExit
+for i in (d if isinstance(d, list) else [d]):
+    reason = i.get("close_reason") or ""
+    hit = next((f for f in RED_FLAGS if f.lower() in reason.lower()), None)
+    if not hit:
+        continue
+    title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:60]
+    # Truncate the reason so it fits in the pane line.
+    reason_short = re.sub(r"\s+", " ", reason.strip())[:120]
+    print("INVALID-CLOSED %s — close reason contains %r: %s. title: %s" % (
+        i["id"], hit, reason_short, title))
+' 2>/dev/null
+}
+
 # --------------------------------------------------------------------------------------
 # THE REPOSITORY REGISTRY. Which repository a bead is worked in comes from THE BEAD — a
 # `repo:<name>` label, the same partition every imported Gas Town bead already carries —
