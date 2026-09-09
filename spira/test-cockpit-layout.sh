@@ -41,14 +41,22 @@ LIVE_FIFO="$TMP/live.fifo"
 mkfifo "$GHOST_FIFO" "$LIVE_FIFO"
 
 cleanup() {
-    # Guard: kill 0 sends SIGTERM to the entire process group; only kill real PIDs.
-    [ "${GHOST_PID:-0}" -gt 0 ] && kill "$GHOST_PID" 2>/dev/null || true
-    [ "${LIVE_PID:-0}" -gt 0 ]  && kill "$LIVE_PID"  2>/dev/null || true
-    # Closing the <> fds drops the last write-end reference on each FIFO, which
-    # causes script's FIFO reads to return EOF, which signals tmux to detach.
+    # Kill the fixture server FIRST. tmux kill-server disconnects every attached
+    # client (tmux attach-session), which causes script(1) to see its child exit
+    # and exit in turn. Killing script before the server leaves the tmux attach-session
+    # subprocess orphaned in the suite's process group, where the harness finds it
+    # after the test exits and marks the suite red.
+    [ "$FIXTURE_UP" -eq 1 ] && TMUX_TMPDIR="$TMUXDIR" tmux kill-server 2>/dev/null || true
+    # Closing the <> fds drops the last write-end reference on each FIFO; belt-and-suspenders
+    # in case script is still waiting on stdin after the server dies.
     { exec 3>&-; } 2>/dev/null || true
     { exec 4>&-; } 2>/dev/null || true
-    [ "$FIXTURE_UP" -eq 1 ] && TMUX_TMPDIR="$TMUXDIR" tmux kill-server 2>/dev/null || true
+    # Allow time for the server→client→script exit cascade to propagate before we check
+    # for stragglers. On a local machine this takes milliseconds; 0.2 s is conservative.
+    sleep 0.2
+    # Kill any script process that did not exit in time after the server shutdown.
+    [ "${GHOST_PID:-0}" -gt 0 ] && kill "$GHOST_PID" 2>/dev/null || true
+    [ "${LIVE_PID:-0}" -gt 0 ]  && kill "$LIVE_PID"  2>/dev/null || true
     # Reap any background jobs the shell still tracks so the harness sees no orphans on exit.
     wait 2>/dev/null || true
     rm -rf "$TMP"
