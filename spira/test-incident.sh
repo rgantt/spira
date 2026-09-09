@@ -56,6 +56,11 @@ testdb_require test-incident
 TMP="$(mktemp -d)"; trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
 testdb_up incident || { echo "test-incident: could not build a fixture database"; exit 1; }
 
+# Create a minimal repo-map so bdq can validate repo: labels in the test.
+# Format is name|path (pipe-separated), with comments starting with #.
+REPO_MAP="$TMP/repo-map"
+printf 'brain|%s\n' "$SPIRA_DB" > "$REPO_MAP"
+
 # A no-op notifier so the SIN escalation path does not reach the real cockpit.
 NOOP="$TMP/noop.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$NOOP"; chmod +x "$NOOP"
@@ -169,6 +174,7 @@ inc_env() {
     env -i HOME="$HOME" PATH="$PATH" SPIRA_PATH="${SPIRA_PATH:-}" \
         SPIRA_CONF="$TMP/nonexistent.conf" \
         SPIRA_DB="$SPIRA_DB" \
+        SPIRA_REPO_MAP="$REPO_MAP" \
         SPIRA_SPOOL="$SPOOL" \
         SPIRA_INCIDENT_LOG="$ILOG" \
         SPIRA_INCIDENT_LOCK="$LOCK" \
@@ -200,14 +206,14 @@ echo
 echo "the repo: label — a declared repo is stamped on the bead (positive control):"
 # ======================================================================================
 # POSITIVE CONTROL (law-absence-needs-a-positive-control). File an incident that names
-# the harness as its repository and assert the resulting bead carries repo:spira.
+# a repository and assert the resulting bead carries the repo: label.
 # Without this, a mis-set SPIRA_DB, a broken label command, or an absent code path all
 # look like "no label" to an assertion that only checks for its absence.
-printf 'repo test payload\n' | inc_env SPIRA_INCIDENT_REPO=spira
+printf 'repo test payload\n' | inc_env SPIRA_INCIDENT_REPO=brain
 id_repo="$(find_bead 'incident:harness-repo-test')"
 if [ -n "${id_repo:-}" ]; then
     labels_repo="$(bd -C "$SPIRA_DB" label list "$id_repo" 2>/dev/null || true)"
-    want "repo:spira on a bead filed with SPIRA_INCIDENT_REPO=spira" "repo:spira" "$labels_repo"
+    want "repo:brain on a bead filed with SPIRA_INCIDENT_REPO=brain" "repo:brain" "$labels_repo"
 else
     bad "repo label: positive control" "incident.sh filed nothing (no bead at incident:harness-repo-test)"
 fi
