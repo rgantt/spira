@@ -242,23 +242,37 @@ for labels, name in json.loads(sys.argv[1]).items():
             2>/dev/null | python3 -c '
 import sys, json
 name = sys.argv[1]
-try:
-    d = json.load(sys.stdin)
-    for r in (d if isinstance(d, list) else [d]):
-        r["_partition"] = name
-        print(json.dumps(r))
-except Exception:
-    pass
+raw = sys.stdin.read()
+if not raw.strip():
+    # bdjson produced no output — bd refused (schema mismatch, timeout) rather than returning
+    # an empty list. A genuine empty response arrives as "[]" which json_only passes through;
+    # empty output means the JSON was never produced. Emit a sentinel so the aggregator can
+    # distinguish a refusal from a true zero (law-failed-probe-renders-question).
+    print(json.dumps({"_refused": True}))
+else:
+    try:
+        d = json.loads(raw)
+        for r in (d if isinstance(d, list) else [d]):
+            r["_partition"] = name
+            print(json.dumps(r))
+    except Exception:
+        print(json.dumps({"_refused": True}))
 ' "$_pname" 2>/dev/null
     done | python3 -c '
 import sys, json, re
 rows = []
 seen = set()
+refused = False
 for line in sys.stdin:
     line = line.strip()
     if not line: continue
     try:
         r = json.loads(line)
+        # _refused sentinel: the inner script detected that bdjson produced no output,
+        # meaning bd refused rather than returning an empty list.
+        if r.get("_refused"):
+            refused = True
+            continue
         bid = r.get("id", "")
         if bid and bid not in seen:
             seen.add(bid)
@@ -274,8 +288,14 @@ for n, i in enumerate(rows[:40]):
     part = i.get("_partition", "?")
     title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80].replace("=", "-")
     print("SP_NEXT%d=P%s %s %s %s" % (n, i.get("priority") or "?", part, i["id"], title))
-print("SP_NEXT_N=%d" % len(rows))
-print("SP_READY=%d" % len(rows))
+# A refused query renders ? — "no work ready" is the reassuring answer that must never be
+# the one a broken probe produces (law-failed-probe-renders-question).
+if refused:
+    print("SP_NEXT_N=?")
+    print("SP_READY=?")
+else:
+    print("SP_NEXT_N=%d" % len(rows))
+    print("SP_READY=%d" % len(rows))
 ' 2>/dev/null
 
     # ---- RECENT: TRANSITIONS, not just outcomes ----------------------------------------
@@ -526,8 +546,19 @@ for t, i in aged[:20]:
     fi
 
     # ---- FLOW: what is moving between the operator and the harness ------------------------------
-    local waiting unread
-    waiting=$(bdjson list --status open --limit 0 --label "$SPIRA_ASK_LABEL" 2>/dev/null | json_count)
+    # SP_WAITING: capture bdjson output before counting so we can distinguish a genuine empty
+    # list "[]" (→ 0) from empty output (bd refused → ?). json_only strips non-JSON lines, so a
+    # schema-mismatch error printed by bd produces no output at all, while an empty result set
+    # produces "[]" which json_only passes through. Piping directly into json_count collapses
+    # both to 0, which is the reassuring answer a broken probe must never produce
+    # (law-failed-probe-renders-question).
+    local waiting unread _wait_raw
+    _wait_raw="$(bdjson list --status open --limit 0 --label "$SPIRA_ASK_LABEL" 2>/dev/null)"
+    if [ -z "$_wait_raw" ]; then
+        waiting="?"
+    else
+        waiting="$(printf '%s' "$_wait_raw" | json_count)"
+    fi
     unread=$("$COCK_DIR/unanswered.sh" --count 2>/dev/null | tail -1)
     echo "SP_WAITING=${waiting:-?}"
     echo "SP_UNANSWERED=${unread:-?}"

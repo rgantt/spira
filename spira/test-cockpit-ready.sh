@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+#
+# test-cockpit-ready.sh — SP_READY, SP_NEXT_N, and SP_WAITING render ? when bd refuses.
+#
+#   ./test-cockpit-ready.sh
+#
+# THE FAILURE THIS SUITE EXISTS FOR. bd exits 0 on a schema-version mismatch and
+# prints the complaint to stdout, not stderr. Any probe that counts lines or checks $?
+# reads the refusal as a successful empty response of zero. During the 2026-09-08
+# outage, the cockpit displayed "SP_READY 0" and "SP_NEXT_N 0" while bd could not
+# read the database at all, displacing the suspicion that would have prompted a look.
+#
+# defect: sp-vmh4
+# covers: spira/cockpit.sh
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+pass=0; fail=0
+ok()     { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
+bad()    { fail=$((fail+1)); printf '  FAIL  %s: %s\n' "$1" "$2"; }
+want()   { [[ "$3" == *"$2"* ]] && ok "$1" || bad "$1" "wanted [$2] in [$3]"; }
+nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3]"; }
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+RUN="$TMP/run"; mkdir -p "$RUN"
+BASE_PATH="$PATH"
+
+run_probe() {   # run_probe <SPIRA_BD=path> -> stdout of probe()
+    local bd_path="$1"
+    env -i PATH="$BASE_PATH" HOME="$TMP" LC_ALL=C.UTF-8 \
+        SPIRA_CONF="$TMP/no.conf" SPIRA_HOME="$HERE" SPIRA_REPO="$TMP" \
+        SPIRA_RUN="$RUN" SPIRA_DB="$TMP/nodb" \
+        SPIRA_REPO_MAP="$TMP/no-map" SPIRA_GOAL=sp-test SPIRA_FAYTHS=t \
+        SPIRA_ASK_LABEL=needs-ryan SPIRA_CI_LABEL=awaiting-ci \
+        SPIRA_BD="$bd_path" \
+        bash "$HERE/cockpit.sh" once 2>/dev/null
+}
+
+# ======================================================================================
+# POSITIVE CONTROL FIRST. A check that only tests absence is indistinguishable from one
+# pointed at the wrong thing; proving it fires on a known input proves the machinery
+# works before we rely on its silence (law-absence-needs-a-positive-control).
+#
+# A bd that returns an empty list "[]" for every query: zero ready beads, zero waiting
+# asks. SP_READY and SP_NEXT_N should be 0, not ?.
+
+BD_EMPTY="$TMP/bd-empty"
+cat > "$BD_EMPTY" <<'EOF'
+#!/usr/bin/env bash
+printf '[]'
+exit 0
+EOF
+chmod +x "$BD_EMPTY"
+
+echo "ready probe: bd returns empty list []:"
+zero_out="$(run_probe "$BD_EMPTY")"
+want   "SP_READY key is present"           "SP_READY="  "$zero_out"
+nowant "SP_READY is NOT ? for empty list"  "SP_READY=?" "$zero_out"
+want   "SP_NEXT_N key is present"          "SP_NEXT_N=" "$zero_out"
+nowant "SP_NEXT_N is NOT ? for empty list" "SP_NEXT_N=?" "$zero_out"
+want   "SP_WAITING key is present"         "SP_WAITING="  "$zero_out"
+nowant "SP_WAITING is NOT ? for empty list" "SP_WAITING=?" "$zero_out"
+
+# ======================================================================================
+# THE FAILURE CASE. A bd that mimics a schema-mismatch refusal: prints the error to
+# stdout and exits 0. json_only strips the non-JSON line, so bdjson produces no output.
+# Before the fix, the ready and next-up probes counted nothing as "zero ready beads".
+
+BD_REFUSED="$TMP/bd-refused"
+cat > "$BD_REFUSED" <<'EOF'
+#!/usr/bin/env bash
+echo "schema version mismatch: database is at v61, binary knows up to v53"
+exit 0
+EOF
+chmod +x "$BD_REFUSED"
+
+echo ""
+echo "ready probe: bd refuses (schema mismatch, exit 0):"
+ref_out="$(run_probe "$BD_REFUSED")"
+want "SP_READY is ? on refusal"   "SP_READY=?"   "$ref_out"
+want "SP_NEXT_N is ? on refusal"  "SP_NEXT_N=?"  "$ref_out"
+want "SP_WAITING is ? on refusal" "SP_WAITING=?" "$ref_out"
+
+# ======================================================================================
+printf '\ntest-cockpit-ready: %d ok, %d fail\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
