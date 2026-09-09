@@ -598,12 +598,19 @@ cleanup() {
     # is the last chance to record what happened. Note that `[ -n "$X" ] && cmd` is itself
     # one of those failing commands whenever $X is empty.
     set +e
-    # WAIT FOR THE HEARTBEAT TO FINISH, not just kill it. kill sends SIGTERM, which the
-    # heartbeat's trap handles (kills its sleep child, exits), but if we don't wait the
-    # heartbeat process remains in the suite's process group after aeon.sh exits. suites.sh
-    # runs each suite under setsid and checks for survivors — the unwaited heartbeat
-    # triggers "left background jobs after exit" even when all tests passed. (sp-1ux75)
-    if [ -n "$HB_PID" ]; then kill "$HB_PID" 2>/dev/null; wait "$HB_PID" 2>/dev/null || true; fi
+    if [ -n "$HB_PID" ]; then
+        # Kill the heartbeat's children (e.g., the current `sleep`) BEFORE signalling the
+        # subshell. Without this, `kill "$HB_PID"` exits the subshell but leaves the
+        # sleeping child alive in the caller's process group — which the suite runner
+        # detects as a background-job leak and marks the suite red. (sp-6a72t)
+        # Also wait after the kill: the heartbeat process remains in the suite's process
+        # group until reaped, and an unwaited HB_PID triggers the same "left background
+        # jobs" check even when the sleep child is already gone. (sp-1ux75)
+        _hb_kids="$(ps --ppid "$HB_PID" -o pid= 2>/dev/null | tr -s ' \n' ' ')"
+        [ -n "${_hb_kids// /}" ] && kill $_hb_kids 2>/dev/null || true
+        kill "$HB_PID" 2>/dev/null; wait "$HB_PID" 2>/dev/null || true
+        unset _hb_kids
+    fi
     fixture_drop
     rm -f "$PIDFILE" "${PIDFILE%.pid}.name"
     # RESTORE THE WORLD if this aeon stopped it. Runs here, after the heartbeat and fixture
