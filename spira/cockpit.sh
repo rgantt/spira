@@ -103,9 +103,13 @@ age_of() {
     printf '%d' $(( $(date +%s) - m ))
 }
 
-# unit_active <unit> -> 1 or 0. A timer that is not active is why nothing is happening, and
-# it is the first thing to look at when every other number has stopped moving.
+# unit_active <unit> -> 1 (active), 0 (not active), or ? (unit unknown to systemd).
+# A timer that is not active is why nothing is happening, and it is the first thing to look
+# at when every other number has stopped moving. A unit that cannot be found must not be
+# reported as 0 — that reads as "not active" about a known unit, which displaces the suspicion
+# that it might not exist at all (law-absence-needs-a-positive-control).
 unit_active() {
+    [ "$1" = '?' ] && { printf '?'; return; }
     [ "$(systemctl --user is-active "$1" 2>/dev/null)" = active ] && printf 1 || printf 0
 }
 
@@ -761,9 +765,9 @@ except Exception: print("")' 2>/dev/null)"
     # thing running it. The collector is not the sentinel, so it can — and this is what
     # makes every number below interpretable, because a stale graph under a dead sentinel
     # looks exactly like a quiet one under a live sentinel.
-    echo "SP_SENTINEL_TIMER=$(unit_active spira-sentinel.timer)"
+    echo "SP_SENTINEL_TIMER=$(unit_active "$(spira_unit sentinel timer)")"
     echo "SP_SENTINEL_AGE=$(age_of "$SPIRA_RUN/sentinel.log")"
-    echo "SP_OPS_TIMER=$(unit_active spira-ops.timer)"
+    echo "SP_OPS_TIMER=$(unit_active "$(spira_unit ops timer)")"
     # SP_OPS_AGE: "ops is inside a session" vs "ops has stopped". ops.log only gets new lines
     # from aeon.sh's own log() calls, which are silent during the 480s claude session itself,
     # so its mtime is frozen while ops is actually working — indistinguishable from a dead
@@ -785,7 +789,7 @@ except Exception: print("")' 2>/dev/null)"
     # including a run that died on its first line; auron.status is written by auron.sh
     # itself, last, only once a whole pass has completed. Only the second one distinguishes
     # "it ran" from "it worked".
-    echo "SP_AURON_TIMER=$(unit_active spira-auron.timer)"
+    echo "SP_AURON_TIMER=$(unit_active "$(spira_unit auron timer)")"
     echo "SP_AURON_AGE=$(age_of "$SPIRA_RUN/auron.status")"
     # What it is currently saying. A failed read renders `?`, never 0: "no alerts firing"
     # is the reassuring answer and must never be the one a broken probe produces.

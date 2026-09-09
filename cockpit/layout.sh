@@ -397,8 +397,10 @@ rebuild_loom_if_stale() {
 }
 
 restart_loom_if_stale() {
-    local unit=spira-loom.service bin="${SPIRA_LOOM_BIN:-}" main started mtime
+    local unit bin="${SPIRA_LOOM_BIN:-}" main started mtime
+    unit="$(spira_unit loom service)"
     [ -n "$bin" ] && [ -x "$bin" ] || return 0
+    [ "$unit" != '?' ] || return 0
     systemctl --user cat "$unit" >/dev/null 2>&1 || return 0
     [ "$(systemctl --user is-active "$unit" 2>/dev/null)" = active ] || return 0
     main=$(systemctl --user show "$unit" -p MainPID --value 2>/dev/null || echo 0)

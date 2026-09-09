@@ -182,8 +182,14 @@ else
     [ -e "$SENTINEL_LOG" ] && log_error="exists but is not readable" || log_error="no such file"
 fi
 
-sentinel_timer="$("$SYSTEMCTL" --user is-active spira-sentinel.timer 2>/dev/null)"
-[ -n "$sentinel_timer" ] || sentinel_timer=unknown
+_sentinel_unit="$(spira_unit sentinel timer)"
+if [ "$_sentinel_unit" = '?' ]; then
+    sentinel_timer=unknown
+else
+    sentinel_timer="$("$SYSTEMCTL" --user is-active "$_sentinel_unit" 2>/dev/null)"
+    [ -n "$sentinel_timer" ] || sentinel_timer=unknown
+fi
+unset _sentinel_unit
 
 mirror_configured=0; mirror_exists=0; mirror_mtime=0
 if [ -n "${SPIRA_EXPORTER:-}" ]; then

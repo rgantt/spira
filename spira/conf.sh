@@ -958,3 +958,28 @@ spira_bin_purpose() {
         *)       echo "required by the harness" ;;
     esac
 }
+
+# spira_unit <base> [service|timer] -> the unit name for this installation.
+# Tries the instance-qualified form first (spira-<base>-<instance>.<type>); if that
+# unit is not loaded (neither enabled nor active), falls back to the plain form.
+# Returns '?' if neither form is known to systemd — a unit that cannot be found must
+# not be queried for health, which would report 'inactive' about an unrelated subject
+# (law-absence-needs-a-positive-control). Callers must treat '?' as unknown state.
+#
+# This is the same resolution the TIMER_BASES loop in world.sh uses, extracted so that
+# every caller agrees on which name to address rather than each hard-coding one form.
+spira_unit() {
+    local base="$1" t="${2:-service}"
+    local SC="${SPIRA_SYSTEMCTL:-systemctl}"
+    local inst="spira-${base}${SPIRA_INSTANCE:+-$SPIRA_INSTANCE}.${t}"
+    local plain="spira-${base}.${t}"
+    if "$SC" --user is-enabled "$inst" >/dev/null 2>&1 ||
+       "$SC" --user is-active  "$inst" >/dev/null 2>&1; then
+        printf '%s' "$inst"
+    elif "$SC" --user is-enabled "$plain" >/dev/null 2>&1 ||
+         "$SC" --user is-active  "$plain" >/dev/null 2>&1; then
+        printf '%s' "$plain"
+    else
+        printf '?'
+    fi
+}

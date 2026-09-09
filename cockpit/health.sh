@@ -276,16 +276,20 @@ halt_banner() {
     # The suite was testing the box (law-gates-run-in-a-clean-environment), and it did it in
     # the one situation where the gate most needed to be trustworthy: the gate could not go
     # green while the world was stopped, and the world was stopped in order to fix the gate.
-    # PER-INSTANCE UNIT NAME, both forms tried. After install.sh migrated the fleet the timer
-    # is spira-sentinel-<instance>.timer and the plain name is disabled, so this read
-    # "inactive" and the pane announced SPIRA STOPPED while Spira was running normally
-    # (2026-09-08). A health panel that reports a healthy system as stopped is the same
-    # defect as one reporting a broken one as fine.
-    tstate=inactive
-    for _t in "spira-sentinel${SPIRA_INSTANCE:+-$SPIRA_INSTANCE}.timer" spira-sentinel.timer; do
-        tstate="$("${SPIRA_SYSTEMCTL:-systemctl}" --user is-active "$_t" 2>/dev/null)"
-        [ "$tstate" = active ] && break
-    done
+    # PER-INSTANCE UNIT NAME resolved via spira_unit, which tries the instance-qualified form
+    # first and falls back to the plain name if not found. After install.sh migrated the fleet
+    # the timer is spira-sentinel-<instance>.timer and the plain name is disabled; querying the
+    # plain name read "inactive" and caused the pane to announce SPIRA STOPPED while Spira was
+    # running normally (2026-09-08). A health panel that reports a healthy system as stopped is
+    # the same defect as one reporting a broken one as fine.
+    local _su
+    _su="$(spira_unit sentinel timer)"
+    if [ "$_su" = '?' ]; then
+        tstate=unknown
+    else
+        tstate="$("${SPIRA_SYSTEMCTL:-systemctl}" --user is-active "$_su" 2>/dev/null)"
+        [ -n "$tstate" ] || tstate=unknown
+    fi
     if [ -f "$stamp" ]; then
         since="$(head -1 "$stamp" 2>/dev/null)"
         why="$(sed -n '''2s/^why: //p''' "$stamp" 2>/dev/null)"
