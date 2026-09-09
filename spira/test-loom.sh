@@ -55,7 +55,7 @@ fi
 
 TMP="$(mktemp -d)"; trap 'testdb_drop >/dev/null 2>&1; rm -rf "$TMP"' EXIT INT TERM
 
-testdb_up loom >/dev/null 2>&1
+testdb_up loom >/dev/null 2>&1 || { bad "fixture database" "testdb_up failed — cannot seed"; printf '\n  %d ok, %d failed\n' "$pass" "$fail"; exit 1; }
 
 # Seed four beads: two open, one in-progress, one closed.
 # Edges: sp-aaa→sp-ccc (blocks), sp-bbb→sp-ccc (parent-child), sp-bbb→sp-zzz (dropped —
@@ -73,9 +73,10 @@ bdq update sp-ccc --parent sp-bbb >/dev/null 2>&1          # parent-child edge
 bdq dep add sp-aaa sp-ccc >/dev/null 2>&1                  # sp-aaa blocks sp-ccc
 bdq dep add sp-bbb sp-zzz >/dev/null 2>&1                  # sp-bbb blocks sp-zzz (closed — dropped)
 
-# Route through the SPIRA_BD seam: testdb_up unsets SPIRA_BD so bdq calls the real binary
-# via PATH; the fallback bare "bd" is reachable via the PATH conf.sh exports. testdb_available
-# already verified bd is callable, so no second check here.
+# Route through the SPIRA_BD seam: testdb_up sets SPIRA_BD to the embedded binary so bdq
+# and cargo-test children use the right engine; the fallback bare "bd" is reachable via PATH
+# when the shared fixture put the symlink there.  testdb_available already verified bd is
+# callable, so no second check here.
 BD_BIN="${SPIRA_BD:-bd}"
 ok "fixture database ready at $SPIRA_DB"
 
