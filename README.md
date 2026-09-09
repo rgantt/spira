@@ -360,6 +360,19 @@ disciplined about using that path, which is usually the automation, and misses t
 You need `bd`, `git`, `flock`, `python3`, and whichever coding-agent CLI your personas name.
 `cargo` is optional — without it you lose the attention panel, not the loop.
 
+| program | what it does | if absent |
+|---|---|---|
+| `bd` | the beads issue tracker — the substrate; nothing runs without it | nothing runs |
+| `git` | every repository operation | nothing runs |
+| `python3` | every JSON payload this harness parses | nothing runs |
+| `flock` (util-linux) | serialising writers that share one path — the transcript archive, and the landing gate's per-repository tree | nothing runs |
+| `dolt` | the SQL server beads stores its database in | `bd` cannot reach a database |
+| `gh` | opening and landing pull requests (repos whose land mode is `pr`) | repositories whose land mode is `pr` cannot land |
+| `claude` | the agent an aeon is a session of | no work is done, only reported |
+| `tmux` | the cockpit panes | no attention surface |
+| `cargo` | building the decisions panel; not needed to run the loop | no panel; the loop is unaffected |
+| `node` | gating the browser page's view model; the loop itself never needs it | that one suite skips; the loop is unaffected |
+
 ```sh
 git clone <this repo> spira && cd spira
 
