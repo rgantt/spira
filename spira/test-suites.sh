@@ -214,7 +214,10 @@ echo "green is recorded, not silent — and a suite that never ran has no record
 # ======================================================================================
 # The positive control for every "absent" reading below: a record exists for a suite that ran,
 # so a missing one means "never ran" rather than "the runner does not write these".
-read -r st at secs _ < "$STATE/test-fx-green.sh.result"
+# Pre-declare so a missing file produces a clear FAIL rather than crashing with `st: unbound
+# variable` — the original failure mode that filed sp-xoxxo.
+st="" at="" secs=""
+read -r st at secs _ < "$STATE/test-fx-green.sh.result" 2>/dev/null || true
 is   "a green suite leaves a record"                "ok" "$st"
 case "$at" in
     ''|*[!0-9]*) bad "with a timestamp, and it is now" "[$at]" ;;
