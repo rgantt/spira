@@ -159,10 +159,13 @@ run() {                  # run <suite> — its output only when it matters; cost
     # after the suite exits, so no orphan can hold any descriptor open (sp-a8c5).
     setsid bash "$s" > "$tmp" 2>&1 &
     suite_pid=$!
-    ( sleep "${SPIRA_SUITE_TIMEOUT:-600}" && kill -- -"$suite_pid" 2>/dev/null ) &
+    # KILLER IN ITS OWN PROCESS GROUP so that `kill -- -$killer` sweeps both the sh and the
+    # `sleep` child in one shot.  Without setsid, `sleep` orphans in the test script's PGID
+    # and the harness detects it as a background job left after exit (sp-u5y4t).
+    setsid bash -c "sleep ${SPIRA_SUITE_TIMEOUT:-600} && kill -- -${suite_pid} 2>/dev/null" &
     killer=$!
     wait "$suite_pid" 2>/dev/null; st=$?
-    kill "$killer" 2>/dev/null; wait "$killer" 2>/dev/null || true
+    kill -- -"$killer" 2>/dev/null; wait "$killer" 2>/dev/null || true
     [ "$st" -ge 128 ] && st=124
     if kill -0 -- -"$suite_pid" 2>/dev/null; then
         printf '\nFAIL: %s left background jobs after exit — killed by gate harness\n' "$name" >> "$tmp"
