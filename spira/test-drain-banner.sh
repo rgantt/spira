@@ -8,7 +8,7 @@
 # and left it armed for ~13 minutes. world.sh status DID report DRAINING, but nothing put
 # that in front of the operator — so a pool held at zero by design looked identical to a pool
 # that is simply idle. The drain banner is the mechanism that makes those two states
-# distinguishable from the health pane (per Ryan, 2026-09-08, sp-v7ok).
+# distinguishable from the health pane.
 #
 # WHAT THIS TESTS. cockpit/health.sh's drain_banner function:
 #   - shows a DRAINING banner when $SPIRA_RUN/world.draining exists
