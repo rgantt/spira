@@ -717,7 +717,7 @@ except Exception: print("")' 2>/dev/null)"
     else
         echo "SP_UNSENT=$_n"
         if [ "$_n" -gt 0 ]; then
-            echo "SP_UNSENT_OLDEST_H=$(( ( $(date +%s) - _o ) / 3600 ))"
+            echo "SP_UNSENT_OLDEST_H=$(( ( $(date +%s) - $_o ) / 3600 ))"
         else
             echo "SP_UNSENT_OLDEST_H=0"
         fi
