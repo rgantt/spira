@@ -74,7 +74,7 @@ fetch(API, { headers: { accept: 'application/json' }, cache: 'no-store' })
     .catch(function (e) { bootFail('cannot read the beads', String(e && e.message || e)); });
 
 function boot(D, timing) {
-const B=D.beads, IDS=Object.keys(B);
+let B=D.beads, IDS=Object.keys(B);
 const HEAT=['--h0','--h1','--h2','--h3','--h4','--h5','--h6'];
 const heat=a=>`var(${a<=0?HEAT[0]:a<=1?HEAT[1]:a<=3?HEAT[2]:a<=7?HEAT[3]:a<=14?HEAT[4]:a<=30?HEAT[5]:HEAT[6]})`;
 const S={view:'map',repo:null,focus:null,edges:'cone',saved:null,scale:'live',since:0,agg:'ex',zoom:null,chn:12};
@@ -86,7 +86,7 @@ try{const q=new URLSearchParams(location.hash.replace(/^#/,''));
     S[k]= k==='since'?+v : k==='saved'?(v===''||v==='null'?null:+v) : (v===''||v==='null'?null:v);}
 }catch(e){}
 const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-const st=D.stats, THRESH=st.threshold||3;
+let st=D.stats; const THRESH=st.threshold||3;
 
 /* ============ the density rule ============
    ρ is the constant, not the radius. Solve r = √(A·ρ / πn) over the stage,
@@ -104,29 +104,34 @@ const RFLOOR=5.0;    /* ~10 units of diameter; below this the ring encoding stop
 const GAP=0.34;      /* centre pitch = 2r(1+GAP); ceiling on ink is π/4(1+GAP)² = 44% */
 
 /* ---------- vitals ---------- */
-const rejN=IDS.filter(id=>B[id].att>=THRESH).length;
-const chnN=IDS.filter(id=>B[id].rec>0).length;
-$('#v-live').textContent=st.live; $('#v-mov').textContent=st.moving;
-$('#v-def').textContent=st.deferred; $('#v-cold').textContent=st.cold;
-$('#v-rej').textContent=rejN; $('#v-chn').textContent=chnN;
-/* p50 TIME IN FLIGHT, not p50 cycle time. Cycle time is created-to-closed and needs the
-   closed population, which the read path does not carry; this is created-to-now over the
-   beads still open, so it is a lower bound and is labelled as a different thing. */
-$('#v-cyc').textContent=D.flight.p50<48?Math.round(D.flight.p50)+'h':Math.round(D.flight.p50/24)+'d';
-$('#gen').textContent=new Date(D.generated).toISOString().slice(0,16).replace('T',' ')+' UTC';
-/* MEASURED, NOT ASSERTED. The mockup printed a fixed string here, which is a claim about
-   somebody else's box; these are this load's own numbers. `derived` covers the whole view
-   model — components, layers, grouping and every bucket — and it is the number that
-   decided the client paints. */
-/* THE QUERY'S TIME AND ITS BUDGET COME FROM THE SERVER when it reports them, because a
-   round trip measured here also contains the browser's queue and the network, and the
-   number that says when reading on every request has stopped being cheap is the query's
-   own. Falling back to the round trip is labelled as the round trip. */
-$('#cost').textContent=timing.beads+' beads · '+
-  (timing.meter&&timing.meter.queryMs!==undefined
-    ? 'query '+Math.round(timing.meter.queryMs)+'ms / '+Math.round(timing.meter.budgetMs)+'ms budget'
-    : 'read '+Math.round(timing.read)+'ms')+
-  ' · derived '+Math.round(timing.derive)+'ms';
+/* paintBar: update the top bar's numbers. Called on first load and on every auto-refresh
+   so the counts reflect the current corpus without a manual reload. */
+function paintBar(tm){
+  const rejN=IDS.filter(id=>B[id].att>=THRESH).length;
+  const chnN=IDS.filter(id=>B[id].rec>0).length;
+  $('#v-live').textContent=st.live; $('#v-mov').textContent=st.moving;
+  $('#v-def').textContent=st.deferred; $('#v-cold').textContent=st.cold;
+  $('#v-rej').textContent=rejN; $('#v-chn').textContent=chnN;
+  /* p50 TIME IN FLIGHT, not p50 cycle time. Cycle time is created-to-closed and needs the
+     closed population, which the read path does not carry; this is created-to-now over the
+     beads still open, so it is a lower bound and is labelled as a different thing. */
+  $('#v-cyc').textContent=D.flight.p50<48?Math.round(D.flight.p50)+'h':Math.round(D.flight.p50/24)+'d';
+  $('#gen').textContent=new Date(D.generated).toISOString().slice(0,16).replace('T',' ')+' UTC';
+  /* MEASURED, NOT ASSERTED. The mockup printed a fixed string here, which is a claim about
+     somebody else's box; these are this load's own numbers. `derived` covers the whole view
+     model — components, layers, grouping and every bucket — and it is the number that
+     decided the client paints. */
+  /* THE QUERY'S TIME AND ITS BUDGET COME FROM THE SERVER when it reports them, because a
+     round trip measured here also contains the browser's queue and the network, and the
+     number that says when reading on every request has stopped being cheap is the query's
+     own. Falling back to the round trip is labelled as the round trip. */
+  $('#cost').textContent=tm.beads+' beads · '+
+    (tm.meter&&tm.meter.queryMs!==undefined
+      ? 'query '+Math.round(tm.meter.queryMs)+'ms / '+Math.round(tm.meter.budgetMs)+'ms budget'
+      : 'read '+Math.round(tm.read)+'ms')+
+    ' · derived '+Math.round(tm.derive)+'ms';
+}
+paintBar(timing);
 $('#ramp').innerHTML=['0d','1d','3d','1w','2w','30d','older']
   .map((l,i)=>`<i style="background:var(${HEAT[i]})" title="${l}"></i>`).join('')
   +`<span style="margin-left:5px">today → cold</span>`;
@@ -167,12 +172,12 @@ function cone(id){
    the only honest way to hold it is to look. The synthetic corpora replay the LIVE
    distribution at 1k, 5k and 20k, so the density rule is measured rather than
    argued about — a formula that looked right on paper was rejected this way. */
-const REAL={beads:B,components:D.components,repos:D.repos.map(r=>({repo:r.repo,n:r.n,
+let REAL={beads:B,components:D.components,repos:D.repos.map(r=>({repo:r.repo,n:r.n,
   epics:r.epics.map(e=>({id:e.id,title:e.title,n:e.n,beads:e.beads}))}))};
 const SCALE={live:st.live,'1k':1000,'5k':5000,'20k':20000};
 const mulberry=a=>()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
   t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};
-const synCache={};
+let synCache={};
 function corpus(){
   if(S.scale==='live') return REAL;
   if(synCache[S.scale]) return synCache[S.scale];
@@ -1208,6 +1213,53 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){if(S.zoom)S.zoom=null;else S.focus=null;render();}
   const V=['map','chains','churn','flow','build','ops'];
   if(e.key>='1'&&e.key<='6'){S.view=V[+e.key-1];render();}});
+
+/* AUTO-REFRESH — re-fetch when the server's cache window closes so a tab left open
+   shows what changed rather than what was. The server reports `cache_s` (how long it
+   holds its snapshot) and `age_ms` (how old the snapshot is when the response arrives).
+   We wait until that window has closed — cache_s seconds minus the elapsed age, plus
+   2 s of headroom — and then fetch again. One query per cache window regardless of how
+   many tabs are open, because the server's own cache bounds the cost.
+   The re-fetch intentionally waits for the server cache to expire first; fetching early
+   would return the same snapshot and burn a round trip for nothing. */
+var _refreshTimer=null;
+function scheduleRefresh(cacheS,ageMs){
+  if(_refreshTimer) clearTimeout(_refreshTimer);
+  /* Floor at 5 s to stay clear of a tight loop if the server reports an unusual age. */
+  var delay=Math.max(5000,(cacheS||15)*1000-(ageMs||0)+2000);
+  _refreshTimer=setTimeout(doRefresh,delay);
+}
+function doRefresh(){
+  var t0=(typeof performance!=='undefined'?performance:Date).now();
+  fetch(API,{headers:{accept:'application/json'},cache:'no-store'})
+    .then(function(r){
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      return r.json();
+    })
+    .then(function(payload){
+      var read=(typeof performance!=='undefined'?performance:Date).now()-t0;
+      var p=LoomModel.unwrap(payload);
+      var t1=(typeof performance!=='undefined'?performance:Date).now();
+      var model=LoomModel.derive(p.beads,Object.assign({},p.meta,{
+        edges:p.edges,
+        now:p.meter.generatedAtMs||undefined
+      }));
+      var derive=(typeof performance!=='undefined'?performance:Date).now()-t1;
+      /* Swap in the new corpus. synCache is keyed to the old bead set — discard it. */
+      D=model; B=D.beads; IDS=Object.keys(B); st=D.stats;
+      REAL={beads:B,components:D.components,repos:D.repos.map(r=>({repo:r.repo,n:r.n,
+        epics:r.epics.map(e=>({id:e.id,title:e.title,n:e.n,beads:e.beads}))}))};
+      synCache={};
+      paintBar({beads:p.beads.length,read:read,derive:derive,meter:p.meter});
+      render();
+      scheduleRefresh(p.meter.cacheS,p.meter.ageMs);
+    })
+    .catch(function(){
+      /* On error, retry after one full cache window. */
+      scheduleRefresh(timing.meter&&timing.meter.cacheS,0);
+    });
+}
+scheduleRefresh(timing.meter&&timing.meter.cacheS,timing.meter&&timing.meter.ageMs);
 render();
 
 }
