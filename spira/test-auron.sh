@@ -454,7 +454,7 @@ WRITE_FAIL_BD="$TMP/write-fail-bd"
     printf '# Passes reads through to the real embedded binary; fails writes.\n'
     printf '# Simulates a schema-cursor write failure (reads ok, writes refused).\n'
     printf 'case "${3:-}" in\n'
-    printf '    list|show) exec %q "$@" ;;\n' "$TESTDB_BD"
+    printf '    list|show|migrate) exec %q "$@" ;;\n' "$TESTDB_BD"
     printf '    *) printf "write-fail-bd: write refused (simulating schema-skew write failure)\\n" >&2; exit 1 ;;\n'
     printf 'esac\n'
 } > "$WRITE_FAIL_BD"
