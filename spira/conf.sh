@@ -65,7 +65,7 @@ COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_VIEW SPIRA_VIEW_SESSION
 SPIRA_ALERT_GLOB
-SPIRA_BD_PIN
+SPIRA_BD SPIRA_BD_PIN
 SPIRA_FAYTHS SPIRA_MAX_AEONS SPIRA_LANES SPIRA_QA_DEPTH
 SPIRA_TOKEN_WINDOW_H SPIRA_TOKEN_PROJECTS SPIRA_CTX_WARN SPIRA_CTX_HIGH SPIRA_CTX_LIMIT
 SPIRA_ARCHIVE
@@ -757,6 +757,45 @@ unset _spira_conf_here _spira_conf_env _spira_conf_home_env
 # --------------------------------------------------------------------------------------
 export PATH="${SPIRA_PATH:+$SPIRA_PATH:}$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
+# SPIRA_BD — resolved once, deterministically, after SPIRA_PATH is applied. When the
+# environment or a config file already set it (both captured before this point), the value
+# survives unchanged. When neither did, it resolves to the first bd on the PATH this
+# harness just assembled — rather than whatever PATH the calling context carries. PATH
+# order differs between a login shell, a systemd unit and an aeon's confined environment,
+# so a caller that fell through to ${SPIRA_BD:-bd} in lib.sh could silently pick a
+# different binary in each context (sp-s2zvn, scar from 2026-09-08).
+if [ -z "${SPIRA_BD:-}" ]; then
+    SPIRA_BD="$(command -v bd 2>/dev/null || echo bd)"
+fi
+export SPIRA_BD
+
+# BD SCHEMA REFUSAL. When the resolved bd's migration count disagrees with the database's,
+# bd exits 0 with the complaint on stdout — callers that check exit status read success and
+# parse the error as data. Catching it here, once, stops the mismatch from propagating to
+# every bdq call. Only runs when the database is present; on a fresh install or in a test
+# fixture that has not yet called testdb_up, $SPIRA_DB/.beads does not exist and the check
+# is skipped entirely. bd's version string does not order against release tags — a dev build
+# knows MORE migrations than a tagged release — so pin by migration count, not version string.
+if [ -d "${SPIRA_DB:-}/.beads" ]; then
+    if ! _spira_bd_out="$(timeout 30 "$SPIRA_BD" -C "$SPIRA_DB" migrate schema 2>&1)"; then
+        _spira_bd_db="$(printf '%s\n' "$_spira_bd_out" | grep -oE 'database is at v[0-9]+' | grep -oE '[0-9]+')"
+        _spira_bd_bin="$(printf '%s\n' "$_spira_bd_out" | grep -oE 'binary knows up to v[0-9]+' | grep -oE '[0-9]+')"
+        if [ -n "${_spira_bd_db:-}" ] && [ -n "${_spira_bd_bin:-}" ]; then
+            printf 'spira: bd schema mismatch — database is at v%s, %s knows up to v%s\n' \
+                "$_spira_bd_db" "$SPIRA_BD" "$_spira_bd_bin" >&2
+            printf 'spira: rebuild bd at v%s or set SPIRA_BD in %s\n' \
+                "$_spira_bd_db" "${SPIRA_CONF_FILE:-spira.conf}" >&2
+        else
+            printf 'spira: bd migrate schema failed — %s\n' \
+                "$(printf '%s\n' "$_spira_bd_out" | head -1)" >&2
+            printf 'spira: bd is %s\n' "$SPIRA_BD" >&2
+        fi
+        unset _spira_bd_out _spira_bd_db _spira_bd_bin
+        exit 1
+    fi
+    unset _spira_bd_out
+fi
+
 # BD_IGNORE_SCHEMA_SKEW WAS EXPORTED HERE AND IS GONE, because the recovery it was waiting on
 # has run. The database was at schema v61, migrated by the accidental v1.2.0/v1.2.1 release,
 # and every bd newer than v1.1.0 refused it outright — a refusal that EXITS 0 with the
@@ -874,7 +913,7 @@ export SPIRA_INSTANCE \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \
        SPIRA_GATE_NOVERDICT SPIRA_GATE_BASEFAIL \
-       SPIRA_CONF_FILE SPIRA_PROD \
+       SPIRA_BD SPIRA_CONF_FILE SPIRA_PROD \
        SPIRA_REVIEWER_VERDICTS SPIRA_REVIEWER_MODEL SPIRA_REVIEW_LABEL
 
 # --------------------------------------------------------------------------------------

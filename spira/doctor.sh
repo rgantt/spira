@@ -62,6 +62,42 @@ for b in dolt gh claude tmux cargo node; do
               "If it is installed elsewhere, set SPIRA_PATH in ${CONF:-spira.conf}."; fi
 done
 
+# EVERY bd ON PATH, with its version. When more than one is present, PATH order decides
+# which one an unconfigured caller picks — and that order differs between a login shell, a
+# systemd unit and an aeon's confined environment. SPIRA_BD (set in conf.sh) is the pin that
+# makes them agree; the configured binary is labelled here so a mismatch in "bd schema" below
+# immediately names the offender (sp-s2zvn, scar from 2026-09-08).
+echo
+echo "bd binaries on PATH"
+_spira_dr_bd_count=0
+_spira_dr_bd_first=""
+IFS=: read -ra _spira_dr_path_dirs <<< "$PATH"
+for _spira_dr_bd_dir in "${_spira_dr_path_dirs[@]}"; do
+    [ -x "${_spira_dr_bd_dir}/bd" ] || continue
+    _spira_dr_bd_count=$((_spira_dr_bd_count + 1))
+    _spira_dr_bd_full="${_spira_dr_bd_dir}/bd"
+    _spira_dr_bd_ver="$(timeout 5 "$_spira_dr_bd_full" version 2>/dev/null | head -1 || printf '?')"
+    [ "$_spira_dr_bd_count" -eq 1 ] && _spira_dr_bd_first="$_spira_dr_bd_full"
+    if [ "$_spira_dr_bd_full" = "${SPIRA_BD:-}" ]; then
+        OK "$_spira_dr_bd_full — $_spira_dr_bd_ver  ← SPIRA_BD (configured)"
+    else
+        OK "$_spira_dr_bd_full — $_spira_dr_bd_ver"
+    fi
+done
+if [ "$_spira_dr_bd_count" -eq 0 ]; then
+    FAIL "no bd on PATH" "PATH is $PATH"
+elif [ "$_spira_dr_bd_count" -gt 1 ] && \
+     [ -n "${SPIRA_BD:-}" ] && [ "${SPIRA_BD:-}" != "$_spira_dr_bd_first" ]; then
+    WARN "SPIRA_BD is not the first bd on PATH" \
+         "An unconfigured tool would pick $_spira_dr_bd_first instead of $SPIRA_BD.
+    PATH order is determined by SPIRA_PATH in ${CONF:-spira.conf}."
+elif [ "$_spira_dr_bd_count" -gt 1 ] && [ -z "${SPIRA_BD:-}" ]; then
+    WARN "$_spira_dr_bd_count bd binaries on PATH and SPIRA_BD is not set" \
+         "Set SPIRA_BD in ${CONF:-spira.conf} to pin the binary explicitly."
+fi
+unset _spira_dr_bd_count _spira_dr_bd_first _spira_dr_path_dirs _spira_dr_bd_dir \
+      _spira_dr_bd_full _spira_dr_bd_ver
+
 echo
 echo "the database"
 if [ -d "$SPIRA_DB/.beads" ]; then
