@@ -288,6 +288,28 @@ svg.map{display:block;width:100%;height:auto;border-radius:8px;background:var(--
   background:var(--sunk);padding:2px 6px;border-radius:4px;max-width:70ch;overflow-wrap:anywhere}
 .boot button{border:1px solid var(--line2);background:var(--surface);color:var(--ink);
   border-radius:6px;padding:5px 12px;font:inherit;font-size:12px;cursor:pointer}
+
+/* ---------- ops pane ---------- */
+.obox{display:flex;flex-direction:column;gap:1px;max-width:74ch;font-size:13px}
+.obanner{padding:8px 12px;border-radius:6px;font-size:13px;font-weight:600;margin-bottom:6px;
+  line-height:1.55;border-left:3px solid transparent}
+.obanner.halt{background:color-mix(in srgb,var(--verm) 10%,transparent);color:var(--verm);
+  border-left-color:var(--verm)}
+.obanner.drain{background:color-mix(in srgb,var(--brass) 10%,transparent);color:var(--brass);
+  border-left-color:var(--brass)}
+/* Each row: a fixed-width label column, then the value. */
+.orow{display:grid;grid-template-columns:54px 1fr;gap:0 8px;min-height:18px;align-items:start;
+  padding:1px 0}
+.olab{font-family:"IBM Plex Sans Condensed",sans-serif;text-transform:uppercase;letter-spacing:.08em;
+  font-size:10px;font-weight:600;color:var(--muted);padding-top:2px;white-space:nowrap}
+.oval{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--ink2);line-height:1.5;
+  word-break:break-word}
+/* Sub-rows indent past the label column. */
+.osub{padding-left:62px;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--muted);
+  line-height:1.5}
+.osep{height:1px;background:var(--line);margin:6px 0}
+/* Semantic colour helpers used inline. */
+.o-ok{color:var(--jade)} .o-warn{color:var(--brass)} .o-bad{color:var(--verm);font-weight:700}
 </style>
 </head>
 <body>
@@ -321,6 +343,7 @@ svg.map{display:block;width:100%;height:auto;border-radius:8px;background:var(--
       <button class="tab" role="tab" data-view="churn" aria-selected="false"><i>↻</i>Churn</button>
       <button class="tab" role="tab" data-view="flow" aria-selected="false"><i>◫</i>Flow</button>
       <button class="tab" role="tab" data-view="build" aria-selected="false"><i>⚙</i>Build</button>
+      <button class="tab" role="tab" data-view="ops" aria-selected="false"><i>≡</i>Ops</button>
     </div>
     <h4>Scope</h4>
     <div id="repos"></div>
@@ -422,6 +445,15 @@ svg.map{display:block;width:100%;height:auto;border-radius:8px;background:var(--
            are counted over closed beads, and no closed bead is fetched.</p>
       </div></div>
       <div class="grid2" id="flowgrid"></div>
+    </section>
+
+    <!-- OPS -->
+    <section data-pane="ops" class="hidden">
+      <div class="head"><div>
+        <h2>Ops health</h2>
+        <p>A mirror of the cockpit health column. Refreshes every 10 s while this pane is open; stops when you switch away.</p>
+      </div></div>
+      <div id="ops-out"></div>
     </section>
 
     <!-- BUILD -->

@@ -1,4 +1,5 @@
-//! Loom's read endpoint: one route, `GET /api/beads`, returning the live beads graph.
+//! Loom's read endpoints: `GET /api/beads` for the live beads graph and `GET /api/ops` for
+//! the Spira ops dashboard (a mirror of the cockpit's health column, readable on a phone).
 //!
 //! WHAT IS AND IS NOT HERE. This serves the graph and nothing else — no layout, no
 //! components, no buckets, no ranking. All of that measured 2 ms in the browser at the live
@@ -19,6 +20,7 @@
 //! nobody publishes is the one that grows.
 
 pub mod beads;
+pub mod ops;
 
 use axum::extract::State;
 use axum::http::{header, StatusCode};
@@ -26,6 +28,7 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
 use beads::QueryError;
+use ops::OpsSnapshot;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -66,6 +69,14 @@ pub struct Config {
     /// The `bd` to run, from the harness's own `SPIRA_BD` override. Ordinarily the bare name,
     /// resolved through `extra_path`.
     pub bd: String,
+    /// The runtime directory holding cockpit.env, budget.env and the world stamps.
+    /// From `SPIRA_RUN`. Empty means no ops endpoint data.
+    pub run: String,
+    /// Spira instance name, used to construct the sentinel timer unit name.
+    /// From `SPIRA_INSTANCE`, default "prod".
+    pub instance: String,
+    /// The `systemctl` binary to use for sentinel-active checks. Overridable in tests.
+    pub systemctl: String,
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -95,6 +106,15 @@ impl Config {
                 .ok()
                 .filter(|b| !b.is_empty())
                 .unwrap_or_else(|| "bd".to_string()),
+            run: std::env::var("SPIRA_RUN").unwrap_or_default(),
+            instance: std::env::var("SPIRA_INSTANCE")
+                .ok()
+                .filter(|i| !i.is_empty())
+                .unwrap_or_else(|| "prod".to_string()),
+            systemctl: std::env::var("SPIRA_SYSTEMCTL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "systemctl".to_string()),
         }
     }
 }
@@ -125,6 +145,9 @@ pub struct Loom {
     /// query is the corner this simple design would run out of first, and it should be seen
     /// arriving rather than deduced afterwards.
     cell: Mutex<Option<Arc<Snapshot>>>,
+    /// The ops snapshot cache. A 5-second TTL rather than the beads cache's configurable one:
+    /// two small file reads and one systemctl call are much cheaper than a bd query.
+    ops_cell: Mutex<Option<Arc<OpsSnapshot>>>,
 }
 
 impl Loom {
@@ -132,6 +155,7 @@ impl Loom {
         Loom {
             cfg,
             cell: Mutex::new(None),
+            ops_cell: Mutex::new(None),
         }
     }
 
@@ -218,6 +242,27 @@ impl Loom {
         out
     }
 
+    /// Serve the ops dashboard, refreshing first if the held snapshot has aged out (5 s TTL).
+    pub async fn serve_ops(&self) -> (StatusCode, String) {
+        const OPS_CACHE: Duration = Duration::from_secs(5);
+        let mut held = self.ops_cell.lock().await;
+        let fresh = held
+            .as_ref()
+            .map(|s| s.taken.elapsed() < OPS_CACHE)
+            .unwrap_or(false);
+        if !fresh {
+            let snap = OpsSnapshot::take(
+                &self.cfg.run,
+                &self.cfg.instance,
+                &self.cfg.systemctl,
+            )
+            .await;
+            *held = Some(Arc::new(snap));
+        }
+        let s = held.as_ref().expect("a snapshot was just stored");
+        (StatusCode::OK, s.body.clone())
+    }
+
     /// Serve the graph, refreshing first if the held snapshot has aged out.
     pub async fn serve(&self) -> (StatusCode, String) {
         let asked = Instant::now();
@@ -274,6 +319,16 @@ async fn beads_route(State(loom): State<Arc<Loom>>) -> Response {
         .expect("a response with a valid status and headers")
 }
 
+async fn ops_route(State(loom): State<Arc<Loom>>) -> Response {
+    let (status, body) = loom.serve_ops().await;
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(body.into())
+        .expect("a response with a valid status and headers")
+}
+
 fn static_response(content_type: &'static str, body: &'static str) -> Response {
     Response::builder()
         .status(StatusCode::OK)
@@ -297,6 +352,7 @@ async fn app_js_route() -> Response {
 pub fn router(loom: Arc<Loom>) -> Router {
     Router::new()
         .route("/api/beads", get(beads_route))
+        .route("/api/ops", get(ops_route))
         .route("/", get(page_route))
         .route("/model.js", get(model_js_route))
         .route("/app.js", get(app_js_route))

@@ -76,6 +76,9 @@ fn cfg(db: &str, shim: &str, budget_ms: u64, cache_s: u64) -> Config {
         cache: Duration::from_secs(cache_s),
         addr: String::new(),
         bd: "bd".to_string(),
+        run: String::new(),
+        instance: "test".to_string(),
+        systemctl: "systemctl".to_string(),
     }
 }
 

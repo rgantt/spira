@@ -867,6 +867,292 @@ function drawInsp(){
   $$('#insp .conelist button').forEach(x=>x.onclick=()=>{S.focus=x.dataset.id;render();});
 }
 
+/* ---------- ops pane ---------- */
+let OPS=null, opsTimer=null;
+const OPS_API=API.replace(/beads(\?.*)?$/, 'ops');
+
+function fetchOps(){
+  fetch(OPS_API,{headers:{accept:'application/json'},cache:'no-store'})
+    .then(r=>r.json())
+    .then(data=>{OPS=data; if(S.view==='ops') drawOps();})
+    .catch(e=>console.warn('ops fetch failed',e));
+}
+
+function drawOps(){
+  const el=document.getElementById('ops-out');
+  if(!OPS){el.innerHTML='<div style="color:var(--muted);padding:16px 0">Loading…</div>';return;}
+  const d=OPS;
+  const q=k=>Object.prototype.hasOwnProperty.call(d,k)?d[k]:null;
+  const sq=k=>{const v=q(k);return v!==null?String(v):null;};
+  const E=s=>String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const ok=v=>`<span class="o-ok">${E(v)}</span>`;
+  const bad=v=>`<span class="o-bad">${E(v)}</span>`;
+  const warn=v=>`<span class="o-warn">${E(v)}</span>`;
+  const dim=v=>`<span style="color:var(--muted)">${E(v)}</span>`;
+  const bold=v=>`<b>${E(v)}</b>`;
+  const QM=()=>bad('?');
+  const str=k=>{const v=q(k);return v!==null?E(String(v)):QM();};
+  function numC(v,t,unit){
+    if(v===null||v===undefined)return QM()+(unit?E(unit):'');
+    const n=parseInt(v,10);if(isNaN(n))return QM()+(unit?E(unit):'');
+    const s=String(v)+(unit||'');return n>=t?warn(s):ok(s);
+  }
+  function badZ(v){
+    if(v===null||v===undefined)return QM();
+    return String(v)==='0'?ok('0'):bad(String(v));
+  }
+  function tok(v){
+    if(v===null||v===undefined)return '?';
+    const n=parseInt(v,10);if(isNaN(n))return String(v);
+    if(n>=1000000)return Math.floor(n/1000000)+'M';
+    if(n>=1000)return Math.floor(n/1000)+'k';
+    return String(n);
+  }
+  function ageS(secs,warnAt){
+    if(secs===null||secs===undefined)return QM();
+    const n=parseInt(secs,10);if(isNaN(n))return QM();
+    const s=n<120?n+'s':Math.floor(n/60)+'m';
+    return n>=warnAt?bad(s):dim(s);
+  }
+  function pctC(p){
+    if(p===null)return QM();const n=parseInt(p,10);if(isNaN(n))return QM();
+    if(n>=90)return bad(p+'%');if(n>=70)return warn(p+'%');return ok(p+'%');
+  }
+  function durMin(m){
+    if(m===null)return '?';const n=parseInt(m,10);if(isNaN(n))return '?';
+    if(n===0)return '0m';if(n<60)return n+'m';
+    if(n<1440)return Math.floor(n/60)+'h'+(n%60?n%60+'m':'');
+    return Math.floor(n/1440)+'d'+(Math.floor(n%1440/60)?Math.floor(n%1440/60)+'h':'');
+  }
+  const row=(l,c)=>`<div class="orow"><span class="olab">${E(l)}</span><span class="oval">${c}</span></div>`;
+  const sub=c=>`<div class="osub">${c}</div>`;
+  const sep=()=>'<div class="osep"></div>';
+
+  let h='<div class="obox">';
+
+  /* HALT/DRAIN banners — read from stamps, not from the snapshot, so a dead collector
+     does not render a halted world as running. */
+  if(d.halted){
+    let b=`<div class="obanner halt">■ SPIRA STOPPED — no aeons are summoned; nothing lands`;
+    if(d.halted_since)b+=`<br><span style="font-weight:normal">${dim('since')} ${E(d.halted_since)}</span>`;
+    if(d.halted_why)b+=`<br><span style="font-weight:normal">${dim('why')} ${E(d.halted_why)}</span>`;
+    h+=b+'</div>';
+  } else if(d.sentinel_active===false){
+    h+='<div class="obanner halt">■ SPIRA STOPPED — sentinel.timer is not active and no halt stamp was recorded</div>';
+  }
+  if(d.draining){
+    const mins=d.draining_age_s!==null?Math.floor(d.draining_age_s/60):'?';
+    h+=`<div class="obanner drain">⏸ DRAINING — summons gated for ${E(String(mins))}m — loop and landing continue</div>`;
+  }
+
+  /* Header — SPIRA HH:MM  sentinel/ops/auron dots  STALE if snapshot is > 3 min old */
+  const sentDot=d.sentinel_active===true?ok('●'):d.sentinel_active===null?QM():bad('○');
+  const opsDot=(s=>s==='1'?ok('●'):s==='0'?bad('○'):QM())(sq('SP_OPS_TIMER'));
+  const auronDot=(s=>s==='1'?ok('●'):s==='0'?bad('○'):QM())(sq('SP_AURON_TIMER'));
+  let staleH='';
+  const atE=q('SP_AT');
+  if(atE!==null){const ag=Math.floor(Date.now()/1000)-parseInt(atE,10);if(!isNaN(ag)&&ag>180)staleH='  '+bad(`STALE ${ag}s`);}
+  h+=row('SPIRA',
+    new Date().toTimeString().slice(0,5)+'  '+
+    dim('sentinel')+' '+sentDot+' '+ageS(q('SP_SENTINEL_AGE'),180)+'  '+
+    dim('ops')+' '+opsDot+' '+ageS(q('SP_OPS_AGE'),180)+staleH);
+  h+=sub(dim('auron')+' '+auronDot+' '+ageS(q('SP_AURON_AGE'),180));
+  const af=q('SP_AURON_FIRING');
+  if(af!==null&&af!=='?'&&String(af)!=='0')
+    h+=sub(bad('ALERT')+' '+bad(String(af))+' firing  '+dim(E(sq('SP_AURON_KEYS')||'')));
+
+  h+=sep();
+
+  /* TOKENS / CTX / WIN */
+  const tw=q('SP_TOK_WIN'),twh=sq('SP_TOK_WINDOW_H')||'?';
+  h+=row(`TOKENS/${twh}h`, bold(tok(tw))+' billed');
+  for(const[k,name]of[['AEON','aeons'],['SESS','session']]){
+    const w=q(`SP_TOK_${k}_WIN`),t=q(`SP_TOK_${k}_TURNS`),c=q(`SP_TOK_${k}_CTX`);
+    const pct=(w!==null&&tw&&parseInt(tw,10)>0)?Math.round(parseInt(w,10)*100/parseInt(tw,10))+'%':'?';
+    h+=sub(`${E(name)} ${pct}  ${t!==null?E(String(t)):'?'}t · ${tok(c)} ctx/t`);
+  }
+  const ctxN=q('SP_CTX_NOW');
+  if(ctxN==='-'){h+=sub(dim('no session at the keyboard'));}
+  else if(ctxN!==null&&ctxN!=='?'&&/^\d+$/.test(String(ctxN))){
+    let cx=dim('ctx')+' '+bold(tok(ctxN));
+    const ct=q('SP_CTX_TURNS');if(ct!==null)cx+=` / ${E(String(ct))}t`;
+    const cn=q('SP_CTX_NEXT');
+    if(cn==='warn'||cn==='high')cx+='  '+warn(cn);
+    else if(cn==='limit'||cn==='over')cx+='  '+bad(cn);
+    h+=sub(cx);
+  }
+  const p5=q('SP_RATELIM_5H_PCT'),p7=q('SP_RATELIM_7D_PCT');
+  const m5=q('SP_RATELIM_5H_MIN'),m7=q('SP_RATELIM_7D_MIN');
+  h+=row('WIN',
+    '5h '+pctC(p5)+'  '+dim('reset')+' '+E(durMin(m5))+'  '+
+    '7d '+pctC(p7)+'  '+dim('reset')+' '+E(durMin(m7)));
+
+  h+=sep();
+
+  /* NOW — working aeons */
+  const an=q('SP_AEON_N');
+  if(an===null||an==='?'){h+=row('NOW',QM()+dim(' cannot read the aeon roster'));}
+  else if(parseInt(an,10)===0){h+=row('NOW',dim('no aeon working'));}
+  else{
+    const nn=parseInt(an,10);
+    for(let i=0;i<Math.min(nn,5);i++){
+      const nm=sq(`SP_AEON${i}_NAME`)||'?',fy=sq(`SP_AEON${i}_FAYTH`)||'?',bd2=sq(`SP_AEON${i}_BEAD`)||'?';
+      h+=row(i===0?'NOW':'', bold(nm)+'  '+dim(fy)+'  '+E(bd2));
+    }
+    if(nn>5)h+=sub(dim(`…${nn-5} more`));
+  }
+
+  /* NEXT */
+  const nxN=q('SP_NEXT_N');
+  if(nxN===null||nxN==='?'){h+=row('NEXT',QM()+dim(' cannot read the ready queue'));}
+  else if(parseInt(nxN,10)===0){h+=row('NEXT',dim('0 ready — nothing to claim'));}
+  else{
+    h+=row('NEXT',bold(E(String(nxN)))+dim(' ready'));
+    for(let i=0;i<5;i++){const r=sq(`SP_NEXT${i}`);if(!r)break;h+=sub(E(r));}
+  }
+
+  /* UNLND */
+  const pN=q('SP_PEND_N');
+  if(pN===null||pN==='?'){h+=row('UNLND',QM()+dim(' cannot read the unlanded queue'));}
+  else if(parseInt(pN,10)===0){h+=row('UNLND',dim('nothing waiting to land'));}
+  else{
+    const pO=sq('SP_PEND_OLDEST')||'?';
+    h+=row('UNLND',bold(E(String(pN)))+dim(' closed, not on base — oldest ')+
+      (/[hd]/.test(pO)?warn(pO):dim(pO)));
+    for(let i=0;i<5;i++){const r=sq(`SP_PEND${i}`);if(!r)break;h+=sub(E(r));}
+  }
+
+  /* RECENT */
+  const e0=sq('SP_EVENT0');
+  if(!e0){h+=row('RECENT',d.cockpit_env_error?QM()+dim(' no snapshot to read'):dim('nothing in the window'));}
+  else{
+    for(let i=0;i<8;i++){const ev=sq(`SP_EVENT${i}`);if(!ev)break;h+=row(i===0?'RECENT':'',E(ev));}
+  }
+
+  /* CI */
+  const caN=q('SP_AWAITING_N'),caSt=q('SP_AWAITING_STUCK');
+  if(caN===null||caN==='?'){h+=row('CI',QM()+dim(' cannot read what is parked on CI'));}
+  else if(parseInt(caN,10)===0&&(!caSt||String(caSt)==='0')){h+=row('CI',dim('nothing parked on CI'));}
+  else{
+    const caA=sq('SP_AWAITING_AGE')||'?',caO=sq('SP_AWAITING_OLDEST')||'?';
+    let ci=bold(E(String(caN)))+dim(' bead(s) waiting on a run  oldest ')+E(caO)+' '+(/[hd]/.test(caA)?warn(caA):dim(caA));
+    if(caSt&&String(caSt)!=='0')
+      ci+='  '+warn(E(String(caSt))+' parked with no run')+dim(` (${E(sq('SP_AWAITING_STUCK_ID')||'?')})`);
+    h+=row('CI',ci);
+    for(let i=0;i<5;i++){const r=sq(`SP_AWAITING${i}`);if(!r)break;h+=sub(E(r));}
+  }
+
+  h+=sep();
+
+  /* ATTN */
+  const ua=q('SP_UNANSWERED');
+  h+=row('ATTN',
+    dim('waiting on you')+' '+bold(str('SP_WAITING'))+'  '+
+    dim('threads')+' '+(ua!==null&&String(ua)!=='0'?bad(String(ua)):ok(ua!==null?String(ua):'?')));
+
+  /* SEND */
+  const sf=q('SP_SENT_FAILED'),bd3=q('SP_BRANCH_DONE');
+  h+=row('SEND',
+    bold(str('SP_UNSENT'))+dim(' branches unsent')+'  '+
+    (bd3!==null&&String(bd3)!=='0'?warn(String(bd3)):str('SP_BRANCH_DONE'))+dim(' awaiting rites')+'  '+
+    dim('oldest ')+str('SP_UNSENT_OLDEST_H')+dim('h'));
+  h+=sub((sf!==null&&String(sf)!=='0'?bad(String(sf)):ok(sf!==null?String(sf):'?'))+dim(' fiends — unsent work that came back'));
+
+  /* BEADS */
+  h+=row('BEADS',dim('24h')+'  closed '+str('SP_CLOSED_24H')+'  '+dim('opened')+' '+str('SP_OPENED_24H'));
+  h+=sub(dim('opened ')+str('SP_BEADS_SPARK_OPENED')+'  '+dim('closed ')+str('SP_BEADS_SPARK_CLOSED'));
+  h+=sub(dim('landed ')+str('SP_BEADS_SPARK_LANDED')+'  '+str('SP_BEADS_LANDED_24H')+dim(' in 24h'));
+  const uld=q('SP_UNLANDED');
+  h+=sub(dim('24h worked ')+str('SP_CLOSED')+dim(': ')+str('SP_LANDED')+dim(' landed')+'  '+
+    dim(str('SP_AWAITING_LAND')+' awaiting')+'  '+
+    (uld!==null&&String(uld)!=='0'?bad(String(uld)):ok(uld!==null?String(uld):'?'))+dim(' never landed'));
+
+  /* LAND */
+  const lAt=q('SP_LAND_AT');
+  const lAge=lAt!==null&&/^\d+$/.test(String(lAt))?Math.floor(Date.now()/1000)-parseInt(lAt,10):null;
+  const lRc=q('SP_LAND_RC');
+  const lRcH=lRc===null||lRc==='?'?QM():String(lRc)==='0'?ok('0'):warn(String(lRc));
+  h+=row('LAND',
+    dim('last')+' '+ageS(lAge,600)+'  '+dim('rc')+' '+lRcH+'  '+
+    dim('branches')+' '+str('SP_LAND_BRANCHES')+'  '+dim('moved')+' '+str('SP_LAND_MOVED'));
+  const glv=q('SP_GATE_LIVE');
+  if(glv&&String(glv)!=='0'&&String(glv)!=='?'){
+    h+=sub(bold(E(String(glv)))+dim(' gate(s) running'));
+    const gN=q('SP_GATE_N')||0;
+    for(let gi=0;gi<Math.min(parseInt(gN,10),5);gi++){
+      const gs=sq(`SP_GATE${gi}_SLUG`)||'?',ga=q(`SP_GATE${gi}_AGE`),gp=sq(`SP_GATE${gi}_PHASE`)||'?';
+      const gas=ga!==null?(parseInt(ga,10)<120?parseInt(ga,10)+'s':Math.floor(parseInt(ga,10)/60)+'m'):'?';
+      h+=sub(E(gs)+'  '+(gp==='waiting'?warn(gp):dim(gp))+'  '+dim(gas));
+    }
+  }
+  const lpN=q('SP_LANDPROG_N');
+  if(lpN&&String(lpN)!=='0'&&String(lpN)!=='?')
+    for(let i=0;i<Math.min(parseInt(lpN,10),5);i++){const r=sq(`SP_LANDPROG${i}`);if(r)h+=sub(E(r));}
+
+  /* GATE */
+  const yF=q('SP_YIELD_FAULT');
+  const yFH=yF===null||yF==='?'?QM():String(yF)==='0'?ok('0'):warn(String(yF));
+  const ySolo=q('SP_YIELD_SOLO_MED'),yConc=q('SP_YIELD_CONC_MED');
+  h+=row('GATE',
+    dim('reds')+' '+str('SP_YIELD_REDS')+'  '+dim('defect')+' '+str('SP_YIELD_DEFECT')+'  '+
+    dim('fault')+' '+yFH+'  '+dim('unknown')+' '+str('SP_YIELD_UNKNOWN'));
+  h+=sub(dim('cost ')+
+    (ySolo!==null&&ySolo!=='?'?E(String(ySolo))+'s':'?')+dim(' solo · ')+
+    (yConc!==null&&yConc!=='?'?E(String(yConc))+'s':'?')+dim(' with another (median)'));
+
+  /* SELF — repeating alerts, birth, stall, judgement */
+  const srN=q('SP_SELF_REPEATING_N')||0;
+  let selfSeen=false;
+  for(let si=0;si<Math.min(parseInt(srN,10),3);si++){
+    const t=sq(`SP_SELF_REPEATING${si}`);
+    if(t){h+=row(si===0?'SELF':'',bad('REPEATING')+'  '+dim(E(t)));selfSeen=true;}
+  }
+  const sb=q('SP_SELF_STILLBORN_W');
+  if(sb!==null&&sb!=='?'&&parseInt(sb,10)>0)
+    h+=row('BIRTH',bad(String(sb))+dim(' died at birth  · last ')+str('SP_SELF_STILLBORN_LAST'));
+  const sv=q('SP_SELF_STARVED_W');
+  if(sv!==null&&sv!=='?'&&parseInt(sv,10)>0)
+    h+=row('STALL',bad(String(sv))+dim(' stalled passes  · last ')+str('SP_SELF_STARVED_LAST'));
+  const jud=q('SP_SINCE_JUDGEMENT');
+  const judH=jud===null||jud==='?'?QM():String(jud)==='n/a'?dim('not needed'):
+    String(jud).startsWith('NEVER')?bad(jud):dim(E(String(jud))+' passes ago');
+  h+=row('SELF',dim('judgement')+' '+judH);
+
+  /* BOX */
+  h+=row('BOX',
+    dim('disk ')+numC(q('SP_DISK_ROOT_PCT'),85,'%')+'  '+
+    dim('ws ')+numC(q('SP_DISK_WS_PCT'),85,'%')+'  '+
+    dim('cpu ')+str('SP_CPU_IDLE')+dim('% idle  load ')+str('SP_LOAD1'));
+
+  /* GOV */
+  if(String(q('SP_CAPACITY_PAUSED'))==='1'){
+    const cl=q('SP_CAPACITY_LEFT'),cm=cl!==null?Math.floor(parseInt(cl,10)/60):'?';
+    h+=row('GOV',bad('ACCOUNT OUT OF CAPACITY')+dim(' until ')+str('SP_CAPACITY_AT')+
+      dim(` (${E(String(cm))}m)  summoning paused`));
+  } else {
+    const hr=q('SP_HEADROOM')!==null?q('SP_HEADROOM'):q('SP_BUDGET');
+    let gv=bold(str('SP_GOVERNOR_MODE'))+dim(' mode  ');
+    if(hr!==null&&parseInt(hr,10)===0)
+      gv+=warn('would withhold — '+E(sq('SP_BUDGET_REASON')||'no headroom'));
+    else
+      gv+=ok(hr!==null?E(String(hr)):'?')+dim(' more aeon(s) affordable  idle avg ')+str('SP_CPU_IDLE_AVG')+dim('%');
+    h+=row('GOV',gv);
+  }
+
+  /* OPS */
+  h+=row('OPS',dim('never-fired ')+numC(q('SP_SOP_NEVER_FIRED'),5)+'  '+dim('recurred (no hold) ')+badZ(q('SP_SOP_RECURRED')));
+
+  /* File freshness footer */
+  h+=sep();
+  const ceA=q('cockpit_env_age_s'),ceE=q('cockpit_env_error');
+  const beA=q('budget_env_age_s'),beE=q('budget_env_error');
+  h+=sub(dim('cockpit.env ')+(ceE?bad('error: '+E(String(ceE))):ageS(ceA,300))+
+    '  '+dim('budget.env ')+(beE?bad('error: '+E(String(beE))):ageS(beA,300)));
+
+  h+='</div>';
+  el.innerHTML=h;
+}
+
 /* ---------- render / events ---------- */
 function render(){
   $$('.tab').forEach(t=>t.setAttribute('aria-selected',t.dataset.view===S.view));
@@ -879,6 +1165,12 @@ function render(){
   $$('[data-agg]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.agg===S.agg));
   if(S.view==='map')drawMap(); if(S.view==='chains')drawChains();
   if(S.view==='churn')drawChurn(); if(S.view==='flow')drawFlow();
+  if(S.view==='ops'){
+    drawOps();
+    if(!opsTimer){fetchOps();opsTimer=setInterval(fetchOps,10000);}
+  } else {
+    if(opsTimer){clearInterval(opsTimer);opsTimer=null;}
+  }
   if(S.view!=='map'){const mv=IDS.filter(id=>moved(B[id])).length;
     $('#v-moved').textContent=(mv?'▲ ':'')+mv+' moved'; $('#v-moved').classList.toggle('zero',!mv);}
   drawInsp();
@@ -914,8 +1206,8 @@ document.addEventListener('mousemove',e=>{
   tip.style.top=Math.min(e.clientY+16,innerHeight-r.height-10)+'px';});
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){if(S.zoom)S.zoom=null;else S.focus=null;render();}
-  const V=['map','chains','churn','flow','build'];
-  if(e.key>='1'&&e.key<='5'){S.view=V[+e.key-1];render();}});
+  const V=['map','chains','churn','flow','build','ops'];
+  if(e.key>='1'&&e.key<='6'){S.view=V[+e.key-1];render();}});
 render();
 
 }

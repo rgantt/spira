@@ -44,7 +44,7 @@ async fn main() -> ExitCode {
     // a log line naming what was ASKED FOR cannot be used to reach the thing that is running.
     match listener.local_addr() {
         Ok(a) => eprintln!(
-            "loom: serving http://{a}/ and /api/beads — budget {} ms, {} s cache",
+            "loom: serving http://{a}/ and /api/beads and /api/ops — budget {} ms, {} s cache",
             cfg.budget.as_millis(),
             cfg.cache.as_secs()
         ),
