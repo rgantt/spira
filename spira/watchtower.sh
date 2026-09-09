@@ -90,6 +90,11 @@ fi
 # enough and an escalation bead is worth the noise.
 DRAIN_WARN_MINS="${SPIRA_DRAIN_WARN_MINS:-15}"
 
+# How old the oldest unsent branch must be (in hours) before the Sending escalation fires.
+# An unsent branch belonging to a live in_progress bead is work in flight; the escalation is
+# for branches that have been waiting far longer than any single bead should take.
+UNSENT_WARN_H="${SPIRA_UNSENT_WARN_H:-24}"
+
 # ---------------------------------------------------------------------------------------
 # THE COLLECTOR'S SNAPSHOT, and whether it can be believed at all. Every other number below
 # is read out of cockpit.env, so its freshness is the first fact — a stale file makes the
@@ -358,6 +363,18 @@ reading \`?\` is one this pass COULD NOT READ — never treat it as a zero.
   $(printf '%-36s' "longest gate wait, $gate_win_label")${gate_wait_disp}   ${oldest_br:-}
   worst no-verdict streak             ${nv_worst}       ${nv_worst_key:-none}
 
+### The Sending — are finished branches leaving?
+
+  An unsent branch belonging to a live in_progress bead is work in flight, not backlog;
+  the raw count alone is not a fault. An unadopted ref (a spira/* branch whose suffix
+  resolves to no bead) can never be reaped by any rite and is a permanent +1 on a figure
+  whose purpose is to trend to zero.
+
+  unsent branches                     $(g SP_UNSENT)
+  oldest unsent (hours)               $(g SP_UNSENT_OLDEST_H)
+  unadopted refs (no bead, permanent) $(g SP_UNADOPTED)
+  fiends (FAILED deletes, came back)  $(g SP_SENT_FAILED)
+
 ### The gate — is it buying anything?
 
   UNKNOWN is never folded into either column. A run of them means this measurement has
@@ -483,6 +500,57 @@ if [ -n "$drain_since" ] && [ "$drain_mins" != "?" ] && \
         log "watchtower: drain escalation filed (${drain_mins}m >= ${DRAIN_WARN_MINS}m threshold)"
     else
         log "watchtower: $INC is missing — drain escalation not filed"
+    fi
+fi
+
+# ---------------------------------------------------------------------------------------
+# SENDING ESCALATIONS. The snapshot already carries the Sending vital signs; these are the
+# thresholds at which the sweep alone is not enough and a dedicated bead is warranted.
+#
+# OLDEST-UNSENT. An unsent branch belonging to a live in_progress bead is work in flight,
+# not backlog — but a branch older than SPIRA_UNSENT_WARN_H hours without a matching open
+# bead is a branch nobody is about to send, and the rite that should reap it has failed
+# or not run. Filed only when SP_UNSENT_OLDEST_H is numeric and at or above the threshold.
+#
+# UNADOPTED. A spira/* branch whose suffix resolves to no bead can never be reaped by any
+# rite — the reaper checks the bead, finds nothing, and skips. It is a permanent +1 on a
+# figure whose purpose is to trend to zero. Filed whenever SP_UNADOPTED is nonzero, using
+# incident.sh dedup so repeated sweeps bump a recurrence rather than filing duplicates.
+#
+# ONLY WHEN NUMERIC. A `?` means the probe failed; filing an escalation on an unreadable
+# probe would sound the alarm without evidence (law-absence-needs-a-positive-control).
+_unsent_oldest="${SP_UNSENT_OLDEST_H:-?}"
+_unadopted="${SP_UNADOPTED:-?}"
+
+if [ "$_unsent_oldest" != "?" ] && [ "$_unsent_oldest" -ge "$UNSENT_WARN_H" ] 2>/dev/null; then
+    if [ -x "$INC" ] || [ -r "$INC" ]; then
+        printf 'Oldest unsent branch: %sh — threshold is %sh\n\nA branch this old without a landing means the Sending rite has not run or cannot delete it.\nBranches owned by live in_progress beads are work in flight; confirm the branch has no holder before acting.\n\nCheck sending.sh and the rite logs. Reap manually if the owning bead is already closed.\n' \
+            "$_unsent_oldest" "$UNSENT_WARN_H" | \
+        SPIRA_INCIDENT_TYPE=task \
+        SPIRA_INCIDENT_PRIORITY=1 \
+        SPIRA_INCIDENT_ACTOR=watchtower \
+        SPIRA_SIN_EXEMPT=1 \
+        SPIRA_INCIDENT_REPO=spira \
+        bash "$INC" file "SENDING: oldest unsent branch ${_unsent_oldest}h" - >/dev/null || true
+        log "watchtower: sending escalation filed (oldest unsent ${_unsent_oldest}h >= ${UNSENT_WARN_H}h threshold)"
+    else
+        log "watchtower: $INC is missing — sending escalation not filed"
+    fi
+fi
+
+if [ "$_unadopted" != "?" ] && [ "$_unadopted" -gt 0 ] 2>/dev/null; then
+    if [ -x "$INC" ] || [ -r "$INC" ]; then
+        printf 'Unadopted refs: %s\n\nA spira/* branch whose suffix resolves to no bead can never be reaped by any rite.\nEach one is a permanent +1 on SP_UNADOPTED until removed by hand.\n\nList with: git -C <repo> for-each-ref --format="%%(*refname:short)" refs/heads/spira/ | while read b; do bd show "${b#spira/}" 2>/dev/null || echo "UNADOPTED: $b"; done\nDelete safely: git -C <repo> branch -D <branch> (no bead, no aeon holds it)\n' \
+            "$_unadopted" | \
+        SPIRA_INCIDENT_TYPE=task \
+        SPIRA_INCIDENT_PRIORITY=2 \
+        SPIRA_INCIDENT_ACTOR=watchtower \
+        SPIRA_SIN_EXEMPT=1 \
+        SPIRA_INCIDENT_REPO=spira \
+        bash "$INC" file "SENDING: ${_unadopted} unadopted ref(s) cannot be reaped" - >/dev/null || true
+        log "watchtower: unadopted escalation filed (${_unadopted} unadopted refs)"
+    else
+        log "watchtower: $INC is missing — unadopted escalation not filed"
     fi
 fi
 

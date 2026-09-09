@@ -330,7 +330,7 @@ echo "the snapshot still renders as a whole:"
 fresh
 land_mark sp-whole LANDED cafe5 spira
 snap="$(wt)"
-for section in 'The far end' 'The workers' 'The graph' 'The menu' 'Can this snapshot be believed'; do
+for section in 'The far end' 'The Sending' 'The workers' 'The graph' 'The menu' 'Can this snapshot be believed'; do
     want "the snapshot still carries: $section" "$section" "$snap"
 done
 want "and still warns that ? is not a zero" "never treat it as a zero" "$snap"
@@ -591,6 +591,122 @@ want "SP_REPO_UNMAPPED=0 renders as 0, not ?" "repo: unmapped 0" "$snap"
 want "SP_REPO_ABSENT=0 renders as 0, not ?"  "absent 0"         "$snap"
 nowant "and the zero is not disguised as ?" "repo: unmapped ?" "$snap"
 nowant "and the absent zero is not ?" "absent ?" "$snap"
+
+# ======================================================================================
+echo
+echo "the Sending vital signs render from cockpit.env:"
+# ======================================================================================
+# THE SEAM THIS COVERS. cockpit.sh writes SP_UNSENT, SP_UNSENT_OLDEST_H, SP_UNADOPTED and
+# SP_SENT_FAILED into cockpit.env; watchtower.sh reads them and renders them in 'The Sending'
+# section. Missing keys must render `?` (an unread probe is not a clean probe), and zero must
+# render as zero (a system with no unsent work should say so, not report unknown).
+#
+# THE POSITIVE CONTROL COMES FIRST. A renderer that always prints `?` passes the ? tests;
+# only a fixture with real numbers can prove it is actually reading the keys.
+fresh
+mkdir -p "$TMP/run"
+printf "SP_UNSENT=9\nSP_UNSENT_OLDEST_H=72\nSP_UNADOPTED=1\nSP_SENT_FAILED=17\n" \
+    > "$TMP/run/cockpit.env"
+snap="$(wt)"
+want "SP_UNSENT renders in the Sending section"        "unsent branches"             "$snap"
+want "SP_UNSENT value renders"                         "unsent branches                     9" "$snap"
+want "SP_UNSENT_OLDEST_H renders"                      "oldest unsent (hours)               72" "$snap"
+want "SP_UNADOPTED renders"                            "unadopted refs"              "$snap"
+want "SP_UNADOPTED value renders"                      "unadopted refs (no bead, permanent) 1" "$snap"
+want "SP_SENT_FAILED renders"                          "fiends (FAILED"              "$snap"
+want "SP_SENT_FAILED value renders"                    "fiends (FAILED deletes, came back)  17" "$snap"
+
+# UNREAD SNAPSHOT (missing keys) renders ? — same rule as strands and repo labels.
+fresh
+mkdir -p "$TMP/run"
+printf "SP_OPEN=5\n" > "$TMP/run/cockpit.env"   # no SP_UNSENT/SP_UNADOPTED/SP_SENT_FAILED keys
+snap="$(wt)"
+want "missing SP_UNSENT renders ?"           "unsent branches                     ?" "$snap"
+want "missing SP_UNSENT_OLDEST_H renders ?"  "oldest unsent (hours)               ?" "$snap"
+want "missing SP_UNADOPTED renders ?"        "unadopted refs (no bead, permanent) ?" "$snap"
+want "missing SP_SENT_FAILED renders ?"      "fiends (FAILED deletes, came back)  ?" "$snap"
+
+# ZERO IS A VALID MEASUREMENT. A clean Sending should render 0, not ?.
+fresh
+mkdir -p "$TMP/run"
+printf "SP_UNSENT=0\nSP_UNSENT_OLDEST_H=0\nSP_UNADOPTED=0\nSP_SENT_FAILED=0\n" \
+    > "$TMP/run/cockpit.env"
+snap="$(wt)"
+want "SP_UNSENT=0 renders as 0, not ?"          "unsent branches                     0" "$snap"
+want "SP_UNSENT_OLDEST_H=0 renders as 0, not ?" "oldest unsent (hours)               0" "$snap"
+want "SP_UNADOPTED=0 renders as 0, not ?"        "unadopted refs (no bead, permanent) 0" "$snap"
+want "SP_SENT_FAILED=0 renders as 0, not ?"      "fiends (FAILED deletes, came back)  0" "$snap"
+nowant "and SP_UNSENT=0 is not disguised as ?"   "unsent branches                     ?" "$snap"
+
+# ======================================================================================
+echo
+echo "the Sending escalations fire at their thresholds:"
+# ======================================================================================
+# OLDEST-UNSENT ESCALATION. An unsent branch older than SPIRA_UNSENT_WARN_H hours triggers
+# a dedicated bead. Only numeric values that meet the threshold fire; `?` and values below
+# the threshold are silent. Positive control: the fixture that should fire, must fire.
+
+# At or above threshold: escalation incident is filed.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf "SP_UNSENT=3\nSP_UNSENT_OLDEST_H=30\nSP_UNADOPTED=0\nSP_SENT_FAILED=0\n" \
+    > "$TMP/run/cockpit.env"
+rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
+wt_file_multi SPIRA_UNSENT_WARN_H=24
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+want "oldest-unsent at threshold fires escalation" "SENDING: oldest" "$subjects"
+want "escalation subject names the age"            "30h"             "$subjects"
+
+# Below threshold: no escalation.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf "SP_UNSENT=3\nSP_UNSENT_OLDEST_H=12\nSP_UNADOPTED=0\nSP_SENT_FAILED=0\n" \
+    > "$TMP/run/cockpit.env"
+rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
+wt_file_multi SPIRA_UNSENT_WARN_H=24
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+nowant "oldest-unsent below threshold does not fire" "SENDING: oldest" "$subjects"
+
+# `?` oldest is never an escalation (law-absence-needs-a-positive-control).
+fresh
+mkdir -p "$TMP/run/landstate"
+printf "SP_UNSENT=?\nSP_UNSENT_OLDEST_H=?\nSP_UNADOPTED=0\nSP_SENT_FAILED=0\n" \
+    > "$TMP/run/cockpit.env"
+rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
+wt_file_multi SPIRA_UNSENT_WARN_H=0
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+nowant "? oldest-unsent never fires escalation even at threshold 0" "SENDING: oldest" "$subjects"
+
+# UNADOPTED ESCALATION. Any nonzero unadopted count fires; zero is silent.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf "SP_UNSENT=2\nSP_UNSENT_OLDEST_H=1\nSP_UNADOPTED=3\nSP_SENT_FAILED=0\n" \
+    > "$TMP/run/cockpit.env"
+rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
+wt_file_multi SPIRA_UNSENT_WARN_H=24
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+want "nonzero SP_UNADOPTED fires escalation" "SENDING:" "$subjects"
+want "escalation subject names the count"    "unadopted" "$subjects"
+
+# Zero unadopted: no escalation.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf "SP_UNSENT=2\nSP_UNSENT_OLDEST_H=1\nSP_UNADOPTED=0\nSP_SENT_FAILED=0\n" \
+    > "$TMP/run/cockpit.env"
+rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
+wt_file_multi SPIRA_UNSENT_WARN_H=24
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+nowant "SP_UNADOPTED=0 does not fire escalation" "unadopted" "$subjects"
+
+# `?` unadopted is never an escalation.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf "SP_UNSENT=2\nSP_UNSENT_OLDEST_H=1\nSP_UNADOPTED=?\nSP_SENT_FAILED=0\n" \
+    > "$TMP/run/cockpit.env"
+rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
+wt_file_multi SPIRA_UNSENT_WARN_H=0
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+nowant "? unadopted never fires escalation" "unadopted" "$subjects"
 
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
