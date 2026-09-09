@@ -31,7 +31,7 @@
 # label reaches both ends without duplication.
 #
 # defect: sp-cr96
-# covers: cockpit/ask.sh cockpit/moot-sweep.sh spira/watchtower.sh
+# covers: cockpit/ask.sh cockpit/moot-sweep.sh spira/watchtower.sh spira/incident.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 COCKPIT="$(cd "$HERE/../cockpit" && pwd -P)"
@@ -249,6 +249,102 @@ env -i PATH="$PATH" HOME="$TMP" \
     bash "$HERE/watchtower.sh" >/dev/null 2>&1
 is "a halted world does not call the moot sweep" "" \
    "$(cat "$TMP/moot-called" 2>/dev/null || echo "")"
+
+# ======================================================================================
+echo
+echo "incident.sh undeclared-repo predicate: clears when incident bead gets repo: label:"
+# ======================================================================================
+# Verifies the MOOT-WHEN predicate that incident.sh writes when filing an undeclared-repo
+# ask. Three properties are load-bearing:
+#   1. The predicate exits non-zero while the incident bead carries no repo: label.
+#   2. The predicate exits 0 once a repo: label is added.
+#   3. The predicate exits non-zero when bd show returns nothing (bead missing or DB
+#      unreachable), leaving the ask open rather than silently clearing it.
+#
+# The predicate is constructed with a heredoc, exactly as incident.sh does, so the same
+# quoting behaviour is under test. $INC_ID expands now (the specific bead to watch);
+# $COCKPIT_DB remains a variable reference that expands at sweep time.
+testdb_reset
+
+INC_ID="sp-tinc1"
+printf '{"id":"%s","title":"test incident","status":"open","issue_type":"bug","labels":["spira","incident"]}\n' \
+    "$INC_ID" | testdb_seed
+
+inc_pred=$(cat <<PREDEOF
+_d=\$(bd -C "\$COCKPIT_DB" show $INC_ID --json 2>/dev/null); [ -n "\$_d" ] || { echo 'probe: no output from bd show — database may be unreachable'; exit 1; }; printf '%s\n' "\$_d" | python3 -c 'import json,sys; t=sys.stdin.read().strip(); d=(json.loads(t) if t else []); r=(d[0] if isinstance(d,list) and d else (d if isinstance(d,dict) and d else None)); valid=r is not None and "id" in r; s=r.get("status","?") if valid else "?"; ll=(r.get("labels") or []) if valid else []; rp=[x for x in ll if x.startswith("repo:")]; ok=valid and (s!="open" or bool(rp)); msg=("cleared: "+(rp[0] if rp else "bead "+s)) if ok else ("live: status="+s+", no repo: label") if valid else "probe failed: bd show returned error or no valid bead"; print(msg); sys.exit(0 if ok else 1)'
+PREDEOF
+)
+
+# File the ask via ask.sh so the predicate is stored and parsed exactly as it would be
+# in production (ask.sh handles JSON encoding; a manual seed cannot do this safely).
+ask_out=$(ask add "undeclared repo for $INC_ID" \
+    --default "add repo:<name> to $INC_ID" \
+    --why "no repo: label on $INC_ID" \
+    --moot-when "$inc_pred" 2>&1)
+inc_ask_id=$(printf '%s' "$ask_out" | grep -oE '\[([a-z]{2}-[a-z0-9]+)\]' | tr -d '[]' | head -1)
+[ -n "$inc_ask_id" ] && ok "ask filed with predicate" || { bad "ask filed with predicate" "no id in: $ask_out"; }
+
+if [ -n "$inc_ask_id" ]; then
+    desc=$(bd_show_desc "$inc_ask_id")
+    want "description carries MOOT-WHEN" "MOOT-WHEN:" "$desc"
+    want "predicate names the incident bead id" "$INC_ID" "$desc"
+
+    # No repo: label yet — predicate must not clear.
+    out=$(sweep 2>&1)
+    nowant "predicate does not clear before repo: label is added" "CLEARED" "$out"
+    is "ask stays open before repo: label" "open" "$(bd_show_status "$inc_ask_id")"
+
+    # Add repo: label to the incident bead — predicate must now clear.
+    bd -C "$SPIRA_DB" label add "$INC_ID" "repo:spira" >/dev/null 2>&1
+    out=$(sweep 2>&1)
+    want "CLEARED after repo: label added"  "CLEARED"    "$out"
+    want "and names the ask bead"           "$inc_ask_id" "$out"
+
+    # With --apply, the ask is resolved.
+    sweep --apply >/dev/null 2>&1
+    is "ask is closed after --apply" "closed" "$(bd_show_status "$inc_ask_id")"
+fi
+
+# CLOSED INCIDENT BEAD also clears the ask (the second clearing condition).
+testdb_reset
+INC_ID2="sp-tinc2"
+printf '{"id":"%s","title":"test incident 2","status":"open","issue_type":"bug","labels":["spira","incident"]}\n' \
+    "$INC_ID2" | testdb_seed
+
+inc_pred2=$(cat <<PREDEOF
+_d=\$(bd -C "\$COCKPIT_DB" show $INC_ID2 --json 2>/dev/null); [ -n "\$_d" ] || { echo 'probe: no output from bd show — database may be unreachable'; exit 1; }; printf '%s\n' "\$_d" | python3 -c 'import json,sys; t=sys.stdin.read().strip(); d=(json.loads(t) if t else []); r=(d[0] if isinstance(d,list) and d else (d if isinstance(d,dict) and d else None)); valid=r is not None and "id" in r; s=r.get("status","?") if valid else "?"; ll=(r.get("labels") or []) if valid else []; rp=[x for x in ll if x.startswith("repo:")]; ok=valid and (s!="open" or bool(rp)); msg=("cleared: "+(rp[0] if rp else "bead "+s)) if ok else ("live: status="+s+", no repo: label") if valid else "probe failed: bd show returned error or no valid bead"; print(msg); sys.exit(0 if ok else 1)'
+PREDEOF
+)
+ask_out2=$(ask add "undeclared repo for $INC_ID2" \
+    --default "add repo:<name> to $INC_ID2" \
+    --why "no repo: label on $INC_ID2" \
+    --moot-when "$inc_pred2" 2>&1)
+inc_ask_id2=$(printf '%s' "$ask_out2" | grep -oE '\[([a-z]{2}-[a-z0-9]+)\]' | tr -d '[]' | head -1)
+if [ -n "$inc_ask_id2" ]; then
+    bd -C "$SPIRA_DB" close "$INC_ID2" --reason "resolved" >/dev/null 2>&1
+    out=$(sweep 2>&1)
+    want "CLEARED when incident bead is closed" "CLEARED" "$out"
+fi
+
+# MISSING/UNREACHABLE BEAD: bd show returns nothing — predicate must exit non-zero.
+# A bead id that does not exist in the test db causes bd show to return [] or nothing.
+# The predicate must not read this as "condition cleared" — the ask stays open.
+testdb_reset
+MISSING_ID="sp-doesnotexistXXX"
+missing_pred=$(cat <<PREDEOF
+_d=\$(bd -C "\$COCKPIT_DB" show $MISSING_ID --json 2>/dev/null); [ -n "\$_d" ] || { echo 'probe: no output from bd show — database may be unreachable'; exit 1; }; printf '%s\n' "\$_d" | python3 -c 'import json,sys; t=sys.stdin.read().strip(); d=(json.loads(t) if t else []); r=(d[0] if isinstance(d,list) and d else (d if isinstance(d,dict) and d else None)); valid=r is not None and "id" in r; s=r.get("status","?") if valid else "?"; ll=(r.get("labels") or []) if valid else []; rp=[x for x in ll if x.startswith("repo:")]; ok=valid and (s!="open" or bool(rp)); msg=("cleared: "+(rp[0] if rp else "bead "+s)) if ok else ("live: status="+s+", no repo: label") if valid else "probe failed: bd show returned error or no valid bead"; print(msg); sys.exit(0 if ok else 1)'
+PREDEOF
+)
+ask_out3=$(ask add "undeclared repo for missing incident" \
+    --default "add repo:<name>" \
+    --why "no repo: label" \
+    --moot-when "$missing_pred" 2>&1)
+inc_ask_id3=$(printf '%s' "$ask_out3" | grep -oE '\[([a-z]{2}-[a-z0-9]+)\]' | tr -d '[]' | head -1)
+if [ -n "$inc_ask_id3" ]; then
+    sweep --apply >/dev/null 2>&1
+    is "ask stays open when bd show returns nothing for the incident bead" "open" \
+       "$(bd_show_status "$inc_ask_id3")"
+fi
 
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
