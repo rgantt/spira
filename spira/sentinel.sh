@@ -396,7 +396,17 @@ for i in (d if isinstance(d, list) else [d]):
 # reading the wrong repository's graph gives the wrong answer confidently in both directions:
 # a bead for repository A reads as never landed in repository B, so this check would reopen finished
 # work on every pass. One query, both facts.
-while IFS=$'\t' read -r id r_name superseded dropped sentcontent delivers started_at; do
+# THE FIELD SEPARATOR IS \x1f, NOT TAB, AND THAT IS LOAD-BEARING. Bash treats tab as IFS
+# WHITESPACE, so a run of tabs collapses to one delimiter and an EMPTY MIDDLE COLUMN
+# disappears, shifting every column after it left by one. `delivers` is empty on almost every
+# bead — it is the exception, not the rule — so `read` assigned it the NEXT column,
+# started_at's ISO timestamp. A timestamp is not a recognised delivers type, so CHECK 5 took
+# the delivers branch for every closed bead that had no delivers: label at all, charged an
+# attempt, and reopened it. Eleven beads were poisoned in ninety seconds on 2026-09-09 —
+# every one of them with commits on the base naming it, every one with no delivers: label.
+# \x1f is not IFS whitespace, so empty columns survive it. Verified directly:
+#   printf 'a\tb\t\tc\n' | while IFS=$'\t' read -r w x y z; do echo "[$y]"; done   -> [c]
+while IFS=$'\x1f' read -r id r_name superseded dropped sentcontent delivers started_at; do
     [ -n "$id" ] || continue
     # Only beads an aeon worked — anything closed by hand has its own evidence.
     [ -f "$SPIRA_RUN/$id.log" ] || continue
@@ -595,13 +605,14 @@ for i in (d if isinstance(d, list) else [d]):
     # Seventh column: started_at — the timestamp of the last claim, used by note/report checks
     # to confirm the file was written in the bead window, not before the session began.
     started = i.get("started_at") or ""
-    print("%s\t%s\t%s\t%s\t%s\t%s\t%s" % (i["id"], repo, sup, drop, sentc, delivers, started))' "$home_repo" 2>/dev/null
+    # \x1f, not tab: an empty column between two tabs is eaten by bash read (see the loop).
+    print("\x1f".join([i["id"], repo, str(sup), str(drop), str(sentc), delivers, started]))' "$home_repo" 2>/dev/null
     done <<< "$PARTITIONS" |
     # Sorted on the REPOSITORY column first, because the loop above caches one `git log`
     # walk per repository and re-walks whenever the repository changes between rows; `-u`
     # then drops the duplicate a bead carrying two personas' labels would produce. Both
     # keys together are the whole line, so nothing is deduplicated on a partial key.
-    sort -u -t$'\t' -k2,2 -k1,1
+    sort -u -t$'\x1f' -k2,2 -k1,1
 )
 [ -n "$PARTITIONS" ] || log "CHECK5 no persona in the chamber declares a partition — no closed bead is being checked for landing"
 
