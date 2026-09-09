@@ -25,8 +25,23 @@ set -uo pipefail
 # launched — by then the claim, the worktree and the fixture have already spent some of it.
 AEON_T0="$(date +%s)"
 
-FAYTH="${1:-}"; [ -n "$FAYTH" ] || die "usage: aeon.sh <fayth> [--dry-run]"
-DRY=0; [ "${2:-}" = "--dry-run" ] && DRY=1
+FAYTH="${1:-}"; [ -n "$FAYTH" ] || die "usage: aeon.sh <fayth> [--dry-run | --sweep [--prompt <text>|-]]"
+DRY=0; SWEEP=0; SWEEP_PROMPT=""
+case "${2:-}" in
+    --dry-run) DRY=1 ;;
+    --sweep)
+        SWEEP=1
+        case "${3:-}" in
+            --prompt)
+                # --prompt - reads stdin; --prompt <text> uses the literal value.
+                if [ "${4:-}" = "-" ]; then SWEEP_PROMPT="$(cat)"
+                else                         SWEEP_PROMPT="${4:-}"
+                fi
+                ;;
+            -)  SWEEP_PROMPT="$(cat)" ;;   # bare - is a stdin shorthand
+        esac
+        ;;
+esac
 F="$SPIRA_HOME/chamber/$FAYTH.fayth"
 [ -f "$F" ] || die "no such fayth: $F"
 # shellcheck disable=SC1090
@@ -93,6 +108,96 @@ ledger_done() {
 [ -f "$LEDGER" ] && [ "$(wc -l < "$LEDGER")" -gt 20000 ] \
     && { tail -n 5000 "$LEDGER" > "$LEDGER.trim" && mv -f "$LEDGER.trim" "$LEDGER"; }
 ledger "born $FAYTH $$"
+
+# ---- sweep mode: a beadless session --------------------------------------------------
+# A SWEEP RUNS THE PERSONA WITHOUT A BEAD. The bead lifecycle — claim, lease, close,
+# verdict, attempt — does not apply. What does apply is the capacity check, the draining
+# check, the concurrency cap, and the born/awake/done ledger lines. Those are shared
+# because a sweep spends the same account window a builder does and must appear in the
+# cockpit's aeon counts — a stillborn sweep must show as born-without-awake just as a
+# stillborn builder does.
+#
+# THE FENCE IS CLAIM-SPECIFIC. fayth_fenced refuses a predicate that does not filter to
+# this installation's own beads — it exists to stop a persona claiming somebody else's
+# work. A sweep does not claim, so the fence has nothing to guard and must not run here.
+# It is not deleted for that reason; claim mode reaches it on the path below.
+if [ "$SWEEP" = 1 ]; then
+    have_sw="$(aeon_count "$FAYTH")"
+    if [ "$have_sw" -ge "${FAYTH_MAX_CONCURRENT:-1}" ]; then
+        log "$FAYTH: at capacity ($have_sw/${FAYTH_MAX_CONCURRENT:-1}), not sweeping"
+        ledger "awake $FAYTH capacity"
+        exit 0
+    fi
+    if [ -f "${SPIRA_RUN:-}/world.draining" ]; then
+        log "$FAYTH: draining — not sweeping (world.sh resume to lift)"
+        ledger "awake $FAYTH draining"
+        exit 0
+    fi
+    if capacity_paused; then
+        log "$FAYTH: the account is out of capacity for another ${SPIRA_CAPACITY_LEFT}s — not sweeping"
+        ledger "awake $FAYTH paused"
+        exit 0
+    fi
+
+    # Identity: take a name from the pool so the pane can distinguish concurrent sweeps.
+    SWEEP_AEON="$(aeon_name_take "$FAYTH")"
+    export SPIRA_AEON="$SWEEP_AEON"
+    export BEADS_ACTOR="aeon-$SWEEP_AEON"
+    export GIT_AUTHOR_NAME="aeon-$SWEEP_AEON" GIT_AUTHOR_EMAIL="aeon-$SWEEP_AEON@spira.local"
+    export GIT_COMMITTER_NAME="aeon-$SWEEP_AEON" GIT_COMMITTER_EMAIL="aeon-$SWEEP_AEON@spira.local"
+
+    # Pidfile keeps this sweep visible to aeon_count for the duration of the session.
+    # Named with $$ to avoid collisions with concurrent sweeps or bead workers.
+    SWEEP_PIDFILE="$SPIRA_RUN/aeon-$FAYTH-sweep-$$.pid"
+    printf '%s' "$SWEEP_AEON" > "${SWEEP_PIDFILE%.pid}.name"
+    echo $$ > "$SWEEP_PIDFILE"
+
+    # BEAD_ID placeholder for ledger lines: the literal string "sweep".
+    # Readers that parse the ledger for born/awake/done counts see a distinguishable token
+    # rather than an empty field; the cockpit's aeon_count reads pidfiles, not this value.
+    SWEEP_BEAD="sweep"
+    ledger "awake $FAYTH $SWEEP_BEAD"
+
+    SWEEP_LOGF="$SPIRA_RUN/sweep-$FAYTH-$$.log"
+    log "$FAYTH: sweeping (log: $SWEEP_LOGF)"
+
+    # Teardown: release the pidfile and write the disposition line regardless of exit path.
+    sweep_cleanup() {
+        local rc=$?
+        set +e
+        rm -f "$SWEEP_PIDFILE" "${SWEEP_PIDFILE%.pid}.name"
+        ledger "done $FAYTH $SWEEP_BEAD rc=$rc status=sweep $(session_result_fields "${SWEEP_LOGF:-}")"
+        exit $rc
+    }
+    trap sweep_cleanup EXIT INT TERM
+
+    # Prompt: caller-supplied text (from --prompt or -) prepended with statutes. If no
+    # prompt was given, use the fayth's .md as-is — without bead substitutions, since
+    # there is no bead. The fayth .md is still useful as the persona's standing brief.
+    SWEEP_STATUTES="$(render_memories "${FAYTH_MEMORY_PREFIXES:-law-}")"
+    if [ -z "$SWEEP_PROMPT" ]; then
+        SWEEP_PROMPT="$(cat "$SPIRA_HOME/chamber/$FAYTH.md" 2>/dev/null || true)"
+    fi
+    SWEEP_FULL="# Memories in force
+
+$SWEEP_STATUTES
+
+---
+
+$SWEEP_PROMPT"
+
+    set +e
+    printf '%s' "$SWEEP_FULL" | \
+        ${FAYTH_TIMEOUT_SECONDS:+timeout $FAYTH_TIMEOUT_SECONDS} \
+        "${SPIRA_CLAUDE:-claude}" -p --output-format stream-json --verbose \
+               --include-partial-messages \
+               --model "${FAYTH_MODEL:-claude-opus-5}" \
+               --allowedTools "${FAYTH_TOOLS:-Bash,Read,Edit,Write,Glob,Grep}" \
+               --dangerously-skip-permissions \
+        >> "$SWEEP_LOGF" 2>&1
+    exit $?
+fi
+# ---- end sweep mode ------------------------------------------------------------------
 
 # ---- concurrency ---------------------------------------------------------------------
 have="$(aeon_count "$FAYTH")"
