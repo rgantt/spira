@@ -53,11 +53,13 @@ done
 
 # Configuration, never a hardcoded path (law: every harness path comes from spira.conf).
 # Sourced with `set +u` because conf.sh is written for callers that have not set -u.
-BRAIN_DEFAULT=/workspaces/brain
 { set +u; . "$HERE/../spira/conf.sh" 2>/dev/null; set -u; } || true
 VIEW="${SPIRA_VIEW:-$HOME/.local/bin/cockpit-remote}"
 LAYOUT="$HERE/layout.sh"
-CWD="${SPIRA_REPO:-$BRAIN_DEFAULT}"
+# COCKPIT_CWD is derived in conf.sh as ${SPIRA_WIKI:-$SPIRA_REPO}: the wiki when one is
+# configured, the harness root otherwise. It is the right default for tmux sessions because
+# the operator's instructions load from whichever project they work in, not the harness.
+CWD="${COCKPIT_CWD:-$SPIRA_REPO}"
 # brain and hunk are the two the cockpit LINKS and are structural. chat is Ryan's and is
 # recreated because it died with the server, but nothing depends on it.
 SESSIONS="brain hunk chat"
