@@ -100,13 +100,19 @@ got="$(. "$RUN/cockpit.env" 2>/dev/null; printf '%s' "${SP_MARKER:-}")"
 
 echo
 echo "sweep_stale_tmps clears pre-existing orphaned temps at startup"
-# The sweep runs at the top of 'once' before probe is called, so interrupt it immediately
-# after startup; the orphans must already be gone.
+# The sweep runs at the top of 'once' before probe is called, so once the orphans are gone
+# the probe is still slow enough to safely interrupt.
 touch "$RUN/.cockpit.99999" "$RUN/.cockpit.orphan"
 SPIRA_RUN="$RUN" SPIRA_COCKPIT_FORCE=1 bash "$COCKPIT" once >/dev/null 2>&1 &
 sweep_pid=$!
-# Give the sweep — which is synchronous and cheap — a moment to run before we kill the probe.
-sleep 0.5
+# Wait for the sweep to have run: the orphan count drops from 2 once they are removed.
+# A fixed sleep is unreliable because sourcing lib.sh and conf.sh can take longer than any
+# constant; the probe that follows sweep is slow enough that killing after the count drops is safe.
+for _ in $(seq 1 200); do
+    [ "$(temps)" -lt 2 ] && break
+    kill -0 "$sweep_pid" 2>/dev/null || break
+    sleep 0.1
+done
 kill -TERM "$sweep_pid" 2>/dev/null; wait "$sweep_pid" 2>/dev/null || true
 n="$(temps)"
 [ "$n" -eq 0 ] && ok "orphaned temps removed by startup sweep" \
