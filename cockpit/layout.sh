@@ -325,10 +325,26 @@ restart_if_stale() { # pane_tag script_path
 # to prevent: a key added to the probe is never emitted, the pane renders `?` for it forever,
 # and every process involved reports itself healthy.
 restart_spira_collector_if_stale() {
-    local unit=spira-cockpit.service src="$SPIRA_HOME/cockpit.sh" main started mtime
+    # THE UNIT NAME IS PER-INSTANCE. install.sh renders spira-cockpit-<instance>.service
+    # for each installation; the old plain unit is inactive (dead) on a migrated box. Try
+    # the instance-qualified name first, fall back to the plain name for pre-migration
+    # installs. Return early if no active unit is found — an is-active call on the wrong
+    # unit is the first two (cockpit.sh:54, world.sh work_services), and this is the third.
+    local unit="" src u main started mtime
+    for u in "spira-cockpit${SPIRA_INSTANCE:+-$SPIRA_INSTANCE}.service" spira-cockpit.service; do
+        systemctl --user cat "$u" >/dev/null 2>&1 || continue
+        [ "$(systemctl --user is-active "$u" 2>/dev/null)" = active ] || continue
+        unit="$u"
+        break
+    done
+    [ -n "$unit" ] || return 0
+    # THE SOURCE IS THE PROD CHECKOUT, NOT THE DEV CHECKOUT. promote.sh fast-forwards
+    # $SPIRA_PROD with git checkout, which stamps the promoted files with the promotion
+    # time. $SPIRA_HOME is the dev checkout and is not updated on promotion, so its mtime
+    # never reflects a landing — a committed change looks current to the old comparison even
+    # when the running collector predates it by an hour (observed 2026-09-09, sp-nfxd).
+    src="${SPIRA_PROD:-}/cockpit.sh"
     [ -f "$src" ] || return 0
-    systemctl --user cat "$unit" >/dev/null 2>&1 || return 0
-    [ "$(systemctl --user is-active "$unit" 2>/dev/null)" = active ] || return 0
     main=$(systemctl --user show "$unit" -p MainPID --value 2>/dev/null || echo 0)
     [ -n "$main" ] && [ "$main" != 0 ] || return 0
     started=$(proc_start "$main") || {
@@ -641,13 +657,14 @@ status)
         p="$(tagged "$t")"
         printf '%-10s %s\n' "$t:" "${p:-absent}"
     done
-    # The collector is not this script's to report on: `systemctl --user status
-    # spira-cockpit.service` is the authority, and a second opinion here would drift.
-    # FROM $SPIRA_RUN, NOT DERIVED — the same reason health.sh reads it from there.
+    # The collector is not this script's to report on: systemctl is the authority,
+    # and a second opinion here would drift. FROM $SPIRA_RUN, NOT DERIVED — the same
+    # reason health.sh reads it from there.
+    local _svc="spira-cockpit${SPIRA_INSTANCE:+-$SPIRA_INSTANCE}.service"
     if [ -f "$SPIRA_RUN/cockpit.env" ]; then
-        echo "snapshot:  $(( $(date +%s) - $(stat -c %Y "$SPIRA_RUN/cockpit.env") ))s old (spira-cockpit.service)"
+        echo "snapshot:  $(( $(date +%s) - $(stat -c %Y "$SPIRA_RUN/cockpit.env") ))s old ($_svc)"
     else
-        echo "snapshot:  missing — check 'systemctl --user status spira-cockpit.service'"
+        echo "snapshot:  missing — check 'systemctl --user status $_svc'"
     fi
     ;;
 
