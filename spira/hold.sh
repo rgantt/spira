@@ -78,8 +78,19 @@ echo "$HOLD_PID" > "$PIDFILE"
 # Redirected to /dev/null: the heartbeat inherits this script's file descriptors, and a
 # $() substitution around the caller waits until EVERY writer on the pipe closes — so
 # without this redirect, `out="$(hold.sh ...)"` blocks until the heartbeat exits.
+#
+# SIGTERM from unhold.sh kills this subshell. The trap kills the sleep child first so
+# it does not become an orphan in the caller's process group and trigger the harness
+# background-job check.
 (
-    while sleep "${SPIRA_HOLD_HEARTBEAT:-120}"; do
+    _hb_sleep=
+    _hb_term() { [ -n "$_hb_sleep" ] && kill "$_hb_sleep" 2>/dev/null; exit 0; }
+    trap '_hb_term' TERM INT
+    while true; do
+        sleep "${SPIRA_HOLD_HEARTBEAT:-120}" &
+        _hb_sleep=$!
+        wait "$_hb_sleep" 2>/dev/null
+        _hb_sleep=
         [ -f "$PIDFILE" ] || exit 0
         [ -d "/proc/$HOLD_PID" ] || exit 0
         bdq heartbeat "$ID" >/dev/null 2>&1 || exit 0
