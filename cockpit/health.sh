@@ -301,11 +301,40 @@ halt_banner() {
     printf '  %sstart it:%s spira/world.sh start\n' "$C_DIM" "$C_RST"
 }
 
+# A DRAINING WORLD FOLLOWS THE HALT BANNER, because a pool held at zero by design and a pool
+# that is empty because nothing is ready look identical from every other surface — and a
+# forgotten drain has the same shape as law-arm-before-you-retire: a stopped channel and a
+# quiet one are indistinguishable.
+#
+# READ THE STAMP ($SPIRA_RUN/world.draining), NOT world.sh STATUS. world.sh status reads
+# systemd unit names, and those are themselves broken (sp-4biz, P0). drain and resume work
+# correctly precisely because they gate on the stamp and never name a unit, so we do the same.
+#
+# MINUTES FROM THE STAMP'S MTIME. The stamp's first line is a human-readable timestamp; `stat
+# -c %Y` extracts the epoch seconds the OS recorded when the file was written, which is the
+# same instant, and arithmetic on epoch seconds needs no date parsing. If stat cannot read the
+# file, the probe renders `?` — a broken read must never render as "not draining"
+# (law-absence-needs-a-positive-control).
+drain_banner() {
+    local stamp="$SPIRA_RUN/world.draining" mtime mins
+    [ -f "$stamp" ] || return 0
+    mtime="$(stat -c %Y "$stamp" 2>/dev/null)"
+    if [ -n "$mtime" ] && [ "$mtime" -gt 0 ] 2>/dev/null; then
+        mins=$(( ($(date +%s) - mtime) / 60 ))
+    else
+        mins="?"
+    fi
+    printf '%s%s ⏸ DRAINING %s%s summons gated for %s%sm%s — loop and landing continue%s\n' \
+        "$C_B" "$C_WARN" "$C_RST" "$C_DIM" "$C_RST" "$mins" "$C_DIM" "$C_RST"
+    printf '  %slift it:%s world.sh resume\n' "$C_DIM" "$C_RST"
+}
+
 header_line() {
     local age="?" stale=""
     [ -n "${SP_AT:-}" ] && age=$(( $(date +%s) - SP_AT ))
     [ "$age" != "?" ] && [ "$age" -gt 180 ] && stale="  ${C_BAD}STALE ${age}s${C_RST}"
     halt_banner
+    drain_banner
     # AURON IS SHOWN WITH ITS AGE, NEVER OMITTED WHEN IT IS SILENT. It is the watchdog over
     # the loop and its only power is speech, so a dead Auron and a healthy system produce
     # the same pane unless its own pulse is on it — and the pane would render the healthy

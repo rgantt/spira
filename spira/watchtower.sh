@@ -57,6 +57,40 @@ if [ -f "$HALT_STAMP" ]; then
 fi
 
 # ---------------------------------------------------------------------------------------
+# DRAINING? Drain is lighter than halt — the loop, landing and reaping continue; only new
+# summons are gated. A drain left armed longer than intended has the same shape as
+# law-arm-before-you-retire: a stopped channel and a quiet one are indistinguishable from
+# outside, so the vital sign belongs here alongside the halt signal.
+#
+# READ THE STAMP DIRECTLY, NOT world.sh STATUS. world.sh status reads systemd unit names,
+# which are broken (sp-4biz, P0). drain and resume work correctly because they gate on the
+# stamp and never name a unit, so we do the same.
+#
+# MINUTES FROM MTIME, same as cockpit/health.sh: `stat -c %Y` returns epoch seconds the OS
+# recorded when the file was written, which needs no date parsing. A failed stat renders `?`
+# — never "not draining" (law-absence-needs-a-positive-control).
+# ---------------------------------------------------------------------------------------
+DRAIN_STAMP="$SPIRA_RUN/world.draining"
+# drain_since empty → no stamp → not draining; drain_mins "?" → stamp exists but unreadable.
+# Not-draining renders 0, not "?" — the ? convention is for a probe that FAILED, not for the
+# absence of the condition being probed (law-absence-needs-a-positive-control).
+drain_since=""; drain_mins=0
+if [ -f "$DRAIN_STAMP" ]; then
+    drain_since="$(head -1 "$DRAIN_STAMP" 2>/dev/null)"
+    _dmtime="$(stat -c %Y "$DRAIN_STAMP" 2>/dev/null)"
+    if [ -n "$_dmtime" ] && [ "$_dmtime" -gt 0 ] 2>/dev/null; then
+        drain_mins=$(( (now - _dmtime) / 60 ))
+    else
+        drain_mins="?"
+    fi
+fi
+
+# How long before a drain triggers its own incident. The normal sweep already carries the
+# drain state as a vital sign; this threshold is the point at which the sweep alone is not
+# enough and an escalation bead is worth the noise.
+DRAIN_WARN_MINS="${SPIRA_DRAIN_WARN_MINS:-15}"
+
+# ---------------------------------------------------------------------------------------
 # THE COLLECTOR'S SNAPSHOT, and whether it can be believed at all. Every other number below
 # is read out of cockpit.env, so its freshness is the first fact — a stale file makes the
 # whole sweep a report about the past, and reporting the past as the present during an
@@ -299,10 +333,20 @@ if [ -n "$halt_since" ]; then
 "
 fi
 
+# Drain section: present only when the stamp exists. Unlike the halt section, a draining
+# world still files its sweep — the loop and landing continue. The section is a warning
+# banner, not a suppression notice.
+drain_section=""
+if [ -n "$drain_since" ]; then
+    drain_section="!! DRAINING since ${drain_since} (${drain_mins}m)
+   Summons gated; loop, landing and reaping continue. Lift with: world.sh resume
+"
+fi
+
 snapshot() {
 cat <<EOF
 ## Spira pipeline, $(date -u +%Y-%m-%dT%H:%M:%SZ)
-${halt_section}
+${halt_section}${drain_section}
 N workers pull from a DAG into a merge queue. These are that queue's vital signs. A field
 reading \`?\` is one this pass COULD NOT READ — never treat it as a zero.
 
@@ -328,6 +372,7 @@ reading \`?\` is one this pass COULD NOT READ — never treat it as a zero.
 
 ### The workers
 
+  draining since (? = cannot read)    ${drain_mins}      minutes   (stamp: world.draining)
   aeons alive                         ${aeons_live}      (counted now, not from the snapshot)
   beads in progress                   $(g SP_INPROG)
   ready to claim                      $(g SP_READY)
@@ -411,3 +456,26 @@ SPIRA_INCIDENT_REPO=spira \
 bash "$INC" file "Spira sweep — is the pipeline moving?" - >/dev/null || {
     log "watchtower: could not file the sweep"; exit 1; }
 log "watchtower: swept — ${since_land}m since the last landing, $(g SP_UNLANDED) unlanded, ${aeons_live} aeons"
+
+# DRAIN ESCALATION. The sweep above already carries the drain state as a vital sign. When
+# the drain has been armed longer than the threshold, file a dedicated bead so it reaches
+# Ops even if the sweep itself is already open (the dedup bumps a recurrence rather than
+# filing a second). Filed as P1 task, not a routine chore — a forgotten drain is a live
+# condition that is starving the worker pool.
+#
+# ONLY WHEN DRAINING AND NUMERIC. A `?` drain_mins means the probe failed; filing an
+# escalation on an unreadable probe would sound the alarm without evidence
+# (law-absence-needs-a-positive-control). The halt guard above already exited when halted,
+# so this branch only runs when the world is still moving.
+if [ -n "$drain_since" ] && [ "$drain_mins" != "?" ] && \
+   [ "$drain_mins" -ge "$DRAIN_WARN_MINS" ] 2>/dev/null; then
+    printf 'DRAINING for %sm — summons gated since %s\n\nNew aeons cannot be summoned while world.draining exists. Loop, landing and reaping continue.\n\nLift with: world.sh resume\n' \
+        "$drain_mins" "$drain_since" | \
+    SPIRA_INCIDENT_TYPE=task \
+    SPIRA_INCIDENT_PRIORITY=1 \
+    SPIRA_INCIDENT_ACTOR=watchtower \
+    SPIRA_SIN_EXEMPT=1 \
+    SPIRA_INCIDENT_REPO=spira \
+    bash "$INC" file "DRAINING: world.sh summons gated" - >/dev/null || true
+    log "watchtower: drain escalation filed (${drain_mins}m >= ${DRAIN_WARN_MINS}m threshold)"
+fi

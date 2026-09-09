@@ -414,6 +414,112 @@ wt_file
 is "the filing path calls incident.sh when running" "called" \
    "$([ -f "$TMP/incident-called" ] && cat "$TMP/incident-called" || echo "")"
 
+# ======================================================================================
+echo
+echo "a draining world is a vital sign in the snapshot:"
+# ======================================================================================
+# DRAIN IS LIGHTER THAN HALT — the loop, landing and reaping continue; only new summons
+# are gated. So the sweep still files (unlike a halt, which skips entirely), but the drain
+# state is surfaced as a prominent vital sign so Ops can see it. A drain stamp at the
+# right path is all that is needed.
+#
+# POSITIVE CONTROL FIRST: the field must reach the pane and read a number, not `?`, for
+# a stamp we can stat. Without this, a broken stat or a wrong path produces `?` and every
+# assertion below passes on silence (law-absence-needs-a-positive-control).
+fresh
+mkdir -p "$TMP/run"
+printf '2026-09-08 20:02:00 UTC\nsummons gated in summon_fayth; loop and landing still running.\n' \
+    > "$TMP/run/world.draining"
+# Touch the stamp to a known age (5 minutes ago) so the field is a number, not unknown.
+touch -d "@$(( NOW - 300 ))" "$TMP/run/world.draining" 2>/dev/null || true
+snap="$(wt)"
+want "a drain stamp surfaces in the snapshot"    "DRAINING"                     "$snap"
+want "and reports the stamp timestamp"           "2026-09-08 20:02:00 UTC"      "$snap"
+want "and a numeric minutes field (not ?)"       "draining since"               "$snap"
+nowant "and does not claim no incidents are filed" "No incidents are filed"     "$snap"
+# The section label distinguishes drain from the not-draining state.
+want "drain_mins is a number — positive control" "5"   "$(field "$snap" 'draining since (? = cannot read)')"
+
+# NO DRAIN STAMP renders 0, NOT `?`. "Not draining" and "draining but probe failed" are
+# different facts; the former is the healthy state and must not show the alarm colour.
+fresh
+mkdir -p "$TMP/run"
+snap="$(wt)"
+# field() returns the rest of the line after the label; the first word is the minutes.
+dm_raw="$(field "$snap" 'draining since (? = cannot read)')"
+is "no drain stamp renders 0, not ?"  "0" "${dm_raw%% *}"
+
+# A DRAINING WORLD STILL FILES THE SWEEP. Unlike a halted world (which exits before calling
+# incident.sh), a drain leaves the loop and landing running — so the sweep is needed.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf '2026-09-08 20:02:00 UTC\nsummons gated.\n' > "$TMP/run/world.draining"
+wt_file
+is "a draining world still calls incident.sh" "called" \
+   "$([ -f "$TMP/incident-called" ] && cat "$TMP/incident-called" || echo "")"
+
+# ======================================================================================
+echo
+echo "drain escalation: a bead is cut once the threshold is exceeded:"
+# ======================================================================================
+# wt_file_multi: runs watchtower without --show, collecting ALL incident.sh calls.
+# incident.sh is invoked as: incident.sh file "<subject>" -
+# so $1=file, $2=subject, $3=-. The mock appends $2 to a file so we can inspect subjects.
+wt_file_multi() {   # wt_file_multi [VAR=val ...] -> appends subjects to $TMP/inc-subjects
+    local mock="$TMP/mock-inc-multi.sh"
+    printf '#!/usr/bin/env bash\nprintf "%%s\n" "$2" >> "%s"\ncat > /dev/null\n' \
+        "$TMP/inc-subjects" > "$mock"
+    chmod +x "$mock"
+    env -i PATH="$PATH" HOME="$TMP" \
+        SPIRA_CONF=/nonexistent SPIRA_RUN="$TMP/run" \
+        SPIRA_WATCH_GATE_WINDOW="$GATE_WINDOW" \
+        SPIRA_INCIDENT_SH="$mock" \
+        "$@" bash "$HERE/watchtower.sh" 2>/dev/null
+}
+
+# Below threshold: only the normal sweep fires, no drain escalation.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf '2026-09-08 20:02:00 UTC\nsummons gated.\n' > "$TMP/run/world.draining"
+touch -d "@$(( NOW - 600 ))" "$TMP/run/world.draining" 2>/dev/null || true   # 10m < 15m threshold
+rm -f "$TMP/inc-subjects"
+wt_file_multi SPIRA_DRAIN_WARN_MINS=15
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+want   "below threshold still files the sweep"     "Spira sweep"  "$subjects"
+nowant "but does not file the drain escalation"    "DRAINING:"    "$subjects"
+
+# At or above threshold: both the sweep AND the drain escalation fire.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf '2026-09-08 20:02:00 UTC\nsummons gated.\n' > "$TMP/run/world.draining"
+touch -d "@$(( NOW - 1200 ))" "$TMP/run/world.draining" 2>/dev/null || true   # 20m > 15m threshold
+rm -f "$TMP/inc-subjects"
+wt_file_multi SPIRA_DRAIN_WARN_MINS=15
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+want "above threshold files the sweep"             "Spira sweep"       "$subjects"
+want "and also files the drain escalation"         "DRAINING:"         "$subjects"
+want "with a fixed subject for dedup"              "world.sh summons"  "$subjects"
+
+# Threshold is configurable: zero means escalate immediately.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf '2026-09-08 20:02:00 UTC\nsummons gated.\n' > "$TMP/run/world.draining"
+touch -d "@$(( NOW - 60 ))" "$TMP/run/world.draining" 2>/dev/null || true   # 1m
+rm -f "$TMP/inc-subjects"
+wt_file_multi SPIRA_DRAIN_WARN_MINS=0
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+want "SPIRA_DRAIN_WARN_MINS=0 escalates immediately" "DRAINING:" "$subjects"
+
+# No drain stamp means no escalation, even with a zero threshold.
+fresh
+mkdir -p "$TMP/run/landstate"
+rm -f "$TMP/run/world.draining"
+rm -f "$TMP/inc-subjects"
+wt_file_multi SPIRA_DRAIN_WARN_MINS=0
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+want   "no stamp still files the sweep"         "Spira sweep"   "$subjects"
+nowant "no stamp means no drain escalation"     "DRAINING:"     "$subjects"
+
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
 [ "$fail" -eq 0 ]
