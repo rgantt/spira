@@ -71,13 +71,18 @@ live_aeons() {
 # a new work unit cannot silently escape a halt.
 #
 # EXCLUDED DELIBERATELY:
-#   spira-cockpit.service   the pane the operator is reading
-#   spira-watch@*.service   handled separately by --hard
+#   spira-cockpit[-<instance>].service   the ops dashboard the operator is reading
+#   spira-loom[-<instance>].service      the Loom query engine the dashboard depends on
+#   spira-watch@*.service                handled separately by --hard
+# Both the bare (pre-migration) and instance-qualified forms are matched so the pattern
+# holds during and after the per-instance migration (sp-4biz: a rename repoints no reader;
+# sp-xfg4: the bare-name exclusion here let the collector be swept on every stop).
 # Dolt is never named spira-*; the exclusions above are the only ones needed.
 work_services() {
+    local sfx="${SPIRA_INSTANCE:+-$SPIRA_INSTANCE}"
     "$SC" --user list-units 'spira-*.service' --state=active --no-legend 2>/dev/null \
         | awk '{print $1}' \
-        | grep -Ev '^spira-cockpit\.service$|^spira-watch@'
+        | grep -Ev "^spira-cockpit(\\.service|${sfx}\\.service)$|^spira-loom(\\.service|${sfx}\\.service)$|^spira-watch@"
 }
 
 # live_workers -> one pid per line for any process running gate.sh or landing.sh from this
@@ -273,7 +278,7 @@ status)
     # also reported, so a new work unit cannot hide here while appearing as HALTED above.
     printf '  %-26s %s\n' "spira-landing.service" "$("$SC" --user is-active spira-landing.service 2>/dev/null || echo inactive)"
     while IFS= read -r svc; do
-        case "$svc" in spira-landing.service|spira-cockpit.service) continue ;; esac
+        case "$svc" in spira-landing.service|spira-cockpit*.service|spira-loom*.service) continue ;; esac
         printf '  %-26s %s\n' "$svc" "$("$SC" --user is-active "$svc" 2>/dev/null)"
     done < <("$SC" --user list-units 'spira-*.service' --state=active --no-legend 2>/dev/null | awk '{print $1}' | grep -Ev '^spira-watch@')
 
