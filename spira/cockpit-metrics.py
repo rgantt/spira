@@ -187,7 +187,7 @@ def ledger_metrics(lines, since):
     }
 
 
-def sending_metrics(lines, since):
+def sending_metrics(lines, since, now=None):
     """The Sending: work sent, work refused, and work that would not go.
 
     The refusals are the point. Sending a branch is routine; DECLINING to send one a live
@@ -198,6 +198,8 @@ def sending_metrics(lines, since):
     while a worktree holds it), so the landing check re-merged and re-pushed it every two
     minutes forever. Unsent work comes back (2026-09-05).
     """
+    if now is None:
+        now = datetime.now(timezone.utc)
     # COUNT BRANCHES, NOT LOG LINES. held/kept were incremented per matching line, and the
     # sending runs every two minutes — so one branch a live aeon held for eight hours
     # counted 240 times and the pane read "held 221" for 23 distinct branches. A number
@@ -210,6 +212,9 @@ def sending_metrics(lines, since):
     # minutes is the check working, not a backlog growing, and only a set can say so.
     sent_ids, failed_ids = set(), set()
     held_ids, kept_ids = set(), set()
+    # Most recent timestamp attributed to a FAILED line, so health.sh can dim the alarm
+    # once the condition has been resolved for long enough that no action is needed.
+    failed_last_ts = None
     # sending.sh's own output carries NO timestamp of its own — it is printed inside a pass
     # and captured verbatim. So attribute each line to the most recent timestamped line
     # above it. Lines before any timestamp are pre-window and dropped rather than counted,
@@ -238,12 +243,20 @@ def sending_metrics(lines, since):
         # the same event is not a second observation of it.
         elif t.startswith("FAILED"):
             parts = t.split()
-            if len(parts) > 1: failed_ids.add(parts[1])
+            if len(parts) > 1:
+                failed_ids.add(parts[1])
+                if cur is not None and (failed_last_ts is None or cur > failed_last_ts):
+                    failed_last_ts = cur
+    if failed_last_ts is not None:
+        failed_age_m = str(int((now - failed_last_ts).total_seconds() / 60))
+    else:
+        failed_age_m = "?"
     return {
         "SP_SENT": len(sent_ids),
         "SP_SENT_HELD": len(held_ids),
         "SP_SENT_KEPT": len(kept_ids),
         "SP_SENT_FAILED": len(failed_ids),
+        "SP_SENT_FAILED_AGE_M": failed_age_m,
     }
 
 
@@ -373,8 +386,6 @@ def main():
         (sys.argv[1], sentinel_metrics,
          ("SP_PASSES", "SP_ACTS", "SP_FALSE_ACTS", "SP_FALSE_PER_PASS", "SP_SINCE_JUDGEMENT",
           "SP_STARVED_PASSES")),
-        (sys.argv[1], sending_metrics,
-         ("SP_SENT", "SP_SENT_HELD", "SP_SENT_KEPT", "SP_SENT_FAILED")),
         (sys.argv[2], ledger_metrics,
          ("SP_AEON_BORN", "SP_AEON_LIVED", "SP_AEON_STILLBORN", "SP_AEON_WORKED")),
     ):
@@ -383,6 +394,14 @@ def main():
         except Exception:
             # A probe that fails says so. It never says 0.
             out.update({k: "?" for k in keys})
+    # Sending metrics need `now` to compute SP_SENT_FAILED_AGE_M, so they are called
+    # outside the generic loop rather than bending it to pass a third argument.
+    try:
+        out.update(sending_metrics(read(sys.argv[1]), since, now))
+    except Exception:
+        for k in ("SP_SENT", "SP_SENT_HELD", "SP_SENT_KEPT", "SP_SENT_FAILED",
+                  "SP_SENT_FAILED_AGE_M"):
+            out[k] = "?"
 
     # Short-window SELF metrics. SPIRA_SELF_WINDOW is in minutes (default 60); the window
     # is independent of the history window above so it stays narrow enough to show "now".

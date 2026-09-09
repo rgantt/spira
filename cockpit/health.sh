@@ -991,7 +991,19 @@ ci_section() {
 standing_lines() {
     # FLOW — everything moving between the operator and the harness, in one place.
     local unans_col="$C_OK"; [ "${SP_UNANSWERED:-0}" != 0 ] && unans_col="${C_BAD}${C_B}"
-    local fail_col="$C_OK";  [ "${SP_SENT_FAILED:-0}" != 0 ] && fail_col="${C_BAD}${C_B}"
+    # ALARM DIMS WHEN OLD. The 24h FAILED count is a monument to every refusal in the window,
+    # not a description of what is happening now. A count that is non-zero but whose most
+    # recent FAILED line is older than 60m (30× the 2m sending interval) is resolved — the
+    # condition stopped hours ago and the counter will decay to 0 on its own. Bright red for
+    # an active or recent condition; dim once it is clearly past.
+    local fail_col="$C_OK"
+    if [ "${SP_SENT_FAILED:-0}" != 0 ]; then
+        if [ "${SP_SENT_FAILED_AGE_M:-?}" != "?" ] && [ "${SP_SENT_FAILED_AGE_M:-0}" -ge 60 ] 2>/dev/null; then
+            fail_col="$C_DIM"
+        else
+            fail_col="${C_BAD}${C_B}"
+        fi
+    fi
     # TWO LINES. As one it ran to ~140 characters against a pane about 100 wide and
     # truncated mid-word — which is how a dashboard ends up showing a stray "f".
     printf ' %sATTN%s   %swaiting on you%s %s%s%s   %sthreads awaiting my reply%s %s%s%s\n' \
@@ -1029,8 +1041,16 @@ standing_lines() {
         "$C_DIM" "$C_RST" "$C_B" "${SP_UNSENT:-?}" "$C_RST" \
         "$( [ "${SP_BRANCH_DONE:-0}" = 0 ] && printf '%s' "$C_DIM" || printf '%s' "$C_WARN")" "${SP_BRANCH_DONE:-?}" "$C_RST" \
         "$age_col" "${SP_UNSENT_OLDEST_H:-?}" "$C_RST" "$unadopt_seg"
-    printf '        %s%s fiends%s %s— unsent work that came back%s\n' \
-        "$fail_col" "${SP_SENT_FAILED:-?}" "$C_RST" "$C_DIM" "$C_RST"
+    local fiend_age_sfx=""
+    if [ "${SP_SENT_FAILED:-0}" != 0 ]; then
+        if [ "${SP_SENT_FAILED_AGE_M:-?}" = "?" ]; then
+            fiend_age_sfx=" ${C_DIM}(last: ?)${C_RST}"
+        else
+            fiend_age_sfx=" ${C_DIM}(last: ${SP_SENT_FAILED_AGE_M}m ago)${C_RST}"
+        fi
+    fi
+    printf '        %s%s fiends%s %s— unsent work that came back%s%s\n' \
+        "$fail_col" "${SP_SENT_FAILED:-?}" "$C_RST" "$C_DIM" "$C_RST" "$fiend_age_sfx"
 
     # 24H — throughput, and whether closing meant landing.
     printf ' %sBEADS%s  %s24h%s  closed %s · %sopened%s %s\n' \
