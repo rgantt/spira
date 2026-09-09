@@ -1138,10 +1138,23 @@ if [ -f "$WORK/$SPIRA_TESTDB_LIB" ]; then
           read -r TESTDB_STARTED_SERVICE; read -r TESTDB_MODE; } <<< "$fixture_out"
         export TESTDB_SHARED=1 TESTDB_NAME TESTDB_DIR TESTDB_BASELINE TESTDB_BIN \
                TESTDB_STARTED_SERVICE TESTDB_MODE
-        # The PATH shim lets bare `bd` resolve to the embedded binary in every suite that
-        # inherits this fixture. The subshell that built the fixture added it to its own PATH
-        # but that did not propagate; add it here so child processes see it.
-        [ -n "$TESTDB_BIN" ] && export PATH="$TESTDB_BIN:$PATH"
+        # PATH IS DELIBERATELY NOT TOUCHED, and this is the fix for the v53/v61 scar.
+        # Prepending TESTDB_BIN here put a tempdir symlink `bd -> bd-embedded` (a tagged
+        # release that knows 53 migrations) first on the PATH of the aeon's OWN shell, for
+        # the aeon's whole life. Bare `bd` against the production store then printed
+        # "schema version mismatch: database is at v61, binary knows up to v53" — and
+        # printed it while EXITING 0. Five aeons read that as a broken database and each
+        # escalated a destructive rollback of a store that was healthy.
+        #
+        # THE LINE WAS ALSO REDUNDANT. testdb_up() re-prepends TESTDB_BIN to PATH and
+        # SPIRA_PATH itself whenever a suite enters a shared fixture (testdb.sh, the
+        # TESTDB_SHARED branch), so every suite that needs the embedded binary still gets
+        # it. suites.sh has always done it this way: it builds the fixture, exports the
+        # TESTDB_* vars, and then explicitly restores the production PATH — "the fixture is
+        # for suite subprocesses, not us." This now matches.
+        #
+        # Address the production store with $SPIRA_BD, never with bare `bd`
+        # (law-address-the-store-with-spira-bd).
         FIXTURE_LIB="$WORK/$SPIRA_TESTDB_LIB"
         log "$FAYTH: $BEAD_ID shares one test fixture $TESTDB_NAME (${TESTDB_MODE:-embedded}), built in ${fixture_ms}ms"
     else
