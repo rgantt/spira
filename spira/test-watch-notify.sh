@@ -391,12 +391,17 @@ echo
 echo "the unit is fenced, configured, and enabled"
 mkdir -p "$TMP/render-home"
 RCONF="$TMP/render.conf"
-printf 'SPIRA_RUN = %s\nSPIRA_COCKPIT = %s\nSPIRA_WATCHERS = %s\n' "$RUN" "$COCKPIT" "$MAN" > "$RCONF"
+# SPIRA_PROD pinned to empty: render() falls back to SPIRA_HOME ($CLONE/spira), so the
+# ExecStart path comes from the clone and not a derived $WORKSPACES/clone-prod path that
+# does not exist in the test tree (sp-82jo added the executability fence; sp-kteb).
+printf 'SPIRA_RUN = %s\nSPIRA_COCKPIT = %s\nSPIRA_WATCHERS = %s\nSPIRA_PROD = \n' \
+    "$RUN" "$COCKPIT" "$MAN" > "$RCONF"
 rendered="$(env -i HOME="$TMP/render-home" PATH="$PATH" SPIRA_CONF="$RCONF" \
     bash "$CLONE/systemd/install.sh" --render 2>/dev/null)"
 is "the renderer produced units" "yes" "$([ -n "$rendered" ] && echo yes || echo no)"
-svc="$(awk '/^===== spira-watch-notify.service =====$/{f=1;next} /^===== /{f=0} f' <<< "$rendered")"
-tmr="$(awk '/^===== spira-watch-notify.timer =====$/{f=1;next} /^===== /{f=0} f' <<< "$rendered")"
+# sp-fo38 added per-instance unit suffixes; extract the prod-instance name (default).
+svc="$(awk '/^===== spira-watch-notify-prod.service =====$/{f=1;next} /^===== /{f=0} f' <<< "$rendered")"
+tmr="$(awk '/^===== spira-watch-notify-prod.timer =====$/{f=1;next} /^===== /{f=0} f' <<< "$rendered")"
 is "the service is rendered"  "yes" "$([ -n "$svc" ] && echo yes || echo no)"
 is "and so is the timer"      "yes" "$([ -n "$tmr" ] && echo yes || echo no)"
 has "it runs the dispatcher's notify verb"      "$svc" "$CLONE/spira/watchd.sh notify"
@@ -430,9 +435,30 @@ is "and a pass happens several times inside it" "yes" \
 # THE TIMER IS ENABLED. A unit that is installed and never started is a mechanism that exists
 # only in the repository — which is the shape of every defect this whole design is about.
 STUB="$TMP/stub"; mkdir -p "$STUB"
+# The stub logs every non-query systemctl call so the assertions below can grep it.
+# is-active returns "inactive" until a unit is enabled (enable --now) or restarted, then
+# "active" — this is the correct sequence for a fresh install: units do not exist before
+# install.sh runs, so the ENABLE loop uses "enable --now" rather than "enable"+"restart".
+# After that the sp-syub end-state check calls is-active for every ENABLE unit and expects
+# "active", which the stateful stub provides once the unit has been enabled (sp-kteb).
+# list-* calls (list-units, list-timers, list-unit-files) are informational and not asserted.
 cat > "$STUB/systemctl" <<EOF
 #!/usr/bin/env bash
-printf '%s\n' "\$*" >> "$TMP/systemctl.log"
+mkdir -p "$TMP/active"
+case "\$*" in
+    *"is-active"*)
+        _u="\${*##* }"
+        [ -f "$TMP/active/\$_u" ] && printf 'active\n' || printf 'inactive\n'
+        ;;
+    *"list-"*) : ;;
+    *)
+        printf '%s\n' "\$*" >> "$TMP/systemctl.log"
+        case "\$*" in
+            *"enable --now "*) touch "$TMP/active/\${*##*enable --now }" ;;
+            *"restart "*)      touch "$TMP/active/\${*##*restart }" ;;
+        esac
+        ;;
+esac
 exit 0
 EOF
 printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/loginctl"
@@ -441,17 +467,25 @@ IHOME="$TMP/ihome"; mkdir -p "$IHOME"
 : > "$TMP/systemctl.log"
 # Reached through SPIRA_PATH and not PATH: conf.sh REPLACES PATH outright, so a directory
 # handed in through the environment is gone before install.sh runs anything.
-printf 'SPIRA_RUN = %s\nSPIRA_COCKPIT = %s\nSPIRA_WATCHERS = %s\nSPIRA_PATH = %s\n' \
-    "$RUN" "$COCKPIT" "$MAN" "$STUB" > "$TMP/install.conf"
+# SPIRA_PROD points to the real harness so the sp-82jo executability fence finds real scripts.
+# SPIRA_INSTALL_FORCE=1 bypasses the sp-mlcd landref check; the clone is not a git repo.
+# SPIRA_COCKPIT points to the real cockpit dir so cockpit-ensure.service's ExecStart target
+# (layout.sh) resolves to an executable file; the synthetic $COCKPIT dir has none (sp-kteb).
+printf 'SPIRA_RUN = %s\nSPIRA_COCKPIT = %s\nSPIRA_WATCHERS = %s\nSPIRA_PATH = %s\nSPIRA_PROD = %s\n' \
+    "$RUN" "$ROOT/cockpit" "$MAN" "$STUB" "$HERE" > "$TMP/install.conf"
+# SPIRA_HOME is set so @SPIRA_HOME@ units (auron, watch-refresh) point at real scripts;
+# conf.sh otherwise derives it from the clone, where only conf.sh and watchd.sh exist.
 env -i HOME="$IHOME" PATH="$STUB:$PATH" SPIRA_CONF="$TMP/install.conf" \
+    SPIRA_INSTALL_FORCE=1 SPIRA_HOME="$HERE" \
     bash "$CLONE/systemd/install.sh" > "$TMP/install.out" 2>&1
 log="$(cat "$TMP/systemctl.log")"
 has "the install ran"                           "$log" "daemon-reload"
-has "and enabled the notify timer"              "$log" "enable --now spira-watch-notify.timer"
+# sp-fo38 added per-instance unit suffixes; the default instance is "prod".
+has "and enabled the notify timer"              "$log" "enable --now spira-watch-notify-prod.timer"
 # The .service behind a .timer is started BY the timer; enabling it as well would also run it
 # once at boot, outside the schedule.
-hasnt "but not the service behind it"           "$log" "enable --now spira-watch-notify.service"
-has "and the unit files are installed"          "$(ls "$IHOME/.config/systemd/user")" "spira-watch-notify.timer"
+hasnt "but not the service behind it"           "$log" "enable --now spira-watch-notify-prod.service"
+has "and the unit files are installed"          "$(ls "$IHOME/.config/systemd/user")" "spira-watch-notify-prod.timer"
 
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
