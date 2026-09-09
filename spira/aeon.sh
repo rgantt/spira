@@ -887,6 +887,58 @@ specific problem — do not redo work that is already committed."
 esac
 unset _n_prior _prior_log
 
+# ---- pre-session dirty-files guard -----------------------------------------------
+# AN AEON THAT RUNS `git add -A` IN A SHARED CHECKOUT STAGES WHATEVER HAPPENS TO BE
+# DIRTY — archivist drafts, operator edits, any uncommitted change from any other process.
+# The guard below snapshots what is dirty NOW (after the harness has finished its own setup
+# but before the aeon's session starts) and installs a per-worktree pre-commit hook that
+# refuses to land any of those paths in a commit. Polite refusal: the hook names the
+# offending files so the aeon can exclude them with `git add -- <specific-path>`.
+#
+# PER-WORKTREE HOOKS require extensions.worktreeConfig in the parent repo (so git reads
+# each worktree's own config file) and `git config --worktree core.hooksPath` to write to
+# that worktree-specific config. Enabling worktreeConfig is idempotent and additive:
+# worktrees without a config.worktree file behave exactly as before.
+_wt_gitdir="$(git -C "$WORK" rev-parse --path-format=absolute --git-dir 2>/dev/null || true)"
+if [ -n "$_wt_gitdir" ]; then
+    git -C "$REPO" config extensions.worktreeConfig true 2>/dev/null || true
+
+    # Tracked modifications and new untracked files present before the session starts.
+    # Sorted so grep -xF can scan the list without requiring comm(1)'s sorted inputs.
+    _dirty_snapshot="$_wt_gitdir/spira-dirty-before"
+    { git -C "$WORK" diff --name-only HEAD 2>/dev/null
+      git -C "$WORK" ls-files --others --exclude-standard 2>/dev/null
+    } | sort -u >"$_dirty_snapshot"
+
+    # Hook lives in a directory the worktree owns: the worktree-specific git dir.
+    _dirty_hook_dir="$_wt_gitdir/hooks"
+    mkdir -p "$_dirty_hook_dir"
+    cp "$SPIRA_HOME/pre-commit-guard.sh" "$_dirty_hook_dir/pre-commit" 2>/dev/null || true
+    chmod +x "$_dirty_hook_dir/pre-commit" 2>/dev/null || true
+    git -C "$WORK" config --worktree core.hooksPath "$_dirty_hook_dir" 2>/dev/null || true
+fi
+
+DIRTY_BRIEF=""
+if [ -n "${_wt_gitdir:-}" ] && [ -s "${_wt_gitdir}/spira-dirty-before" ]; then
+    _dirty_list="$(sed 's/^/  /' "$_wt_gitdir/spira-dirty-before")"
+    DIRTY_BRIEF="## Pre-existing dirty files — do not stage these
+
+**These files were already modified or untracked in your worktree when this session started.** They belong to another process (an archivist, an operator, a prior session's scratch work) and must not appear in your commit.
+
+\`\`\`
+$_dirty_list
+\`\`\`
+
+**Never use \`git add -A\` or \`git add .\`** — they sweep everything and will pick these up. Stage only the paths you yourself wrote:
+
+    git add -- <specific-path>
+
+The pre-commit hook will refuse any commit that stages a pre-session path and name the offenders. Override (only when genuinely necessary):
+
+    SPIRA_ALLOW_DIRTY_STAGE=1 git commit ..."
+fi
+unset _wt_gitdir _dirty_snapshot _dirty_hook_dir _dirty_list
+
 # ---- one test fixture for the whole session -------------------------------------------
 # WAITING ON TESTS WAS 43% OF A SESSION'S WALL CLOCK and 73% of its tool time, and the
 # suites here are not CPU-bound, they are database-bound: `bd init` is nearly all of the
@@ -1181,6 +1233,7 @@ $STATUTES
 ---
 
 $PROMPT
+$DIRTY_BRIEF
 $RESUME_BRIEF
 $CLOSE_BRIEF
 $REBASE_BRIEF"
