@@ -59,6 +59,10 @@ _bdq_check_repo_label() {   # _bdq_check_repo_label <create-args> -> 0 or refuse
     [ -z "$labels" ] && return 0
     repo_val="$(printf '%s\n' "$labels" | tr ',' '\n' | grep '^repo:' | head -1 | cut -c6-)"
     [ -z "$repo_val" ] && return 0
+    # The home repo is always a valid target. repo_names reads the repo-map file,
+    # which lists satellite repos only — the home repo is handled by spira_home_repo()
+    # and is never in that file.
+    [ "$repo_val" = "$(spira_home_repo)" ] && return 0
     valid="$(repo_names 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//')"
     if ! repo_names 2>/dev/null | grep -qxF "$repo_val"; then
         printf 'spira: repo:%s is not in the repo map; valid keys: %s\n' \
