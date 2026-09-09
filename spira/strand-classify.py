@@ -87,11 +87,25 @@ for b in beads:
 # escalation label is the third state the statute forbids, and it is invisible to every other
 # check because a deferred bead is neither ready, nor in progress, nor closed. 130 of them
 # once sat parked across three rigs.
+#
+# EXEMPT: a deferred bead with at least one "blocks" dep on an open or in_progress bead is
+# legitimately waiting — the DAG states the reason. Escalating it would assert "nothing in
+# the plan below it can move" when a live aeon IS moving the thing that will free it (sp-hg8q).
+# Only escalate when all known blockers are closed or the bead has no blocking deps at all.
 for b in beads:
-    if b.get("status") == "deferred" and ASK not in lab(b):
-        row("deferred-unescalated", b["id"], "escalate",
-            "deferred but not labelled %s: %s" % (ASK, b.get("title") or ""),
-            "bd update %s --status open, or label it %s with the decision" % (b["id"], ASK))
+    if b.get("status") != "deferred" or ASK in lab(b):
+        continue
+    live_blockers = [
+        d.get("depends_on_id") for d in (b.get("dependencies") or [])
+        if d.get("type") == "blocks"
+        and d.get("depends_on_id") in by_id
+        and OPEN(by_id[d["depends_on_id"]])
+    ]
+    if live_blockers:
+        continue
+    row("deferred-unescalated", b["id"], "escalate",
+        "deferred but not labelled %s: %s" % (ASK, b.get("title") or ""),
+        "bd update %s --status open, or label it %s with the decision" % (b["id"], ASK))
 
 # -- starved: the condition this check is named for. Claimable work exists and nothing alive
 # is working it. Aeons at their concurrency cap is NOT starvation — work is moving.
