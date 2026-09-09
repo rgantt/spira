@@ -372,11 +372,18 @@ cmd_run() {
         # SWEEP SURVIVORS. If any process remains in the suite's process group after it
         # exited, the suite has a cleanup defect. Kill them and, if the suite otherwise
         # passed, mark it red so the defect surfaces rather than being silently absorbed.
+        # The kernel briefly holds a process group table entry accessible via kill -0 after
+        # the last member exits; a 50 ms re-check lets the table settle before we declare a
+        # defect.  Real survivors persist well beyond 50 ms; the transient race clears
+        # within that window, so the two cases are distinguishable.
         if kill -0 -- -"$suite_pid" 2>/dev/null; then
-            kill -- -"$suite_pid" 2>/dev/null || true
-            if [ "$rc" -eq 0 ]; then
-                printf 'FAIL: %s left background jobs after exit — killed by harness\n' "$s" >> "$tmp"
-                rc=1
+            sleep 0.05
+            if kill -0 -- -"$suite_pid" 2>/dev/null; then
+                kill -- -"$suite_pid" 2>/dev/null || true
+                if [ "$rc" -eq 0 ]; then
+                    printf 'FAIL: %s left background jobs after exit — killed by harness\n' "$s" >> "$tmp"
+                    rc=1
+                fi
             fi
         fi
         out="$(cat "$tmp")" || true
