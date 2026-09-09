@@ -800,7 +800,18 @@ trap cleanup EXIT INT TERM
 STALL_BEATS="${FAYTH_STALL_BEATS:-10}"   # x heartbeat interval; 10 x 120s = 20 min idle
 (
     idle=0; grants=0
-    while sleep "${FAYTH_HEARTBEAT_SECONDS:-120}"; do
+    # SLEEP IS BACKGROUNDED AND WAITED FOR so that SIGTERM (sent by cleanup via `kill $HB_PID`)
+    # can interrupt the wait and allow the trap to kill the sleep child. A `while sleep X; do`
+    # pattern is NOT interruptible: bash defers traps while waiting for a foreground command,
+    # so `kill $HB_PID` kills the subshell but leaves `sleep X` running as an orphan in the
+    # suite's process group. `wait BUILTIN` IS interruptible — a signal with a set trap causes
+    # wait to return immediately with exit > 128, then the trap fires. Without this, suites.sh
+    # reported the suite red for leaving background jobs even after all tests passed.
+    _hb_s=""
+    trap 'kill "$_hb_s" 2>/dev/null; exit 0' TERM INT
+    while true; do
+        sleep "${FAYTH_HEARTBEAT_SECONDS:-120}" & _hb_s=$!
+        wait "$_hb_s" 2>/dev/null || break
         read -r model_idle model_state < <(heartbeat_model_idle "$LOGF")
 
         case "$model_state" in
