@@ -269,6 +269,17 @@ sys.exit(0 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
         if [ "${_ahead:-0}" -gt 0 ] 2>/dev/null; then
             bdq label add "$id" content-landed >/dev/null 2>&1 || true
         fi
+        # ASSERT: every branch content_landed confirms as done should have been seen by
+        # landing.sh first. landing.sh writes $SPIRA_RUN/landstate/$id on every code path
+        # that processes a branch — gate, rebase conflict, or the actual push — so a missing
+        # record means the branch slipped past landing.sh's selection entirely. That is the
+        # shape of sp-qj8n: four close/reopen cycles, no landstate entry on any of them,
+        # because landing.sh's scan never included the branch. Logging here flags the anomaly
+        # on the FIRST reap rather than after the reopen cycles that diagnosed the original.
+        # The send proceeds regardless — cleanup must not stall on a diagnostic.
+        if [ ! -f "${SPIRA_RUN}/landstate/$id" ]; then
+            log "sending: ASSERT $id — content landed but no landstate/$id; landing.sh may not have selected this branch (sp-qj8n shape)"
+        fi
         send_branch "$id" "$br"
     done
 

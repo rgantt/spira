@@ -242,22 +242,28 @@ land_mark() {            # land_mark <id> <state> <tip> [reason]
     printf '%s %s %s %s' "$2" "${3:-none}" "$(date +%s)" "${4:-}" > "$LANDSTATE/$1.$$" 2>/dev/null \
         && mv -f "$LANDSTATE/$1.$$" "$LANDSTATE/$1" 2>/dev/null
 }
-# NO GUARD IS BUILT ON THIS RECORD YET, DELIBERATELY. The obvious one — "do not reopen a
-# commit this pass already landed" — was written, and then proved UNREACHABLE: a landed tip
-# that has not moved is an ancestor of the base, so `content_landed` returns true and the pass
-# never reaches the rebase or the gate at all; and a tip that HAS moved is new work, which the
+# THE RECORD IS USED IN TWO WAYS. The first guard written — "do not reopen a commit this
+# pass already landed" — was written, then proved UNREACHABLE: a landed tip that has not
+# moved is an ancestor of the base, so `content_landed` returns true and the pass never
+# reaches the rebase or the gate at all; and a tip that HAS moved is new work, which the
 # record correctly declines to vouch for. There is no state in between.
 #
-# So sp-q9i — a bead reopened as "does not rebase" nine minutes after its work was merged and
-# its branch reaped — is NOT fixed here, and shipping that guard would have looked exactly
-# like fixing it. Something recreated that ref between the reap and the next pass, and until
-# what did is established from the logs rather than guessed at, a guard against it is a guess
-# with a comment attached. sp-q9i keeps that question.
+# So sp-q9i is NOT fixed here, and shipping that guard would have looked exactly like fixing
+# it. Something recreated that ref between the reap and the next pass, and until what did is
+# established from the logs rather than guessed at, a guard against it is a guess with a
+# comment attached. sp-q9i keeps that question.
 #
-# What the record IS for, today, is the thing that has no witness at all: the stretch between
-# DONE and LANDED is invisible, and every fact needed to show it is already computed and then
-# dropped (sp-idml). One line per bead, written where the transition happens, costs nothing
-# and is the input any answer to that will need.
+# THE SECOND USE is the assertion in sending.sh (sp-bjzj). Before it reaps a branch,
+# sending.sh checks that landing.sh left a landstate entry for it. An absent entry means
+# landing.sh never selected this branch — the selection bug that caused sp-qj8n to close
+# four times without the work ever reaching the base. Every code path here writes a record:
+# GATED / REBASED / RED / CONTENT / LANDED, so any branch that slips past the loop is
+# visible on the first reap rather than after four reopen cycles.
+#
+# What the record IS for originally: the stretch between DONE and LANDED is invisible, and
+# every fact needed to show it is already computed and then dropped (sp-idml). One line per
+# bead, written where the transition happens, costs nothing and is the input any analysis
+# of that stretch will need.
 
 # =======================================================================================
 # A BASE THAT FAILS ITS OWN GATE IS THE REPOSITORY'S BUG, AND IT NEEDS AN OWNER
@@ -844,6 +850,13 @@ for i in d:
         # rewrite of the commits.
         if content_landed "$repo" "$br" "$base"; then
             log "$base already contains every change on $br — nothing to land"
+            # RECORD THIS PATH so sending.sh's landstate assertion does not fire for a
+            # branch landing.sh legitimately skipped. Without this, every content-reaped
+            # branch would look identical to the sp-qj8n shape (no landstate entry at all)
+            # and the assertion would fire for ordinary squash landings and review-only
+            # beads that landing.sh correctly determined needed no push.
+            tip="$(git -C "$repo" rev-parse "$br" 2>/dev/null)"
+            land_mark "$id" CONTENT "${tip:-none}"
             continue
         fi
 
