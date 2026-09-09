@@ -161,6 +161,32 @@ pane() {                 # pane <rows> [cols] -> the frame, ANSI stripped
 rows_of() { printf '%s\n' "$1" | awk -v l=" $2" 'index($0,l)==1{n=1;next} n && /^ [A-Z]/{exit} n{n++} END{print n+0}'; }
 
 echo
+echo "the SPIRA_SYSTEMCTL mock — halt_banner positive control"
+
+# THE MOCK IS A PRECONDITION FOR EVERY BUDGET ASSERTION IN THIS SUITE. header_line()
+# calls halt_banner, which queries SPIRA_SYSTEMCTL and adds three rows when the sentinel
+# timer is not running. On a box where the real systemctl returns "active" the assertions
+# pass without the mock — which means mock removal is silent on such boxes. This check
+# uses an inactive stub to prove halt_banner CAN fire, then the active stub to prove it
+# is suppressed: both sides, so a broken or removed mock is caught regardless of box state
+# (law-absence-needs-a-positive-control).
+printf '#!/bin/sh\necho inactive\n' > "$PD/bin/mock-inactive"
+chmod +x "$PD/bin/mock-inactive"
+printf 'SP_NEXT_N=0\nSP_AWAITING_N=0\n' | snap
+r_active=$(pane 45 | awk '/ NOW /{exit} {n++} END{print n+0}')
+r_stopped=$(env -i PATH="$PATH" HOME="$PD/home" TERM=dumb LC_ALL=C.UTF-8 \
+        SPIRA_CONF="$PD/no.conf" SPIRA_REPO="$PD/repo" SPIRA_RUN="$PD/repo/.runtime/spira" \
+        SPIRA_SYSTEMCTL="$PD/bin/mock-inactive" \
+        bash "$PANE" once 45 0 2>/dev/null \
+      | sed 's/\x1b\[[?0-9;]*[a-zA-Z]//g' \
+      | awk '/ NOW /{exit} {n++} END{print n+0}')
+if [ "$r_stopped" -gt "$r_active" ]; then
+    pass=$((pass+1)); printf '  ok    halt_banner fires: %s rows before NOW when stopped, %s when active\n' "$r_stopped" "$r_active"
+else
+    fail=$((fail+1)); printf '  FAIL  halt_banner did not fire: stopped %s rows, active %s rows before NOW\n' "$r_stopped" "$r_active"
+fi
+
+echo
 echo "the NOW rows say how healthy each aeon is"
 
 # COLOUR IS THE ASSERTION HERE, so this renders WITHOUT stripping ANSI. The quiet figure is
