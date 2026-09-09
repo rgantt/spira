@@ -396,7 +396,7 @@ for i in (d if isinstance(d, list) else [d]):
 # reading the wrong repository's graph gives the wrong answer confidently in both directions:
 # a bead for repository A reads as never landed in repository B, so this check would reopen finished
 # work on every pass. One query, both facts.
-while IFS=$'\t' read -r id r_name superseded dropped nopayload sentcontent; do
+while IFS=$'\t' read -r id r_name superseded dropped sentcontent delivers started_at; do
     [ -n "$id" ] || continue
     # Only beads an aeon worked — anything closed by hand has its own evidence.
     [ -f "$SPIRA_RUN/$id.log" ] || continue
@@ -418,13 +418,6 @@ while IFS=$'\t' read -r id r_name superseded dropped nopayload sentcontent; do
     # at 00:18:52, poison label intact, so no aeon would claim it and nothing would ever
     # land it. A permanent zombie reached by a check that was right about every other bead.
     [ "$dropped" = 1 ] && continue
-    # A BEAD MARKED no-payload HAS NO COMMIT AND NEVER WILL. It is a bead whose deliverable
-    # is the bead itself — a report, a test result, a diagnosis — written into the bead's
-    # close reason rather than into the repository. The landing pass rebases before merging,
-    # and a rebase drops empty commits, so nothing on the base will ever name it. The aeon
-    # sets this label when it closes such a bead; CHECK 5 honours it here so the signal is
-    # not simply the branch that the reaper correctly removes.
-    [ "${nopayload:-0}" = 1 ] && continue
     # A BRANCH THE SENDING REAPED BY CONTENT LEAVES NO COMMIT NAMING THE BEAD. content_landed
     # deletes a branch when merging it would produce exactly the base tree — the work is on the
     # base, but under some other commit, so no merge commit is ever made and the subject search
@@ -439,6 +432,86 @@ while IFS=$'\t' read -r id r_name superseded dropped nopayload sentcontent; do
     # sp-637b was poisoned after 3 attempts and reopened as attempt 4 four minutes later — so
     # the counter that exists to bound the loop was being outrun by it.
     [ "${sentcontent:-0}" = 1 ] && continue
+    # A BEAD CARRYING delivers:TYPE DECLARED WHAT IT PRODUCED INSTEAD OF A COMMIT. Verify
+    # each declared output is actually present; if all verify, accept the close. If any
+    # evidence is absent, reopen — a delivers: declaration with nothing behind it is a bead
+    # closed on nothing, which is precisely what this check exists to catch.
+    #
+    # This supersedes no-payload (sp-ail7). no-payload exempted unconditionally, so a sweep
+    # that failed silently after one command was indistinguishable from one that filed twenty
+    # beads. delivers:TYPE is the typed-and-verified form: the aeon declares what it produced
+    # and this check confirms it is there.
+    #
+    # RECOGNISED TYPES:
+    #   delivers:beads           — at least one child bead names $id as its parent
+    #   delivers:note:/abs/path  — the file at that path exists and was written in the bead's
+    #   delivers:report:/abs/path  window (mtime after started_at)
+    #
+    # Unknown types are treated as unverifiable and cause a reopen. A label that cannot be
+    # checked is not evidence; treating unknown types as passing would recreate the no-payload
+    # hole under a longer name.
+    if [ -n "${delivers:-}" ]; then
+        _delivers_ok=1
+        _delivers_fail=""
+        _IFS_SAVE="$IFS"; IFS=';'
+        # shellcheck disable=SC2206
+        _deliver_arr=( ${delivers} )
+        IFS="$_IFS_SAVE"
+        for _deliver in "${_deliver_arr[@]}"; do
+            [ -n "$_deliver" ] || continue
+            _dtype="${_deliver%%:*}"
+            _dval="${_deliver#*:}"   # path for note/report; same as _dtype for beads
+            case "$_dtype" in
+                beads)
+                    # Child bead count via a per-bead query. Only reached for beads that
+                    # declared this type, so the extra call is bounded and justified.
+                    _cnt="$(bdjson children "$id" 2>/dev/null | python3 -c '
+import sys,json
+try: d=json.load(sys.stdin)
+except Exception: print(0); sys.exit()
+print(len([x for x in (d if isinstance(d,list) else [d]) if x.get("id")]))' 2>/dev/null)" || _cnt=0
+                    if [ "${_cnt:-0}" -le 0 ] 2>/dev/null; then
+                        _delivers_ok=0
+                        _delivers_fail="delivers:beads declared but no child beads name $id as source"
+                    fi
+                    ;;
+                note|report)
+                    # Path must be distinct from the type name (i.e. a colon-separated path
+                    # must follow), the file must exist, and its mtime must be after the
+                    # bead's started_at — so that a file written before this session does not
+                    # satisfy a claim the aeon is making about work it did in this session.
+                    if [ "$_dval" = "$_dtype" ]; then
+                        _delivers_ok=0
+                        _delivers_fail="delivers:$_dtype has no file path — use delivers:$_dtype:/absolute/path"
+                    elif [ ! -f "$_dval" ]; then
+                        _delivers_ok=0
+                        _delivers_fail="delivers:$_dtype: $_dval does not exist"
+                    elif [ -n "${started_at:-}" ]; then
+                        _se="$(date -d "$started_at" +%s 2>/dev/null)" || _se=0
+                        _mt="$(stat -c %Y "$_dval" 2>/dev/null)" || _mt=0
+                        if [ "${_mt:-0}" -le "${_se:-0}" ] 2>/dev/null; then
+                            _delivers_ok=0
+                            _delivers_fail="delivers:$_dtype: $_dval exists but was not written in this bead's window (mtime $(date -d "@${_mt:-0}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown) <= started_at $started_at)"
+                        fi
+                    fi
+                    ;;
+                *)
+                    _delivers_ok=0
+                    _delivers_fail="delivers:$_dtype is not a recognised type (beads, note, report)"
+                    ;;
+            esac
+            [ "$_delivers_ok" = 1 ] || break
+        done
+        if [ "$_delivers_ok" = 1 ]; then
+            log "CHECK5 $id: delivers ($delivers) verified — not reopened"
+            continue
+        else
+            n="$(bump_attempt "$id" "delivers-unverified")"
+            bead_reopen "$id" "Reopened by sentinel: ${_delivers_fail}. Attempt $n charged. Set delivers:TYPE labels that match the evidence actually produced and present."
+            progress "reopened $id — delivers not verified: $_delivers_fail (attempt $n)"
+            continue
+        fi
+    fi
     r_path="$(repo_root "${r_name:-}")" || {
         log "CHECK5 $id: repo:$r_name is not in repo-map — cannot say whether it landed"
         continue; }
@@ -510,15 +583,19 @@ for i in (d if isinstance(d, list) else [d]):
     # Fourth column: dropped by the operator, carried as a label because "dropped" is not a
     # relation between beads the way supersession is — there is no second bead to point at.
     drop = 1 if "spira-dropped" in (i.get("labels") or []) else 0
-    # Fifth column: no-payload — bead whose deliverable is the bead itself (a report, a
-    # diagnosis, a test result). The landing pass rebases and drops empty commits, so nothing
-    # on the base will ever name it. The aeon sets this label on close; CHECK 5 honours it.
-    nopayload = 1 if "no-payload" in (i.get("labels") or []) else 0
-    # Sixth column: the Sending reaped this branch by content, or the bead is poisoned. Both
+    # Fifth column: the Sending reaped this branch by content, or the bead is poisoned. Both
     # mean no commit will ever name it, so reopening only burns another aeon on finished work.
     lab = i.get("labels") or []
     sentc = 1 if ("content-landed" in lab or "spira-poison" in lab) else 0
-    print("%s\t%s\t%s\t%s\t%s\t%s" % (i["id"], repo, sup, drop, nopayload, sentc))' "$home_repo" 2>/dev/null
+    # Sixth column: delivers:TYPE labels the aeon set on close — semicolon-separated list of
+    # the values after "delivers:", e.g. "beads" or "note:/path/to/file". Empty if none. The
+    # loop verifies each declared output is present; an empty column means this bead must have
+    # a commit on the base (the normal path). This supersedes no-payload (sp-ail7).
+    delivers = ";".join(l[len("delivers:"):] for l in lab if l.startswith("delivers:"))
+    # Seventh column: started_at — the timestamp of the last claim, used by note/report checks
+    # to confirm the file was written in the bead window, not before the session began.
+    started = i.get("started_at") or ""
+    print("%s\t%s\t%s\t%s\t%s\t%s\t%s" % (i["id"], repo, sup, drop, sentc, delivers, started))' "$home_repo" 2>/dev/null
     done <<< "$PARTITIONS" |
     # Sorted on the REPOSITORY column first, because the loop above caches one `git log`
     # walk per repository and re-walks whenever the repository changes between rows; `-u`

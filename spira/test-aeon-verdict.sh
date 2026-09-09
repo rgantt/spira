@@ -75,7 +75,7 @@ printf 'work {{BEAD_ID}} in {{REPO}} on {{BRANCH}}\n{{PARK}}\n' > "$SPIRA_HOME/c
 BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_CLAUDE="$BIN/claude" TMP
 grep -q 'SPIRA_CLAUDE' "$HERE/aeon.sh" \
     || { echo "test-aeon-verdict: aeon.sh has no SPIRA_CLAUDE injection point — refusing to run the real model" >&2; exit 1; }
-shim() {   # shim <commit:0|1> <finish: close | supersede:<successor-id>>
+shim() {   # shim <commit:0|1> <finish: close | supersede:<id> | delivers-beads:close | delivers-beads-empty:close>
     printf '%s' "$1" > "$TMP/docommit"
     printf '%s' "$2" > "$TMP/finish"
     cat > "$BIN/claude" <<'SHIM'
@@ -88,8 +88,19 @@ if [ "$(cat "$TMP/docommit")" = 1 ]; then
 fi
 finish="$(cat "$TMP/finish")"
 case "$finish" in
-    close)       bd -C "$SPIRA_DB" close "$id" --reason "done" >/dev/null 2>&1 ;;
-    supersede:*) bd -C "$SPIRA_DB" supersede "$id" --with "${finish#supersede:}" >/dev/null 2>&1 ;;
+    close)                  bd -C "$SPIRA_DB" close "$id" --reason "done" >/dev/null 2>&1 ;;
+    supersede:*)            bd -C "$SPIRA_DB" supersede "$id" --with "${finish#supersede:}" >/dev/null 2>&1 ;;
+    delivers-beads:close)
+        # Labels the bead with delivers:beads, creates a child bead, then closes.
+        bd -C "$SPIRA_DB" label add "$id" "delivers:beads" >/dev/null 2>&1
+        bd -C "$SPIRA_DB" create --title "filed by $id" --type task --parent "$id" >/dev/null 2>&1
+        bd -C "$SPIRA_DB" close "$id" --reason "diagnosis complete; child beads filed" >/dev/null 2>&1
+        ;;
+    delivers-beads-empty:close)
+        # Labels the bead with delivers:beads but files NO child bead, then closes.
+        bd -C "$SPIRA_DB" label add "$id" "delivers:beads" >/dev/null 2>&1
+        bd -C "$SPIRA_DB" close "$id" --reason "diagnosis complete" >/dev/null 2>&1
+        ;;
 esac
 printf '{"type":"result","subtype":"success","is_error":false,"result":"done","num_turns":3}\n'
 exit 0
@@ -98,10 +109,6 @@ SHIM
 }
 seed() {   # seed <id> [status]
     printf '{"id":"%s","title":"t","status":"%s","issue_type":"task","labels":["spira","plan","repo:fixture"],"updated_at":"2026-09-04T00:00:00Z"}\n' \
-        "$1" "${2:-open}" | testdb_seed
-}
-seed_nopayload() {   # seed_nopayload <id> [status]
-    printf '{"id":"%s","title":"t","status":"%s","issue_type":"task","labels":["spira","plan","repo:fixture","no-payload"],"updated_at":"2026-09-04T00:00:00Z"}\n' \
         "$1" "${2:-open}" | testdb_seed
 }
 run_aeon() { rm -rf "$SPIRA_RUN/worktree"; "$SPIRA_HOME/aeon.sh" builder > "$TMP/out" 2>&1; }
@@ -141,22 +148,27 @@ nowant "and no reopen note is written"       "Closed is not landed" "$(notes sp-
 
 # ======================================================================================
 echo
-echo "no-payload with nothing committed — left closed, because its deliverable is not a commit (sp-ail7):"
+echo "delivers:beads with child beads — left closed; the typed-and-verified form (sp-4z3s):"
 # ======================================================================================
-# THE DEFECT THIS REPRODUCES. A bead whose work produces no commit — a QA sweep, a
-# watchtower pass, an analysis — closes correctly and is then reopened by this very check
-# because no commit names it. The bead oscillates closed -> reopened without bound,
-# accumulating attempt labels toward poison, for work that was done correctly every time.
-# The aeon sets no-payload on close; the check must honour it before deciding to reopen.
-#
-# THE OTHER HALF is the existing "closed with NOTHING committed" case above: a bead without
-# no-payload that commits nothing IS reopened. The label exempts; it does not disable.
-testdb_reset; seed_nopayload sp-vd-np; shim 0 close; run_aeon
-is     "the bead stays closed"               closed "$(field sp-vd-np status)"
-want   "the verdict records the exemption"   "nopayload=1" "$(cat "$TMP/out")"
-want   "and says why it declined to act"     "NOT reopened — no-payload" "$(cat "$TMP/out")"
-nowant "so nothing is reopened"              "REOPENED"    "$(cat "$TMP/out")"
-nowant "and no reopen note is written"       "Closed is not landed" "$(notes sp-vd-np)"
+# THE MECHANISM THIS TESTS. A bead that files child beads (a diagnosis that produces
+# action items, an ops sweep that files bug reports) cannot land a commit. delivers:beads
+# is the typed-and-verified replacement for no-payload: the aeon declares what it
+# produced and this check confirms the evidence is present. The two halves of the
+# contract are: children exist → stays closed; no children → reopened.
+testdb_reset; seed sp-vd-db; shim 0 delivers-beads:close; run_aeon
+is     "the bead stays closed"             closed "$(field sp-vd-db status)"
+want   "the verdict records the exemption" "delivers" "$(cat "$TMP/out")"
+want   "and says why it declined to act"   "NOT reopened — delivers" "$(cat "$TMP/out")"
+nowant "so nothing is reopened"            "REOPENED" "$(cat "$TMP/out")"
+nowant "and no reopen note is written"     "Closed is not landed" "$(notes sp-vd-db)"
+
+# ======================================================================================
+echo
+echo "delivers:beads WITHOUT child beads — IS reopened; evidence missing:"
+# ======================================================================================
+testdb_reset; seed sp-vd-dbe; shim 0 delivers-beads-empty:close; run_aeon
+is   "the bead is reopened"               open "$(field sp-vd-dbe status)"
+want "the verdict names the missing evidence" "REOPENED — delivers not verified" "$(cat "$TMP/out")"
 
 # ======================================================================================
 echo
