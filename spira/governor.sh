@@ -47,6 +47,17 @@ HIST="$SPIRA_RUN/governor.tsv"
 # the budget is computed, recorded and logged, and clamps nothing. Flip to `enforce` when
 # the history says what the ceiling should be, which is knowable only once Gas Town is
 # gone and Spira is the load.
+#
+# MEASUREMENT OUTCOME (sp-fhq6, 2026-09-09). After >24h of governor.tsv history since the
+# rewrite (1373 rows, 2026-09-07 to 2026-09-09), the smoothed idle_avg has a near-zero
+# correlation with landings-per-hour (r=0.099) — it primarily reflects gate/build load
+# rather than productive throughput. More importantly: with idle_avg averaging 43.6% and
+# SPIRA_IDLE_FLOOR=25%, SPIRA_IDLE_PER_AEON defaults to 25% (one core), giving headroom=0
+# 83% of the time. In enforce mode that limits effective concurrency to ≤1 aeon at a time
+# and blocks summons for 10+ minutes when all aeons finish and idle_avg hasn't recovered to
+# 50%. Observed reality: idle_avg changes only ~3% between running=0 and running=3 (aeons
+# spend 80%+ of their time waiting on the API, not burning CPU), so per_aeon=25% is 2-3×
+# too conservative. Recalibrate SPIRA_IDLE_PER_AEON to 10-13% before flipping to enforce.
 MODE="${SPIRA_GOVERNOR_MODE:-measure}"
 # Load average is REPORTED and not decided on — see the note below the sample. The two
 # knobs that once named a load ceiling were defined and never read; they are gone rather
