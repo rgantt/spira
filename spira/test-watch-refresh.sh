@@ -482,9 +482,16 @@ EOF
 printf '#!/bin/bash\nexit 0\n' > "$STUB/loginctl"
 chmod +x "$STUB/systemctl" "$STUB/loginctl"
 IHOME="$TMP/ihome"; mkdir -p "$IHOME"
+# A separate PROD root, distinct from CLONE (SPIRA_HOME) and RUN (SPIRA_RUN), so the
+# assertion can verify that ExecStart resolves from SPIRA_PROD, not from a hardcoded path
+# or from SPIRA_HOME. sp-g8ph changed ExecStart from @SPIRA_HOME@ to @SPIRA_PROD@; this
+# is the property that change introduced.
+# install.sh refuses an unexecutable ExecStart target; all scripts must exist in PROD.
+PROD="$TMP/prod-fake"; mkdir -p "$PROD"
+cp "$HERE"/*.sh "$PROD/"
 : > "$TMP/install.log"
 printf 'SPIRA_COCKPIT = %s\nSPIRA_RUN = %s\nSPIRA_WATCHERS = %s\nSPIRA_PATH = %s\nSPIRA_PROD = %s\n' \
-    "$COCKPIT" "$RUN" "$MAN" "$STUB" "$HERE" > "$TMP/install.conf"
+    "$COCKPIT" "$RUN" "$MAN" "$STUB" "$PROD" > "$TMP/install.conf"
 env -i HOME="$IHOME" PATH="$STUB:$PATH" SPIRA_CONF="$TMP/install.conf" \
     SPIRA_INSTALL_FORCE=1 \
     bash "$CLONE/systemd/install.sh" > "$TMP/install.out" 2>&1
@@ -507,14 +514,15 @@ T="$IHOME/.config/systemd/user/spira-watch-refresh-prod.timer"
 has "the timer fires every minute" "$(cat "$T" 2>/dev/null)" "OnUnitActiveSec=1min"
 
 # NO PATH IS HARDCODED. Every absolute path in the rendered units must lie under a value
-# that came from the config above — which pins both to non-defaults, so a literal cannot
-# pass by coincidence.
+# that came from the config above — which pins all three to non-defaults, so a literal cannot
+# pass by coincidence. SPIRA_HOME resolves from $CLONE/spira (conf.sh's own directory),
+# SPIRA_PROD from $PROD, and SPIRA_RUN from $RUN.
 paths="$(sed 's|file://|file:|' "$U" "$T" 2>/dev/null | grep -oE '[=:]/[^ ]+' | sed 's/^[=:]//')"
 is "the path extractor found paths to judge" "yes" "$([ -n "$paths" ] && echo yes || echo no)"
 stray=""
 while IFS= read -r p; do
     [ -n "$p" ] || continue
-    case "$p" in "$CLONE/spira"/*|"$RUN"/*) ;; *) stray="$stray $p" ;; esac
+    case "$p" in "$CLONE/spira"/*|"$RUN"/*|"$PROD"/*) ;; *) stray="$stray $p" ;; esac
 done <<< "$paths"
 is "and every one came from configuration" "" "$stray"
 
