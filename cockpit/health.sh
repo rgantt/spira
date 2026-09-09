@@ -329,6 +329,7 @@ drain_banner() {
     printf '  %slift it:%s world.sh resume\n' "$C_DIM" "$C_RST"
 }
 
+
 header_line() {
     local age="?" stale=""
     [ -n "${SP_AT:-}" ] && age=$(( $(date +%s) - SP_AT ))
