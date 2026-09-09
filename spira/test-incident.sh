@@ -242,6 +242,130 @@ else
     bad "no-repo: positive control" "incident.sh filed nothing (no bead at incident:harness-repo-test)"
 fi
 
+testdb_reset
+mkdir -p "$RUN"
+> "$ILOG"
+
+# ======================================================================================
+echo
+echo "undeclared-repo ask dedupe — multiple incidents for the same ref produce ONE ask:"
+# ======================================================================================
+# THE BLEED THIS SUITE EXERCISES. 21 distinct test files produced 57 open asks by 16:07
+# on 2026-09-09 (sp-k4de0, sp-unpyd). Each test suite pass filed a fresh ask rather than
+# bumping the existing one, because the filing used the incident TITLE (which varies — it
+# embeds the new bead id) rather than the EXTERNAL REF (which is stable across incidents
+# from the same source).
+#
+# The fix: dedupe on the ref, within the intake flock that already serialises drain_one.
+# Two concurrent filers both hold the lock before checking, so the second always finds the
+# ask the first just created.
+#
+# A REAL ASK TOOL IS NEEDED TO TEST THIS. A noop mock never writes to the database, so the
+# dedupe check always sees "no open ask" and always files — which passes a broken check and
+# breaks a working one identically. The mock below creates real decision beads with the
+# correct label in the test fixture, so the second call can find and comment on the first.
+MOCK_ASK="$TMP/mock-ask.sh"
+cat > "$MOCK_ASK" <<'MOCK'
+#!/usr/bin/env bash
+# Minimal ask.sh stand-in: 'add' creates a decision bead in the test database.
+# Anything else is a no-op so SIN escalations do not interfere with the count.
+set -uo pipefail
+DB="${COCKPIT_DB:-${SPIRA_DB:-}}"
+[ -n "$DB" ] || exit 0
+case "${1:-}" in
+    add)
+        title="${2:-}"
+        bd -C "$DB" create "$title" \
+            --type decision \
+            --labels "${SPIRA_ASK_LABEL:-needs-operator},overseer,ask-question" \
+            --silent >/dev/null 2>&1 || true
+        ;;
+    *) exit 0 ;;
+esac
+MOCK
+chmod +x "$MOCK_ASK"
+
+# inc_ask: like inc_env but uses the real-enough mock ask for the dedupe tests.
+inc_ask() {
+    env -i HOME="$HOME" PATH="$PATH" SPIRA_PATH="${SPIRA_PATH:-}" \
+        SPIRA_CONF="$TMP/nonexistent.conf" \
+        SPIRA_DB="$SPIRA_DB" \
+        SPIRA_SPOOL="$SPOOL" \
+        SPIRA_INCIDENT_LOG="$ILOG" \
+        SPIRA_INCIDENT_LOCK="$LOCK" \
+        SPIRA_RUN="$RUN" \
+        SPIRA_ASK="$MOCK_ASK" \
+        "$@" bash "$HERE/incident.sh" file "undeclared repo test" - >/dev/null 2>&1
+}
+
+# Count open asks whose title contains the stable key for this ref.
+# Filters on issue_type=decision rather than the ask label: the label value comes from
+# SPIRA_ASK_LABEL which the outer shell reads from the real spira.conf, while the
+# mock's subprocess uses only what was passed through env -i (the default needs-operator).
+# issue_type=decision is stable, set at create time, and unambiguous: incidents are bugs.
+count_undeclared_asks() {   # count_undeclared_asks <ref> -> integer
+    local key="undeclared repo: $(printf '%s' "$1" | cut -c1-72)"
+    bd -C "$SPIRA_DB" list --status open --limit 0 --json 2>/dev/null \
+      | python3 -c '
+import sys, json
+want = sys.argv[1]
+try: d = json.load(sys.stdin)
+except Exception: print(0); raise SystemExit(0)
+rows = d if isinstance(d, list) else [d]
+print(sum(1 for r in rows if want in (r.get("title") or "") and r.get("issue_type") == "decision"))
+' "$key"
+}
+
+# The dedupe ref that incident.sh derives from the title "undeclared repo test".
+NOREP_REF="incident:undeclared-repo-test"
+
+# -------
+echo
+echo "  positive control — single filing creates one ask:"
+printf 'first payload\n' | inc_ask >/dev/null
+n="$(count_undeclared_asks "$NOREP_REF")"
+is "single undeclared-repo incident creates exactly one ask" "1" "$n"
+
+testdb_reset; mkdir -p "$RUN"; > "$ILOG"
+
+# -------
+echo
+echo "  sequential dedupe — second filing finds existing ask after incident resolves:"
+# THE BLEED, REPRODUCED. An incident closes (operator said it was fixed); the next run
+# of the same test file (same ref) creates a new incident. Without the fix, a second ask
+# is also created. With the fix, the open ask is found and commented on instead.
+# Step 1: file the first incident (creates incident-1 + ask-A).
+printf 'payload 1\n' | inc_ask >/dev/null
+# Extract the incident bead id from the log ("filed <id> for incident:...").
+_seq_id="$(grep 'incident: filed .* for incident:undeclared-repo-test' "$ILOG" \
+    | awk '{print $4}' | head -1)"
+# Close the incident so the next filing is a new bead, not a recurrence.
+[ -n "${_seq_id:-}" ] && \
+    bd -C "$SPIRA_DB" close "$_seq_id" --reason "resolved in test" >/dev/null 2>&1 || true
+# Step 2: same test still has no repo — new run, new incident, must reuse the ask.
+> "$ILOG"
+printf 'payload 2\n' | inc_ask >/dev/null
+n="$(count_undeclared_asks "$NOREP_REF")"
+is "two incidents (close in between) produce one ask" "1" "$n"
+recur_log="$(grep -c 'undeclared-repo ask already open' "$ILOG" 2>/dev/null || true)"
+is "second filing after close logged as a recurrence, not a new ask" "1" "$recur_log"
+
+testdb_reset; mkdir -p "$RUN"; > "$ILOG"
+
+# -------
+echo
+echo "  concurrent dedupe — two simultaneous filers create exactly one ask:"
+# TWO FILERS, NO SLEEP BETWEEN THEM. The intake flock serialises drain_one; the second
+# filer waits, then re-checks inside the lock and finds the ask the first just created.
+printf 'concurrent A\n' | inc_ask >/dev/null &
+pid_a=$!
+printf 'concurrent B\n' | inc_ask >/dev/null &
+pid_b=$!
+wait "$pid_a" || true
+wait "$pid_b" || true
+n="$(count_undeclared_asks "$NOREP_REF")"
+is "two concurrent undeclared-repo filers produce one ask" "1" "$n"
+
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
 [ "$fail" -eq 0 ]

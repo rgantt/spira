@@ -201,23 +201,49 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
         bdq label add "$id" "needs-repo-triage" >/dev/null 2>&1
         bdq note "$id" "Repository not declared — SPIRA_INCIDENT_REPO was not set and LABELS carried no repo: label. An aeon claiming this bead works it in the home-repo fallback, which may be the wrong checkout. Add repo:<name> before claiming." >/dev/null 2>&1
         if [ "${SIN_EXEMPT:-0}" != 1 ]; then
-            # THE PREDICATE EXITS 0 WHEN THE INCIDENT BEAD GETS A repo: LABEL OR IS CLOSED.
-            # $id is expanded NOW (the ask records the specific bead to watch); $COCKPIT_DB
-            # expands at sweep time in moot-sweep.sh. An empty response from bd show signals
-            # that the database is unreachable: the predicate exits non-zero and the ask stays
-            # open rather than silently reading as cleared
-            # (law-absence-needs-a-positive-control).
-            local _moot_pred
-            _moot_pred=$(cat <<MOOTEOF
+            # DEDUPE: the ref is the stable key — not the title, which embeds the incident bead
+            # id in some code paths and would produce a distinct ask per incident of the same
+            # test file. Two concurrent filers reaching this point are already serialised by
+            # drain_one's flock, so the check-and-create pair is atomic.
+            _ask_subj="undeclared repo: $(printf '%s' "$ref" | cut -c1-72)"
+            _ask_db="${COCKPIT_DB:-$SPIRA_DB}"
+            _ask_open="$(bd -C "$_ask_db" list --status open \
+                --label "${SPIRA_ASK_LABEL:-needs-operator}" --limit 0 --json 2>/dev/null \
+              | json_only \
+              | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: raise SystemExit(0)
+rows = d if isinstance(d, list) else [d]
+want = sys.argv[1]
+for r in rows:
+    if want in (r.get("title") or ""):
+        print(r["id"]); break
+' "$_ask_subj" 2>/dev/null)"
+            if [ -n "${_ask_open:-}" ]; then
+                bd -C "$_ask_db" comments add "$_ask_open" \
+                    "Seen again at $(date -u +%Y-%m-%dT%H:%M:%SZ): $id ($ref). Add a repo: label before an aeon claims it." \
+                    >/dev/null 2>&1
+                ilog "$ref undeclared-repo ask already open as $_ask_open — noted recurrence"
+            elif [ -x "$ASK" ]; then
+                # THE PREDICATE EXITS 0 WHEN THE INCIDENT BEAD GETS A repo: LABEL OR IS CLOSED.
+                # $id is expanded NOW (the ask records the specific bead to watch); $COCKPIT_DB
+                # expands at sweep time in moot-sweep.sh. An empty response from bd show signals
+                # that the database is unreachable: the predicate exits non-zero and the ask stays
+                # open rather than silently reading as cleared
+                # (law-absence-needs-a-positive-control).
+                local _moot_pred
+                _moot_pred=$(cat <<MOOTEOF
 _d=\$(bd -C "\$COCKPIT_DB" show $id --json 2>/dev/null); [ -n "\$_d" ] || { echo 'probe: no output from bd show — database may be unreachable'; exit 1; }; printf '%s\n' "\$_d" | python3 -c 'import json,sys; t=sys.stdin.read().strip(); d=(json.loads(t) if t else []); r=(d[0] if isinstance(d,list) and d else (d if isinstance(d,dict) and d else None)); valid=r is not None and "id" in r; s=r.get("status","?") if valid else "?"; ll=(r.get("labels") or []) if valid else []; rp=[x for x in ll if x.startswith("repo:")]; ok=valid and (s!="open" or bool(rp)); msg=("cleared: "+(rp[0] if rp else "bead "+s)) if ok else ("live: status="+s+", no repo: label") if valid else "probe failed: bd show returned error or no valid bead"; print(msg); sys.exit(0 if ok else 1)'
 MOOTEOF
 )
-            [ -x "$ASK" ] && "$ASK" add \
-                "Incident filed with no repository declared: $title" \
-                --default "add repo:<name> to $id once you know which checkout owns the code this incident is about" \
-                --why "$id was filed without a repo: label. Without one an aeon works it in the home-repo fallback, which has not held the harness since sp-9tal." \
-                --moot-when "$_moot_pred" \
-                >/dev/null 2>&1
+                "$ASK" add \
+                    "$_ask_subj" \
+                    --default "add repo:<name> to $id once you know which checkout owns the code this incident is about" \
+                    --why "$id was filed without a repo: label. Without one an aeon works it in the home-repo fallback, which has not held the harness since sp-9tal." \
+                    --moot-when "$_moot_pred" \
+                    >/dev/null 2>&1
+            fi
         fi
         ilog "$ref labelled needs-repo-triage — repo undeclared"
     fi
