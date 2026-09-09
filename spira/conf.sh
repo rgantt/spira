@@ -780,11 +780,14 @@ if [ -d "${SPIRA_DB:-}/.beads" ]; then
     if ! _spira_bd_out="$(timeout 30 "$SPIRA_BD" -C "$SPIRA_DB" migrate schema 2>&1)"; then
         _spira_bd_db="$(printf '%s\n' "$_spira_bd_out" | grep -oE 'database is at v[0-9]+' | grep -oE '[0-9]+')"
         _spira_bd_bin="$(printf '%s\n' "$_spira_bd_out" | grep -oE 'binary knows up to v[0-9]+' | grep -oE '[0-9]+')"
-        if [ -n "${_spira_bd_db:-}" ] && [ -n "${_spira_bd_bin:-}" ]; then
+        # Report both versions, rendering ? when one cannot be read. A mismatch where only
+        # the database cursor is parseable ("database is at vN" without "binary knows up to")
+        # still names the database side so the operator knows what to rebuild toward. (sp-1khst)
+        if [ -n "${_spira_bd_db:-}" ] || [ -n "${_spira_bd_bin:-}" ]; then
             printf 'spira: bd schema mismatch — database is at v%s, %s knows up to v%s\n' \
-                "$_spira_bd_db" "$SPIRA_BD" "$_spira_bd_bin" >&2
+                "${_spira_bd_db:-?}" "$SPIRA_BD" "${_spira_bd_bin:-?}" >&2
             printf 'spira: rebuild bd at v%s or set SPIRA_BD in %s\n' \
-                "$_spira_bd_db" "${SPIRA_CONF_FILE:-spira.conf}" >&2
+                "${_spira_bd_db:-?}" "${SPIRA_CONF_FILE:-spira.conf}" >&2
         else
             printf 'spira: bd migrate schema failed — %s\n' \
                 "$(printf '%s\n' "$_spira_bd_out" | head -1)" >&2

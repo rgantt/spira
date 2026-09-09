@@ -42,6 +42,10 @@ bdq() {
     # Refuse a bead whose title or description contains vocabulary that halts the harness,
     # unless needs-ryan is already on it — which is the label that makes such a bead correct.
     [ "${1:-}" = create ] && { _bdq_check_destructive "$@" || return 1; }
+    # Refuse DELETE FROM schema_migrations regardless of needs-ryan. This SQL was recommended
+    # by escalation beads (which carry needs-ryan) three times; needs-ryan means "Ryan will
+    # review" — it does not mean the SQL is correct. (sp-1khst)
+    [ "${1:-}" = create ] && { _bdq_check_schema_delete "$@" || return 1; }
     timeout "${BD_TIMEOUT:-180}" "${SPIRA_BD:-bd}" -C "$SPIRA_DB" "$@"
 }
 
@@ -134,6 +138,53 @@ _bdq_check_destructive() {  # _bdq_check_destructive <create-args> -> 0 or refus
 
     printf 'spira: bead contains "%s" — procedures that halt the harness require needs-ryan.\nAdd needs-ryan to --labels, or reword to remove the destructive step.\n' \
         "$matched" >&2
+    return 1
+}
+
+_bdq_check_schema_delete() {  # _bdq_check_schema_delete <create-args> -> 0 or refuse
+    # Refuse any bead whose title or description contains DELETE FROM schema_migrations,
+    # regardless of needs-ryan. Unlike the general destructive-vocabulary check, needs-ryan
+    # does not bypass this one: three escalation beads carried needs-ryan and still recommended
+    # this SQL, and the third was approved. needs-ryan records that Ryan will decide; it does
+    # not assert that the recommended action is correct. (sp-1khst)
+    #
+    # The SQL removes migration rows from the Dolt database backing the beads store. Once
+    # committed through DOLT_COMMIT this is not recoverable without a backup restore.
+    # Rebuilding bd to match the database cursor is always the correct response to a real
+    # schema mismatch; see bd-pin.sh. A false mismatch — the common case — resolves with
+    # `bd migrate schema`, which reports the actual state rather than grepping error strings.
+    local arg next="" title="" desc="" saw_create=0 positioned=0
+    for arg in "$@"; do
+        if [ -n "$next" ]; then
+            case "$next" in
+                title)       title="$arg"; positioned=1 ;;
+                description) desc="$arg" ;;
+            esac
+            next=""; continue
+        fi
+        case "$arg" in
+            --title)           next=title ;;
+            --title=*)         title="${arg#--title=}"; positioned=1 ;;
+            -d|--description)  next=description ;;
+            --description=*)   desc="${arg#--description=}" ;;
+            -*)                ;;
+            *)
+                if [ "$saw_create" = 0 ]; then saw_create=1
+                elif [ "$positioned" = 0 ]; then title="$arg"; positioned=1
+                fi ;;
+        esac
+    done
+
+    local text="$title $desc"
+    [ -z "${text# }" ] && return 0
+
+    printf '%s\n' "$text" | grep -iqE 'DELETE[[:space:]]+FROM[[:space:]]+schema_migrations' || return 0
+
+    printf 'spira: bead contains "DELETE FROM schema_migrations" — this SQL is refused\n' >&2
+    printf 'even with needs-ryan because it was escalated and approved three times while wrong.\n' >&2
+    printf 'Run `bd migrate schema` and include its output in the escalation instead.\n' >&2
+    printf 'The correct response to a real mismatch is rebuilding bd (see bd-pin.sh),\n' >&2
+    printf 'not deleting migration rows from the database.\n' >&2
     return 1
 }
 

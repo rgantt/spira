@@ -158,6 +158,58 @@ nowant "bdq: bd not called"   "bd-called"   "$e2e_bad"
 e2e_ok="$(run_bdq "Run world.sh stop with approval" "spira,plan,needs-ryan" 2>&1)" || true
 want "bdq with needs-ryan: bd called"  "bd-called"  "$e2e_ok"
 
+# ==========================================================================
+echo
+echo "DELETE FROM schema_migrations refused even with needs-ryan:"
+# ==========================================================================
+# _bdq_check_schema_delete runs AFTER the needs-ryan bypass in _bdq_check_destructive,
+# so escalation beads that recommend this SQL cannot be filed regardless of needs-ryan.
+# This is the sp-1khst fence: three escalation beads carrying needs-ryan were approved.
+
+check_schema_title() {  # check_schema_title <title> <labels> -> combined stdout+stderr
+    env -i PATH="$PATH" HOME="$TMP" \
+        SPIRA_HOME="$HERE" SPIRA_REPO="$TMP/norepo" SPIRA_DB="$TMP/nodb" \
+        SPIRA_REPO_MAP="$TMP/nomap" SPIRA_BD="$STUB_BD" \
+        bash -c '. "$1/lib.sh"; _bdq_check_schema_delete create "$2" --labels "$3"' \
+            -- "$HERE" "$1" "$2" 2>&1
+}
+check_schema_desc() {  # check_schema_desc <desc> <labels> -> combined stdout+stderr
+    env -i PATH="$PATH" HOME="$TMP" \
+        SPIRA_HOME="$HERE" SPIRA_REPO="$TMP/norepo" SPIRA_DB="$TMP/nodb" \
+        SPIRA_REPO_MAP="$TMP/nomap" SPIRA_BD="$STUB_BD" \
+        bash -c '. "$1/lib.sh"; _bdq_check_schema_delete create "clean title" -d "$2" --labels "$3"' \
+            -- "$HERE" "$1" "$2" 2>&1
+}
+
+# Positive control: the exact SQL from the retired SOP is refused in a title.
+out="$(check_schema_title "DELETE FROM schema_migrations WHERE version > 53" "spira,plan" || true)"
+want "schema-delete title: refused"         "schema_migrations"         "$out"
+want "schema-delete title: says measure"    "bd migrate schema"         "$out"
+
+# Refused in description too.
+out="$(check_schema_desc "Step 1: DELETE FROM schema_migrations WHERE version > 53" "spira,plan" || true)"
+want "schema-delete desc: refused"          "schema_migrations"         "$out"
+
+# Refused WITH needs-ryan — this is the gap the previous checks had.
+out="$(check_schema_title "DELETE FROM schema_migrations WHERE version > 53" "spira,plan,needs-ryan" || true)"
+want "schema-delete with needs-ryan: still refused"  "schema_migrations"  "$out"
+
+# Case variations.
+out="$(check_schema_title "delete from schema_migrations where version > 53" "spira,plan" || true)"
+want "lowercase: refused"  "schema_migrations"  "$out"
+
+# Innocent text is not refused.
+out="$(check_schema_title "check schema migration count with bd migrate schema" "spira,plan" 2>&1)" || true
+nowant "bd migrate schema: not refused"  "schema_migrations"  "$out"
+
+out="$(check_schema_title "investigate schema mismatch between v61 and v53" "spira,plan" 2>&1)" || true
+nowant "schema mismatch without DELETE: not refused"  "schema_migrations"  "$out"
+
+# End-to-end: bdq refuses even with needs-ryan.
+e2e_schema="$(run_bdq "DELETE FROM schema_migrations WHERE version > 53" "spira,plan,needs-ryan" || true)"
+want   "bdq schema-delete with needs-ryan: refused"      "schema_migrations"  "$e2e_schema"
+nowant "bdq schema-delete with needs-ryan: bd not called" "bd-called"         "$e2e_schema"
+
 echo
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

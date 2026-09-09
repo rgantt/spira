@@ -183,8 +183,11 @@ if [ -d "$SPIRA_DB/.beads" ]; then
     else
         _schema_db="$(printf '%s\n' "$_schema_out" | grep -oE 'database is at v[0-9]+' | grep -oE '[0-9]+')"
         _schema_bd="$(printf '%s\n' "$_schema_out" | grep -oE 'binary knows up to v[0-9]+' | grep -oE '[0-9]+')"
-        if [ -n "${_schema_db:-}" ] && [ -n "${_schema_bd:-}" ]; then
-            FAIL "bd migration count (v$_schema_bd) does not match database cursor (v$_schema_db)" \
+        # Report both versions, rendering ? when one cannot be read. Previously this fell
+        # to a generic "cannot verify" message when only one version was parseable — losing
+        # the partial information that names which side the mismatch is on. (sp-1khst)
+        if [ -n "${_schema_db:-}" ] || [ -n "${_schema_bd:-}" ]; then
+            FAIL "bd migration count (v${_schema_bd:-?}) does not match database cursor (v${_schema_db:-?})" \
                  "Rebuild bd from the commit recorded in $SPIRA_BD_PIN, then run:
         $SPIRA_HOME/bd-pin.sh write"
         else
