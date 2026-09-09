@@ -27,6 +27,7 @@
 # the right arguments; bd's own correctness is tested in suites that use testdb.sh.
 #
 # covers: spira/groomer.sh spira/conf.sh
+# defect: sp-gsmx.8
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
