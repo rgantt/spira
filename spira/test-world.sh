@@ -45,7 +45,11 @@ nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3
 
 echo "test-world.sh"
 
-TMP="$(mktemp -d)"; trap 'kill "$WORKER_PID" 2>/dev/null; rm -rf "$TMP"' EXIT INT TERM
+# set -m gives each background job its own process group (PGID = job PID), so
+# kill -- -$WORKER_PID reaches both the bash wrapper and any child (e.g. sleep)
+# it spawned — leaving no orphans in the caller's process group on cleanup.
+set -m
+TMP="$(mktemp -d)"; trap 'kill -- -"$WORKER_PID" 2>/dev/null; rm -rf "$TMP"' EXIT INT TERM
 WORKER_PID=""
 
 SH="$TMP/spira"
@@ -96,12 +100,14 @@ STOP_FAILS=""
 world() {
     : > "$CALLS"
     SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_CONF="$TMP/no-such-conf" \
+    SPIRA_DB="$TMP/no-db" \
     SPIRA_SYSTEMCTL="$TMP/systemctl" \
         bash "$SH/world.sh" "$@" 2>&1
 }
 world_rc() {
     : > "$CALLS"
     SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_CONF="$TMP/no-such-conf" \
+    SPIRA_DB="$TMP/no-db" \
     SPIRA_SYSTEMCTL="$TMP/systemctl" \
         bash "$SH/world.sh" "$@" 2>&1; echo "$?"
 }
@@ -188,7 +194,7 @@ wcount="$(printf '%s' "$out" | grep 'live workers' | grep -oE '[0-9]+' | tail -1
 [ "${wcount:-0}" -ge 1 ] && ok "live workers count is at least 1" \
                            || bad "live workers count" "wanted >=1, got [${wcount:-?}]"
 
-kill "$WORKER_PID" 2>/dev/null; wait "$WORKER_PID" 2>/dev/null; WORKER_PID=""
+kill -- -"$WORKER_PID" 2>/dev/null; wait "$WORKER_PID" 2>/dev/null; WORKER_PID=""
 
 out="$(world status)"
 wcount="$(printf '%s' "$out" | grep 'live workers' | grep -oE '[0-9]+' | tail -1)"
@@ -238,7 +244,7 @@ sleep 0.3
 
 rc=0
 out="$(SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_CONF="$TMP/no-such-conf" \
-       SPIRA_SYSTEMCTL="$TMP/systemctl" \
+       SPIRA_DB="$TMP/no-db" SPIRA_SYSTEMCTL="$TMP/systemctl" \
        bash "$SH/world.sh" drain --timeout 0 2>&1)" || rc=$?
 
 is  "drain exits non-zero when it times out with an aeon live" "1" "$rc"
@@ -248,7 +254,7 @@ want "and says summons stay gated" "REMAIN GATED"         "$out"
 [ -f "$RUN/world.draining" ] && ok "a timed-out drain leaves the gate in place" \
                              || bad "a timed-out drain leaves the gate in place" "stamp was removed"
 
-kill "$WORKER_PID" 2>/dev/null; wait "$WORKER_PID" 2>/dev/null; WORKER_PID=""
+kill -- -"$WORKER_PID" 2>/dev/null; wait "$WORKER_PID" 2>/dev/null; WORKER_PID=""
 world resume >/dev/null
 
 # ---- THE GATE MUST COVER EVERY DOOR, NOT JUST THE TIDY ONE --------------------------
