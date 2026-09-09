@@ -17,6 +17,9 @@
 # IT IS READ-ONLY. It creates nothing and starts nothing, so it is safe to run on a box you
 # are unsure about — which is the box you would want to run it on.
 set -uo pipefail
+# Tell conf.sh not to exit on schema mismatch so the "bd schema" section below can
+# report it cleanly. Without this, conf.sh exits before doctor.sh prints any FAIL line.
+SPIRA_DOCTOR=1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/conf.sh"
 
 fatal=0; warn=0

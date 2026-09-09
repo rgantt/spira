@@ -791,7 +791,10 @@ if [ -d "${SPIRA_DB:-}/.beads" ]; then
             printf 'spira: bd is %s\n' "$SPIRA_BD" >&2
         fi
         unset _spira_bd_out _spira_bd_db _spira_bd_bin
-        exit 1
+        # SPIRA_DOCTOR=1 means doctor.sh is the caller. It suppresses stderr to print
+        # its own structured FAIL, and it runs `bd migrate schema` itself in its schema
+        # section — so conf.sh must not exit here or doctor.sh never reaches that check.
+        [ -z "${SPIRA_DOCTOR:-}" ] && exit 1
     fi
     unset _spira_bd_out
 fi
