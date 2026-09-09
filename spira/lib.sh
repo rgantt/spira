@@ -941,9 +941,34 @@ summon_fayth() {         # summon_fayth <fayth> [pool-remaining]
     # stopping spira-sentinel.timer to halt summons also halts landing and strands every
     # finished branch — measured 2026-09-08, three branches unlanded across a 16-minute
     # hand-drain. Gate the spawn; leave the loop running.
-    if [ -f "${SPIRA_RUN:-}/world.draining" ]; then
-        log "CHECK7 $f: draining — not summoning (world.sh resume to lift)"
-        return 1
+    # A DRAIN EXPIRES, AND THE GATE IS WHAT EXPIRES IT. A drain is a held breath: right for
+    # the minutes an operation needs, never for an hour. Whoever sets one can die before
+    # lifting it, and on 2026-09-09 one did — an Ops sweep drained at 18:02:03, finished its
+    # SOP at 18:04:29, exited without resuming, and the world sat gated for 59 minutes with
+    # 25 beads ready and no aeons. Every pass logged "pass complete — goal reached" while it
+    # happened, because a drain is a MODE and nothing treated the mode as a fault.
+    #
+    # LIFTING IT HERE IS LOUD, NEVER SILENT. An expiry that quietly resumed would hide the
+    # forgotten resume, and the forgotten resume is the defect worth seeing.
+    #
+    # A STAMP WITH NO `expires` LINE IS TREATED AS EXPIRED AT stamp-mtime + TTL, so a drain
+    # written by the older world.sh cannot wedge the loop forever either. Fail toward
+    # summoning: one aeon summoned during an operation costs an attempt, and a stuck gate
+    # costs the whole pipeline.
+    _dstamp="${SPIRA_RUN:-}/world.draining"
+    if [ -f "$_dstamp" ]; then
+        _dexp="$(sed -n 's/^expires \([0-9][0-9]*\)$/\1/p' "$_dstamp" 2>/dev/null | head -1)"
+        if [ -z "$_dexp" ]; then
+            _dmt="$(stat -c %Y "$_dstamp" 2>/dev/null || echo 0)"
+            _dexp=$(( _dmt + ${SPIRA_DRAIN_TTL:-1800} ))
+        fi
+        if [ "$(date +%s)" -ge "$_dexp" ]; then
+            rm -f "$_dstamp"
+            log "CHECK7 $f: DRAIN EXPIRED — lifting a drain nobody resumed (deadline $(date -d "@$_dexp" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo '?'), TTL ${SPIRA_DRAIN_TTL:-1800}s). Whoever drained did not resume; summons are live again."
+        else
+            log "CHECK7 $f: draining — not summoning (world.sh resume to lift)"
+            return 1
+        fi
     fi
     # THE ACCOUNT BEFORE THE QUEUE. A summon during a capacity outage cannot succeed, and it
     # does not fail for free: the aeon it starts claims a bead, is refused by the API, and

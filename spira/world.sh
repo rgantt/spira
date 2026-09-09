@@ -220,17 +220,39 @@ start)
 # door and lets the room empty: no NEW aeon is summoned, while the loop, landing and reaping
 # all keep running so an aeon already working can finish and LAND what it built.
 #
-# NOTHING IS STOPPED, so there is no channel to forget to restart (law-arm-before-you-retire).
+# NOTHING IS STOPPED, so there is no SERVICE to forget to restart. THE STAMP IS STILL A THING
+# TO FORGET, and it was forgotten: an Ops sweep applying sop-harness-checkout-behind drained
+# at 18:02:03 on 2026-09-09, finished its SOP at 18:04:29, and exited without resuming. The
+# world stayed gated for 59 minutes with 25 beads ready and zero aeons, and every pass
+# reported "pass complete — goal reached" while doing so. The sentinel was behaving correctly
+# — a drain is a mode, not a fault — so nothing anywhere treated it as one.
+#
+# SO THE DRAIN EXPIRES. It carries a deadline and the gate lifts it when that passes, loudly.
+# A drain is a held breath: legitimate for the minutes an operation needs, never for an hour,
+# and a holder that dies must not take the loop with it. `--for` sets the lifetime; the gate
+# in lib.sh enforces it, so every caller is covered by one rule.
+#
+# NOT THE SAME AS `--timeout`, which bounds how long `drain` WAITS for live aeons to finish
+# before returning. That is this command's patience; this is the gate's lifetime after the
+# command has gone.
+#
 # The gate is a stamp file that summon_fayth() checks in lib.sh — one place, covering every
 # caller. The first attempt at this stopped spira-sentinel.timer instead, which also stopped
 # landing, because landing is a leg of the sentinel pass rather than a timer of its own:
 # three finished branches sat unlanded for sixteen minutes (2026-09-08).
 drain)
-    shift; dtimeout=1800
-    [ "${1:-}" = "--timeout" ] && { dtimeout="${2:-1800}"; shift 2; }
+    shift; dtimeout=1800; dfor="${SPIRA_DRAIN_TTL:-1800}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --timeout) dtimeout="${2:-1800}"; shift 2 ;;
+            --for)     dfor="${2:-1800}";     shift 2 ;;
+            *) break ;;
+        esac
+    done
 
     { date '+%Y-%m-%d %H:%M:%S %Z'
       printf 'summons gated in summon_fayth; loop and landing still running. Lift with: %s resume\n' "$0"
+      printf 'expires %s\n' "$(( $(date +%s) + dfor ))"
     } > "$DRAIN_STAMP"
     echo "spira: draining — no new aeons; loop, landing and reaping continue"
 
