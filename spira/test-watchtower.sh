@@ -555,6 +555,43 @@ is "no stamp still writes the prompt file"  "1" \
 nowant "no stamp means no drain escalation" "DRAINING:" "$subjects"
 nowant "and no routine sweep bead"          "Spira sweep" "$subjects"
 
+# ======================================================================================
+echo
+echo "the repo-label vital signs render from cockpit.env:"
+# ======================================================================================
+# THE SEAM THIS COVERS. cockpit.sh repo_labels computes SP_REPO_UNMAPPED and SP_REPO_ABSENT;
+# watchtower.sh reads them from the snapshot and renders them in 'The graph' section.
+# Tests here drive the renderer through a hand-written cockpit.env, the same pattern used
+# for the strand ledger — no database query is made from inside watchtower.
+#
+# THE POSITIVE CONTROL IS REQUIRED. A renderer that always prints '?' passes the ? test;
+# only a fixture with real numbers can expose that.
+fresh
+mkdir -p "$TMP/run"
+printf "SP_REPO_UNMAPPED=3\nSP_REPO_ABSENT=7\n" > "$TMP/run/cockpit.env"
+snap="$(wt)"
+want "SP_REPO_UNMAPPED renders in the graph" "repo: unmapped 3" "$snap"
+want "SP_REPO_ABSENT renders in the graph"   "absent 7"         "$snap"
+
+# UNREAD SNAPSHOT (missing keys) renders ? — same rule as strands.
+fresh
+mkdir -p "$TMP/run"
+printf "SP_OPEN=5\n" > "$TMP/run/cockpit.env"   # no SP_REPO_* keys at all
+snap="$(wt)"
+want "missing SP_REPO_UNMAPPED renders ?" "repo: unmapped ?" "$snap"
+want "missing SP_REPO_ABSENT renders ?"  "absent ?"         "$snap"
+
+# ZERO IS A VALID MEASUREMENT. A database with no unmapped or absent beads should render 0,
+# not ?. A renderer that cannot distinguish 0 from unread displaces the zero.
+fresh
+mkdir -p "$TMP/run"
+printf "SP_REPO_UNMAPPED=0\nSP_REPO_ABSENT=0\n" > "$TMP/run/cockpit.env"
+snap="$(wt)"
+want "SP_REPO_UNMAPPED=0 renders as 0, not ?" "repo: unmapped 0" "$snap"
+want "SP_REPO_ABSENT=0 renders as 0, not ?"  "absent 0"         "$snap"
+nowant "and the zero is not disguised as ?" "repo: unmapped ?" "$snap"
+nowant "and the absent zero is not ?" "absent ?" "$snap"
+
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
 [ "$fail" -eq 0 ]

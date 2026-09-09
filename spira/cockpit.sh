@@ -806,6 +806,7 @@ except Exception: print("")' 2>/dev/null)"
     # system's workers are still doing, and counting them here would report that system's
     # backlog as this one's.
     sphere_keys
+    repo_label_keys
 
     # ---- closed versus landed ----------------------------------------------------------
     # law-closed-is-not-landed as a 24h figure matching the header it sits under. The
@@ -1187,6 +1188,60 @@ print("SP_OPEN=%d"      % sum(1 for i in work if i.get("status") != "closed"))
 print("SP_INPROG=%d"    % sum(1 for i in work if i.get("status") == "in_progress"))
 print("SP_NEEDSOP=%d"  % sum(1 for i in work if i.get("status") != "closed" and has(i, ASK)))
 ' 2>/dev/null || { echo "SP_OPEN=?"; echo "SP_INPROG=?"; echo "SP_NEEDSOP=?"; }
+}
+
+# The repo-label keys: non-closed beads whose repo: label is either absent from the
+# repo-map or missing entirely. Both count as failures: a bead with `repo:bogus` parks an
+# aeon at unmapped-repo just as a bead with no label does — they fail closed identically.
+#
+# A SEPARATE QUERY FROM THE SPHERE GRID. The sphere grid is scoped to spira,plan; this
+# check spans every non-closed bead in the database, because a mis-labelled bead outside
+# that scope parks an aeon on unmapped-repo the same way.
+#
+# Broken out as a function so the test suite can drive the exact code the collector runs —
+# the same reason strand_keys and sphere_keys are functions and not inlined.
+repo_label_keys() {
+    # SP_REPO_UNMAPPED: non-closed beads with a repo: label absent from the map.
+    # SP_REPO_ABSENT:   non-closed beads carrying no repo: label at all.
+    # Both render ? when the repo-map is unreadable — an unreadable map and a clean map are
+    # indistinguishable from outside; the ? is the only honest answer
+    # (law-absence-needs-a-positive-control).
+    if [ ! -r "${SPIRA_REPO_MAP:-}" ]; then
+        echo "SP_REPO_UNMAPPED=?"
+        echo "SP_REPO_ABSENT=?"
+        return
+    fi
+    local valid_names _raw
+    valid_names="$(awk 'BEGIN{FS="|"} /^[ \t]*#/{next}
+        {n=$1; gsub(/^[ \t]+|[ \t]+$/,"",n); if(n!=""&&NF>1) print n}' \
+        "$SPIRA_REPO_MAP" 2>/dev/null)"
+    # bdjson list --limit 0 returns non-closed beads only (default filter). An empty result
+    # means bd refused (schema mismatch, misconfigured path) — distinguish from a real empty
+    # list, which arrives as "[]" that json_only passes through unchanged.
+    _raw="$(bdjson list --limit 0 2>/dev/null)"
+    if [ -z "$_raw" ]; then
+        echo "SP_REPO_UNMAPPED=?"
+        echo "SP_REPO_ABSENT=?"
+        return
+    fi
+    printf '%s\n' "$_raw" | VALID_NAMES="$valid_names" python3 -c '
+import os, sys, json
+try: d = json.load(sys.stdin)
+except Exception:
+    print("SP_REPO_UNMAPPED=?"); print("SP_REPO_ABSENT=?"); raise SystemExit
+d = d if isinstance(d, list) else [d]
+# Names come in newline-separated; split() handles any whitespace including newlines.
+valid = set(os.environ.get("VALID_NAMES", "").split())
+unmapped = absent = 0
+for i in d:
+    repo_labels = [l[5:] for l in (i.get("labels") or []) if l.startswith("repo:")]
+    if not repo_labels:
+        absent += 1
+    elif not any(r in valid for r in repo_labels):
+        unmapped += 1
+print("SP_REPO_UNMAPPED=%d" % unmapped)
+print("SP_REPO_ABSENT=%d" % absent)
+' 2>/dev/null || { echo "SP_REPO_UNMAPPED=?"; echo "SP_REPO_ABSENT=?"; }
 }
 
 # THE SERIES, because a gauge cannot answer "over time". The question the token meter exists
@@ -1692,5 +1747,10 @@ ratelim)
 sphere)
     sphere_keys
     ;;
-*) echo "usage: cockpit.sh [once|loop|history|strands|sops|ratelim|sphere]" >&2; exit 1 ;;
+# The repo-label keys alone, taking no other reading. This is the seam the suite drives:
+# it is the same function probe calls, so what is tested is what runs.
+repo_labels)
+    repo_label_keys
+    ;;
+*) echo "usage: cockpit.sh [once|loop|history|strands|sops|ratelim|sphere|repo_labels]" >&2; exit 1 ;;
 esac

@@ -384,6 +384,7 @@ reading \`?\` is one this pass COULD NOT READ — never treat it as a zero.
 ### The graph
 
   open $(g SP_OPEN) · closed $(g SP_CLOSED) · landed $(g SP_LANDED) · needs-operator $(g SP_NEEDSOP)
+  repo: unmapped $(g SP_REPO_UNMAPPED) · absent $(g SP_REPO_ABSENT)
   parked on CI $(g SP_AWAITING_N), oldest $(g SP_AWAITING_AGE), stuck $(g SP_AWAITING_STUCK)
 
 ### The menu — run these scans, then look for what they do not cover
