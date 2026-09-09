@@ -83,13 +83,22 @@ inc() {
         "$@" bash "$HERE/incident.sh" file "the test sweep" -
 }
 
-# Count open beads carrying the given external ref on the fixture database. The output
-# format is "○ sp-xyz ● P1 [bug] …", so we match on the bead-id pattern anywhere in
-# the line rather than at the start of it.
+# Count open beads carrying the given external ref on the fixture database.
+# NOTE: bd-embedded does not support --external-ref server-side filtering, so filter
+# client-side via JSON, exactly as incident.sh open_incident does.
 count_open() {
-    bd -C "$SPIRA_DB" list --status open,in_progress --limit 0 \
-        --label spira,incident --external-ref "$1" 2>/dev/null \
-      | grep -cE ' sp-[a-z0-9]+' || true
+    bd -C "$SPIRA_DB" list --status open,in_progress --limit 0 --label spira,incident --json 2>/dev/null \
+      | python3 -c '
+import sys, json
+target = sys.argv[1]
+count = 0
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for i in (d if isinstance(d, list) else [d]):
+    if i.get("external_ref") == target:
+        count += 1
+print(count)
+' "$1"
 }
 
 # ======================================================================================
@@ -171,10 +180,19 @@ inc_env() {
 }
 
 # Find the bead by its external ref (the ref incident.sh derives from the title).
+# NOTE: bd-embedded does not support --external-ref server-side filtering, so filter
+# client-side via JSON.
 find_bead() {   # find_bead <external-ref> -> bead id or empty
-    bd -C "$SPIRA_DB" list --status open,in_progress --limit 1 \
-        --external-ref "$1" 2>/dev/null \
-      | grep -oE '\bsp-[a-z0-9]+\b' | head -1 || true
+    bd -C "$SPIRA_DB" list --status open,in_progress --limit 0 --json 2>/dev/null \
+      | python3 -c '
+import sys, json
+target = sys.argv[1]
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for i in (d if isinstance(d, list) else [d]):
+    if i.get("external_ref") == target:
+        print(i["id"]); break
+' "$1"
 }
 
 # ======================================================================================
