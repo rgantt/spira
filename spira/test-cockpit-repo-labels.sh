@@ -44,7 +44,7 @@ nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3
 # A minimal repo-map with one valid entry. Pin to a non-default name ('validrepo') so the
 # test cannot silently pass if the code has a literal like 'brain' baked in.
 MAP="$TMP/repo-map"
-printf 'validrepo | /workspaces/valid | push | origin/main | | \n' > "$MAP"
+printf 'validrepo | /opt/valid | push | origin/main | | \n' > "$MAP"
 
 RUN="$TMP/run"; mkdir -p "$RUN"
 run_repo_labels() {    # run_repo_labels [KEY=val ...]  — extra args override env vars
