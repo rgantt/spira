@@ -153,6 +153,7 @@ rds() {  # rds [args] -> output of released-defects.sh
     env -i PATH="$PATH" HOME="$HOME" \
         SPIRA_CONF=/nonexistent \
         SPIRA_DB="$SPIRA_DB" \
+        SPIRA_BD="$SPIRA_BD" \
         SPIRA_REPO_MAP="$REPO_MAP" \
         SPIRA_REPO="$REPO" \
         SPIRA_RUN="$TMP/run" \
@@ -205,6 +206,7 @@ printf '# empty\n' > "$REPO_MAP_EMPTY"
 out_nomap="$(env -i PATH="$PATH" HOME="$HOME" \
     SPIRA_CONF=/nonexistent \
     SPIRA_DB="$SPIRA_DB" \
+    SPIRA_BD="$SPIRA_BD" \
     SPIRA_REPO_MAP="$REPO_MAP_EMPTY" \
     SPIRA_REPO=/nonexistent \
     SPIRA_RUN="$TMP/run" \

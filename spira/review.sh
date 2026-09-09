@@ -337,7 +337,6 @@ PY
 _file_findings() {
     local result="$1" tag="$2" name="$3"
     local count=0 in_finding=0 title="" body=""
-
     # Each block: "FINDING: <title>\n<body lines>\n---\n"
     # Uses <<< so _file_one_finding runs in the current shell and can update $count.
     while IFS= read -r line; do
@@ -384,18 +383,23 @@ _file_one_finding() {
     local ref; ref="review:${tag}:$(printf '%s' "$title" | md5sum | cut -c1-8)"
 
     # Deduplicate against existing open/in-progress beads with this ref.
+    # --external-ref is not a bd list filter; fetch by label and filter in Python.
     local existing
     existing="$(bdjson list --status open,in_progress \
-        --external-ref "$ref" --limit 1 2>/dev/null \
+        --label "$REVIEW_LABEL" --limit 0 2>/dev/null \
         | python3 -c '
 import json, sys
+target = sys.argv[1]
 try:
     d = json.load(sys.stdin)
     items = d if isinstance(d, list) else [d]
-    print(items[0]["id"] if items and isinstance(items[0], dict) else "")
+    for item in items:
+        if isinstance(item, dict) and item.get("external_ref") == target:
+            print(item["id"])
+            break
 except Exception:
-    print("")
-' 2>/dev/null)"
+    pass
+' "$ref" 2>/dev/null)"
     [ -n "${existing:-}" ] && { printf '%s\n' "$existing"; return 0; }
 
     # Write body to a temp file (not to a shell argument) so content with

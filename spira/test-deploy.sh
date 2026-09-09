@@ -157,9 +157,11 @@ run_deploy() {
         SPIRA_REPO_MAP="$REPO_MAP" \
         SPIRA_REPO="$REPO" \
         SPIRA_HOME="$SH" \
+        SPIRA_HOME_REPO=fixture \
         SPIRA_GOAL=sp-goal \
         SPIRA_ID_PREFIX=sp \
         SPIRA_DB="$SPIRA_DB" \
+        SPIRA_BD="$SPIRA_BD" \
         SPIRA_CLAUDE="$FAKE_CLAUDE" \
         SPIRA_REVIEWER_VERDICTS="$VERDICTS" \
         SPIRA_REVIEWER_MODEL=claude-test-model \
@@ -255,6 +257,8 @@ is   "block: systemctl not called"              ""                        "$(cat
 bead_count="$(env -i PATH="$PATH" HOME="$HOME" \
     SPIRA_CONF=/nonexistent \
     SPIRA_DB="$SPIRA_DB" \
+    SPIRA_BD="$SPIRA_BD" \
+    SPIRA_HOME_REPO=fixture \
     SPIRA_ID_PREFIX=sp \
     bash -c '. '"$SH/lib.sh"'; bdjson list --status open --label review-finding --limit 0 2>/dev/null | python3 -c "
 import json,sys

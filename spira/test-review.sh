@@ -141,6 +141,7 @@ run_review() {
         SPIRA_GOAL=sp-goal \
         SPIRA_ID_PREFIX=sp \
         SPIRA_DB="$SPIRA_DB" \
+        SPIRA_BD="$SPIRA_BD" \
         SPIRA_CLAUDE="$FAKE_CLAUDE" \
         SPIRA_REVIEWER_VERDICTS="$VERDICTS" \
         SPIRA_REVIEWER_MODEL=claude-test-model \
@@ -227,6 +228,7 @@ db_count() {
     env -i PATH="$PATH" HOME="$HOME" \
         SPIRA_CONF=/nonexistent \
         SPIRA_DB="$SPIRA_DB" \
+        SPIRA_BD="$SPIRA_BD" \
         SPIRA_ID_PREFIX=sp \
         bash -c '. '"$SH/lib.sh"'; bdjson list --status open --label review-finding --limit 0 2>/dev/null | python3 -c "
 import json,sys
@@ -245,6 +247,7 @@ bead_count="$(db_count)"
 bead_titles="$(env -i PATH="$PATH" HOME="$HOME" \
     SPIRA_CONF=/nonexistent \
     SPIRA_DB="$SPIRA_DB" \
+    SPIRA_BD="$SPIRA_BD" \
     SPIRA_ID_PREFIX=sp \
     bash -c '. '"$SH/lib.sh"'; bdjson list --status open --label review-finding --limit 0 2>/dev/null | python3 -c "
 import json,sys
