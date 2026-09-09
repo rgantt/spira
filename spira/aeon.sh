@@ -598,6 +598,11 @@ cleanup() {
     # is the last chance to record what happened. Note that `[ -n "$X" ] && cmd` is itself
     # one of those failing commands whenever $X is empty.
     set +e
+    # WAIT FOR THE HEARTBEAT TO FINISH, not just kill it. kill sends SIGTERM, which the
+    # heartbeat's trap handles (kills its sleep child, exits), but if we don't wait the
+    # heartbeat process remains in the suite's process group after aeon.sh exits. suites.sh
+    # runs each suite under setsid and checks for survivors — the unwaited heartbeat
+    # triggers "left background jobs after exit" even when all tests passed. (sp-1ux75)
     if [ -n "$HB_PID" ]; then kill "$HB_PID" 2>/dev/null; wait "$HB_PID" 2>/dev/null || true; fi
     fixture_drop
     rm -f "$PIDFILE" "${PIDFILE%.pid}.name"
