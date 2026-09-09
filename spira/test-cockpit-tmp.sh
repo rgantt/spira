@@ -51,10 +51,16 @@ echo "a killed pass leaves no temp behind"
 # the collector ignored it, ran to completion, and the case reported "no temp left" — true,
 # and about a pass that was never interrupted. The exec shim restores the default disposition
 # so the child models systemd and a terminal rather than this test's own shell.
+#
+# os.setpgrp() puts the child in its own process group so `kill -SIG -$p` reaches every
+# probe subprocess. Without this, bash defers the signal trap until the running bd/python3
+# child returns — probe queries the live database, which takes tens of seconds per pass,
+# and the suite would block in `wait` for the full probe duration on every kill.
 spawn() {
     SPIRA_RUN="$RUN" SPIRA_COCKPIT_FORCE=1 python3 -c '
 import os, signal, sys
 signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.setpgrp()
 os.execvp("bash", ["bash", sys.argv[1], "once"])
 ' "$COCKPIT" >/dev/null 2>&1 &
 }
@@ -73,13 +79,16 @@ for sig in TERM INT HUP; do
         sleep 0.1
     done
     if [ "$seen" -eq 0 ]; then
-        kill -KILL "$p" 2>/dev/null; wait "$p" 2>/dev/null
+        kill -KILL "-$p" 2>/dev/null; wait "$p" 2>/dev/null
         echo "SKIP: cockpit.sh never created a temp — probe cannot start here (bd/git missing?)" >&2
         exit 77
     fi
     ok "$sig: temp present mid-probe (control)"
 
-    kill -"$sig" "$p" 2>/dev/null
+    # Kill the process group so probe's subprocesses also receive the signal: bash defers
+    # its signal trap until the current foreground child returns, and probe's bd/python3
+    # children have no trap — they exit immediately, unblocking bash's own trap.
+    kill -"$sig" "-$p" 2>/dev/null
     wait "$p" 2>/dev/null; rc=$?
 
     # The signal is re-raised after cleanup rather than swallowed for a made-up status, so
@@ -103,7 +112,14 @@ echo "sweep_stale_tmps clears pre-existing orphaned temps at startup"
 # The sweep runs at the top of 'once' before probe is called, so once the orphans are gone
 # the probe is still slow enough to safely interrupt.
 touch "$RUN/.cockpit.99999" "$RUN/.cockpit.orphan"
-SPIRA_RUN="$RUN" SPIRA_COCKPIT_FORCE=1 bash "$COCKPIT" once >/dev/null 2>&1 &
+# Use the same python3 shim as spawn so cockpit.sh runs in its own process group — kill
+# -TERM -$sweep_pid then reaches probe's children too, not just bash.
+SPIRA_RUN="$RUN" SPIRA_COCKPIT_FORCE=1 python3 -c '
+import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.setpgrp()
+os.execvp("bash", ["bash", sys.argv[1], "once"])
+' "$COCKPIT" >/dev/null 2>&1 &
 sweep_pid=$!
 # Wait for the sweep to have run: the orphan count drops from 2 once they are removed.
 # A fixed sleep is unreliable because sourcing lib.sh and conf.sh can take longer than any
@@ -113,7 +129,7 @@ for _ in $(seq 1 200); do
     kill -0 "$sweep_pid" 2>/dev/null || break
     sleep 0.1
 done
-kill -TERM "$sweep_pid" 2>/dev/null; wait "$sweep_pid" 2>/dev/null || true
+kill -TERM "-$sweep_pid" 2>/dev/null; wait "$sweep_pid" 2>/dev/null || true
 n="$(temps)"
 [ "$n" -eq 0 ] && ok "orphaned temps removed by startup sweep" \
               || bad "$n orphaned temp(s) survived startup sweep"
