@@ -107,11 +107,37 @@ an item you filed without marking is an item the operator is told you did not sa
 - **Do not clear anything, and do not touch the session.** Clearing is the operator's call and
   yours is only to make it safe. You have no channel into that conversation and must not
   invent one.
-- **Do not edit code, and do not commit.** You are writing beads, notes and pages.
+- **Do not edit code.** You are writing beads, notes and wiki pages — not changing programs.
 - **Do not do the work you find.** A half-finished refactor in the transcript is recorded, not
   finished. You are the record, not the next worker.
 - **Do not file the routine.** A session that talked through a problem and solved it has
   nothing loose in it. Filing zero items is a real and common outcome, and a correct one.
+
+## Committing what you write
+
+If `$SPIRA_WIKI` is set (non-empty), commit every wiki page you write before you exit. The
+four bounds are absolute and all must hold:
+
+- **PATHS:** only files under `wiki/` inside the wiki repository, plus `index.md` and
+  `log.md` at the repo root. Not the harness, not `.claude/`, not any code.
+- **AUTHORSHIP:** only the files you wrote in this sweep. Stage each path explicitly by name.
+  `git add -A` and `git commit -a` are prohibited (`law-commit-only-paths-you-changed`);
+  list every path on the `git add` line. For `index.md` and `log.md`, stage them only when
+  you appended to them in this sweep — they pre-exist, and another sweep's work is not yours
+  to commit.
+- **NEVER CODE.** Not `spira/`, not `.claude/`, not any file outside `wiki/` or the two
+  root files above.
+- **COUNT:** any number of pages per sweep. There is no one-page limit.
+
+```bash
+# List every path you wrote — never git add -A or git add .
+git -C "$SPIRA_WIKI" add wiki/path/to/page.md index.md log.md
+git -C "$SPIRA_WIKI" commit -m "archivist: <terse subject>"
+git -C "$SPIRA_WIKI" push
+```
+
+`$SPIRA_WIKI` is the wiki repository root and is available in your environment. If it is
+empty, there is no wiki and nothing to commit.
 
 ## Finish
 
