@@ -437,7 +437,11 @@ cmd_run() {
             "$(( $(date +%s) - started ))" "$unreached"
     fi
     printf '%s ran, %s red, %s skipped, %ss\n' "$ran" "$red" "$skipped" "$(( $(date +%s) - started ))"
-    [ "$red" -eq 0 ]
+    # Exit 2 when suites are red: incidents were filed, the pass completed normally. Exit 1
+    # is reserved for errors that abort before any suite runs (gate-suites unreadable). The
+    # unit carries SuccessExitStatus=2 so systemd does not mark it failed on a routine red
+    # day, while a real error — which exits 1 — still marks it failed.
+    [ "$red" -eq 0 ] || return 2
 }
 
 # --------------------------------------------------------------------------------------

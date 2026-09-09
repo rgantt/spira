@@ -192,7 +192,7 @@ plant test-fx-gated.sh <<'S'
 touch "$FX_GATED_RAN"
 S
 
-out="$(sut run)"
+out="$(sut run)"; rc_reds=$?
 want "a planted suite is run with no list edited"      "test-fx-green.sh" "$out"
 want "a planted red is reported red"                   "RED" "$out"
 [ -e "$TMP/gated.ran" ] \
@@ -207,6 +207,10 @@ want "a suite with no covers declaration is named" "test-fx-bare.sh" "$out"
 want "as an omission, not as a skip"               "no \`# covers:\` declaration" "$out"
 is   "and it has a result, so it really ran"       "ok" \
      "$( { read -r s1 _ < "$STATE/test-fx-bare.sh.result"; printf '%s' "${s1:-}"; } 2>/dev/null )"
+
+# A run with reds exits 2 — suites ran and incidents were filed (routine), not 1
+# (which is reserved for critical errors that abort before any suite runs).
+is "a run with reds exits 2 (routine red, not a critical error)" "2" "$rc_reds"
 
 # ======================================================================================
 echo
@@ -466,7 +470,13 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$GT/spira/test-gt-ok.sh"
 git -C "$GT" add -A
 git -C "$GT" -c user.email=t@t -c user.name=t commit -q -m base
 
-gate() { env -i PATH="$PATH" HOME="$TMP/home" bash "$GT/spira/gate-spira.sh" 2>&1; }
+gate() {
+    # SPIRA_SUITE_TIMEOUT=5: the gate's watchdog spawns `sleep $timeout` in a
+    # background subshell; killing the subshell leaves sleep as an orphan holding
+    # the command-substitution pipe open until sleep expires. 5s keeps the test
+    # responsive while still exercising the gate's suite-running path.
+    env -i PATH="$PATH" HOME="$TMP/home" SPIRA_SUITE_TIMEOUT=5 bash "$GT/spira/gate-spira.sh" 2>&1
+}
 
 printf 'spira/test-gt-ok.sh\n' > "$GT/spira/gate-suites"
 gout="$(gate)"; grc=$?
@@ -524,7 +534,7 @@ L
 
 leak_out="$(sut run SPIRA_SUITES_BUDGET=60 SPIRA_SUITE_TIMEOUT=10)"; leak_rc=$?
 
-is "the pass returns rather than hanging on the leaked child (rc=1: cleanup defect)" "1" "$leak_rc"
+is "the pass returns rather than hanging on the leaked child (rc=2: suite filed as red)" "2" "$leak_rc"
 is "the leaker is marked red for leaving a background job" "red" \
    "$( { read -r ls _ < "$STATE/test-fx-leaky.sh.result"; printf '%s' "${ls:-MISSING}"; } 2>/dev/null )"
 is "and so does the suite after it" "ok" \

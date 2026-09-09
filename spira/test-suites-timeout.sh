@@ -75,6 +75,17 @@ else
     else
         bad "unit injects SPIRA_SUITES_MAXSEC" "Environment= line not found in $UNIT"
     fi
+
+    # suites.sh run exits 2 for routine reds; SuccessExitStatus=2 keeps the unit out of
+    # the failed state on a normal red day, while exit 1 (critical errors) still fails it.
+    success_exit="$(grep -m1 '^SuccessExitStatus=' "$UNIT" 2>/dev/null \
+                   | cut -d= -f2- | tr -d '[:space:]')"
+    if [ "$success_exit" = "2" ]; then
+        ok "unit has SuccessExitStatus=2 (routine reds do not mark the unit failed)"
+    else
+        bad "unit has SuccessExitStatus=2" \
+            "got [${success_exit:-MISSING}] — routine reds will mark the unit failed"
+    fi
 fi
 
 # ======================================================================================
