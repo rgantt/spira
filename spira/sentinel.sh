@@ -989,6 +989,34 @@ for f in $LANE_FAYTHS; do
     fi
 done
 
+# ======================================================================================
+# CHECK 7c — ready beads no persona can claim. Every partition reporting "nothing ready"
+# is ambiguous: the queue may be genuinely empty, or a bead may be present with labels
+# that prevent every persona from claiming it. CHECK 7 cannot distinguish these — it asks
+# each fayth's own predicate and stops at 0. This check reads the raw ready set, tests
+# each bead against the full chamber, and surfaces any with an empty intersection.
+#
+# THE TWO FAILURE MODES this detects:
+#   1. fayth:<persona> with partition labels the named persona does not own — the fifteen-
+#      hour strand of 2026-09-09: seven P1 beads carried fayth:ops on spira,plan labels;
+#      builder matched the partition but was excluded by the preference; ops was excluded
+#      by its own partition. Every persona reported 0; every report was truthful.
+#   2. spira with no partition label — a bead any partition requires exactly one of (plan,
+#      incident, ...) but carries none of them; invisible to every persona by construction.
+#      Live instance at time of fix: sp-bvo7.
+#
+# THIS IS NOT AN ACTION — it does not change the DAG; it names what is wrong so the fix
+# is one label, not a debugging session. Counted as `acted` so the pass summary says
+# something surfaced rather than ending silently.
+# ======================================================================================
+unclaimable_out="$(detect_unclaimable_ready 2>/dev/null)"
+if [ -n "$unclaimable_out" ]; then
+    printf '%s\n' "$unclaimable_out"
+    n_unc="$(grep -c '^UNCLAIMABLE' <<< "$unclaimable_out" || true)"
+    log "CHECK7c: $n_unc ready bead(s) no persona can claim — fix each by adding or removing the label named above"
+    act "surfaced $n_unc unclaimable ready bead(s)"
+fi
+
 if [ "$GOAL_REACHED" = 1 ]; then
     log "pass complete — $acted action(s), $progressed progress, goal reached"
     exit 0

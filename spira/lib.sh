@@ -2309,6 +2309,105 @@ for i in (d if isinstance(d, list) else [d]):
     return 0
 }
 
+# detect_unclaimable_ready -> one UNCLAIMABLE line per ready bead no persona can claim.
+#
+# THE ALARM THIS CHECK FIRES ON IS DISTINCT FROM AN IDLE QUEUE. "nothing ready" and "a
+# ready bead nobody can claim" look identical to CHECK 7: every partition reports 0, a
+# genuinely empty queue reports 0, and the pass ends with the same log line either way.
+# This check reads the raw ready set — no partition filter — and tests each bead against
+# the full chamber. The empty-queue case finds no beads; the unclaimable case finds them.
+#
+# THE ARITHMETIC MIRRORS bead.sh's claimers(). Not called from there because bead.sh lives
+# in the brain repo and this runs in the harness; porting keeps the harness self-contained.
+# Both derive from the same chamber files, so they agree by construction.
+#
+# EXCLUSION SET IS THE PERSONA'S OWN FAYTH_EXCLUDE_LABELS ONLY. The `fayth:<other-persona>`
+# terms that fayth_exclude() appends to each `bd ready --exclude-label` call are already
+# handled here by the preference check: when a bead carries `fayth:ops`, pref={ops} and
+# only ops is tested — no other persona enters the loop at all. Duplicating fayth: terms
+# into the exclusion set would be correct but redundant.
+#
+# OUTPUT NAMES THE BEAD, ITS PREFERENCE AND THE REJECTION REASON so the fix is one label.
+# Format: UNCLAIMABLE <id> — <reason>
+detect_unclaimable_ready() {
+    local parts="" f inc exc
+    for f in $(spira_fayths); do
+        inc="$(fayth_get "$f" FAYTH_LABELS)"
+        exc="$(fayth_get "$f" FAYTH_EXCLUDE_LABELS)"
+        [ -n "$inc" ] && parts="${parts}${f}|${inc}|${exc}"$'\n'
+    done
+    [ -n "$parts" ] || return 0
+
+    bdjson "${READY_ARGS[@]}" 2>/dev/null \
+    | PARTS="$parts" python3 -c '
+import json, os, sys
+
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+beads = d if isinstance(d, list) else [d]
+
+parts = {}
+for line in os.environ["PARTS"].splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    name, inc_str, exc_str = line.split("|", 2)
+    parts[name] = (set(filter(None, inc_str.split(","))),
+                   set(filter(None, exc_str.split(","))))
+
+partition_labels = sorted({lab for inc, _ in parts.values() for lab in inc if lab != "spira"})
+
+for bead in beads:
+    L = set(bead.get("labels") or [])
+    bid = bead.get("id", "?")
+    # Only our own beads; skip ones already handled by dedicated checks
+    if "spira" not in L:
+        continue
+    if L & {"needs-ryan", "spira-poison"}:
+        continue
+
+    pref = {x.split(":", 1)[1] for x in L if x.startswith("fayth:")}
+    claimers = []
+    for name, (inc, exc) in parts.items():
+        if not inc <= L:
+            continue
+        if L & exc:
+            continue
+        if pref and name not in pref:
+            continue
+        claimers.append(name)
+
+    if claimers:
+        continue
+
+    # Build a diagnostic naming the preference and why each named persona was rejected
+    if pref:
+        reasons = []
+        for p in sorted(pref):
+            if p not in parts:
+                reasons.append("%s (not in chamber)" % p)
+            elif not parts[p][0] <= L:
+                missing = sorted(parts[p][0] - L)
+                reasons.append("%s (partition %s, missing %s)" % (
+                    p, sorted(parts[p][0]), missing))
+            elif L & parts[p][1]:
+                blocked = sorted(L & parts[p][1])
+                reasons.append("%s (excluded by own labels %s)" % (p, blocked))
+            else:
+                reasons.append("%s (unknown reason)" % p)
+        pref_str = ", ".join(sorted(pref))
+        print("UNCLAIMABLE %s — fayth:%s narrows to %s, but none can claim it: %s; "
+              "fix: drop the fayth: label or add the named persona'\''s partition labels" % (
+                  bid, pref_str, ", ".join(sorted(pref)), "; ".join(reasons)))
+    else:
+        print("UNCLAIMABLE %s — spira with no matching partition; "
+              "no persona'\''s partition labels (%s) are all present; "
+              "add one of: %s" % (bid, ", ".join(partition_labels), ", ".join(partition_labels)))
+' 2>/dev/null
+}
+
 # --------------------------------------------------------------------------------------
 # THE REPOSITORY REGISTRY. Which repository a bead is worked in comes from THE BEAD — a
 # `repo:<name>` label, the same partition every imported Gas Town bead already carries —
