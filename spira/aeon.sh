@@ -167,6 +167,13 @@ if [ "$SWEEP" = 1 ]; then
         set +e
         rm -f "$SWEEP_PIDFILE" "${SWEEP_PIDFILE%.pid}.name"
         ledger "done $FAYTH $SWEEP_BEAD rc=$rc status=sweep $(session_result_fields "${SWEEP_LOGF:-}")"
+        # SAME RATIONALE AS THE BEAD-MODE TEARDOWN: a sweep that ran and did work
+        # succeeded, even if the claude CLI exited 1 because a tool call returned non-zero.
+        # Exit 0 only when the session actually ran (unlanded or killed mid-work); a
+        # refused session (API capacity) preserves $rc so the named unit enters FAILED.
+        case "$(session_outcome "${SWEEP_LOGF:-}" 2>/dev/null)" in
+            unlanded|killed) exit 0 ;;
+        esac
         exit $rc
     }
     trap sweep_cleanup EXIT INT TERM
@@ -740,8 +747,18 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
         bdq note "$BEAD_ID" "Closed by the session while its landing gate was still running — $gate_why. The close carries no gate verdict; the landing pass gates this branch again and reopens the bead if it fails." >/dev/null 2>&1
         log "$FAYTH: $BEAD_ID closed with its gate still running ($gate_why)"
     fi
-    ledger_done "$rc" "${st:-?}"
-    exit $rc
+    ledger_done "${SESSION_RC:-$rc}" "${st:-?}"
+    # A CLOSED BEAD IS A SUCCEEDED TASK. SESSION_RC is the claude CLI's exit code, held
+    # separately because `rc=$?` at trap time reflects the verdict block's LAST COMMAND —
+    # which may be a `bdq note` or `git` that returned non-zero for cosmetic reasons —
+    # not the session's verdict. A named unit (spira-ops, spira-qa) left in FAILED state
+    # because of a stray command exit code shows up in every `systemctl --state=failed`
+    # check and drowns genuine failures (law-alerts-must-be-actionable).
+    # Exit 0 when the bead is closed: the work succeeded.
+    # Exit SESSION_RC otherwise: a session that ran and did not close the bead is a
+    # genuine failure, and SESSION_RC carries the claude CLI's actual exit code.
+    [ "${st:-}" = "closed" ] && exit 0
+    exit "${SESSION_RC:-$rc}"
 }
 # WHY THE HARNESS ITSELF PUT THIS BEAD BACK, if it did. Set by the verdict block at the foot
 # of this script, read by the teardown above. Empty is the state every session starts in and
@@ -1660,7 +1677,7 @@ if [ "$st" = "closed" ] && [ "$committed" = "yes" ] && [ -z "$SOP_SILENT" ]; the
         log "$FAYTH: $BEAD_ID closed current with $BASE"
     elif rebase_branch "$BRANCH" "$BASE" "$REPO" "$REPO_NAME"; then
         log "$FAYTH: $BEAD_ID closed behind $BASE — rebased by the harness after close (the session did not)"
-        bdq note "$BEAD_ID" "Rebased onto $BASE by aeon.sh after the session closed the bead without doing so. The replay was clean; the landing gate judges the rebased tree." >/dev/null 2>&1
+        bdq note "$BEAD_ID" "Rebased onto $BASE by aeon.sh after the session closed the bead without doing so. The replay was clean; the landing gate judges the rebased tree." >/dev/null 2>&1 || true
     else
         _other_beads="$(other_beads_on_conflicts "$REPO" "$BRANCH" "$BASE" "${REBASE_CONFLICTS:-}")"
         _reopen_note="Reopened by aeon.sh: closed behind $BASE and $BRANCH does not rebase onto it — conflicts in ${REBASE_CONFLICTS:-unknown}. The brief asked for this rebase before closing."
