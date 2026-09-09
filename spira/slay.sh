@@ -127,6 +127,11 @@ status_of() { bdjson show "$ID" | python3 -c 'import sys,json
 d=json.load(sys.stdin); d=d if isinstance(d,list) else [d]; print(d[0].get("status","") if d else "")' 2>/dev/null; }
 st="$(status_of)"
 if [ "$st" = in_progress ]; then
+    # bdq unclaim releases the lease but does NOT change status — the bead stays in_progress,
+    # and spira_holder_witnesses reads in_progress as "held", so the worktree/branch removal
+    # below is refused. Reopen first: it moves the status to open, making the holder check
+    # see nobody home, which is what is actually true at this point.
+    bdq reopen "$ID" >/dev/null 2>&1 || true
     bdq unclaim "$ID" --force >/dev/null 2>&1 \
         || bdq update "$ID" --status open --assignee "" >/dev/null 2>&1 \
         || true
