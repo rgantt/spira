@@ -1320,6 +1320,40 @@ PROMPT="${PROMPT/\{\{DEADLINE\}\}/$DEADLINE_BRIEF}"
 # memories sorted last without saying so. render_memories reads the JSON and prints each
 # one whole.
 STATUTES="$(render_memories "${FAYTH_MEMORY_PREFIXES:-law-}")"
+# THE MACHINE-READABLE ALTERNATIVE TO "ALREADY DONE" IS PART OF THE BRIEF. An aeon that
+# concludes the work is already done will close with "already done" in the reason unless it
+# is explicitly told not to. The sentinel reads the COMMIT GRAPH, not the close reason: a
+# bare close without a commit naming the bead is indistinguishable from a failed attempt and
+# is reopened with an attempt charged toward the poison threshold. Two attempts that way is
+# one from poison. `bd supersede` records the relation where the sentinel, landing pass, and
+# cleanup checks all read it; a close reason is read by none of them.
+#
+# THE SUCCESSOR MUST BE VERIFIED AS LANDED BEFORE `bd supersede` IS RUN. Closed is not
+# landed: a bead can be closed without its commit on the base, so a supersede decision made
+# from the successor's status alone retires this bead against a promise that may never be
+# kept and nothing downstream will notice the gap.
+ALREADY_DONE_BRIEF="## If you find the work is already done
+
+If you conclude this bead's work has already landed on \`$BASE\` under another commit — a
+different bead already carried it — do **not** close with an \"already done\" reason. The
+sentinel verifies landing by reading the commit graph, not the close reason: a bare close
+without a commit naming \`$BEAD_ID\` is indistinguishable from a failed attempt, and the
+sentinel reopens it and charges an attempt toward the poison threshold.
+
+The machine-readable path:
+
+1. **Verify the successor actually landed.** Closed is not landed — a bead can be closed
+   without its commit on the base. Check the commit graph, not the bead's status:
+
+       git -C $WORK log --format='%s' -n \${SPIRA_VERDICT_WINDOW:-400} $BASE | grep <successor-id>
+
+2. Once confirmed on the base, **run \`bd supersede\`**:
+
+       bd -C $SPIRA_DB supersede $BEAD_ID --with <successor-id>
+
+That records the relation so the sentinel, landing pass, and cleanup checks all recognise this
+bead as retired and skip it correctly. A close reason alone is not read by any of them."
+
 # THE LAST STEP BEFORE CLOSING IS A REBASE, AND IT IS THE AEON'S. The landing pass rebases
 # too, but it cannot resolve a conflict — it reopens the bead and hands the conflict to the
 # NEXT aeon, which arrives with none of the context that wrote the commits. With several
@@ -1349,6 +1383,7 @@ $STATUTES
 $PROMPT
 $DIRTY_BRIEF
 $RESUME_BRIEF
+$ALREADY_DONE_BRIEF
 $CLOSE_BRIEF
 $REBASE_BRIEF"
 

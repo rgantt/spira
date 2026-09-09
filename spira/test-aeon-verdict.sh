@@ -270,6 +270,62 @@ nowant "a persona with no wall gets no placeholder either" "{{" "$prompt"
 want   "and is told plainly that it has no clock" "no wall-clock deadline" "$prompt"
 nowant "and is not given a deadline it does not have" "This session is killed at" "$prompt"
 
+# ======================================================================================
+echo
+echo "the brief tells the aeon to use bd supersede rather than close when work is already done:"
+# ======================================================================================
+# THE DEFECT THIS REPRODUCES (sp-0gne). An aeon that finds the work already done closes
+# with "already done" in the reason. The sentinel reads the commit graph, not the close
+# reason: that close is indistinguishable from a failed attempt — the bead is reopened and
+# charged. The fix: state the machine-readable path in the prompt the aeon receives, before
+# it acts. The instruction appeared in the REOPEN NOTE, which is too late — it arrives after
+# the attempt has been charged, and the next aeon starts from the prompt, not from that note.
+#
+# ASSERTED AGAINST THE PROMPT THE SHIM RECEIVES. A grep on aeon.sh proves the string is in
+# the source; it cannot prove the string survives template rendering. ALREADY_DONE_BRIEF is
+# appended to FULL unconditionally for every bead regardless of persona, so the prompt from
+# the previous run contains it.
+want "the brief tells aeons to use bd supersede for already-done work" \
+     "bd supersede" "$prompt"
+want "and to verify the successor actually landed first" \
+     "Verify the successor actually landed" "$prompt"
+nowant "no unreplaced placeholder reaches the model" "{{" "$prompt"
+
+# ======================================================================================
+echo
+echo "an aeon using bd supersede on a landed successor ends superseded, not reopened-and-charged:"
+# ======================================================================================
+# THE STRONGER FORM the bead acceptance describes. The existing test (sp-vd-3) seeds the
+# successor as merely closed — a status in the database. This test puts an ACTUAL COMMIT
+# naming the successor on origin/main first, asserting against the case the instruction
+# describes: a genuinely landed successor.
+#
+# POSITIVE CONTROL beside the exempted case. The superseded bead is asserted to survive
+# beside an identical bead that has no supersede relation and IS reopened — so silence below
+# cannot pass against a version of the check that skips everything.
+testdb_reset
+seed sp-vd-dup            # to be superseded — the duplicate; id must not be a substring of the winner's
+seed sp-vd-winner closed  # the successor whose work is already on the base
+# Land the winner: put a commit naming sp-vd-winner on origin/main.
+# sp-vd-dup does not appear in "sp-vd-winner — the work", so committed=no is correctly read.
+printf 'sp-vd-winner\n' >> "$REPO/f"
+git -C "$REPO" add f
+git -C "$REPO" commit -qm "sp-vd-winner — the work"
+git -C "$REPO" push -q origin main 2>/dev/null
+git -C "$REPO" checkout -q main
+
+shim 0 supersede:sp-vd-winner; run_aeon
+is     "the superseded bead stays closed"              closed "$(field sp-vd-dup status)"
+want   "the verdict records the exemption"             "superseded=1" "$(cat "$TMP/out")"
+want   "and says why it declined to act"               "NOT reopened — superseded" "$(cat "$TMP/out")"
+nowant "so the bead is not reopened"                   "REOPENED" "$(cat "$TMP/out")"
+
+# Positive control: without the supersede relation, a bare close-without-commit IS reopened.
+testdb_reset; seed sp-vd-ctrl
+shim 0 close; run_aeon
+is   "a non-superseded bare close is reopened (positive control)"  open "$(field sp-vd-ctrl status)"
+want "and the REOPENED line appears"                               "REOPENED" "$(cat "$TMP/out")"
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
