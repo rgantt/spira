@@ -809,14 +809,21 @@ fn main() {
                     app.scroll.reset();
                 }
                 KeyCode::Enter if app.view == View::Decisions => {
-                    app.mode = Some("decide".into());
+                    // An ask-* bead is closed by the verdict; a work bead gets a comment and
+                    // stays open. The mode drives both: "decide" closes, "comment" does not.
+                    let mode = if app.current().map(|it| model::is_ask(&it)).unwrap_or(false) {
+                        "decide"
+                    } else {
+                        "comment"
+                    };
+                    app.mode = Some(mode.into());
                     app.buf.clear();
                     app.reading = false;
                     app.scroll.reset();
                 }
-                // ⏎ ON A DECISION IS THE DECISION — a deliberate ruling. `c` is the rare
-                // path for someone who has read the body and wants to comment without yet
-                // closing, matching the list's own `c comment` binding.
+                // ⏎ ON AN ASK IS THE DECISION — a deliberate ruling. `c` is the path for
+                // someone who has read the body and wants to comment without closing (always
+                // available for asks; only path for work beads), matching the list's `c comment`.
                 KeyCode::Char('c') if app.view == View::Decisions => {
                     app.mode = Some("comment".into());
                     app.buf.clear();
@@ -940,13 +947,17 @@ fn main() {
                 app.mode = Some("reason".into());
                 app.buf.clear();
             }
-            // ⏎ ON A DECISION IS THE DECISION. Typing an answer to a question IS answering
-            // it — the close reason IS the verdict. Making ⏎ a comment left the item sitting
-            // there after the operator had already answered it: "i don't want to comment and have
-            // the thing still there, i want to DECIDE." Commenting without deciding is the
-            // rare case, so it gets its own key.
+            // ⏎ ON AN ASK IS THE DECISION. Typing an answer to a question IS answering
+            // it — the close reason IS the verdict. For a work bead with no ask-* label,
+            // ⏎ records a comment and leaves the bead open: a reply to "fix it" is not a
+            // verdict, and closing the bead would retire the work unfixed.
             KeyCode::Enter if n > 0 && app.view == View::Decisions => {
-                app.mode = Some("decide".into());
+                let mode = if app.current().map(|it| model::is_ask(&it)).unwrap_or(false) {
+                    "decide"
+                } else {
+                    "comment"
+                };
+                app.mode = Some(mode.into());
                 app.buf.clear();
             }
             KeyCode::Enter if n > 0 && (app.view == View::Insights || app.view == View::Alerts) => {

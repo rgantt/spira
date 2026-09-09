@@ -617,6 +617,23 @@ pub fn enact(item: &Item, slug: &str, text: &str) -> Result<(), String> {
     .map_err(|e| format!("enacted law-{slug} but could not label {}: {e}", item.id))
 }
 
+/// Whether a bead is waiting on a verdict from the operator.
+///
+/// A bead carrying any ask-* label is a question, decision, or task the operator must rule on:
+/// pressing ⏎ closes it with the typed text as the verdict. A work bead in DECISIONS carries no
+/// ask-* label — replying to it means commenting, not deciding, and the bead stays open.
+///
+/// THE BUG THIS PREVENTS: a P0 work bead reached DECISIONS because it carried `overseer`. The
+/// operator replied "fix it" in the panel. The panel treated the reply as a verdict and CLOSED
+/// the bead with "fix it" as the reason — making it uncaimable and retiring the work unfixed.
+/// The distinguishing fact was only that he engaged with it; the trap fired on exactly the
+/// beads he paid attention to.
+pub fn is_ask(item: &Item) -> bool {
+    item.labels
+        .iter()
+        .any(|l| matches!(l.as_str(), "ask-question" | "ask-decision" | "ask-task"))
+}
+
 /// A comment is never a completion. Replying used to mark things done, which once recorded
 /// the operator's clarifying question as the evidence that the work was finished.
 pub fn comment(view: View, item: &Item, text: &str) -> Result<(), String> {
@@ -746,5 +763,52 @@ mod tests {
     fn the_word_limit_is_not_enforced_here() {
         let long = format!("slug: {}", "word ".repeat(300));
         assert!(parse_enact(&long).is_ok());
+    }
+
+    // ── is_ask: closes vs. comments ──────────────────────────────────────────────────────
+    //
+    // THE BUG SHAPE: DECISIONS shows any bead waiting on the operator, not only asks. A work
+    // bead reaches it when it carries `overseer`. Pressing ⏎ on that bead used to close it
+    // with the reply as the verdict — retiring the work unfixed. The distinguishing fact was
+    // only that the operator engaged with it, which made the trap fire on the most important
+    // beads. These tests assert the line `is_ask` draws.
+
+    fn work_item(labels: &[&str]) -> Item {
+        Item {
+            id: "sp-x".into(),
+            title: "fix the thing".into(),
+            lead: String::new(),
+            body: "description".into(),
+            badge: "task".into(),
+            when: "2026-09-08T10:00:00Z".into(),
+            enacted: None,
+            thread: Vec::new(),
+            labels: labels.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// Every ask-* label makes a bead an ask. THE POSITIVE CONTROL
+    /// (law-absence-needs-a-positive-control): a predicate that returned false for everything
+    /// would satisfy "work beads are not asks" while being completely broken.
+    #[test]
+    fn beads_with_ask_labels_are_asks() {
+        for label in ["ask-question", "ask-decision", "ask-task"] {
+            let it = work_item(&[label, "needs-ryan", "overseer"]);
+            assert!(is_ask(&it), "{label} must be recognized as an ask");
+        }
+    }
+
+    /// A work bead in DECISIONS carries `overseer` (or the escalation label) but no ask-*.
+    /// Replying to it must comment, never close.
+    #[test]
+    fn a_work_bead_with_no_ask_label_is_not_an_ask() {
+        let it = work_item(&["spira", "plan", "overseer", "repo:spira"]);
+        assert!(!is_ask(&it));
+    }
+
+    /// Empty labels — a bead with nothing on it — is not an ask.
+    #[test]
+    fn a_bead_with_no_labels_is_not_an_ask() {
+        assert!(!is_ask(&work_item(&[])));
     }
 }
