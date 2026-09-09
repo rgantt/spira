@@ -194,8 +194,16 @@ else ok "hold is dead after holder dies"; fi
 # SPIRA_HOLD_HEARTBEAT seconds between liveness checks, so removing the pidfile
 # alone leaves it alive in the suite's process group until the harness kills it,
 # which the harness counts as a test defect even when all assertions pass.
+# Wait until the heartbeat has actually exited (not just received the signal),
+# then give its sleep child — killed by the heartbeat's trap — time to exit too.
+# Without this wait, suites.sh's kill -0 -- -pgid check after the test exits
+# finds the heartbeat or its sleep child still in the process group.
 hbpid2="$(cat "$SPIRA_RUN/hold-sp-h2.hb" 2>/dev/null)"
-[ -n "$hbpid2" ] && kill "$hbpid2" 2>/dev/null || true
+if [ -n "$hbpid2" ]; then
+    kill "$hbpid2" 2>/dev/null || true
+    while [ -d "/proc/$hbpid2" ]; do sleep 0.05; done
+    sleep 0.05
+fi
 rm -f "$SPIRA_RUN/hold-sp-h2.pid" "$SPIRA_RUN/hold-sp-h2.hb"
 
 # ======================================================================================
