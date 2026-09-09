@@ -2,7 +2,7 @@
 #
 # ask — put a question, decision, insight or event in front of the operator, stored as a bead.
 #
-#   ask.sh add "<question>"        [--why "<what is blocked>"] [--default "<what I'd do>"]
+#   ask.sh add "<question>"        [--why "<what is blocked>"] [--default "<what I'd do>"] [--moot-when "<cmd>"]
 #   ask.sh decide "<the choice>"   [--why ...] [--default ...]
 #   ask.sh insight "<what was learned>" [--why "<why it matters>"]
 #   ask.sh note "<what happened>" --kind <event.kind> [--why ...] [--target <bead>]
@@ -104,6 +104,13 @@ compose() { # kind why default evidence
     # wearing a decision's clothes: they must go find the facts before they can even tell what is
     # being asked, which is the work the escalation existed to do for them.
     [ -n "$ev" ] && body="${body}**Evidence**"$'\n'"\`\`\`"$'\n'"${ev}"$'\n'"\`\`\`"$'\n\n'
+    # MOOT-WHEN IS MACHINE-READABLE. moot-sweep.sh runs this command on a timer; exit 0
+    # means the condition that fired this alert has cleared and the ask is resolved without
+    # human involvement. Never set on events or insights — neither has a clearing condition.
+    [ -n "${MOOT_WHEN:-}" ] && case "$kind" in
+        event|insight) ;;
+        *) body="${body}MOOT-WHEN: ${MOOT_WHEN}"$'\n\n' ;;
+    esac
     if [ "$kind" = event ]; then
         # An event has no thread and nothing is owed, so it says neither how to answer it nor
         # how to dismiss it — it is read and moved on from. Saying anything else here is how
@@ -191,8 +198,8 @@ for line in t.splitlines():
     printf '%s' "$id"
 }
 
-parse_opts() { # sets WHY / DFLT / KIND / TARGET from remaining args
-    WHY=""; DFLT=""; EV=""; KIND=""; TARGET=""
+parse_opts() { # sets WHY / DFLT / KIND / TARGET / MOOT_WHEN from remaining args
+    WHY=""; DFLT=""; EV=""; KIND=""; TARGET=""; MOOT_WHEN=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --why)     WHY="${2:-}"; shift 2 ;;
@@ -209,6 +216,9 @@ parse_opts() { # sets WHY / DFLT / KIND / TARGET from remaining args
                 if [ -r "${2:-}" ]; then EV="$(tail -c 2500 "$2" 2>/dev/null)"
                 else EV="(evidence file unreadable: ${2:-})"; fi
                 shift 2 ;;
+            # A shell command exiting 0 when the condition that fired this alert has cleared.
+            # moot-sweep.sh runs it on a timer and resolves the ask without human involvement.
+            --moot-when) MOOT_WHEN="${2:-}"; shift 2 ;;
             *) shift ;;
         esac
     done

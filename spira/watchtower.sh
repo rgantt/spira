@@ -479,3 +479,19 @@ if [ -n "$drain_since" ] && [ "$drain_mins" != "?" ] && \
     bash "$INC" file "DRAINING: world.sh summons gated" - >/dev/null || true
     log "watchtower: drain escalation filed (${drain_mins}m >= ${DRAIN_WARN_MINS}m threshold)"
 fi
+
+# ---------------------------------------------------------------------------------------
+# MOOT-ASK SWEEP. Auto-filed asks record the condition that fired them as a MOOT-WHEN:
+# command in their description. When that command exits 0, the condition has cleared and
+# the ask is no longer actionable — resolve it so it does not consume the operator's
+# attention on every session start. The sweep runs here on the same cadence because these
+# conditions are the same ones this pass already reads (law-detection-outranks-rejection).
+# ---------------------------------------------------------------------------------------
+MOOT_SH="${SPIRA_MOOT_SH:-$(dirname "$0")/../cockpit/moot-sweep.sh}"
+if [ -r "$MOOT_SH" ]; then
+    bash "$MOOT_SH" --apply >/dev/null 2>&1 || \
+        log "watchtower: moot-sweep exited non-zero — check $MOOT_SH"
+    log "watchtower: moot-sweep ran"
+else
+    log "watchtower: moot-sweep skipped — $MOOT_SH is missing or unreadable"
+fi
