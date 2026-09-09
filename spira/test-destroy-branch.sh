@@ -5,11 +5,12 @@
 #
 #   ./test-destroy-branch.sh
 #
-# THE PROPERTY UNDER TEST (sp-hl72 / sp-mqsl). Before the content fence was
+# THE PROPERTY UNDER TEST (sp-w6bw / sp-hl72 / sp-mqsl). Before the content fence was
 # added, spira_destroy_branch called git branch -D unconditionally once two
 # lightweight checks passed (no live holder, not checked out in a worktree).
 # A branch reclaimed or slain before its commits reached origin/main could be
 # garbage-collected within minutes, with no error and no log line from landing.
+# sp-w6bw filed the assertion requirement; sp-kq8l implemented it; sp-hl72 wrote this test.
 #
 # The fence uses content_landed (diff-based), not merge-base --is-ancestor
 # (ancestry-based). The distinction matters for squash repositories: a squash
