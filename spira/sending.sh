@@ -257,8 +257,58 @@ sys.exit(0 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
                 send_branch "$id" "$br" "REAPED"
                 continue
             fi
+            # SQUASH-MERGED CLOSED BEAD. A squash lands the work as one commit the branch is
+            # not an ancestor of. content_landed then answers NO about a finished branch whose
+            # changes are all on the base — specifically when post-squash commits on the base
+            # touch the same files and produce a conflict on merge-tree. The conflict means the
+            # base holds the squashed content AND something beyond it; the branch carries
+            # nothing the base lacks.
+            #
+            # A merged PR whose headRefOid still matches the current branch tip is proof that:
+            # (a) every commit on this branch was captured by the PR at the moment of the
+            # squash-merge, and (b) no commits were added to the branch after the merge, so
+            # the ref holds nothing further. Together with a CLOSED bead these three facts
+            # constitute the same assurance content_landed gives for a fast-forward: the work
+            # is on the base and the ref can be reaped safely.
+            #
+            # pr_merged alone is never evidence for deletion (its own comment says so), but
+            # pr_merged AND unchanged-tip AND closed-bead together are. The tip check is what
+            # makes it safe: without it, commits added after the squash would be silently
+            # destroyed. With it, those commits are impossible by definition.
+            #
+            # NETWORK CALL. ghq reaches GitHub, so this runs only after content_landed and
+            # superseded have both said no — never on the common path.
+            if bdjson show "$id" 2>/dev/null | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(1)
+d = d if isinstance(d, list) else [d]
+sys.exit(0 if d and d[0].get("status") == "closed" else 1)' 2>/dev/null; then
+                _br_tip="$(git -C "$REPO" rev-parse "$br" 2>/dev/null)"
+                _pr_tip="$(cd "$REPO" 2>/dev/null && ghq pr view "$br" \
+                    --json state,headRefOid \
+                    -q 'select(.state=="MERGED") | .headRefOid' 2>/dev/null)"
+                if [ -n "$_pr_tip" ] && [ "${_br_tip:-}" = "$_pr_tip" ]; then
+                    if [ "$DRY" = 1 ]; then
+                        say "WOULD  $id  reap squash-merged branch $br (PR merged at this tip)"
+                        continue
+                    fi
+                    send_branch "$id" "$br" "REAPED"
+                    continue
+                fi
+            fi
             n="$(git -C "$REPO" rev-list --count "$LANDREF..$br" 2>/dev/null || echo '?')"
-            say "KEEP   $id  unlanded — $n commit(s) not in $LANDREF"; continue
+            if bdjson show "$id" 2>/dev/null | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(1)
+d = d if isinstance(d, list) else [d]
+sys.exit(0 if d and "status" in d[0] else 1)' 2>/dev/null; then
+                say "KEEP   $id  unlanded — $n commit(s) not in $LANDREF"
+            else
+                say "UNADOPTED $id  no bead — $n commit(s) not in $LANDREF"
+            fi
+            continue
         fi
         if [ "$DRY" = 1 ]; then
             say "WOULD  $id  send branch $br$( [ -n "$(worktree_of "$br" "$REPO")" ] && printf ' and its worktree')"
