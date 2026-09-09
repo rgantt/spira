@@ -1968,9 +1968,11 @@ youngest_in_subtree() {
 subtree_has_flock() {
     local root="$1"
     local p pid cur hops hit comm parent
-    # Same ppid-map optimization as youngest_in_subtree:
-    # build the entire map with ONE awk pass, walk ancestry via array lookups.
-    # PARSE AFTER THE COMM, NOT BY FIELD NUMBER, to handle processes with spaces in comm.
+    # Build a ppid map from a /proc/*/stat snapshot for ancestor walks.
+    # A flock process that appeared after the snapshot will be absent from the
+    # map even though it is visible via /proc/PID/comm; reading its stat directly
+    # in the comm scan below closes that TOCTOU window for the first hop.
+    # PARSE AFTER THE COMM, NOT BY FIELD NUMBER, to handle comms with spaces.
     declare -A ppid
     while IFS=' ' read -r pid parent; do
         ppid["$pid"]="$parent"
@@ -1985,11 +1987,22 @@ subtree_has_flock() {
         comm="$(cat "$p" 2>/dev/null)" || continue
         [ "$comm" = "flock" ] || continue
         pid="${p%%/comm}"; pid="${pid##*/}"
-        cur="$pid"; hops=0; hit=0
+        # Read this flock process's ppid directly from its stat file rather than
+        # from the snapshot: a freshly-spawned flock may not yet have been in
+        # /proc when the map was built, so ppid["$pid"] would be absent and the
+        # walk would stop at the first step.
+        cur=$(awk '{ n = match($0, /^[0-9]+ \(/); if (!n) next
+                     close_paren = 0
+                     for (i = length($0); i > 0; i--) if (substr($0, i, 1) == ")") { close_paren = i; break }
+                     if (!close_paren) next
+                     rest = substr($0, close_paren + 2)
+                     split(rest, a, " ")
+                     print a[2]; exit }' "/proc/$pid/stat" 2>/dev/null)
+        hops=0; hit=0
         while [ "$hops" -lt 40 ]; do
             [ "$cur" = "$root" ] && { hit=1; break; }
             [ "$cur" = "1" ] || [ -z "$cur" ] && break
-            cur="${ppid["$cur"]}" || break
+            cur="${ppid["$cur"]}"
             hops=$((hops+1))
         done
         [ "$hit" = 1 ] && return 0
