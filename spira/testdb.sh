@@ -293,10 +293,30 @@ testdb_reset() {
         fi
         return 0
     fi
-    # Embedded mode: directory swap.
+    # Embedded mode: directory swap using rename rather than rm-then-cp.
+    #
+    # WHY NOT rm -rf THEN cp -rp. Two hazards in sequence:
+    #   1. rm -rf can fail with ENOTEMPTY on overlay2 filesystems (a known Docker
+    #      kernel bug where the rename-based unlink of a whiteout entry conflicts
+    #      with a concurrent readdir). The failure is non-fatal to rm itself but
+    #      leaves the directory partially populated.
+    #   2. cp -rp into an EXISTING directory copies the source AS A SUBDIRECTORY,
+    #      not over it. If step 1 left .beads alive, step 2 creates .beads/.beads,
+    #      and the next reset then fails to remove the nested copy — compounding
+    #      the damage across every subsequent call (sp-i0vz5).
+    #
+    # mv (rename(2)) is atomic, does not recurse, and has no overlay2 edge case.
+    # The strategy: copy baseline to a fresh sibling name, rename old out of the
+    # way, rename new into place. Only the final cleanup rm can still fail, and
+    # by that point the live database is already in the correct state.
     [ -d "$TESTDB_BASELINE/.beads" ] || return 1
-    rm -rf "$TESTDB_DIR/.beads"
-    cp -rp "$TESTDB_BASELINE/.beads" "$TESTDB_DIR/.beads"
+    local _new; _new="$TESTDB_DIR/.beads.new"
+    local _old; _old="$TESTDB_DIR/.beads.old"
+    rm -rf "$_new" "$_old"   # clean up any leftovers from a previous interrupted reset
+    cp -rp "$TESTDB_BASELINE/.beads" "$_new" || { rm -rf "$_new"; return 1; }
+    mv "$TESTDB_DIR/.beads" "$_old" 2>/dev/null || true   # no-op when .beads absent
+    mv "$_new" "$TESTDB_DIR/.beads"                       || return 1
+    rm -rf "$_old" 2>/dev/null || true
 }
 
 testdb_seed() {          # testdb_seed  < JSONL on stdin
