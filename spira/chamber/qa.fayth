@@ -8,10 +8,11 @@
 FAYTH_NAME=qa
 FAYTH_DESC="QA — sweeps the scar record and proposes test beads for unguarded defects"
 
-# The partition. qa-sweep beads are created by spira-qa.service before each summon, one per
-# sweep, so this can only ever see work the timer itself filed — never plan beads, never
-# incidents. The escalation and CI-park labels are excluded for the same reason they are
-# everywhere: an escalation must never be dispatched as if it were work.
+# The fence. The fence check in aeon.sh requires FAYTH_LABELS to contain 'spira' before
+# both sweep and claim modes; it runs before the sweep branch and cannot be skipped. QA
+# runs in beadless sweep mode (aeon.sh --sweep) on every timer tick — it does not claim
+# qa-sweep beads. The 'qa-sweep' suffix is kept so that a manually-filed sweep bead is
+# still claimable if one is ever created by hand.
 FAYTH_LABELS="spira,qa-sweep"
 FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"
 

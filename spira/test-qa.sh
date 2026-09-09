@@ -21,7 +21,7 @@
 # (depth isolation, closing rule, citations), and the configuration key (SPIRA_QA_DEPTH).
 #
 # defect: sp-gsmx.6
-# covers: spira/chamber/qa.fayth spira/chamber/qa.md spira/conf.sh spira/qa-sweep.sh
+# covers: spira/chamber/qa.fayth spira/chamber/qa.md spira/conf.sh systemd/spira-qa.service
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 
@@ -157,10 +157,11 @@ want "SPIRA_LANES default includes ops"         "ops"            "$(grep 'SPIRA_
 # fresh install does not immediately schedule the expensive structural sweep.
 want "SPIRA_QA_DEPTH default is 'scars'"        "scars"          "$(grep 'SPIRA_QA_DEPTH:=' "$HERE/conf.sh")"
 
-# The service is executable and references qa-sweep.sh create.
-want "spira-qa.service references qa-sweep.sh create" "qa-sweep.sh create" \
-     "$(cat "$(dirname "$HERE")/systemd/spira-qa.service" 2>/dev/null || echo '')"
-is   "qa-sweep.sh is executable" "0" "$([ -x "$HERE/qa-sweep.sh" ] && echo 0 || echo 1)"
+# The service uses beadless sweep mode and no longer references qa-sweep.sh.
+svc_content="$(cat "$(dirname "$HERE")/systemd/spira-qa.service" 2>/dev/null || echo '')"
+want   "spira-qa.service uses aeon.sh qa --sweep" "aeon.sh qa --sweep" "$svc_content"
+nowant "spira-qa.service does not reference qa-sweep.sh" "qa-sweep.sh" "$svc_content"
+nowant "qa-sweep.sh is not present" "qa-sweep.sh" "$(ls "$HERE/" 2>/dev/null)"
 
 echo
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

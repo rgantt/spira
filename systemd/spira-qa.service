@@ -1,8 +1,8 @@
 [Unit]
 # The QA persona's TIMER trigger. QA is not responding to an event — it sweeps the scar
-# record on a cadence, looking for defects that escaped without a guarding assertion. The
-# sweep bead created here (ExecStartPre) is what the aeon claims and closes, carrying the
-# sweep's evidence.
+# record on a cadence, looking for defects that escaped without a guarding assertion. There
+# is no sweep bead: QA runs in beadless sweep mode (aeon.sh --sweep), which carries the
+# same capacity and ledger accounting a builder does without the bead lifecycle.
 #
 # ExecCondition makes the unit inert until qa.fayth lands on main. Between arming the timer
 # and the branch landing there is a window in which ExecStart would fail every six hours;
@@ -14,14 +14,9 @@ After=default.target
 [Service]
 Type=oneshot
 ExecCondition=/usr/bin/test -f @SPIRA_PROD@/chamber/qa.fayth
-# Create a qa-sweep bead if none is open or in_progress. A failed create is not fatal: the
-# aeon will find nothing and exit idle, which is the same outcome as a skipped pass. The -
-# prefix tells systemd to treat non-zero exit as success.
-ExecStartPre=-@SPIRA_PROD@/qa-sweep.sh create
-ExecStart=@SPIRA_PROD@/aeon.sh qa
-# FAYTH_TIMEOUT_SECONDS (3600) plus room for the claim, the sweep bead create, and the
-# verdict. An aeon that outlives this is killed, its lease goes stale, and bd reclaim
-# returns the bead so the next pass starts clean.
+ExecStart=@SPIRA_PROD@/aeon.sh qa --sweep
+# FAYTH_TIMEOUT_SECONDS (3600) plus room for the sweep to start. An aeon that outlives this
+# is killed, its lease goes stale, and the next pass starts clean on the next timer tick.
 TimeoutStartSec=4200
 # This box runs prod and the CI runner (law-fence-loops-on-shared-hardware). QA reads the
 # scar record (file I/O and bd queries), not code; it need not outrun builders.

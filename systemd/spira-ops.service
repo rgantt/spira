@@ -1,13 +1,14 @@
 [Unit]
-# The Ops persona's EVENT trigger. Incidents arrive from `OnFailure=` on the alert templates
-# via incident.sh, so this partition of the graph fills from outside the plan — and the two
-# ExecStartPre lines below (drain the spool, repair the wiring) belong to that arrival path
-# and to nothing else, which is why they are here and not in the sentinel.
+# The Ops persona's TIMER trigger. The timer path runs a beadless sweep: Ops reads the
+# watchtower snapshot, runs the scans on its menu, and files beads for anything that needs
+# attention. Incident claims arrive from the sentinel, which summons Ops directly when an
+# incident bead is ready — that path does not run through this service file.
 #
-# The summon itself is not exclusive to this unit: the sentinel asks EVERY fayth in the
-# chamber for its own predicate's ready count on every pass. This timer is the second path
-# to the same summon, at the cadence an incident deserves rather than the plan's.
-Description=Spira Ops — claim one incident, match an SOP, resolve or escalate
+# The two ExecStartPre lines below (drain the spool, repair the wiring) belong to the
+# incident arrival path and have nothing to do with the sweep: they are kept here because
+# this service is the one thing that runs on every timer tick whether or not there are
+# incidents, making it the cheapest place to do idempotent intake maintenance.
+Description=Spira Ops — sweep the pipeline on a cadence; incidents arrive via the sentinel
 Documentation=file://@SPIRA_HOME@/chamber/ops.fayth
 After=default.target
 
@@ -28,9 +29,15 @@ ExecStartPre=-@SPIRA_PROD@/install-intake.sh install
 # Anything the spool is still holding because the database was unreachable when the event
 # arrived. A write-ahead record nobody drains is a lost event with extra steps.
 ExecStartPre=-@SPIRA_PROD@/incident.sh drain
-ExecStart=@SPIRA_PROD@/aeon.sh ops
-# Matches FAYTH_TIMEOUT_SECONDS plus room for the claim and the verdict. An aeon that
-# outlives this is killed, its lease goes stale, and `bd reclaim` returns the bead.
+# THE PROMPT FILE IS WRITTEN BY WATCHTOWER. spira-watchtower.timer fires watchtower.sh on
+# a thirty-minute cadence; it writes the snapshot to $SPIRA_RUN/ops-sweep-prompt.txt before
+# this unit runs. Ops reads that file and enters sweep mode with it as the brief. If the
+# file is absent (watchtower has not run since boot), this unit exits non-zero and systemd
+# records a failure; the next tick will find the file present. That is the correct outcome:
+# a sweep with no snapshot context produces no useful signal.
+ExecStart=/bin/bash -c 'exec @SPIRA_PROD@/aeon.sh ops --sweep --prompt - < @SPIRA_RUN@/ops-sweep-prompt.txt'
+# Matches FAYTH_TIMEOUT_SECONDS plus room for the sweep to start. An aeon that outlives
+# this is killed and the next timer tick starts a fresh pass.
 TimeoutStartSec=2000
 # This box runs prod and the CI runner (law-fence-loops-on-shared-hardware).
 CPUQuota=70%
