@@ -46,7 +46,7 @@ cp "$HERE/conf.sh" "$HERE/lib.sh" "$HERE/exclude.sh" "$HERE/skew.sh" "$SH/"
 # exclude.sh matcher so a change to the signature fails here rather than passing here
 # and failing in production.
 sig() { local d="$1"; mkdir -p "$d"; : > "$d/boundary"; : > "$d/gate.sh"; : > "$d/lib.sh"; }
-commit() { git -C "$1" add -A >/dev/null 2>&1; git -C "$1" commit -q -m "${2:-c}" >/dev/null 2>&1; }
+commit() { git -C "$1" add -A >/dev/null 2>&1; git -C "$1" commit -q -m "${2:-c}" >/dev/null 2>&1; } # hermetic-ok: $1 is always a path under $WS ($TMP); positional params can't be statically traced
 br() {   # br <repo> <branch> <path> — a branch touching exactly one path
     git -C "$WS/$1" checkout -q -b "$2" main 2>/dev/null
     mkdir -p "$(dirname "$WS/$1/$3")"; printf 'changed\n' >> "$WS/$1/$3"
