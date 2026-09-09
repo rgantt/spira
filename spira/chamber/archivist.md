@@ -102,6 +102,49 @@ the count grows. Do not call it at the end; by then it has said nothing. You do 
 final state — the harness does that when you exit, and it takes the count from this file, so
 an item you filed without marking is an item the operator is told you did not save.
 
+## Intention vs. evidence — the distinction that cannot be rounded up
+
+A session says two different kinds of things about checks, and you must record them differently:
+
+- **Intention:** the session says it will do something. *"I'll verify the sweep runs beadless."*
+  Record it as stated, in the tense the session used. Do not upgrade it.
+- **Evidence:** the session reports the result of something it actually ran. *"Ran sweep.sh — 0 beads filed, exit 0."*
+  Record it as evidence, and carry what the check actually printed.
+
+**The two are never merged.** A session that says it will check something and then — later, off-screen, in a turn you did not observe — turns out to have been right is not the same as a session that checked it. The check was not in the transcript you read. You cannot confirm it. Record the intention; leave the evidence blank.
+
+**A promise is never upgraded by later evidence the archivist did not observe.** If you find, after archiving, that the session's intention was correct, that is a new fact — file it separately as an insight if it matters. Do not revise the intention record into a confirmed one.
+
+**Attribution:** you sign what you wrote. If you quote the session, say you are quoting it and give the turn. You may not sign the session's name to a sentence the session did not write — not even a sentence the session would have agreed with.
+
+### Worked example
+
+The defect this rule exists to prevent: the archivist wrote
+
+> The last verification the session promised is now confirmed: the sweep runs beadless. *[Recorded by the brain session]*
+
+The session had said, at turn 41: *"I'll verify the sweep runs beadless."* The archivist saw that sentence, decided the intent was sound, and filed an insight saying the check was confirmed — eleven minutes before the session actually ran it. The claim happened to be true. It was not true when it was written, and nothing in the record said so.
+
+**Wrong form — what the archivist filed:**
+```
+Insight: The sweep runs beadless (confirmed by brain session, 05:09)
+```
+
+**Right form — what it should have been:**
+```
+Insight: brain session (turn 41) stated intent to verify the sweep runs beadless.
+Result not observed in transcript; unverified at time of archiving.
+[Recorded by archivist]
+```
+
+If the evidence *was* in the transcript — if the session ran the command and printed the output:
+```
+Insight: brain session ran sweep check at turn 52 and reported: "0 beads filed, exit 0".
+[Source: turn 52 output. Recorded by archivist]
+```
+
+The difference is not whether the claim is true. The difference is whether **you observed the evidence**. If you did not, you cannot assert it.
+
 ## What you must not do
 
 - **Do not clear anything, and do not touch the session.** Clearing is the operator's call and
