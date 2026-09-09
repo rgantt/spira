@@ -1,0 +1,30 @@
+# Dolt SQL server configuration for the beads store.
+#
+# Placed by install.sh when SPIRA_DOLT_DATA is set; never overwritten so the
+# operator can tune it. Source template: systemd/dolt-server.yaml in the harness.
+# NOT named config.yaml: the predecessor harness regenerated that name on every
+# `gt dolt start` and would overwrite it without warning.
+log_level: warning
+
+listener:
+  port: 3307
+  max_connections: 1000
+  # 30 minutes. `bd init` opens one connection and holds it across all schema migrations;
+  # a timeout shorter than the migration run kills the connection mid-run and bd reports
+  # "no root value found in session". Measured 2026-09-07: six concurrent fixture builds
+  # take ~350s each. A shorter timeout is the right fix once bd stops paying migration
+  # cost on every init — this is a stopgap until that lands.
+  read_timeout_millis: 1800000
+  write_timeout_millis: 1800000
+
+data_dir: "@SPIRA_DOLT_DATA@"
+
+behavior:
+  dolt_transaction_commit: false
+  event_scheduler: "OFF"
+  auto_gc_behavior:
+    enable: true
+    archive_level: 1
+
+system_variables:
+  dolt_stats_enabled: 0

@@ -187,12 +187,13 @@ fi
 render() {
     python3 - "$1" "$SPIRA_HOME" "$SPIRA_REPO" "$SPIRA_RUN" "$SPIRA_DB" "$SPIRA_COCKPIT" \
                    "$SPIRA_DOLT_DATA" "$SPIRA_TESTDB_DATA" "$DOLT" "$SPIRA_PROD" \
-                   "$SPIRA_INSTANCE" "${2:-}" <<'PY'
+                   "$SPIRA_INSTANCE" "$SPIRA_TESTDB_PORT" "${2:-}" <<'PY'
 import os, re, sys
 keys = ["SPIRA_HOME", "SPIRA_REPO", "SPIRA_RUN", "SPIRA_DB", "SPIRA_COCKPIT",
-        "SPIRA_DOLT_DATA", "SPIRA_TESTDB_DATA", "DOLT", "SPIRA_PROD", "SPIRA_INSTANCE"]
-m = dict(zip(keys, sys.argv[2:12]))
-watcher_name = sys.argv[12] if len(sys.argv) > 12 else ""
+        "SPIRA_DOLT_DATA", "SPIRA_TESTDB_DATA", "DOLT", "SPIRA_PROD", "SPIRA_INSTANCE",
+        "SPIRA_TESTDB_PORT"]
+m = dict(zip(keys, sys.argv[2:13]))
+watcher_name = sys.argv[13] if len(sys.argv) > 13 else ""
 # FALLBACK: an empty SPIRA_PROD is the documented signal that no checkout split
 # is wanted — everything runs from the development checkout (SPIRA_HOME). An
 # empty string substituted into @SPIRA_PROD@ yields ExecStart=/sentinel.sh,
@@ -442,6 +443,29 @@ mkdir -p "$SPIRA_RUN"
 # a watcher that starts and complains, it is a unit that fails instantly with a message about
 # a path.
 mkdir -p "$SPIRA_RUN/watchd"
+
+# PLACE THE DOLT SERVER CONFIGS if the data directories exist and the files do not. The
+# dolt-beads* units reference a config file inside the data directory; a service whose config
+# is absent fails at startup with a plain "No such file" that is opaque without context.
+# Never overwrite: the operator may have tuned the config after the first install.
+# If the live file differs from what the template would render, print a note but keep theirs.
+_place_dolt_yaml() {  # args: <template-name> <data-dir>
+    local tmpl="$SRC/$1" dir="$2" dest text
+    [ -n "$dir" ] || return 0
+    mkdir -p "$dir"
+    dest="$dir/dolt-server.yaml"
+    text="$(render "$tmpl")" || return 1
+    if [ -f "$dest" ]; then
+        if ! cmp -s <(printf '%s\n' "$text") "$dest"; then
+            printf 'install: note: %s differs from template — keeping existing\n' "$dest"
+        fi
+        return 0
+    fi
+    printf '%s\n' "$text" > "$dest.new" && mv "$dest.new" "$dest" \
+        && printf 'install: placed %s\n' "$dest"
+}
+[ -n "${SPIRA_DOLT_DATA:-}" ]   && _place_dolt_yaml dolt-server.yaml      "$SPIRA_DOLT_DATA"
+[ -n "${SPIRA_TESTDB_DATA:-}" ] && _place_dolt_yaml dolt-server-test.yaml "$SPIRA_TESTDB_DATA"
 
 # SEED THE TEST PROD CHECKOUT'S CONFIG. A non-prod sentinel runs from $SPIRA_PROD/sentinel.sh.
 # That conf.sh resolves SPIRA_REPO as the git root of $SPIRA_PROD, then looks for
