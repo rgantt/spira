@@ -598,7 +598,7 @@ cleanup() {
     # is the last chance to record what happened. Note that `[ -n "$X" ] && cmd` is itself
     # one of those failing commands whenever $X is empty.
     set +e
-    if [ -n "$HB_PID" ]; then kill "$HB_PID" 2>/dev/null; fi
+    if [ -n "$HB_PID" ]; then kill "$HB_PID" 2>/dev/null; wait "$HB_PID" 2>/dev/null || true; fi
     fixture_drop
     rm -f "$PIDFILE" "${PIDFILE%.pid}.name"
     # RESTORE THE WORLD if this aeon stopped it. Runs here, after the heartbeat and fixture
