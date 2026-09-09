@@ -1,0 +1,24 @@
+[Unit]
+# Close asks whose VERIFY check already exits 0 — the operator satisfied them and
+# forgot to tick, or a tool completed the work without filing a close.
+# Runs with --apply so closure is real. Each VERIFY command runs under a 120-second
+# timeout; a check that errors leaves the ask open (never reads as satisfied).
+Description=Spira verify-asks — close asks whose VERIFY check already passes
+Documentation=file://@SPIRA_COCKPIT@/verify-asks.sh
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=@SPIRA_COCKPIT@/verify-asks.sh --apply
+# 120s per verify command (script default). 600s covers up to five parallel checks
+# plus the mislabelled-epic scan on a queue with some depth.
+TimeoutStartSec=600
+# Janitorial — must not compete with production or CI on shared hardware
+# (law-fence-loops-on-shared-hardware).
+CPUQuota=10%
+Nice=10
+StandardOutput=append:@SPIRA_RUN@/verify-asks.log
+StandardError=append:@SPIRA_RUN@/verify-asks.log
+
+[Install]
+WantedBy=default.target

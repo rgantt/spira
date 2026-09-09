@@ -1,0 +1,24 @@
+[Unit]
+# Auto-resolve asks that have a MOOT-WHEN predicate and whose predicate now exits 0.
+# Runs with --apply so resolution is real, not just reported.
+# A predicate that errors or times out is treated as "still live", so a broken probe
+# cannot silently clear an open escalation (law-absence-needs-a-positive-control).
+Description=Spira moot sweep — resolve asks whose MOOT-WHEN predicate has cleared
+Documentation=file://@SPIRA_COCKPIT@/moot-sweep.sh
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=@SPIRA_COCKPIT@/moot-sweep.sh --apply
+# Each predicate runs under a 30-second timeout (SPIRA_MOOT_TIMEOUT default).
+# 300 seconds covers up to ten concurrent predicates with room to spare.
+TimeoutStartSec=300
+# Janitorial — must not compete with production or CI on shared hardware
+# (law-fence-loops-on-shared-hardware).
+CPUQuota=10%
+Nice=10
+StandardOutput=append:@SPIRA_RUN@/moot-sweep.log
+StandardError=append:@SPIRA_RUN@/moot-sweep.log
+
+[Install]
+WantedBy=default.target
