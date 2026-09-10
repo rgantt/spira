@@ -58,6 +58,38 @@ testdb_reset
 
 # ======================================================================================
 echo
+echo "regression sp-cdcqy: bdt() in ask.sh honours SPIRA_BD"
+# ======================================================================================
+# ask.sh's bdt() must call \${SPIRA_BD:-bd}, not bare bd.  With bare bd, on an embedded
+# fixture, bd may resolve to a binary that cannot open the store — the call hangs, the
+# suite watchdog sends SIGTERM to the process group, and ask.sh exits 143.  A spy
+# intercepts SPIRA_BD and verifies the create call routes through it.
+_spy_dir="$(mktemp -d)"
+_spy_log="$_spy_dir/calls"
+_spy_bin="$_spy_dir/bd-spy"
+_bd_real="$(command -v bd-embedded 2>/dev/null || true)"
+if [ -n "$_bd_real" ]; then
+    touch "$_spy_log"
+    printf '#!/usr/bin/env bash\nprintf '"'"'%%s\n'"'"' "$*" >> %s\nexec %s "$@"\n' \
+        "$_spy_log" "$_bd_real" > "$_spy_bin"
+    chmod +x "$_spy_bin"
+    COCKPIT_DB="$SPIRA_DB" SPIRA_BD="$_spy_bin" \
+        bash "$COCKPIT/ask.sh" insight "spy-insight" --why "checking bdt routes" \
+        >/dev/null 2>&1 || true
+    if grep -q ' create ' "$_spy_log" 2>/dev/null; then
+        ok  "bdt() routes create through SPIRA_BD"
+    else
+        bad "bdt() routes create through SPIRA_BD" \
+            "spy not called for create — bdt() may be using bare 'bd'"
+    fi
+else
+    ok "bdt() routes create through SPIRA_BD (skipped: bd-embedded not on PATH)"
+fi
+rm -rf "$_spy_dir"
+testdb_reset
+
+# ======================================================================================
+echo
 echo "add without --default: refused, non-zero, no bead created"
 # ======================================================================================
 before="$(count_beads)"
