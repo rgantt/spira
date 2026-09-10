@@ -209,7 +209,7 @@ seed_parks() {
 {"id":"sp-pk-push","title":"parked in a push repo","status":"open","issue_type":"task","labels":["spira","plan","repo:beta","awaiting-ci"]}
 {"id":"sp-pk-hold","title":"parked in a hold repo","status":"open","issue_type":"task","labels":["spira","plan","repo:gamma","awaiting-ci"]}
 {"id":"sp-pk-gone","title":"parked in an unmapped repo","status":"open","issue_type":"task","labels":["spira","plan","repo:nowhere","awaiting-ci"]}
-{"id":"sp-pk-live","title":"parked on a real run","status":"open","issue_type":"task","labels":["spira","plan","repo:alpha","awaiting-ci"]}
+{"id":"sp-pk-live","title":"parked on a real run","status":"open","issue_type":"task","labels":["spira","plan","repo:alpha","awaiting-ci"],"updated_at":"$(ago 60)"}
 JSONL
 }
 
