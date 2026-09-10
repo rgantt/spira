@@ -115,9 +115,9 @@ fi
 # bd AND bd-embedded, because testdb.sh reads TESTDB_BD and lib.sh reads SPIRA_BD, and identical
 # content under both names is what makes the skew unable to return.
 #
-# NOT /workspaces/gt/settings/bin/bd. That path is FIRST on SPIRA_PATH and it is not a binary —
-# it is the polecat policy shim ("a polecat may not FILE work"). It was overwritten once, on
-# 2026-09-10, by reading `bd version` instead of looking at the file.
+# Install to the canonical paths only — SPIRA_PATH may place a policy shim ahead of the real
+# binary, and `bd version` finds the shim first and reports a plausible version string. A shim
+# was overwritten once by identifying the install target from `bd version` rather than the file.
 stamp="$(date +%Y%m%d-%H%M%S)"
 for dst in "$HOME/.local/bin/bd" "$HOME/.local/bin/bd-embedded"; do
     [ -e "$dst" ] && cp -p "$dst" "$dst.pre-$stamp"
