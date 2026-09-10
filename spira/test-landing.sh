@@ -1045,7 +1045,7 @@ out="$(landing_pr)"
 want "the bounded case opens its pull request first" "opened a pull request for spira/sp-rot" "$out"
 
 advance_pr "$TMP/eight"
-out="$(SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
+out="$(SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_BD="${SPIRA_BD:-$TESTDB_BD}" SPIRA_REPO="$REPO" \
     SPIRA_HOME_REPO="$REPONAME" SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GH="$SH/ghpr" \
     SPIRA_NOTIFY="$TMP/ask.sh" SPIRA_ASK="$TMP/ask.sh" \
     SPIRA_PR_REFRESH_MAX=1 bash "$SH/landing.sh" 2>&1)"
@@ -1055,7 +1055,7 @@ is   "and nothing is escalated yet"  "" "$(cat "$ASK_LOG")"
 advance_pr "$TMP/eight"
 before="$(git -C "$TMP/eight" rev-parse spira/sp-rot)"
 : > "$ASK_LOG"; : > "$RUN/landing.progress"
-out="$(SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
+out="$(SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_BD="${SPIRA_BD:-$TESTDB_BD}" SPIRA_REPO="$REPO" \
     SPIRA_HOME_REPO="$REPONAME" SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GH="$SH/ghpr" \
     SPIRA_NOTIFY="$TMP/ask.sh" SPIRA_ASK="$TMP/ask.sh" \
     SPIRA_PR_REFRESH_MAX=1 bash "$SH/landing.sh" 2>&1)"
@@ -1072,7 +1072,7 @@ is     "and an escalation is not a movement either"  "" "$(mailbox_pr)"
 # (law-alerts-must-be-actionable). The marker's state is what remembers.
 advance_pr "$TMP/eight"
 : > "$ASK_LOG"
-out="$(SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$REPO" \
+out="$(SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_BD="${SPIRA_BD:-$TESTDB_BD}" SPIRA_REPO="$REPO" \
     SPIRA_HOME_REPO="$REPONAME" SPIRA_REPO_MAP="$SH/repo-map" SPIRA_GH="$SH/ghpr" \
     SPIRA_NOTIFY="$TMP/ask.sh" SPIRA_ASK="$TMP/ask.sh" \
     SPIRA_PR_REFRESH_MAX=1 bash "$SH/landing.sh" 2>&1)"
