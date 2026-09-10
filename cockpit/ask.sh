@@ -61,7 +61,7 @@ export BEADS_NO_AUTO_IMPORT=1
 # THE database (the operator's call) — the same `COCKPIT_DB` every cockpit tool reads.
 DB="$COCKPIT_DB"
 
-bdt() { bd -C "$DB" "$@"; }
+bdt() { "${SPIRA_BD:-bd}" -C "$DB" "$@"; }
 strip_warn() { grep -vE '^(warning:|  Fix:|  Or:)'; }
 
 # `--default` is close to mandatory on a question: an ask without a recommendation makes the operator
