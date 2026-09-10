@@ -482,14 +482,20 @@ trap 'gate_rc=$?
 # landing. Nothing below this line needs the descriptor: the wait is over and the parent
 # holds it for the whole trial.
 run_gate() {             # run_gate <ref-being-tested> -> the command's own status
+    # THE OUTPUT IS NOT TRUNCATED. A tail -N here silently drops diagnostic from the
+    # first failing step whenever enough subsequent output pushes it past the window —
+    # a fixture builder that fails and emits its reason to stderr, followed by a full
+    # suite run of one-line "ok" entries, loses the reason entirely. gate-spira.sh
+    # already limits output: one line per passing suite, full output only for failures,
+    # so total size is bounded without truncation here.
     ( cd "$TREE" && env -i \
         PATH="$HOME/.cargo/bin:$PATH" HOME="$HOME" TERM=dumb \
         SPIRA_GATE_REPO="$REPO" SPIRA_GATE_REPO_NAME="$REPO_NAME" \
         SPIRA_GATE_BRANCH="$1" SPIRA_GATE_BASE="$BASE" \
         SPIRA_GATE_FILES="$FILELIST" \
         SPIRA_GATE_ALL="${SPIRA_GATE_ALL:-0}" \
-        timeout "${SPIRA_GATE_TIMEOUT:-2700}" bash -c "$CMD" 9>&- ) 2>&1 | tail -20
-    return "${PIPESTATUS[0]}"
+        timeout "${SPIRA_GATE_TIMEOUT:-2700}" bash -c "$CMD" 9>&- ) 2>&1
+    return $?
 }
 
 # CAPTURED FROM THE ASSIGNMENT, NEVER FROM AN `if`. `if out="$(...)"; then ...; fi` leaves
