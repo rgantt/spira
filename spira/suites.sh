@@ -61,6 +61,11 @@ PRIORITY="${SPIRA_SUITES_PRIORITY:-2}"
 GATE_LIST="${SPIRA_GATE_SUITES:-$HERE/gate-suites}"
 INC="${SPIRA_INCIDENT:-$HERE/incident.sh}"
 CURSOR="$STATE/cursor"
+# RUNNER_VARS: variables the systemd unit's Environment= lines inject into every suite via
+# setsid bash. An aeon's environment does not carry them. A suite that fails because one of
+# these is set will produce a red the aeon cannot reproduce — it runs the same reproduce line
+# in a clean environment and finds the suite green. Configurable for tests.
+RUNNER_VARS="${SPIRA_SUITES_RUNNER_VARS:-SPIRA_HOME SPIRA_SUITES_MAXSEC}"
 
 # --------------------------------------------------------------------------------------
 # THE POPULATION, AND THE PARTITION OF IT.
@@ -235,6 +240,61 @@ PAYLOAD
 }
 
 # --------------------------------------------------------------------------------------
+# FILING AN ENVIRONMENT MISMATCH. Called when a suite is red under the runner but passes in
+# an aeon's environment (runner vars stripped). Do not send an aeon to fix this: it cannot
+# reproduce the failure. File a finding that names the variables that differ so the owner of
+# those variables can make the suite robust to them (or strip them before launching suites).
+#
+# THE REF IS SUITE-SCOPED, NOT FINGERPRINT-SCOPED. The failure is in the runner's environment,
+# not in the suite's output, so the same runner state produces the same symptom on every pass.
+# Deduplicating on the suite name alone means each cycle of this mismatch bumps recurrence on
+# one bead rather than filing a fresh one with a new fingerprint.
+# --------------------------------------------------------------------------------------
+file_env_red() {    # file_env_red <basename> <rc> <seconds> <fp> <output> <differing_vars>
+    local s="$1" rc="$2" secs="$3" fp="$4" out="$5" differing="$6" cov id=""
+    cov="$(covers_of "$s")"
+    if [ ! -r "$INC" ]; then
+        log "suites: no intake at $INC — $s env mismatch and the finding reaches nobody"
+        return 1
+    fi
+    local out_inc rc_inc
+    out_inc="$(SPIRA_INCIDENT_TYPE=bug \
+          SPIRA_INCIDENT_PRIORITY="$(priority_of "$s")" \
+          SPIRA_INCIDENT_ACTOR=suites \
+          SPIRA_INCIDENT_LABELS="spira,plan,repo:$SPIRA_HOME_REPO" \
+          SPIRA_INCIDENT_REF="runner-env:$s" \
+          bash "$INC" file "$s is red under the timed runner but passes in an aeon's environment" - <<PAYLOAD
+The timed runner found this suite red, but a confirming run without the runner's injected
+variables passed. Do not send an aeon to reproduce this: the bead's reproduce line runs in an
+aeon's environment and will be green.
+
+The runner's environment carries variables an aeon's does not, and at least one is causing the
+failure. Fix: make the suite robust to these variables, or strip them before running suites.
+
+  suite            $s
+  status           red (rc=$rc) after ${secs}s under the runner
+  confirming run   green (re-run with these stripped: $differing)
+  covers           ${cov:-NOTHING DECLARED — this suite has no \`# covers:\` line}
+  fingerprint      $fp
+
+The dedupe ref is runner-env:$s — identical mismatches bump recurrence on this bead.
+
+--- runner output -------------------------------------------------------------------
+$(printf '%s\n' "$out" | tail -c 6000)
+PAYLOAD
+    )"; rc_inc=$?
+    if [ "$rc_inc" -ne 0 ]; then
+        log "suites: the intake could not file $s env mismatch — it stays spooled and drain will retry"
+        return 1
+    fi
+    id="$(printf '%s\n' "$out_inc" | tail -n 1 | tr -d '[:space:]')"
+    case "${id:-}" in
+        ''|*[!A-Za-z0-9-]*|-*|*-) log "suites: the intake returned no id for $s env mismatch"; return 1 ;;
+    esac
+    printf '%s' "$id"
+}
+
+# --------------------------------------------------------------------------------------
 # THE PASS.
 #
 # THE BUDGET IS A WALL, NOT A HOPE. This runs inside an Ops session that systemd kills at
@@ -250,6 +310,7 @@ PAYLOAD
 # --------------------------------------------------------------------------------------
 cmd_run() {
     local started deadline s out rc secs fp t0 left slice status id next_cursor="" _td_shared=0
+    local env_mismatch=0
     started="$(date +%s)"; deadline=$(( started + BUDGET ))
     mkdir -p "$STATE" 2>/dev/null
 
@@ -427,10 +488,65 @@ cmd_run() {
                 printf '  %-26s TIMEOUT  killed at %ss  %s\n' "$s" "$slice" "${id:-not filed}" ;;
             *)  status=red
                 fp="$(fingerprint "$rc" "$out")"
-                record_write "$s" red "$secs" "$fp"
                 red=$(( red + 1 ))
-                id="$(file_red "$s" red "$rc" "$secs" "$fp" "$out" || true)"
-                printf '  %-26s RED      rc=%s after %ss  %s\n' "$s" "$rc" "$secs" "${id:-not filed}" ;;
+                # CONFIRMING RUN. Before filing, re-run the suite without runner-injected
+                # variables — the environment an aeon's reproduce line runs in. If the suite
+                # passes there, the red is an environment artefact, not a suite defect; an
+                # aeon that claims the resulting bead finds it green and closes it truthfully,
+                # committing nothing, while the next pass re-files it unchanged. Filing an
+                # environment finding instead stops that loop without sending an aeon on a
+                # fruitless reproduction. If budget is exhausted, file nothing — an unconfirmed
+                # red is the current behaviour and it is the defect (sp-ezs7o).
+                left=$(( deadline - $(date +%s) ))
+                local _rv _rv_set confirm_env confirm_differing
+                confirm_env="env"; confirm_differing=""
+                for _rv in $RUNNER_VARS; do
+                    _rv_set="${!_rv+x}"
+                    if [ -n "$_rv_set" ]; then
+                        confirm_env="$confirm_env -u $_rv"
+                        confirm_differing="${confirm_differing:+$confirm_differing }$_rv"
+                    fi
+                done
+                if [ -z "$confirm_differing" ]; then
+                    # No runner variables are set — running standalone or in a test that
+                    # does not inject them. File as a normal red; there is nothing to strip.
+                    record_write "$s" red "$secs" "$fp"
+                    id="$(file_red "$s" red "$rc" "$secs" "$fp" "$out" || true)"
+                    printf '  %-26s RED      rc=%s after %ss  %s\n' "$s" "$rc" "$secs" "${id:-not filed}"
+                elif [ "$left" -le 5 ]; then
+                    # Budget exhausted: cannot confirm. Record the result but do not file.
+                    # An unconfirmed red that reaches a bead an aeon cannot reproduce is the
+                    # defect this mechanism exists to prevent.
+                    record_write "$s" red-unconfirmed "$secs" "$fp"
+                    printf '  %-26s RED-UNCONFIRMED rc=%s after %ss (no budget for confirming run)\n' \
+                        "$s" "$rc" "$secs"
+                else
+                    local confirm_tmp confirm_rc confirm_out confirm_slice
+                    confirm_slice="$PER_SUITE"; [ "$left" -lt "$confirm_slice" ] && confirm_slice="$left"
+                    confirm_tmp="$(mktemp)"
+                    # SYNCHRONOUS: `timeout` handles killing cleanly without background jobs
+                    # that could interfere with the main loop's watchdog logic. Runs in the
+                    # same process group as suites.sh, which is safe — the main loop's
+                    # watchdog targets the SUITE's process group (PGID = suite_pid), not ours.
+                    timeout "$confirm_slice" $confirm_env bash "$HERE/$s" > "$confirm_tmp" 2>&1
+                    confirm_rc=$?
+                    # Treat a timed-out confirming run as confirmed red: we cannot assert green.
+                    [ "$confirm_rc" -eq 124 ] && confirm_rc=1
+                    confirm_out="$(cat "$confirm_tmp")"; rm -f "$confirm_tmp"
+                    if [ "$confirm_rc" -eq 0 ]; then
+                        # Green in aeon's environment: env mismatch, not a suite defect.
+                        record_write "$s" red "$secs" "$fp"
+                        env_mismatch=$(( env_mismatch + 1 ))
+                        id="$(file_env_red "$s" "$rc" "$secs" "$fp" "$out" "$confirm_differing" || true)"
+                        printf '  %-26s ENV-MISMATCH rc=%s after %ss  vars: %s  %s\n' \
+                            "$s" "$rc" "$secs" "$confirm_differing" "${id:-not filed}"
+                    else
+                        # Confirmed red in aeon's environment too.
+                        record_write "$s" red "$secs" "$fp"
+                        id="$(file_red "$s" red "$rc" "$secs" "$fp" "$out" || true)"
+                        printf '  %-26s RED      rc=%s after %ss  %s\n' "$s" "$rc" "$secs" "${id:-not filed}"
+                    fi
+                fi ;;
         esac
     done
 
@@ -458,7 +574,12 @@ cmd_run() {
         printf 'budget spent after %ss — not reached this pass, and first next pass:%s\n' \
             "$(( $(date +%s) - started ))" "$unreached"
     fi
-    printf '%s ran, %s red, %s skipped, %ss\n' "$ran" "$red" "$skipped" "$(( $(date +%s) - started ))"
+    # THE ENV-MISMATCH COUNT IS EMITTED HERE. A nonzero count is the meter that tracks how bad
+    # the runner-environment divergence is. When this reaches zero and stays there, a full
+    # environment scrub (runner using env -i) becomes landable as a deliberate act rather than
+    # a hopeful one. Print it even when zero so the line is parseable on every pass.
+    printf '%s ran, %s red (%s env-mismatch), %s skipped, %ss\n' \
+        "$ran" "$red" "$env_mismatch" "$skipped" "$(( $(date +%s) - started ))"
     # Exit 2 when suites are red: incidents were filed, the pass completed normally. Exit 1
     # is reserved for errors that abort before any suite runs (gate-suites unreadable). The
     # unit carries SuccessExitStatus=2 so systemd does not mark it failed on a routine red
@@ -518,7 +639,7 @@ cmd_status() {
         rec="$(record_read "$s" || true)"
         if [ -z "$rec" ]; then never=$(( never + 1 )); continue; fi
         read -r st at _ _ <<< "$rec"
-        case "$st" in red|timeout) red=$(( red + 1 )) ;; skip) skip=$(( skip + 1 )) ;; esac
+        case "$st" in red|timeout|red-unconfirmed) red=$(( red + 1 )) ;; skip) skip=$(( skip + 1 )) ;; esac
         if [ "$(( now - at ))" -gt "$STALE" ]; then stale=$(( stale + 1 )); fi
         if [ -z "$oldest" ] || [ "$at" -lt "$oldest" ]; then oldest="$at"; oldest_s="$s"; fi
     done
