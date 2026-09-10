@@ -196,7 +196,7 @@ $SWEEP_PROMPT"
     set +e
     printf '%s' "$SWEEP_FULL" | \
         ${FAYTH_TIMEOUT_SECONDS:+timeout $FAYTH_TIMEOUT_SECONDS} \
-        "${SPIRA_CLAUDE:-claude}" -p --output-format stream-json --verbose \
+        "${SPIRA_AGENT:-claude}" -p --output-format stream-json --verbose \
                --include-partial-messages \
                --model "${FAYTH_MODEL:-claude-opus-5}" \
                --allowedTools "${FAYTH_TOOLS:-Bash,Read,Edit,Write,Glob,Grep}" \
@@ -1512,11 +1512,11 @@ cd "$WORK" || die "worktree missing: $WORK"
 # THE BINARY IS INJECTABLE, like `bd`, `gh` and `systemd-run` before it, and for the same
 # reason: it is the one thing a test of this path must be able to replace. And a PATH shim
 # CANNOT do it — conf.sh REPLACES $PATH outright a few lines into this script, so a suite
-# that puts a fake `claude` first on PATH runs the real model against the operator's account,
+# that puts a fake first on PATH runs the real model against the operator's account,
 # silently and at full cost. That is not hypothetical; it is how this line came to be
-# written. A test overrides SPIRA_CLAUDE.
+# written. A test overrides SPIRA_AGENT.
 printf '%s' "$FULL" | ${FAYTH_TIMEOUT_SECONDS:+timeout $FAYTH_TIMEOUT_SECONDS} \
-    "${SPIRA_CLAUDE:-claude}" -p --output-format stream-json --verbose --include-partial-messages \
+    "${SPIRA_AGENT:-claude}" -p --output-format stream-json --verbose --include-partial-messages \
            --model "${FAYTH_MODEL:-claude-opus-5}" \
            --allowedTools "${FAYTH_TOOLS:-Bash,Read,Edit,Write,Glob,Grep}" \
            --dangerously-skip-permissions \

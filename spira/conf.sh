@@ -79,6 +79,7 @@ SPIRA_PROD SPIRA_INSTANCE
 SPIRA_REVIEWER_MODEL SPIRA_REVIEWER_VERDICTS SPIRA_REVIEWER_TIMEOUT SPIRA_REVIEWER_DIFF_LIMIT
 SPIRA_REVIEW_LABEL
 SPIRA_SELF_WINDOW
+SPIRA_AGENT
 "
 
 # --------------------------------------------------------------------------------------
@@ -723,6 +724,19 @@ spira_conf_defaults() {
     # sentinel cadence across a meaningful run of passes.
     : "${SPIRA_SELF_WINDOW:=60}"
 
+    # THE AGENT CLI BINARY. Named once so every tool that invokes it reads the same setting.
+    # The invocation shape (-p --output-format stream-json --verbose --model ...) is NOT
+    # changed by this key — pointing it at another vendor's CLI will not work; only the
+    # binary name is configurable here.
+    # SPIRA_CLAUDE is the deprecated name for this key. If the old name is set and the new
+    # one is not, honour it and warn once so an existing installation is not broken by the
+    # rename.
+    if [ -n "${SPIRA_CLAUDE:-}" ] && [ -z "${SPIRA_AGENT:-}" ]; then
+        printf 'spira: SPIRA_CLAUDE is deprecated; rename it to SPIRA_AGENT in spira.conf\n' >&2
+        SPIRA_AGENT="${SPIRA_CLAUDE}"
+    fi
+    : "${SPIRA_AGENT:=claude}"
+
     # THE MAP FALLS BACK TO THE EXAMPLE, and that is what makes a clean clone runnable at
     # all. The real map is one operator's inventory of checkouts and does not ship; the
     # example does. Resolution runs beside the config file first, because that is where an
@@ -758,9 +772,9 @@ spira_conf_defaults
 unset _spira_conf_here _spira_conf_env _spira_conf_home_env
 
 # --------------------------------------------------------------------------------------
-# PATH. `bd`, `git`, `gh` and `claude` live wherever the operator put them, and everything
-# here is invoked from systemd, where a login shell's PATH does not exist. Bootstrapping in
-# one place is the difference between working and failing silently.
+# PATH. `bd`, `git`, `gh` and the configured agent CLI live wherever the operator put them,
+# and everything here is invoked from systemd, where a login shell's PATH does not exist.
+# Bootstrapping in one place is the difference between working and failing silently.
 #
 # SPIRA_PATH is prepended and is the config's business; the tail is the box's own and is
 # not, so it is not written into the config.

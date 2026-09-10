@@ -29,7 +29,7 @@
 # --------------------------------------------------
 # A real claude call is prohibited in a suite: it draws on the operator's account,
 # varies by model availability, and costs money on every CI run. The fake claude is
-# a Python script set as SPIRA_CLAUDE in env -i invocations. It reads
+# a Python script set as SPIRA_AGENT in env -i invocations. It reads
 # FAKE_REVIEW_VERDICT and emits a minimal valid compact stream-json response.
 # Compact JSON is required: the real Claude CLI outputs without spaces, and the
 # Python parser in review.sh searches for the literal '"type":"result"'.
@@ -142,7 +142,7 @@ run_review() {
         SPIRA_ID_PREFIX=sp \
         SPIRA_DB="$SPIRA_DB" \
         SPIRA_BD="$SPIRA_BD" \
-        SPIRA_CLAUDE="$FAKE_CLAUDE" \
+        SPIRA_AGENT="$FAKE_CLAUDE" \
         SPIRA_REVIEWER_VERDICTS="$VERDICTS" \
         SPIRA_REVIEWER_MODEL=claude-test-model \
         SPIRA_REVIEWER_TIMEOUT=30 \

@@ -80,9 +80,9 @@ printf 'work {{BEAD_ID}} in {{REPO}} on {{BRANCH}}\n{{PARK}}\n' > "$SPIRA_HOME/c
 
 # THE SHIM IS THE SESSION. The guard is not decoration: conf.sh replaces $PATH, so a suite
 # that shimmed `claude` by PATH alone would run the real model at full cost.
-BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_CLAUDE="$BIN/claude" TMP
-grep -q 'SPIRA_CLAUDE' "$HERE/aeon.sh" \
-    || { echo "test-requeue: aeon.sh has no SPIRA_CLAUDE injection point" >&2; exit 1; }
+BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_AGENT="$BIN/claude" TMP
+grep -q 'SPIRA_AGENT' "$HERE/aeon.sh" \
+    || { echo "test-requeue: aeon.sh has no SPIRA_AGENT injection point" >&2; exit 1; }
 shim() {   # shim <commit:0|1> <close:0|1> [move-the-base:0|1]
     printf '%s' "$1" > "$TMP/docommit"; printf '%s' "$2" > "$TMP/doclose"
     printf '%s' "${3:-0}" > "$TMP/domove"

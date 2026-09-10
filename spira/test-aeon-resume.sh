@@ -75,9 +75,9 @@ FAYTH
 printf 'work {{BEAD_ID}} in {{REPO}} on {{BRANCH}}\n{{PARK}}\n' \
     > "$SPIRA_HOME/chamber/builder.md"
 
-BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_CLAUDE="$BIN/claude" TMP
-grep -q 'SPIRA_CLAUDE' "$HERE/aeon.sh" \
-    || { echo "test-aeon-resume: aeon.sh has no SPIRA_CLAUDE injection point — refusing to run the real model" >&2; exit 1; }
+BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_AGENT="$BIN/claude" TMP
+grep -q 'SPIRA_AGENT' "$HERE/aeon.sh" \
+    || { echo "test-aeon-resume: aeon.sh has no SPIRA_AGENT injection point — refusing to run the real model" >&2; exit 1; }
 
 # The shim captures the full prompt and then closes the bead with a commit so aeon.sh's
 # verdict step is satisfied and the test ends cleanly.

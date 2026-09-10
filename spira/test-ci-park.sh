@@ -372,8 +372,8 @@ printf 'FAYTH_NAME=builder\nFAYTH_LABELS="spira,plan"\nFAYTH_EXCLUDE_LABELS="spi
 printf 'work {{BEAD_ID}} in {{REPO}} on {{BRANCH}}\n{{PARK}}\n' > "$AH/chamber/builder.md"
 
 ABIN="$TMP/abin"; mkdir -p "$ABIN"
-grep -q 'SPIRA_CLAUDE' "$HERE/aeon.sh" \
-    || { echo "test-ci-park: aeon.sh has no SPIRA_CLAUDE injection point — refusing to run the real model" >&2; exit 1; }
+grep -q 'SPIRA_AGENT' "$HERE/aeon.sh" \
+    || { echo "test-ci-park: aeon.sh has no SPIRA_AGENT injection point — refusing to run the real model" >&2; exit 1; }
 cat > "$ABIN/claude" <<'SHIM'
 #!/usr/bin/env bash
 cat /dev/stdin > "$PROMPT_OUT"
@@ -391,7 +391,7 @@ brief_for() {   # brief_for <land> -> the PARK section of the brief an aeon was 
     : > "$TMP/prompt"
     SPIRA_HOME="$AH" SPIRA_RUN="$TMP/arun" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$AREPO" \
     SPIRA_REPO_MAP="$map" SPIRA_CI_PARK_MAX=600 \
-    SPIRA_CLAUDE="$ABIN/claude" PROMPT_OUT="$TMP/prompt" \
+    SPIRA_AGENT="$ABIN/claude" PROMPT_OUT="$TMP/prompt" \
         "$AH/aeon.sh" builder >/dev/null 2>&1
     cat "$TMP/prompt"
 }

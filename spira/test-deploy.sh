@@ -162,7 +162,7 @@ run_deploy() {
         SPIRA_ID_PREFIX=sp \
         SPIRA_DB="$SPIRA_DB" \
         SPIRA_BD="$SPIRA_BD" \
-        SPIRA_CLAUDE="$FAKE_CLAUDE" \
+        SPIRA_AGENT="$FAKE_CLAUDE" \
         SPIRA_REVIEWER_VERDICTS="$VERDICTS" \
         SPIRA_REVIEWER_MODEL=claude-test-model \
         SPIRA_REVIEWER_TIMEOUT=30 \

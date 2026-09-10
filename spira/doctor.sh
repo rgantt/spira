@@ -59,7 +59,9 @@ for b in bd git python3 flock; do
               "PATH is $PATH. If it is installed elsewhere, set SPIRA_PATH in ${CONF:-spira.conf}."; fi
 done
 # WARN: each disables one feature, named, rather than the loop.
-for b in dolt gh claude tmux cargo node; do
+# SPIRA_AGENT is used here rather than a literal: an operator who sets it to a different
+# binary name gets a useful message about that binary, not about a product they did not install.
+for b in dolt gh "${SPIRA_AGENT:-claude}" tmux cargo node; do
     if command -v "$b" >/dev/null 2>&1; then OK "$b — $(command -v "$b")"
     else WARN "$b is not on PATH — $(spira_bin_purpose "$b")" \
               "If it is installed elsewhere, set SPIRA_PATH in ${CONF:-spira.conf}."; fi

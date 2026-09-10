@@ -28,7 +28,7 @@
 # TWO REPOS, because the property this test exists to prove is about the DIFFERENCE between
 # them. A single-repo fixture proves nothing: the home repo IS the correct repo.
 #
-# A REAL bd ON A FIXTURE DATABASE, a shim for claude (via SPIRA_CLAUDE), and real git repos
+# A REAL bd ON A FIXTURE DATABASE, a shim for the agent (via SPIRA_AGENT), and real git repos
 # with remotes — the claim is about worktree creation and commit ancestry, and a stub of
 # either would be a second implementation of the thing in question.
 #
@@ -99,11 +99,11 @@ printf 'work {{BEAD_ID}} in {{REPO}} on {{BRANCH}}\n{{PARK}}\n' \
 # THE SHIM stands in for the model. It extracts the bead id and the worktree path from
 # the prompt, makes a commit in the worktree naming the bead, then closes it.
 #
-# SPIRA_CLAUDE IS THE INJECTION POINT. The guard below ensures the real model can never
+# SPIRA_AGENT IS THE INJECTION POINT. The guard below ensures the real model can never
 # run accidentally — conf.sh replaces PATH, so shimming via PATH alone would not reach it.
-BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_CLAUDE="$BIN/claude" TMP SPIRA_DB
-grep -q 'SPIRA_CLAUDE' "$HERE/aeon.sh" \
-    || { echo "test-cross-repo: aeon.sh has no SPIRA_CLAUDE injection point — refusing to run real model" >&2; exit 1; }
+BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_AGENT="$BIN/claude" TMP SPIRA_DB
+grep -q 'SPIRA_AGENT' "$HERE/aeon.sh" \
+    || { echo "test-cross-repo: aeon.sh has no SPIRA_AGENT injection point — refusing to run real model" >&2; exit 1; }
 
 cat > "$BIN/claude" <<'SHIM'
 #!/usr/bin/env bash

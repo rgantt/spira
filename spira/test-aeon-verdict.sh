@@ -72,9 +72,9 @@ printf 'work {{BEAD_ID}} in {{REPO}} on {{BRANCH}}\n{{PARK}}\n' > "$SPIRA_HOME/c
 # case under test needs it finished. The guard below is not decoration: conf.sh replaces
 # $PATH, so a suite that tried to shim `claude` by PATH alone would run the real model
 # against a real account, silently and at full cost.
-BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_CLAUDE="$BIN/claude" TMP
-grep -q 'SPIRA_CLAUDE' "$HERE/aeon.sh" \
-    || { echo "test-aeon-verdict: aeon.sh has no SPIRA_CLAUDE injection point — refusing to run the real model" >&2; exit 1; }
+BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_AGENT="$BIN/claude" TMP
+grep -q 'SPIRA_AGENT' "$HERE/aeon.sh" \
+    || { echo "test-aeon-verdict: aeon.sh has no SPIRA_AGENT injection point — refusing to run the real model" >&2; exit 1; }
 shim() {   # shim <commit:0|1> <finish: close | supersede:<id> | delivers-beads:close | delivers-beads-empty:close>
     printf '%s' "$1" > "$TMP/docommit"
     printf '%s' "$2" > "$TMP/finish"

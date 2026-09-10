@@ -114,8 +114,8 @@ printf 'FAYTH_SOP_REQUIRED=1\n' >> "$HOMEDIR/chamber/healer.fayth"
 # recorded. The guard is not decoration: conf.sh REPLACES $PATH, so a suite shimming `claude`
 # by PATH alone would run the real model against a real account.
 BIN="$TMP/bin"; mkdir -p "$BIN"
-grep -q 'SPIRA_CLAUDE' "$HERE/aeon.sh" \
-    || { echo "test-ops-closing: aeon.sh has no SPIRA_CLAUDE injection point — refusing to run the real model" >&2; exit 1; }
+grep -q 'SPIRA_AGENT' "$HERE/aeon.sh" \
+    || { echo "test-ops-closing: aeon.sh has no SPIRA_AGENT injection point — refusing to run the real model" >&2; exit 1; }
 cat > "$BIN/claude" <<'SHIM'
 #!/usr/bin/env bash
 cat /dev/stdin > "$TMP/prompt"
@@ -167,7 +167,7 @@ run_aeon() {             # run_aeon <fayth> <act>
     env -i HOME="$HOME" PATH="$PATH" SPIRA_PATH="${SPIRA_PATH:-}" TMP="$TMP" \
         SPIRA_CONF="$TMP/nonexistent.conf" SPIRA_WIKI="" \
         SPIRA_HOME="$HOMEDIR" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" \
-        SPIRA_REPO_MAP="$REPO_MAP" SPIRA_CLAUDE="$BIN/claude" \
+        SPIRA_REPO_MAP="$REPO_MAP" SPIRA_AGENT="$BIN/claude" \
         SPIRA_SOP_LEDGER="${LEDGER_OVERRIDE:-$LEDGER}" \
         BEADS_NO_AUTO_IMPORT=1 \
         timeout 300 bash "$HOMEDIR/aeon.sh" "$1" > "$TMP/out" 2>&1

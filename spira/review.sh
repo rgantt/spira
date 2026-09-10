@@ -47,7 +47,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 VERDICTS="${SPIRA_REVIEWER_VERDICTS:-$SPIRA_RUN/review-verdicts}"
 MODEL="${SPIRA_REVIEWER_MODEL:-claude-fable-5-1}"
 REVIEW_LABEL="${SPIRA_REVIEW_LABEL:-review-finding}"
-CLAUDE="${SPIRA_CLAUDE:-claude}"
+CLAUDE="${SPIRA_AGENT:-claude}"
 # How many bytes of diff the reviewer reads. A diff larger than this is
 # truncated with a note. 80 000 bytes fits the real diffs this harness
 # produces and sits comfortably inside a context window.
@@ -148,7 +148,7 @@ do_run() {
 
     # INJECTABLE for the same reason as the archivist: conf.sh replaces PATH,
     # so a PATH shim cannot substitute. A test that puts a fake first on PATH
-    # and does not set SPIRA_CLAUDE would run the real model at cost.
+    # and does not set SPIRA_AGENT would run the real model at cost.
     timeout "${SPIRA_REVIEWER_TIMEOUT:-300}" \
         "${CLAUDE}" -p --output-format stream-json --verbose \
             --model "$MODEL" \

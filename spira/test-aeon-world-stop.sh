@@ -85,9 +85,9 @@ printf 'work {{BEAD_ID}} in {{REPO}} on {{BRANCH}}\n{{PARK}}\n' > "$SPIRA_HOME/c
 # The guard below is not decoration: conf.sh replaces $PATH, so a suite that shimmed
 # `claude` by PATH alone would run the real model against the operator's account.
 BIN="$TMP/bin"; mkdir -p "$BIN"
-export SPIRA_CLAUDE="$BIN/claude" TMP
-grep -q 'SPIRA_CLAUDE' "$HERE/aeon.sh" \
-    || { echo "test-aeon-world-stop: aeon.sh has no SPIRA_CLAUDE injection point — refusing to run the real model" >&2; exit 1; }
+export SPIRA_AGENT="$BIN/claude" TMP
+grep -q 'SPIRA_AGENT' "$HERE/aeon.sh" \
+    || { echo "test-aeon-world-stop: aeon.sh has no SPIRA_AGENT injection point — refusing to run the real model" >&2; exit 1; }
 cat > "$BIN/claude" <<'SHIM'
 #!/usr/bin/env bash
 # Read prompt to get bead id, close the bead, emit a result record.

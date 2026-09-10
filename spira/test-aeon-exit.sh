@@ -70,9 +70,9 @@ printf 'work {{BEAD_ID}} in {{REPO}} on {{BRANCH}}\n{{PARK}}\n' > "$SPIRA_HOME/c
 
 # THE SHIM WRITES $TMP/shim-act TO CONTROL BEHAVIOUR. The claude guard ensures this suite
 # does not silently run the real model when conf.sh replaces $PATH.
-BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_CLAUDE="$BIN/claude" TMP
-grep -q 'SPIRA_CLAUDE' "$HERE/aeon.sh" \
-    || { echo "test-aeon-exit: aeon.sh has no SPIRA_CLAUDE injection point — refusing to run the real model" >&2; exit 1; }
+BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_AGENT="$BIN/claude" TMP
+grep -q 'SPIRA_AGENT' "$HERE/aeon.sh" \
+    || { echo "test-aeon-exit: aeon.sh has no SPIRA_AGENT injection point — refusing to run the real model" >&2; exit 1; }
 
 # The shim is driven by two files:
 #   $TMP/shim-act:   what the session does (commit+close, commit-only, refused)

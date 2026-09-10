@@ -305,7 +305,7 @@ home.}"
         # $SPIRA_RUN and therefore outside its own sweep.
         cd "$ARC/cwd" || exit 1
         printf '%s' "$prompt" | timeout "$SPIRA_ARCHIVIST_TIMEOUT" \
-            "${SPIRA_CLAUDE:-claude}" -p --output-format stream-json --verbose \
+            "${SPIRA_AGENT:-claude}" -p --output-format stream-json --verbose \
                    --model "$SPIRA_ARCHIVIST_MODEL" \
                    --allowedTools "Bash,Read,Grep,Glob,Write" \
                    --dangerously-skip-permissions \

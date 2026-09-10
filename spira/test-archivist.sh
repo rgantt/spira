@@ -44,8 +44,8 @@ mktranscript() {   # mktranscript <path> <turns> <ctx>
     done
 }
 
-# A stub claude that consumes stdin and exits 0. SPIRA_CLAUDE is the injection point, and it
-# exists so a suite does not spend real money against the operator's account.
+# A stub agent binary that consumes stdin and exits 0. SPIRA_AGENT is the injection point,
+# and it exists so a suite does not spend real money against the operator's account.
 STUB_CLAUDE="$T/stub-claude"
 cat > "$STUB_CLAUDE" <<'STUB'
 #!/usr/bin/env bash
@@ -71,7 +71,7 @@ asweep() {
         SPIRA_CTX_WARN="$CW" SPIRA_CTX_HIGH="$CH" SPIRA_CTX_LIMIT="$CL" \
         SPIRA_NOW="$EPOCH" SPIRA_ARCHIVIST_IDLE="$IDLE" \
         SPIRA_ARCHIVIST_EVERY="$EVERY" \
-        SPIRA_CLAUDE="$STUB_CLAUDE" \
+        SPIRA_AGENT="$STUB_CLAUDE" \
         SPIRA_ARCHIVIST_TIMEOUT=10 \
         SPIRA_ARCHIVIST_PER_PASS="${BUDGET:-1}" \
         SPIRA_CHAMBER="$T/chamber" \
@@ -439,7 +439,7 @@ out="$(env -i HOME="$T/home" PATH="$PATH" SPIRA_CONF="$NONE" \
     SPIRA_CTX_WARN="$CW" SPIRA_CTX_HIGH="$CH" SPIRA_CTX_LIMIT="$CL" \
     SPIRA_NOW="$EPOCH" SPIRA_ARCHIVIST_IDLE="$IDLE" \
     SPIRA_ARCHIVIST_EVERY="$EVERY" \
-    SPIRA_CLAUDE="$REFUSE_CLAUDE" \
+    SPIRA_AGENT="$REFUSE_CLAUDE" \
     SPIRA_ARCHIVIST_TIMEOUT=10 \
     SPIRA_ARCHIVIST_PER_PASS=5 \
     SPIRA_CHAMBER="$T/chamber" \
@@ -492,6 +492,25 @@ mktranscript "$T/projects/-test-project/sess-broke.jsonl" 50 300000
 printf 'state=failed\nat_turn=1\nitems_filed=0\n' > "$T/run/archivist/sess-broke.state"
 out3="$(alist)"
 hasnt "a genuinely failed session is still excluded" "$out3" "archive"
+
+# SPIRA_CLAUDE DEPRECATION ALIAS. Setting only the old name must still run the sweep
+# and must emit exactly one deprecation warning. This is the test for the alias in conf.sh.
+rm -rf "$T/run" "$T/projects" "$T/home" "$T/chamber"
+mkdir -p "$T/home" "$T/run/archivist" "$T/projects/-test-project" "$T/chamber"
+cp "$HERE/chamber/archivist.md" "$T/chamber/" 2>/dev/null || printf 'test prompt {{TRANSCRIPT}}' > "$T/chamber/archivist.md"
+mktranscript "$T/projects/-test-project/sess-alias.jsonl" 50 300000
+alias_out="$(env -i HOME="$T/home" PATH="$PATH" SPIRA_CONF="$NONE" \
+    SPIRA_RUN="$T/run" SPIRA_TOKEN_PROJECTS="$T/projects" \
+    SPIRA_CTX_WARN="$CW" SPIRA_CTX_HIGH="$CH" SPIRA_CTX_LIMIT="$CL" \
+    SPIRA_NOW="$EPOCH" SPIRA_ARCHIVIST_IDLE="$IDLE" \
+    SPIRA_ARCHIVIST_EVERY="$EVERY" \
+    SPIRA_CLAUDE="$STUB_CLAUDE" \
+    SPIRA_ARCHIVIST_TIMEOUT=10 \
+    SPIRA_ARCHIVIST_PER_PASS=1 \
+    SPIRA_CHAMBER="$T/chamber" \
+    bash "$ARC" sweep 2>&1)"
+has    "SPIRA_CLAUDE alias: deprecation warning is emitted" "$alias_out" "SPIRA_CLAUDE is deprecated"
+has    "SPIRA_CLAUDE alias: sweep still runs via the alias"  "$alias_out" "safe to clear"
 
 echo
 echo "  $pass passed, $fail failed"

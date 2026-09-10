@@ -74,10 +74,10 @@ printf 'work {{BEAD_ID}} on {{BRANCH}}\n{{PARK}}\n' \
 
 # Mock claude binary. THE GUARD IS NOT DECORATION: conf.sh replaces $PATH, so a PATH
 # shim would reach the real model through the replaced PATH and run it at full cost.
-grep -q 'SPIRA_CLAUDE' "$HERE/aeon.sh" \
-    || { printf 'test-aeon-sweep: aeon.sh has no SPIRA_CLAUDE injection point — refusing to run the real model\n' >&2; exit 1; }
+grep -q 'SPIRA_AGENT' "$HERE/aeon.sh" \
+    || { printf 'test-aeon-sweep: aeon.sh has no SPIRA_AGENT injection point — refusing to run the real model\n' >&2; exit 1; }
 
-BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_CLAUDE="$BIN/claude" TMP
+BIN="$TMP/bin"; mkdir -p "$BIN"; export SPIRA_AGENT="$BIN/claude" TMP
 # The mock emits a tool_use + result event so that session_outcome classifies it as
 # `unlanded` (the outcome that charges an attempt). Without the tool_use, the session
 # looks like a refusal, which does NOT charge — and the positive control would not fire.
