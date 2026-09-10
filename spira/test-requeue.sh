@@ -155,19 +155,23 @@ want "the rung names the outcome"              "sp-attempt-1-unlanded" "$(labels
 is   "with nothing on the requeue counter"     "0" "$(requeue_of sp-rq-2)"
 
 echo
-echo "the pair, run to the poison threshold — only the genuine failure arrives:"
+echo "the pair, two cycles each — only the genuine failure charges attempts:"
 # ONE BEAD READY AT A TIME, because `bd ready --claim` picks for itself and a suite that
 # seeded both would be asserting against whichever it happened to hand out.
+# TWO CYCLES, NOT THREE: the discrimination property holds after N cycles for any N >= 1.
+# Three was chosen to match the SPIRA_POISON_AT default, but sentinel.sh (which applies that
+# threshold) does not run here; the test just checks counters. Two cycles save two run_aeon
+# calls (~20s), which keeps the suite within the timed-run budget. (sp-5hfnn)
 testdb_reset; seed sp-rq-h
 shim 1 1 1
-for _ in 1 2 3; do run_aeon; done
+for _ in 1 2; do run_aeon; done
 bd -C "$SPIRA_DB" label add sp-rq-h "$SPIRA_ASK_LABEL" >/dev/null 2>&1   # out of the partition
 seed sp-rq-w
 shim 0 0
-for _ in 1 2 3; do run_aeon; done
+for _ in 1 2; do run_aeon; done
 is "the harness's bead is still at zero attempts" "0" "$(count_of sp-rq-h)"
-is "and its cycling is visible as three requeues" "3" "$(requeue_of sp-rq-h)"
-is "the work's bead reached the threshold"        "3" "$(count_of sp-rq-w)"
+is "and its cycling is visible as two requeues"   "2" "$(requeue_of sp-rq-h)"
+is "the work's bead carries two attempts"         "2" "$(count_of sp-rq-w)"
 
 echo
 echo "the deadlock sweep lifts a poison from finished, landable work:"
