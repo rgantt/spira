@@ -280,6 +280,45 @@ is "a failure that changes is new information and files again" "2" \
 
 # ======================================================================================
 echo
+echo "timestamps in FAIL output do not fork the fingerprint (sp-zq0bw):"
+# ======================================================================================
+# THE DEFECT THIS PINS. ISO-8601 timestamps contain two-digit fields (month, day, hour,
+# minute, second) that survive the [0-9]{3,} normaliser unchanged, so two identical failures
+# separated by one clock tick produced different checksums and filed separate beads rather
+# than bumping recurrence.
+plant test-fx-timestamped.sh <<'S'
+#!/usr/bin/env bash
+# covers: spira/nothing.sh
+echo "  FAIL  a run still in progress says nothing about sp-pk-live, 65 passed / 1 failed"
+echo "  detail: [$(date -u '+%Y-%m-%dT%H:%M:%SZ') spira: state: goal=running]"
+exit 1
+S
+sut run >/dev/null
+ts_id="$(beads 'test-fx-timestamped.sh' | head -1)"
+is "first run of a timestamped failure files one bead" "1" "$(count "$(beads 'test-fx-timestamped.sh')")"
+sleep 2  # ensure the wall-clock moves so the timestamp in the output changes
+sut run >/dev/null
+is "a second run at a later timestamp is still one bead" "1" "$(count "$(beads 'test-fx-timestamped.sh')")"
+want "recorded as a recurrence on the same bead" "sp-recur-2" "$(B label list "${ts_id:-none}" 2>&1)"
+
+# NEGATIVE CONTROL. A genuinely different failure must still file a fresh bead even when the
+# only FAIL line it shares with the first is the timestamp token — the normaliser must not
+# widen to the point that every timestamped failure looks the same.
+plant test-fx-timestamped.sh <<'S'
+#!/usr/bin/env bash
+# covers: spira/nothing.sh
+echo "  FAIL  a completely different assertion: goal=stopped instead of goal=running"
+echo "  detail: [$(date -u '+%Y-%m-%dT%H:%M:%SZ') spira: state: goal=stopped]"
+exit 1
+S
+sut run >/dev/null
+is "a genuinely different timestamped failure files a new bead" "2" \
+   "$(count "$(beads 'test-fx-timestamped.sh')")"
+
+rm -f "$SH/test-fx-timestamped.sh"
+
+# ======================================================================================
+echo
 echo "a suite declares the priority of what it covers:"
 # ======================================================================================
 plant test-fx-urgent.sh <<'S'

@@ -148,9 +148,11 @@ record_read() {          # record_read <basename> -> `<status> <epoch> <seconds>
 # WHAT IS HASHED. The suite's FAIL lines, which every suite in this tree emits — three
 # different assertion helpers, one shared word. When there are none, the tail of the output
 # and the exit status, which is the honest fallback for a suite that died rather than failed
-# an assertion. Both are normalised first: a scratch directory and any run of digits differ on
-# every run, and a fingerprint carrying them would make each pass a new bead, which is the
-# failure this is here to prevent rather than a smaller version of it.
+# an assertion. Both are normalised first: scratch directories, wall-clock timestamps and any
+# run of three or more digits all vary between passes and must be stripped to a fixed token
+# before hashing. Timestamps are normalised BEFORE digit collapse so that two-digit fields
+# (month, day, hour, minute, second) that survive the [0-9]{3,} rule do not fork the
+# fingerprint — that failure filed one bead per cycle for an identically-failing suite.
 # --------------------------------------------------------------------------------------
 fingerprint() {          # fingerprint <rc> <output> -> a short stable digest
     local rc="$1" out="$2" sig
@@ -161,6 +163,8 @@ fingerprint() {          # fingerprint <rc> <output> -> a short stable digest
     printf 'rc=%s\n%s\n' "$rc" "$sig" \
         | sed -e 's#/tmp/[A-Za-z0-9._-]*#/tmp/X#g' \
               -e 's#/[A-Za-z0-9._/-]*/sptest_[A-Za-z0-9_]*#/X#g' \
+              -e 's/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9][.0-9]*Z\{0,1\}/TIMESTAMP/g' \
+              -e 's/[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/TIME/g' \
               -e 's/[0-9]\{3,\}/N/g' \
         | cksum | tr -d ' \t'
 }
