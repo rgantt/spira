@@ -107,6 +107,7 @@ sentinel() {
     SPIRA_GOAL=sp-goal SPIRA_FAYTHS="${ROSTER:-t tinc}" SPIRA_INFERENCE_EVERY=0 \
     SPIRA_NOTIFY="$SH/ask.sh" \
     SPIRA_LAUNCH="$TMP/launch" SPIRA_SYSTEMCTL="$TMP/systemctl" \
+    SPIRA_SUMMON="$TMP/launch" \
         bash "$SH/sentinel.sh" 2>&1
 }
 
