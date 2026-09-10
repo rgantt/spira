@@ -487,6 +487,15 @@ if ! REPO="$(repo_root "$REPO_NAME")" || [ ! -e "$REPO/.git" ]; then
     exit 1
 fi
 REPO_LAND="$(repo_land "$REPO_NAME")"
+# THE INTAKE INHERITS THE REPOSITORY THIS AEON IS WORKING IN. incident.sh needs a repo: label
+# and has no way to derive one: an aeon that files an incident mid-session declares nothing,
+# so the bead lands repo-less, is worked in the home-repo fallback — which has not held the
+# harness since sp-9tal — and the intake escalates the missing label to the operator. The
+# aeon is the one party that already knows the answer, because repo-map resolved it above to
+# decide which checkout to cut a worktree in. Exported rather than passed at a call site,
+# because the caller is a model deciding to file an incident, not a line of this script.
+# A caller with a better answer still wins: incident.sh prefers a repo: already in LABELS.
+export SPIRA_INCIDENT_REPO="$REPO_NAME"
 log "$FAYTH: $BEAD_ID works repo:$REPO_NAME at $REPO (land=$REPO_LAND)"
 # THE BRANCH IS A PROPERTY OF THE WORK, RECORDED ON THE BEAD — not a string derived from
 # its id (the operator, verbatim: "it seems like there's a needed affinity between bead and
