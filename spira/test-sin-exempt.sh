@@ -67,6 +67,7 @@ file_incident() {
         env SPIRA_DB="$SPIRA_DB" SPIRA_RUN="$TMP/run" SPIRA_CONF="$TMP/no-conf" \
         SPIRA_INCIDENT_REF="$ref" SPIRA_ASK="$TMP/ask.sh" \
         SPIRA_INCIDENT_LOCK="$TMP/run/sinex-test.lock" \
+        SPIRA_INCIDENT_REPO= \
         "$@" \
         bash "$INC" file "$title" - 2>/dev/null
 }

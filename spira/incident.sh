@@ -269,6 +269,12 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
         return 1
     fi
     ilog "filed $id for $ref"
+    # THE INITIAL FILING IS OCCURRENCE 1. Without this the dedup counter starts at 0 on the
+    # first recurrence, so the Nth total filing produces n=N-1 and the SIN fires one interval
+    # late. At SIN_AT=5 (10-minute sweep) that is 60 min rather than the 50 min the comment
+    # promises. The label makes the initial bead indistinguishable from a recurrence in the
+    # counter, so N filings reliably produce sp-recur-N and the SIN fires on the Nth.
+    bdq label add "$id" "sp-recur-1" >/dev/null 2>&1
     # AN UNDECLARED REPO STAYS VISIBLE. Filed but labelled needs-repo-triage so an aeon
     # that would claim it in the home-repo fallback is stopped by its own confusion rather
     # than silently working in the wrong checkout. Escalated once so the operator can
