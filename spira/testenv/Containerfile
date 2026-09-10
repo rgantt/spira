@@ -16,8 +16,9 @@ FROM docker.io/library/ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# System init, session bus, Rust toolchain, and sudo for spirauser to reload units.
+# System init, session bus, Rust toolchain, and tools the install cycle needs.
 # All from the distro archive; no external download scripts.
+# python3 and git are required by install.sh (template rendering and repo root detection).
 RUN apt-get update -q && \
     apt-get install -yq --no-install-recommends \
         systemd \
@@ -27,6 +28,8 @@ RUN apt-get update -q && \
         sudo \
         cargo \
         rustc \
+        python3 \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 # spirauser (uid 1001): the non-root user whose session bus the tests drive.
