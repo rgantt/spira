@@ -398,6 +398,17 @@ cmd_run() {
         fi
     fi
 
+    # Strip runner-injected variables from each suite's environment so a suite that is
+    # sensitive to them (e.g. SPIRA_SUITES_MAXSEC changing a budget calc) fails the same
+    # way in an aeon as it does under the systemd runner.  Mirrors the confirming-run logic
+    # that already does this for red suites, but applied to the primary launch so the
+    # failure is caught before it matters.
+    local _suite_env="" _senv_rv
+    for _senv_rv in $RUNNER_VARS; do
+        [ -n "${!_senv_rv+x}" ] && _suite_env="$_suite_env -u $_senv_rv"
+    done
+    unset _senv_rv
+
     local ran=0 red=0 skipped=0 unreached=""
     # Instrument: track which suites got results, and write unreached for any that didn't.
     local suites_with_results=""
@@ -430,7 +441,8 @@ cmd_run() {
         # group (PGID = suite_pid), so kill -- -suite_pid reaches every descendant it leaves
         # running. Without this, a suite that hangs before its own cleanup lines keeps
         # orphaned children alive past the harness timeout (sp-a8c5).
-        setsid bash "$HERE/$s" > "$tmp" 2>&1 &
+        # shellcheck disable=SC2086
+        setsid${_suite_env:+ env${_suite_env}} bash "$HERE/$s" > "$tmp" 2>&1 &
         suite_pid=$!
         # Watchdog: send SIGTERM to the whole process group if the suite overruns its slice.
         # KILLER IN ITS OWN PROCESS GROUP so that `kill -- -$killer` sweeps both the bash
