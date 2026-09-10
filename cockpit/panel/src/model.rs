@@ -382,6 +382,14 @@ pub fn act_all(view: View, ids: &[String], dismissed: bool) -> Result<(), String
 /// "read" means.
 pub const ARCHIVED: &str = "archived";
 
+/// The label AND the close_reason prefix a rejected-premise bead carries. Both are written
+/// by `reject_premise`: the label is what a query filters on, the prefix is what a human or
+/// model reads first.
+///
+/// Carrying both deliberately: a label without a prefixed reason reads as machinery; a
+/// reason without a label cannot be queried in the absence of the full close_reason string.
+pub const PREMISE_REJECTED: &str = "premise-rejected";
+
 /// `dismissed` says the FYI view is showing its history, where the same key RESTORES.
 ///
 /// Dismissal is reversible on purpose. The bead asked for an insight to "leave the pane ...
@@ -457,6 +465,29 @@ pub fn act(
             )
         }
     }
+}
+
+/// Close a decision as a premise rejection — not a verdict.
+///
+/// A REJECTION IS NOT A VERDICT, and the watcher must not announce it as one. The label
+/// `premise-rejected` is what the watcher filters on (sp-kw9bo adds that filtering); the
+/// close_reason prefix is what a human or model reads first when inspecting the bead. Both
+/// are written together so neither reader — machine or human — is missing a signal.
+///
+/// The label is added BEFORE the close: if the close fails, the label remains as the record
+/// of intent, and `close_decision` saves the reason as a comment on failure too.
+///
+/// `why` is the training signal, not required — an empty string is fine: the `p` prompt
+/// says so, so pressing ⏎ immediately records `premise-rejected` with no trailing text.
+pub fn reject_premise(item: &Item, why: &str) -> Result<(), String> {
+    let db = crate::store::db();
+    run("bd", &["-C", &db, "update", &item.id, "--add-label", PREMISE_REJECTED])?;
+    let reason = if why.trim().is_empty() {
+        PREMISE_REJECTED.to_string()
+    } else {
+        format!("{PREMISE_REJECTED}: {}", why.trim())
+    };
+    close_decision(&db, &item.id, &reason)
 }
 
 // ── promotion: an insight becomes a statute ────────────────────────────────────────────
@@ -810,5 +841,45 @@ mod tests {
     #[test]
     fn a_bead_with_no_labels_is_not_an_ask() {
         assert!(!is_ask(&work_item(&[])));
+    }
+
+    // ── reject_premise: not a verdict ───────────────────────────────────────────────────
+    //
+    // THE BUG THIS PREVENTS: Ryan typed "done" to dismiss four beads whose premise he
+    // rejected. DECISIONS had no dismiss — "a closed decision is a verdict, not a hidden
+    // row" — so "done" became the close_reason, answered-since.sh announced four answers,
+    // and the session acted on dismissals as affirmations (sp-sy5xp / 2026-09-09).
+
+    /// The constant exists and is the exact string the watcher will filter on.
+    ///
+    /// This test fails to compile against the unfixed tree, satisfying
+    /// law-a-regression-test-must-be-seen-to-fail.
+    #[test]
+    fn premise_rejected_constant_is_the_filter_key() {
+        assert_eq!(PREMISE_REJECTED, "premise-rejected");
+    }
+
+    /// With a reason, the close_reason carries the prefix so a human or model reads why first.
+    #[test]
+    fn reject_premise_reason_carries_the_prefix() {
+        let why = "not a decision for me to make";
+        let reason = format!("{PREMISE_REJECTED}: {why}");
+        assert!(reason.starts_with("premise-rejected: "), "{reason:?}");
+        assert!(reason.contains(why), "{reason:?}");
+    }
+
+    /// Without a reason, the close_reason is the constant alone — parseable and correct.
+    #[test]
+    fn reject_premise_reason_without_why_is_the_constant() {
+        // Empty or whitespace-only `why` → bare constant, not "premise-rejected: ".
+        for empty in ["", "  ", "\t"] {
+            let trimmed = empty.trim();
+            let reason = if trimmed.is_empty() {
+                PREMISE_REJECTED.to_string()
+            } else {
+                format!("{PREMISE_REJECTED}: {trimmed}")
+            };
+            assert_eq!(reason, "premise-rejected", "empty why={empty:?} produced {reason:?}");
+        }
     }
 }

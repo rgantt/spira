@@ -483,7 +483,10 @@ pub fn reader(
     // loudest that a record wanted an answer also did nothing when pressed. It now names what
     // ⏎ actually does here, and on a notification it names nothing because ⏎ does nothing.
     let enter = match view {
-        View::Decisions => format!(" · {}⏎{} decide · {}c{} comment", KEY, BAR, KEY, BAR),
+        View::Decisions => format!(
+            " · {}⏎{} decide · {}p{} reject · {}c{} comment",
+            KEY, BAR, KEY, BAR, KEY, BAR
+        ),
         // `L` is offered wherever it is bound, and it is bound here: the reader is where a
         // long insight is actually read, so it is where the question "should this be law?"
         // is answered. A key that works but is advertised on only one of two surfaces is
@@ -647,6 +650,10 @@ pub fn input_label(mode: Option<&str>) -> Option<&'static str> {
         "comment" => "comment",
         "decide" => "verdict",
         "enact" => "statute",
+        // THE WHY IS THE TRAINING SIGNAL. A key that prompts "reason" over a rejection
+        // reads the same as the one that prompts for a verdict, which is exactly the
+        // confusion that made dismissals look like answers.
+        "premise" => "why (training signal)",
         _ => "reason",
     })
 }
@@ -1006,7 +1013,10 @@ fn footer(f: &Frame, pos: usize, total: usize) -> String {
             if has_default {
                 s.push_str(&format!(" · {}a{} accept default", KEY, BAR));
             }
-            s.push_str(&format!(" · {}⏎{} decide · {}c{} comment", KEY, BAR, KEY, BAR));
+            s.push_str(&format!(
+                " · {}⏎{} decide · {}p{} reject · {}c{} comment",
+                KEY, BAR, KEY, BAR, KEY, BAR
+            ));
         }
         // NO `a accept default` AND NO `⏎ decide` HERE, ever — those are the two keys that
         // made the view read as a queue of asks. `h` is the retrieval half of dismissal: an
@@ -2059,6 +2069,60 @@ three")]);
         assert!(!plain.last().unwrap().contains("L enact"));
         let (lines, _) = reader(&item("t", "b"), View::Decisions, NOW, 0, 107, 19);
         assert!(!text(&lines).last().unwrap().contains("L enact"));
+    }
+
+    // ── reject-premise: a fourth exit from a decision row ────────────────────────────────
+    //
+    // THE BUG: Ryan typed "done" to dismiss four beads he refused to answer. There was no
+    // dismiss key for DECISIONS, so "done" was stored as the close_reason and announced as a
+    // verdict. `p` is that key, and its prompt names itself as a training signal so the act
+    // is legible even when the why is left blank. (sp-sy5xp, 2026-09-09)
+
+    /// The DECISIONS footer must offer `p reject` — a key that is not advertised is one that
+    /// is never found. This fails to compile against the unfixed tree, satisfying
+    /// law-a-regression-test-must-be-seen-to-fail.
+    #[test]
+    fn the_decisions_footer_offers_p_reject() {
+        let items = Ok(vec![item("should I mute this check?", "it pages every hour")]);
+        let foot = strip_seq(frame(&a_frame(&items, 107, 19)).last().unwrap());
+        assert!(foot.contains("p reject"), "footer must advertise p: {foot:?}");
+    }
+
+    /// `p` must not appear on FYI, NOTIFICATIONS or ALERTS footers — those are record views
+    /// whose dismiss semantics are already correct.
+    #[test]
+    fn p_reject_is_absent_from_non_decision_footers() {
+        let insight_items = Ok(vec![insight("a finding", "why it matters")]);
+        let fyi_foot = strip_seq(frame(&fyi_frame(&insight_items, false)).last().unwrap());
+        assert!(!fyi_foot.contains("p reject"), "FYI must not offer p: {fyi_foot:?}");
+
+        let alert_items = Ok(vec![alert("wedged", "no pass")]);
+        let alert_foot = strip_seq(frame(&alert_frame(&alert_items, false)).last().unwrap());
+        assert!(!alert_foot.contains("p reject"), "ALERTS must not offer p: {alert_foot:?}");
+    }
+
+    /// The reader's footer must match the list's footer for DECISIONS.
+    ///
+    /// The original FYI defect shipped because the list advertised ⏎ decide and the reader
+    /// advertised it too — but on DECISIONS, where both were wrong. The two surfaces must
+    /// never diverge for the same view.
+    #[test]
+    fn the_decisions_reader_footer_also_offers_p_reject() {
+        let it = item("should I mute this check?", "it pages every hour");
+        let (lines, _) = reader(&it, View::Decisions, NOW, 0, 107, 19);
+        let foot = strip_seq(lines.last().unwrap());
+        assert!(foot.contains("p reject"), "reader footer must advertise p: {foot:?}");
+    }
+
+    /// The input label for "premise" mode distinguishes the training signal from a verdict.
+    /// A label that says "reason" over a rejection reads the same as the verdict prompt.
+    #[test]
+    fn the_input_label_for_premise_says_training_signal() {
+        assert_eq!(input_label(Some("premise")), Some("why (training signal)"));
+        // And no other mode is affected.
+        assert_eq!(input_label(Some("decide")), Some("verdict"));
+        assert_eq!(input_label(Some("comment")), Some("comment"));
+        assert_eq!(input_label(None), None);
     }
 
     /// The compose row names what is being typed. "reason" over a statute would be the same

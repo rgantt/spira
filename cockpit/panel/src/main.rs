@@ -46,7 +46,7 @@ mod store;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal;
-use model::{act, comment, enact, Act, Item, View};
+use model::{act, comment, enact, reject_premise, Act, Item, View};
 use render::{frame, Frame};
 use std::io::{stdout, Write};
 use std::sync::{Arc, Mutex};
@@ -498,6 +498,36 @@ impl App {
             *inflight.lock().unwrap() -= 1;
         });
     }
+
+    /// Close the selected item as a premise rejection.
+    ///
+    /// Same optimistic-hide pattern as `do_act`: the row leaves instantly, the write runs
+    /// off-thread, and a failure puts it back. The `why` is optional — an empty string is
+    /// valid and records `premise-rejected` with no annotation.
+    fn do_reject_premise(&mut self, why: &str) {
+        let Some(it) = self.current() else { return };
+        self.pending.push((it.id.clone(), store::Expect::Closed));
+        self.pending_rev = self.pending_rev.wrapping_add(1);
+        self.flash = format!("premise rejected: {}", it.id);
+        let (errors, inflight, shared, unhide) = (
+            Arc::clone(&self.errors),
+            Arc::clone(&self.inflight),
+            Arc::clone(&self.shared),
+            Arc::clone(&self.unhide),
+        );
+        let why = why.to_string();
+        *inflight.lock().unwrap() += 1;
+        thread::spawn(move || {
+            if let Err(e) = reject_premise(&it, &why) {
+                errors.lock().unwrap().push(format!("{}: {e}", it.id));
+                unhide.lock().unwrap().push(it.id.clone());
+            }
+            *inflight.lock().unwrap() -= 1;
+            store::refresh(&shared);
+        });
+        let n = self.items().map(|v| v.len()).unwrap_or(0);
+        self.sel = self.sel.min(n.saturating_sub(1));
+    }
 }
 
 /// The close reason `d` records, which only two of the four views have one to record.
@@ -764,7 +794,12 @@ fn main() {
             match code {
                 KeyCode::Enter => {
                     let v = app.buf.trim().to_string();
-                    if !v.is_empty() {
+                    // PREMISE ACCEPTS AN EMPTY WHY — the prompt says it is the training
+                    // signal, so pressing ⏎ immediately is valid and records a bare
+                    // "premise-rejected". Every other mode requires text before acting.
+                    if m == "premise" {
+                        app.do_reject_premise(&v);
+                    } else if !v.is_empty() {
                         match m.as_str() {
                             "comment" => app.do_comment(&v),
                             "enact" => app.do_enact(&v),
@@ -859,6 +894,14 @@ fn main() {
                 }
                 KeyCode::Char('s') if app.view == View::Alerts && !app.dismissed => {
                     app.do_act("", Act::Silence);
+                    app.reading = false;
+                    app.scroll.reset();
+                }
+                // `p` REJECTS THE PREMISE. Only in DECISIONS; inert in every other view.
+                // Leaving the reader first so the item is still visible under the prompt.
+                KeyCode::Char('p') if app.view == View::Decisions => {
+                    app.mode = Some("premise".into());
+                    app.buf.clear();
                     app.reading = false;
                     app.scroll.reset();
                 }
@@ -998,6 +1041,12 @@ fn main() {
                     }
                     _ => app.flash = "no default on this one — ⏎ to decide".into(),
                 }
+            }
+            // `p` REJECTS THE PREMISE. Only in DECISIONS — inert in FYI, NOTIFICATIONS and
+            // ALERTS. Prompts for a short why; the prompt says it is the training signal.
+            KeyCode::Char('p') if n > 0 && app.view == View::Decisions => {
+                app.mode = Some("premise".into());
+                app.buf.clear();
             }
             _ => {}
         }
