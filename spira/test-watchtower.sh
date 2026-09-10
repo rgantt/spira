@@ -763,6 +763,89 @@ unique_ref_count="$(printf '%s\n' "$refs" | sort -u | grep -c .)"
 is "two passes with different counts produce one dedupe key"     "1" "$unique_ref_count"
 want "and the key is the stable sending-unadopted-refs ref"      "sending-unadopted-refs" "$refs"
 
+# ======================================================================================
+echo
+echo "the duplicate-ref vital sign renders from cockpit.env:"
+# ======================================================================================
+# THE SEAM THIS COVERS. cockpit.sh writes SP_DUP_REFS and SP_DUP_BEADS into cockpit.env;
+# watchtower.sh reads them and renders them in 'The graph' section. Missing keys must render
+# '?' (a failed probe must not displace the suspicion), and zero must render as zero (a clean
+# dedup path should say so, not report unknown).
+#
+# THE POSITIVE CONTROL COMES FIRST. A renderer that always prints '?' passes the ? test;
+# only a fixture with real numbers can prove it is actually reading the keys.
+fresh
+mkdir -p "$TMP/run"
+printf "SP_DUP_REFS=3\nSP_DUP_BEADS=5\n" > "$TMP/run/cockpit.env"
+snap="$(wt)"
+want "SP_DUP_REFS renders in the graph"       "duplicate incident refs" "$snap"
+want "SP_DUP_REFS value renders"              "duplicate incident refs             3" "$snap"
+want "SP_DUP_BEADS renders"                   "surplus beads: 5" "$snap"
+
+# UNREAD SNAPSHOT (missing keys) renders ? — same rule as other vital signs.
+fresh
+mkdir -p "$TMP/run"
+printf "SP_OPEN=5\n" > "$TMP/run/cockpit.env"   # no SP_DUP_* keys at all
+snap="$(wt)"
+want "missing SP_DUP_REFS renders ?"  "duplicate incident refs             ?" "$snap"
+want "missing SP_DUP_BEADS renders ?" "surplus beads: ?" "$snap"
+
+# ZERO IS A VALID MEASUREMENT. A dedup path with no failures should render 0, not ?.
+fresh
+mkdir -p "$TMP/run"
+printf "SP_DUP_REFS=0\nSP_DUP_BEADS=0\n" > "$TMP/run/cockpit.env"
+snap="$(wt)"
+want   "SP_DUP_REFS=0 renders as 0, not ?"   "duplicate incident refs             0" "$snap"
+nowant "and the zero is not disguised as ?"   "duplicate incident refs             ?" "$snap"
+
+# ======================================================================================
+echo
+echo "the DEDUP escalation fires when SP_DUP_REFS is nonzero:"
+# ======================================================================================
+# Nonzero SP_DUP_REFS means multiple beads carry the same external_ref — the dedup path
+# missed them. The escalation must fire once; zero and ? must be silent.
+
+# Nonzero: escalation fires.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf "SP_DUP_REFS=2\nSP_DUP_BEADS=1\n" > "$TMP/run/cockpit.env"
+rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
+wt_file_multi
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+want "nonzero SP_DUP_REFS fires escalation"  "DEDUP:"     "$subjects"
+want "DEDUP subject names the detection"     "duplicate incident refs detected" "$subjects"
+
+# Zero: no escalation.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf "SP_DUP_REFS=0\nSP_DUP_BEADS=0\n" > "$TMP/run/cockpit.env"
+rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
+wt_file_multi
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+nowant "SP_DUP_REFS=0 does not fire escalation" "DEDUP:" "$subjects"
+
+# ?: no escalation — a failed probe must not file a bead claiming dedup is broken.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf "SP_DUP_REFS=?\nSP_DUP_BEADS=?\n" > "$TMP/run/cockpit.env"
+rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
+wt_file_multi
+subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
+nowant "? SP_DUP_REFS never fires escalation" "DEDUP:" "$subjects"
+
+# DEDUP key is stable across passes — two passes with different counts produce one ref.
+fresh
+mkdir -p "$TMP/run/landstate"
+rm -f "$TMP/inc-refs" "$TMP/ops-prompt"
+printf "SP_DUP_REFS=2\nSP_DUP_BEADS=1\n" > "$TMP/run/cockpit.env"
+wt_refs_multi
+printf "SP_DUP_REFS=4\nSP_DUP_BEADS=3\n" > "$TMP/run/cockpit.env"
+wt_refs_multi
+refs="$(cat "$TMP/inc-refs" 2>/dev/null || echo "")"
+unique_ref_count="$(printf '%s\n' "$refs" | sort -u | grep -c .)"
+is "two passes with different dup counts produce one dedupe key" "1" "$unique_ref_count"
+want "and the key is the stable dedup-meter-nonzero ref" "dedup-meter-nonzero" "$refs"
+
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -403,6 +403,7 @@ reading \`?\` is one this pass COULD NOT READ — never treat it as a zero.
   open $(g SP_OPEN) · closed $(g SP_CLOSED) · landed $(g SP_LANDED) · needs-operator $(g SP_NEEDSOP)
   repo: unmapped $(g SP_REPO_UNMAPPED) · absent $(g SP_REPO_ABSENT)
   parked on CI $(g SP_AWAITING_N), oldest $(g SP_AWAITING_AGE), stuck $(g SP_AWAITING_STUCK)
+  duplicate incident refs             $(g SP_DUP_REFS)      (surplus beads: $(g SP_DUP_BEADS))
 
 ### The menu — run these scans, then look for what they do not cover
 
@@ -540,6 +541,46 @@ if [ "$_unadopted" != "?" ] && [ "$_unadopted" -gt 0 ] 2>/dev/null; then
         log "watchtower: unadopted escalation filed (${_unadopted} unadopted refs)"
     else
         log "watchtower: $INC is missing — unadopted escalation not filed"
+    fi
+fi
+
+# ---------------------------------------------------------------------------------------
+# DUPLICATE-REF ESCALATION. The dedup meter above measures whether incident.sh is actually
+# deduping. When SP_DUP_REFS is nonzero, multiple beads carry the same external_ref — which
+# means the dedup path silently stopped working at some point, and every subsequent filing
+# piled on a fresh bead rather than bumping a recurrence. Filed as a P1 task to Ops; the
+# body names the worst offending refs so Ops can immediately see what to collapse.
+#
+# DEDUP THROUGH THE FIXED PATH (sp-srgr6). The SPIRA_INCIDENT_REF is a stable key, not one
+# that embeds the current count — a count-keyed ref produces a new bead on every measurement,
+# which is the exact failure this escalation exists to catch.
+#
+# ONLY WHEN NUMERIC AND NONZERO. A `?` means the probe failed; filing on a failed probe
+# sounds the alarm without evidence (law-absence-needs-a-positive-control). Zero is the
+# healthy state and is never filed.
+# ---------------------------------------------------------------------------------------
+_dup_refs="${SP_DUP_REFS:-?}"
+_dup_beads="${SP_DUP_BEADS:-?}"
+if [ "$_dup_refs" != "?" ] && [ "$_dup_refs" -gt 0 ] 2>/dev/null; then
+    if [ -x "$INC" ] || [ -r "$INC" ]; then
+        # Build the body: worst offenders from SP_DUP_ROWn, falling back to bare counts.
+        _dup_body="$(printf 'Duplicate incident refs: %s refs, %s surplus beads\n\nThe incident.sh dedup path is not deduplicating within its lookback window. Multiple beads exist for the same external_ref, which means each pass filed a fresh bead instead of bumping a recurrence. Collapse the surplus beads and investigate why open_incident() or recent_closed_incident() missed the existing one.\n\nWorst offenders:\n' "$_dup_refs" "$_dup_beads"
+        for _i in 0 1 2 3 4; do
+            _row_var="SP_DUP_ROW${_i}"
+            _row="${!_row_var:-}"
+            [ -n "$_row" ] && printf '  %s\n' "$_row"
+        done)"
+        printf '%s\n' "$_dup_body" | \
+        SPIRA_INCIDENT_TYPE=task \
+        SPIRA_INCIDENT_PRIORITY=1 \
+        SPIRA_INCIDENT_ACTOR=watchtower \
+        SPIRA_SIN_EXEMPT=1 \
+        SPIRA_INCIDENT_REPO=spira \
+        SPIRA_INCIDENT_REF=incident:dedup-meter-nonzero \
+        bash "$INC" file "DEDUP: duplicate incident refs detected (${_dup_refs} refs, ${_dup_beads} surplus)" - >/dev/null || true
+        log "watchtower: dedup escalation filed (${_dup_refs} dup refs, ${_dup_beads} surplus beads)"
+    else
+        log "watchtower: $INC is missing — dedup escalation not filed"
     fi
 fi
 

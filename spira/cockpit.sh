@@ -1098,6 +1098,9 @@ for i in awaiting_ids:
     # ---- fiends ------------------------------------------------------------------------
     strand_keys
 
+    # ---- duplicate external_refs — the dedup meter -------------------------------------
+    dup_refs_keys
+
     # ---- livelocked and invalid-closed beads -------------------------------------------
     livelock_keys
 
@@ -1263,6 +1266,78 @@ for i in d:
 print("SP_REPO_UNMAPPED=%d" % unmapped)
 print("SP_REPO_ABSENT=%d" % absent)
 ' 2>/dev/null || { echo "SP_REPO_UNMAPPED=?"; echo "SP_REPO_ABSENT=?"; }
+}
+
+# The duplicate-ref meter: how many external_ref values appear on more than one bead.
+#
+# SP_DUP_REFS:  count of distinct external_ref values carried by more than one bead within
+#               the lookback window (open beads always included; closed beads within
+#               SPIRA_INCIDENT_DEDUP_LOOKBACK days, matching incident.sh's own window).
+# SP_DUP_BEADS: total surplus beads — sum of (count - 1) per duplicated ref.
+# SP_DUP_ROW0..N: the worst offenders, for the watchtower's incident body.
+#
+# WHY THIS EXISTS (law-dedup-must-be-measured). Every filer trusts incident.sh's dedup; this
+# is the check on the dedup itself. A nonzero SP_DUP_REFS means two or more beads exist for
+# the same event, which is the looping-incident pattern that produced 38 surplus beads over
+# two days and was found by the operator looking, not by any instrument. When dedup is working
+# the meter reads 0; when it breaks the meter says so before anyone has to notice the queue
+# filling up.
+#
+# A FAILED PROBE RENDERS ?, NEVER 0. A dedup meter showing 0 because it could not query is the
+# exact failure it exists to catch (law-absence-needs-a-positive-control). The ? convention
+# tells Ops to read the code rather than trust the reassuring zero.
+#
+# SCOPED TO spira,incident — the label pair incident.sh sets on every bead it files. This
+# keeps the query set small and matches the dedup candidate pool incident.sh itself searches.
+#
+# Broken out as a function so the test suite can drive the exact code the collector runs,
+# the same reason strand_keys and livelock_keys are functions and not inlined.
+dup_refs_keys() {
+    local _since _raw
+    _since="$(date -u -d "-${SPIRA_INCIDENT_DEDUP_LOOKBACK:-7} days" '+%Y-%m-%d' 2>/dev/null)"
+    if [ -z "$_since" ]; then
+        echo "SP_DUP_REFS=?"; echo "SP_DUP_BEADS=?"; echo "SP_DUP_N=0"; return
+    fi
+    # --all: include closed beads (within-lookback filter is done in Python below).
+    # Empty output means bdjson failed (bd unreachable, schema mismatch); a real empty
+    # result arrives as "[]" which json_only passes through, so the variable is never
+    # empty when the query succeeded.
+    _raw="$(bdjson list --all --limit 0 --label spira,incident 2>/dev/null)"
+    if [ -z "$_raw" ]; then
+        echo "SP_DUP_REFS=?"; echo "SP_DUP_BEADS=?"; echo "SP_DUP_N=0"; return
+    fi
+    printf '%s\n' "$_raw" | DUP_SINCE="$_since" python3 -c '
+import sys, json, os
+from collections import defaultdict
+
+cutoff = os.environ.get("DUP_SINCE", "")
+try: d = json.load(sys.stdin)
+except Exception:
+    print("SP_DUP_REFS=?"); print("SP_DUP_BEADS=?"); print("SP_DUP_N=0")
+    raise SystemExit
+d = d if isinstance(d, list) else [d]
+
+by_ref = defaultdict(list)
+for i in d:
+    ref = i.get("external_ref") or ""
+    if not ref:
+        continue
+    # Include non-closed beads always; include closed beads only within the lookback.
+    if i.get("status") == "closed" and cutoff:
+        closed_at = (i.get("closed_at") or "")[:10]
+        if closed_at < cutoff:
+            continue
+    by_ref[ref].append(i["id"])
+
+dup = {r: ids for r, ids in by_ref.items() if len(ids) > 1}
+print("SP_DUP_REFS=%d" % len(dup))
+print("SP_DUP_BEADS=%d" % sum(len(ids) - 1 for ids in dup.values()))
+rows = sorted(dup.items(), key=lambda x: -len(x[1]))[:5]
+for n, (ref, ids) in enumerate(rows):
+    line = "%s +%d %s" % (ref, len(ids) - 1, " ".join(ids[:5]))
+    print("SP_DUP_ROW%d=%s" % (n, line[:120]))
+print("SP_DUP_N=%d" % len(rows))
+' 2>/dev/null || { echo "SP_DUP_REFS=?"; echo "SP_DUP_BEADS=?"; echo "SP_DUP_N=0"; }
 }
 
 # THE SERIES, because a gauge cannot answer "over time". The question the token meter exists
@@ -1841,5 +1916,10 @@ repo_labels)
 livelock)
     livelock_keys
     ;;
-*) echo "usage: cockpit.sh [once|loop|history|strands|sops|ratelim|sphere|repo_labels|livelock]" >&2; exit 1 ;;
+# The duplicate-ref meter keys alone, taking no other reading. This is the seam the suite
+# drives: it is the same function probe calls, so what is tested is what runs.
+dup_refs)
+    dup_refs_keys
+    ;;
+*) echo "usage: cockpit.sh [once|loop|history|strands|sops|ratelim|sphere|repo_labels|livelock|dup_refs]" >&2; exit 1 ;;
 esac
