@@ -230,8 +230,10 @@ case "$MODE" in
             bdq label add "$ID" spira-dropped >/dev/null 2>&1 || say "bead: could not mark spira-dropped — the close may be reopened by CHECK 5"
             if [ "$st" = closed ]; then
                 # Already closed — by the aeon before it was stopped, or by hand. The reason
-                # still belongs on the record; re-closing would fail and say nothing.
-                bdq note "$ID" "$REASON — $note" >/dev/null 2>&1
+                # still belongs on the record; re-closing would fail and say nothing. The note
+                # is best-effort: bd refusing it (closed bead, permission, network) must not
+                # flip the exit to non-zero when the bead state is already correct.
+                bdq note "$ID" "$REASON — $note" >/dev/null 2>&1 || true
             else
                 bdq close "$ID" --reason "$REASON — $note" >/dev/null 2>&1 || { say "bead: close failed"; fail=1; }
             fi ;;
