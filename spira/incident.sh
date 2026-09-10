@@ -72,6 +72,12 @@ esac
 SPOOL="${SPIRA_SPOOL:-$SPIRA_RUN/incident-spool}"
 ILOG="${SPIRA_INCIDENT_LOG:-$SPIRA_RUN/incident.log}"
 SIN_AT="${SPIRA_SIN_AT:-5}"
+# HOW FAR BACK THE DEDUP LOOKS FOR CLOSED BEADS. A failure whose bead was closed and then
+# recurred is a recurrence, not a new event — reopening keeps the count and timeline on one
+# record and prevents the close-then-refile loop that produced 38 duplicates in 2 days
+# (sp-srgr6). The window is in whole days; the default of 7 days covers the week-scale
+# flaps seen in timed-suite failures while leaving clearly old closures as "done".
+DEDUP_LOOKBACK_DAYS="${SPIRA_INCIDENT_DEDUP_LOOKBACK:-7}"
 # A CALLER MAY DECLARE ITSELF EXEMPT FROM THE SIN ESCALATION. The recurrence counter and the
 # notes still increment — the signal stays where it belongs, on the bead and in the ops pane —
 # but the counter cannot cross the SIN threshold and page the operator. The watchtower sweep
@@ -116,6 +122,35 @@ for i in (d if isinstance(d, list) else [d]):
 ' "$1" 2>/dev/null
 }
 
+recent_closed_incident() {   # recent_closed_incident <ref> -> bead id or empty
+    # REOPENING IS THE CHOSEN STRATEGY, not linking. A closed bead found within the lookback
+    # window is the same incident returning: reopening keeps the recurrence count and the full
+    # timeline on one record. Linking would produce a chain of single-occurrence beads that
+    # must each be tracked and worked separately; one bead that says "red 6 times over 2 days"
+    # is what lets Ops see the pattern and break the cycle.
+    #
+    # DATE ARITHMETIC IS GNU date(1). The fallback -v flag is for BSD/macOS in case this
+    # ever runs there; on Linux only the -d form is used. An empty _since means the date
+    # command is unavailable — skip the closed-bead search rather than returning stale data
+    # with an unbounded window.
+    local _since _dedupe_labels
+    _since="$(date -u -d "-${DEDUP_LOOKBACK_DAYS} days" '+%Y-%m-%d' 2>/dev/null \
+           || date -u -v "-${DEDUP_LOOKBACK_DAYS}d" '+%Y-%m-%d' 2>/dev/null || true)"
+    [ -n "$_since" ] || return 0
+    _dedupe_labels="$(printf '%s' "$LABELS" | tr ',' '\n' | grep -v '^repo:' | paste -sd, -)"
+    bdjson list --status closed --closed-after "$_since" --limit 0 --label "$_dedupe_labels" \
+          2>/dev/null \
+      | python3 -c '
+import sys, json
+target = sys.argv[1]
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for i in (d if isinstance(d, list) else [d]):
+    if i.get("external_ref") == target:
+        print(i["id"]); break
+' "$1" 2>/dev/null
+}
+
 recurrences_of() {       # recurrences_of <id> -> integer
     bdq label list "$1" 2>/dev/null | grep -oE 'sp-recur-[0-9]+' | grep -oE '[0-9]+$' \
         | sort -n | tail -1 || true
@@ -127,7 +162,7 @@ recurrences_of() {       # recurrences_of <id> -> integer
 # so a transient failure costs a retry rather than the event.
 # --------------------------------------------------------------------------------------
 file_one() {
-    local ref="$1" title="$2" pf="$3" id n
+    local ref="$1" title="$2" pf="$3" id n _was_closed _reopen_note _log_suffix
 
     # A bd that cannot even answer is a bd that must not be treated as "no open incident" —
     # that reading is how one outage becomes one bead per alert. Probe first, and bail.
@@ -137,12 +172,33 @@ file_one() {
     fi
 
     id="$(open_incident "$ref")"
+    _was_closed=0
+    if [ -z "${id:-}" ]; then
+        # THE FIX FOR sp-srgr6. open_incident only sees open/in_progress beads, so a bead
+        # closed while the underlying condition persisted was invisible — the next filing
+        # created a fresh bead and the cycle repeated. recent_closed_incident checks closed
+        # beads within SPIRA_INCIDENT_DEDUP_LOOKBACK days; when found, the bead is REOPENED
+        # (not a new bead filed) so the recurrence count and timeline stay on one record.
+        # Pre-fix output for this case: "filed sp-<new> for incident:<ref>" — a second bead.
+        # Post-fix output: "recurred (N) — sp-<original> (reopened from closed)".
+        id="$(recent_closed_incident "$ref")"
+        [ -n "${id:-}" ] && _was_closed=1
+    fi
     if [ -n "${id:-}" ]; then
         n="$(recurrences_of "$id")"; n="${n:-1}"; n=$((n+1))
+        if [ "$_was_closed" = 1 ]; then
+            bdq reopen "$id" --reason "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ) — same failure fingerprint, dedup within ${DEDUP_LOOKBACK_DAYS}-day window" >/dev/null 2>&1
+        fi
         bdq label add "$id" "sp-recur-$n" >/dev/null 2>&1
-        bdq note "$id" "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ).
+        _reopen_note="" _log_suffix=""
+        if [ "$_was_closed" = 1 ]; then
+            _reopen_note="
+Reopened by dedup — same external ref seen again within ${DEDUP_LOOKBACK_DAYS} days of close."
+            _log_suffix=" (reopened from closed)"
+        fi
+        bdq note "$id" "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ).${_reopen_note}
 $(head -c 2000 "$pf")" >/dev/null 2>&1
-        ilog "$ref recurred ($n) — $id"
+        ilog "$ref recurred ($n) — $id${_log_suffix}"
         # A Sin: it keeps coming back because nothing has broken the cycle. Escalated once,
         # on the crossing, never again — a second page buries the first.
         # AN EXEMPT REF NEVER REACHES THIS BLOCK. The recurrence counter and the notes have

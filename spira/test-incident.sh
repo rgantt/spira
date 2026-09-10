@@ -106,6 +106,24 @@ print(count)
 ' "$1"
 }
 
+# Count ALL beads (any status) carrying the given external ref on the fixture database.
+# Used by the close-then-refile regression: after the fix the closed bead is reopened so
+# the total count stays 1; under the unfixed code a new bead is created and the count is 2.
+count_all() {
+    bd -C "$SPIRA_DB" list --all --status open,in_progress,closed --limit 0 --label spira,incident --json 2>/dev/null \
+      | python3 -c '
+import sys, json
+target = sys.argv[1]
+count = 0
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for i in (d if isinstance(d, list) else [d]):
+    if i.get("external_ref") == target:
+        count += 1
+print(count)
+' "$1"
+}
+
 # ======================================================================================
 echo
 echo "the positive control — a single call creates one bead and open_incident finds it:"
@@ -133,6 +151,49 @@ n="$(count_open 'incident:the-test-sweep')"
 is "two sequential calls leave exactly one open bead" "1" "$n"
 log_count="$(grep -c 'recurred' "$ILOG" 2>/dev/null || true)"
 is "the second call was recorded as a recurrence, not a filing" "1" "$log_count"
+
+testdb_reset
+mkdir -p "$RUN"
+> "$ILOG"
+
+# ======================================================================================
+echo
+echo "close-then-refile dedup — a closed bead within the lookback is reopened (sp-srgr6):"
+# ======================================================================================
+# THE DEFECT REPRODUCED. open_incident formerly filtered --status open,in_progress only.
+# Closing a bead for a still-failing ref made it invisible: the next invocation found no
+# open bead and filed a fresh one — repeating until 38 duplicate beads accumulated in 2 days.
+#
+# SEEN TO FAIL against the unfixed tree (law-a-regression-test-must-be-seen-to-fail):
+# Filing first bead; closing it; filing same ref again produced:
+#   2026-09-10T14:25:47Z incident: filed sp-7ed for incident:the-test-sweep   ← second bead
+# count_all returned 2 (one closed original + one fresh open bead).
+#
+# After the fix: recent_closed_incident finds the closed bead within SPIRA_INCIDENT_DEDUP_LOOKBACK
+# days and file_one reopens it with a recurrence note — count_all stays 1, count_open stays 1.
+printf 'first payload\n' | inc >/dev/null
+# Extract and close the bead that was just filed.
+_ctr_id="$(bd -C "$SPIRA_DB" list --status open,in_progress --limit 0 --json 2>/dev/null \
+  | python3 -c '
+import sys, json
+target = sys.argv[1]
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for i in (d if isinstance(d, list) else [d]):
+    if i.get("external_ref") == target:
+        print(i["id"]); break
+' 'incident:the-test-sweep')"
+[ -n "${_ctr_id:-}" ] && \
+    bd -C "$SPIRA_DB" close "$_ctr_id" --reason "resolved in regression test" >/dev/null 2>&1 || true
+> "$ILOG"
+# File the same ref again — should reopen, not create a second bead.
+printf 'second payload\n' | inc >/dev/null
+n_all="$(count_all 'incident:the-test-sweep')"
+is "close-then-refile leaves exactly one bead total (original reopened)" "1" "$n_all"
+n_open="$(count_open 'incident:the-test-sweep')"
+is "the original bead was reopened (now open)" "1" "$n_open"
+log_reopen="$(grep -c 'reopened from closed' "$ILOG" 2>/dev/null || true)"
+is "reopen path was logged, not a new filing" "1" "$log_reopen"
 
 testdb_reset
 mkdir -p "$RUN"
@@ -378,25 +439,32 @@ testdb_reset; mkdir -p "$RUN"; > "$ILOG"
 
 # -------
 echo
-echo "  sequential dedupe — second filing finds existing ask after incident resolves:"
+echo "  sequential dedupe — second filing produces no new ask after incident resolves:"
 # THE BLEED, REPRODUCED. An incident closes (operator said it was fixed); the next run
-# of the same test file (same ref) creates a new incident. Without the fix, a second ask
-# is also created. With the fix, the open ask is found and commented on instead.
+# of the same test file (same ref) formerly created a new incident AND a new ask.
+# sp-jvlrs fixed the ask side (dedup on ref, not title).
+# sp-srgr6 fixed the incident side: the closed bead is found in the lookback window and
+# REOPENED rather than a new bead being filed. When the bead is reopened, the code never
+# reaches the "file new bead" path and the ask count stays at 1.
+# A second valid path: a new bead IS filed but the ask is found and commented on. Both
+# produce exactly one ask — the test asserts on that invariant, not on the internal path.
 # Step 1: file the first incident (creates incident-1 + ask-A).
 printf 'payload 1\n' | inc_ask >/dev/null
 # Extract the incident bead id from the log ("filed <id> for incident:...").
 _seq_id="$(grep 'incident: filed .* for incident:undeclared-repo-test' "$ILOG" \
     | awk '{print $4}' | head -1)"
-# Close the incident so the next filing is a new bead, not a recurrence.
+# Close the incident so the bead-dedup lookback is exercised on the second filing.
 [ -n "${_seq_id:-}" ] && \
     bd -C "$SPIRA_DB" close "$_seq_id" --reason "resolved in test" >/dev/null 2>&1 || true
-# Step 2: same test still has no repo — new run, new incident, must reuse the ask.
+# Step 2: same test still has no repo — new run. Must not create a second ask.
 > "$ILOG"
 printf 'payload 2\n' | inc_ask >/dev/null
 n="$(count_undeclared_asks "$NOREP_REF")"
 is "two incidents (close in between) produce one ask" "1" "$n"
-recur_log="$(grep -c 'undeclared-repo ask already open' "$ILOG" 2>/dev/null || true)"
-is "second filing after close logged as a recurrence, not a new ask" "1" "$recur_log"
+# The recurrence path is "reopened from closed" (bead-level dedup) or "ask already open"
+# (ask-level dedup). Either proves no fresh ask was filed — accept both.
+recur_log="$(grep -cE 'reopened from closed|undeclared-repo ask already open' "$ILOG" 2>/dev/null || true)"
+is "second filing after close was a recurrence (no new ask or new bead)" "1" "$recur_log"
 
 testdb_reset; mkdir -p "$RUN"; > "$ILOG"
 
