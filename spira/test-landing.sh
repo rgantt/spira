@@ -422,7 +422,7 @@ fi
 # same red, and a pass that filed per branch or per pass would have four beads by now.
 out2="$(landing)"
 is   "a second pass files no second incident"  1 "$(n_lines "$(incidents)")"
-want "it bumps a recurrence on the first"      "sp-recur-2" "$(B label list "$inc_id" 2>&1)"
+want "it bumps a recurrence on the first"      "sp-recur-1" "$(B label list "$inc_id" 2>&1)"
 want "and holds the branch again"              "gate: held — the base fails its own gate" "$out2"
 is   "with the bead still closed"              closed "$(status_of sp-held)"
 
