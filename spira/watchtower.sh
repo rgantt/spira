@@ -518,7 +518,8 @@ if [ "$_unsent_oldest" != "?" ] && [ "$_unsent_oldest" -ge "$UNSENT_WARN_H" ] 2>
         SPIRA_INCIDENT_ACTOR=watchtower \
         SPIRA_SIN_EXEMPT=1 \
         SPIRA_INCIDENT_REPO=spira \
-        bash "$INC" file "SENDING: oldest unsent branch ${_unsent_oldest}h" - >/dev/null || true
+        SPIRA_INCIDENT_REF=incident:sending-oldest-unsent \
+        bash "$INC" file "SENDING: oldest unsent branch above threshold" - >/dev/null || true
         log "watchtower: sending escalation filed (oldest unsent ${_unsent_oldest}h >= ${UNSENT_WARN_H}h threshold)"
     else
         log "watchtower: $INC is missing — sending escalation not filed"
@@ -534,7 +535,8 @@ if [ "$_unadopted" != "?" ] && [ "$_unadopted" -gt 0 ] 2>/dev/null; then
         SPIRA_INCIDENT_ACTOR=watchtower \
         SPIRA_SIN_EXEMPT=1 \
         SPIRA_INCIDENT_REPO=spira \
-        bash "$INC" file "SENDING: ${_unadopted} unadopted ref(s) cannot be reaped" - >/dev/null || true
+        SPIRA_INCIDENT_REF=incident:sending-unadopted-refs \
+        bash "$INC" file "SENDING: unadopted refs cannot be reaped" - >/dev/null || true
         log "watchtower: unadopted escalation filed (${_unadopted} unadopted refs)"
     else
         log "watchtower: $INC is missing — unadopted escalation not filed"

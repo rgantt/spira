@@ -506,6 +506,21 @@ wt_file_multi() {   # wt_file_multi [VAR=val ...] -> appends incident subjects t
         SPIRA_INCIDENT_SH="$mock" \
         "$@" bash "$HERE/watchtower.sh" 2>/dev/null
 }
+# wt_refs_multi: like wt_file_multi but captures SPIRA_INCIDENT_REF (the actual dedupe key)
+# rather than the incident subject. Used to verify two passes with different measured values
+# produce one stable key rather than one per measurement.
+wt_refs_multi() {   # wt_refs_multi [VAR=val ...] -> appends SPIRA_INCIDENT_REF to $TMP/inc-refs
+    local mock="$TMP/mock-inc-refs.sh"
+    printf '#!/usr/bin/env bash\nprintf "%%s\n" "${SPIRA_INCIDENT_REF:-}" >> "%s"\ncat > /dev/null\n' \
+        "$TMP/inc-refs" > "$mock"
+    chmod +x "$mock"
+    env -i PATH="$PATH" HOME="$TMP" \
+        SPIRA_CONF=/nonexistent SPIRA_RUN="$TMP/run" \
+        SPIRA_WATCH_GATE_WINDOW="$GATE_WINDOW" \
+        SPIRA_WATCH_PROMPT_FILE="$TMP/ops-prompt" \
+        SPIRA_INCIDENT_SH="$mock" \
+        "$@" bash "$HERE/watchtower.sh" 2>/dev/null
+}
 
 # Below threshold: the prompt file is written, but no drain escalation incident is filed.
 fresh
@@ -655,7 +670,7 @@ rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
 wt_file_multi SPIRA_UNSENT_WARN_H=24
 subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
 want "oldest-unsent at threshold fires escalation" "SENDING: oldest" "$subjects"
-want "escalation subject names the age"            "30h"             "$subjects"
+want "with a fixed subject for dedup"              "above threshold" "$subjects"
 
 # Below threshold: no escalation.
 fresh
@@ -685,8 +700,9 @@ printf "SP_UNSENT=2\nSP_UNSENT_OLDEST_H=1\nSP_UNADOPTED=3\nSP_SENT_FAILED=0\n" \
 rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
 wt_file_multi SPIRA_UNSENT_WARN_H=24
 subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
-want "nonzero SP_UNADOPTED fires escalation" "SENDING:" "$subjects"
-want "escalation subject names the count"    "unadopted" "$subjects"
+want "nonzero SP_UNADOPTED fires escalation"   "SENDING:"   "$subjects"
+want "with a fixed subject for dedup"          "unadopted"  "$subjects"
+nowant "subject does not embed the count"      "3 unadopted" "$subjects"
 
 # Zero unadopted: no escalation.
 fresh
@@ -707,6 +723,45 @@ rm -f "$TMP/inc-subjects" "$TMP/ops-prompt"
 wt_file_multi SPIRA_UNSENT_WARN_H=0
 subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
 nowant "? unadopted never fires escalation" "unadopted" "$subjects"
+
+# ======================================================================================
+echo
+echo "sending escalation dedup: two passes with different measured values produce one ref:"
+# ======================================================================================
+# POSITIVE CONTROL: fire the escalation once with a known age to confirm the ref is set.
+# Then fire again with a different age and confirm the ref is IDENTICAL — not one per
+# measured value, which is the bug this bead was cut to fix. The same invariant applies
+# to the unadopted escalation.
+
+# OLDEST-UNSENT: two different ages → same SPIRA_INCIDENT_REF.
+fresh
+mkdir -p "$TMP/run/landstate"
+rm -f "$TMP/inc-refs" "$TMP/ops-prompt"
+printf "SP_UNSENT=3\nSP_UNSENT_OLDEST_H=30\nSP_UNADOPTED=0\nSP_SENT_FAILED=0\n" \
+    > "$TMP/run/cockpit.env"
+wt_refs_multi SPIRA_UNSENT_WARN_H=24
+printf "SP_UNSENT=3\nSP_UNSENT_OLDEST_H=31\nSP_UNADOPTED=0\nSP_SENT_FAILED=0\n" \
+    > "$TMP/run/cockpit.env"
+wt_refs_multi SPIRA_UNSENT_WARN_H=24
+refs="$(cat "$TMP/inc-refs" 2>/dev/null || echo "")"
+unique_ref_count="$(printf '%s\n' "$refs" | sort -u | grep -c .)"
+is "two passes with different ages produce one dedupe key"       "1" "$unique_ref_count"
+want "and the key is the stable sending-oldest-unsent ref"       "sending-oldest-unsent" "$refs"
+
+# UNADOPTED: two different counts → same SPIRA_INCIDENT_REF.
+fresh
+mkdir -p "$TMP/run/landstate"
+rm -f "$TMP/inc-refs" "$TMP/ops-prompt"
+printf "SP_UNSENT=2\nSP_UNSENT_OLDEST_H=1\nSP_UNADOPTED=3\nSP_SENT_FAILED=0\n" \
+    > "$TMP/run/cockpit.env"
+wt_refs_multi SPIRA_UNSENT_WARN_H=24
+printf "SP_UNSENT=2\nSP_UNSENT_OLDEST_H=1\nSP_UNADOPTED=5\nSP_SENT_FAILED=0\n" \
+    > "$TMP/run/cockpit.env"
+wt_refs_multi SPIRA_UNSENT_WARN_H=24
+refs="$(cat "$TMP/inc-refs" 2>/dev/null || echo "")"
+unique_ref_count="$(printf '%s\n' "$refs" | sort -u | grep -c .)"
+is "two passes with different counts produce one dedupe key"     "1" "$unique_ref_count"
+want "and the key is the stable sending-unadopted-refs ref"      "sending-unadopted-refs" "$refs"
 
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
