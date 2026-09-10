@@ -46,7 +46,7 @@ mod store;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal;
-use model::{act, comment, decline_law, enact, enact_law, is_ask_law, reject_premise, Act, Item, View};
+use model::{act, comment, decline_law, enact, enact_law, is_ask_law, is_suit, reject_premise, suit_verdict, Act, Item, View};
 use render::{frame, Frame};
 use std::io::{stdout, Write};
 use std::sync::{Arc, Mutex};
@@ -593,6 +593,37 @@ impl App {
         let n = self.items().map(|v| v.len()).unwrap_or(0);
         self.sel = self.sel.min(n.saturating_sub(1));
     }
+
+    /// Execute a lawsuit verdict (uphold / retire / amend).
+    ///
+    /// Same optimistic-hide pattern as `do_act`: the bead is hidden immediately, the write
+    /// runs off-thread, and a failure puts it back. The distinction from `do_act` is that
+    /// `suit_verdict` runs rule.sh before closing, so a rule.sh failure returns Err and the
+    /// bead stays open — "A failed rule.sh leaves the bead open and says so."
+    fn do_suit_verdict(&mut self, verdict: &str) {
+        let Some(it) = self.current() else { return };
+        self.pending.push((it.id.clone(), store::Expect::Closed));
+        self.pending_rev = self.pending_rev.wrapping_add(1);
+        self.flash = format!("suit verdict on {}…", it.id);
+        let (errors, inflight, shared, unhide) = (
+            Arc::clone(&self.errors),
+            Arc::clone(&self.inflight),
+            Arc::clone(&self.shared),
+            Arc::clone(&self.unhide),
+        );
+        let verdict = verdict.to_string();
+        *inflight.lock().unwrap() += 1;
+        thread::spawn(move || {
+            if let Err(e) = suit_verdict(&it, &verdict) {
+                errors.lock().unwrap().push(format!("{}: {e}", it.id));
+                unhide.lock().unwrap().push(it.id.clone());
+            }
+            *inflight.lock().unwrap() -= 1;
+            store::refresh(&shared);
+        });
+        let n = self.items().map(|v| v.len()).unwrap_or(0);
+        self.sel = self.sel.min(n.saturating_sub(1));
+    }
 }
 
 /// The close reason `d` records, which only two of the four views have one to record.
@@ -873,6 +904,7 @@ fn main() {
                             "enact" => app.do_enact(&v),
                             // amend-and-enact: the edited text replaces the proposed title.
                             "amend" => app.do_enact_law(&v),
+                            "suit" => app.do_suit_verdict(&v),
                             // decide and reason both close; the text is the record.
                             _ => app.do_act(&v, Act::Primary),
                         }
@@ -914,9 +946,12 @@ fn main() {
                     app.scroll.reset();
                 }
                 KeyCode::Enter if app.view == View::Decisions => {
-                    // An ask-* bead is closed by the verdict; a work bead gets a comment and
-                    // stays open. The mode drives both: "decide" closes, "comment" does not.
-                    let mode = if app.current().map(|it| model::is_ask(&it)).unwrap_or(false) {
+                    // A suit bead uses a different mode: its three verdicts run rule.sh before
+                    // closing. An ask-* bead closes with the typed text as the verdict. A work
+                    // bead with no ask-* label gets a comment and stays open.
+                    let mode = if app.current().map(|it| is_suit(&it)).unwrap_or(false) {
+                        "suit"
+                    } else if app.current().map(|it| model::is_ask(&it)).unwrap_or(false) {
                         "decide"
                     } else {
                         "comment"
@@ -1099,11 +1134,13 @@ fn main() {
                 app.buf.clear();
             }
             // ⏎ ON AN ASK IS THE DECISION. Typing an answer to a question IS answering
-            // it — the close reason IS the verdict. For a work bead with no ask-* label,
-            // ⏎ records a comment and leaves the bead open: a reply to "fix it" is not a
-            // verdict, and closing the bead would retire the work unfixed.
+            // it — the close reason IS the verdict. For a suit, the verdict runs rule.sh
+            // against the statute book before closing. For a work bead with no ask-* label,
+            // ⏎ records a comment and leaves the bead open.
             KeyCode::Enter if n > 0 && app.view == View::Decisions => {
-                let mode = if app.current().map(|it| model::is_ask(&it)).unwrap_or(false) {
+                let mode = if app.current().map(|it| is_suit(&it)).unwrap_or(false) {
+                    "suit"
+                } else if app.current().map(|it| model::is_ask(&it)).unwrap_or(false) {
                     "decide"
                 } else {
                     "comment"

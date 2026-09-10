@@ -665,7 +665,78 @@ pub fn enact(item: &Item, slug: &str, text: &str) -> Result<(), String> {
 pub fn is_ask(item: &Item) -> bool {
     item.labels
         .iter()
-        .any(|l| matches!(l.as_str(), "ask-question" | "ask-decision" | "ask-task"))
+        .any(|l| matches!(l.as_str(), "ask-question" | "ask-decision" | "ask-task" | "ask-suit"))
+}
+
+/// Whether a bead is a lawsuit — a challenge to a statute in force.
+///
+/// A suit has three verdicts: uphold (no change), retire (removes the statute), amend
+/// (replaces the statute text). These are executed against the statute book by `suit_verdict`,
+/// so a suit bead enters a different mode than a plain ask.
+pub fn is_suit(item: &Item) -> bool {
+    item.labels.iter().any(|l| l == "ask-suit")
+}
+
+/// The statute slug this suit challenges, read off the `statute:law-<slug>` label.
+///
+/// The label is set when the suit is filed and is the only machine-readable link between the
+/// bead and the statute it targets. Body parsing is avoided deliberately: a label is
+/// queryable, versioned, and unambiguous; a string buried in prose is none of those.
+pub fn suit_slug(item: &Item) -> Option<String> {
+    item.labels
+        .iter()
+        .find_map(|l| l.strip_prefix("statute:law-").map(|s| s.to_string()))
+}
+
+/// Execute a lawsuit verdict: uphold, retire, or amend.
+///
+/// UPHOLD closes the bead unchanged. RETIRE runs `rule.sh retire <slug>` first; if it
+/// succeeds the bead is closed, if it fails the bead stays open. AMEND runs
+/// `rule.sh enact <slug> <new text>` first with the same close-on-success / leave-open-on-fail
+/// contract. The distinction "bead stays open on failure" is what the acceptance criterion
+/// "A failed rule.sh leaves the bead open and says so" means: this function returns Err,
+/// the caller unhides the bead, and the flash says why.
+///
+/// A slug is required on the bead. A suit without `statute:law-<slug>` cannot be acted on;
+/// the error names the problem so the operator knows what to fix.
+pub fn suit_verdict(item: &Item, verdict: &str) -> Result<(), String> {
+    let v = verdict.trim();
+    // The first whitespace-delimited token is the verb; the rest is the new text for amend.
+    let first = v.split_whitespace().next().unwrap_or("").to_lowercase();
+    let db = crate::store::db();
+    match first.as_str() {
+        "uphold" => {
+            // Uphold: statute unchanged; just close.
+            close_decision(&db, &item.id, "uphold")?;
+        }
+        "retire" => {
+            let slug = suit_slug(item)
+                .ok_or_else(|| "no statute:law-<slug> label on this bead".to_string())?;
+            let rule = rule_sh()?;
+            run_verbose(&rule, &["retire", &slug])?;
+            close_decision(&db, &item.id, &format!("retire: law-{slug} retired"))?;
+        }
+        "amend" => {
+            // "amend: <new text>" — colon is optional, everything after the verb is the text.
+            let rest = v[first.len()..].trim_start_matches(':').trim();
+            if rest.is_empty() {
+                return Err(
+                    "amend requires new statute text: amend: <new text>".into(),
+                );
+            }
+            let slug = suit_slug(item)
+                .ok_or_else(|| "no statute:law-<slug> label on this bead".to_string())?;
+            let rule = rule_sh()?;
+            run_verbose(&rule, &["enact", &slug, rest])?;
+            close_decision(&db, &item.id, &format!("amend: law-{slug} amended"))?;
+        }
+        _ => {
+            return Err(format!(
+                "unknown suit verdict '{first}' — type uphold / retire / amend: <new text>"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Whether a bead is a law proposal — label `ask-law`.
@@ -890,6 +961,15 @@ mod tests {
         assert!(!is_ask(&it));
     }
 
+    /// Every ask-* label makes a bead an ask, including ask-suit. THE POSITIVE CONTROL
+    /// for the extended set: is_ask was written only for question/decision/task, and a
+    /// suit that is_ask=false would be offered only comment (not decide) on ⏎ press.
+    #[test]
+    fn ask_suit_is_an_ask() {
+        let it = work_item(&["ask-suit", "needs-ryan", "overseer", "statute:law-foo"]);
+        assert!(is_ask(&it), "ask-suit must be recognized as an ask");
+    }
+
     /// Empty labels — a bead with nothing on it — is not an ask.
     #[test]
     fn a_bead_with_no_labels_is_not_an_ask() {
@@ -937,6 +1017,59 @@ mod tests {
         let it = law_item(&["ask-question", "needs-ryan", "overseer"]);
         assert!(!is_ask_law(&it));
         assert!(!is_ask_law(&work_item(&["overseer", "spira"])));
+    }
+
+    // ── is_suit / suit_slug ─────────────────────────────────────────────────────────────
+
+    fn suit_item(labels: &[&str]) -> Item {
+        Item {
+            id: "sp-y".into(),
+            title: "lawsuit: law-foo".into(),
+            lead: String::new(),
+            body: "Evidence it is wrong".into(),
+            badge: "lawsuit".into(),
+            when: "2026-09-10T10:00:00Z".into(),
+            enacted: None,
+            thread: Vec::new(),
+            labels: labels.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// is_suit is true iff `ask-suit` is present. THE POSITIVE CONTROL: a false-for-all
+    /// predicate would satisfy "non-suits are not suits" while being entirely broken.
+    #[test]
+    fn is_suit_detects_ask_suit_label() {
+        let it = suit_item(&["ask-suit", "needs-ryan", "overseer", "statute:law-foo"]);
+        assert!(is_suit(&it), "ask-suit label must be detected");
+    }
+
+    #[test]
+    fn a_plain_ask_is_not_a_suit() {
+        let it = work_item(&["ask-decision", "needs-ryan", "overseer"]);
+        assert!(!is_suit(&it));
+    }
+
+    /// suit_slug reads the statute slug from the `statute:law-<slug>` label. The slug is
+    /// what rule.sh retire/enact receives; a missing label is named as an error rather than
+    /// guessed from the title or body.
+    #[test]
+    fn suit_slug_reads_the_label() {
+        let it = suit_item(&["ask-suit", "statute:law-closed-is-not-landed"]);
+        assert_eq!(suit_slug(&it).as_deref(), Some("closed-is-not-landed"));
+    }
+
+    #[test]
+    fn suit_slug_returns_none_when_label_absent() {
+        let it = suit_item(&["ask-suit"]);
+        assert_eq!(suit_slug(&it), None);
+    }
+
+    /// suit_slug strips the `statute:law-` prefix exactly once and no further.
+    #[test]
+    fn suit_slug_does_not_double_strip() {
+        let it = suit_item(&["ask-suit", "statute:law-law-something"]);
+        // The stored label is `statute:law-law-something`; the slug is `law-something`.
+        assert_eq!(suit_slug(&it).as_deref(), Some("law-something"));
     }
 
     // ── reject_premise: not a verdict ───────────────────────────────────────────────────

@@ -665,6 +665,9 @@ pub fn input_label(mode: Option<&str>) -> Option<&'static str> {
         // reads the same as the one that prompts for a verdict, which is exactly the
         // confusion that made dismissals look like answers.
         "premise" => "why (training signal)",
+        // A lawsuit verdict is not the same label as a plain verdict — the three options
+        // are different enough that the prompt must name them.
+        "suit" => "uphold / retire / amend: <new text>",
         _ => "reason",
     })
 }

@@ -7,6 +7,7 @@
 #   ask.sh law "<slug>: <statute text>"                       [--why "<context>"]
 #   ask.sh insight "<what was learned>" [--why "<why it matters>"] [--from "<who is recording>"]
 #   ask.sh note "<what happened>" --kind <event.kind> [--why ...] [--target <bead>]
+#   ask.sh suit "<statute-slug>"   [--why "<evidence>"] [--evidence "..."]
 #   ask.sh list [needs-you|insights|events|all]
 #   ask.sh rejected
 #   ask.sh answered <bead-id> "<verdict>"
@@ -97,6 +98,8 @@ compose() { # kind why default evidence from
             # is the same defect as the insight that opened with "**What is blocked:**".
             event)   body="${body}**Detail:** ${why}"$'\n\n' ;;
             insight) body="${body}**Why it matters:** ${why}"$'\n\n' ;;
+            # A lawsuit is a challenge to existing law, not a task waiting on a person.
+            suit)    body="${body}**Evidence it is wrong / over-broad / superseded:**"$'\n'"${why}"$'\n\n' ;;
             *)       body="${body}**What is blocked:** ${why}"$'\n\n' ;;
         esac
     fi
@@ -122,6 +125,13 @@ compose() { # kind why default evidence from
         local recorder="${from:-brain session}"
         body="${body}_Recorded by ${recorder}. Nothing is owed — this is a record, not a_"$'\n'
         body="${body}_request. Press \`d\` in the cockpit pane to dismiss it; \`h\` brings it back._"
+    elif [ "$kind" = suit ]; then
+        # THREE VERDICTS, unique to this kind. The panel executes the chosen one against the
+        # statute book when the key is pressed; a failed rule.sh leaves this bead open.
+        body="${body}_Filed by the brain session. Verdict in the cockpit pane (⏎ to type):_"$'\n'
+        body="${body}_• **uphold** — closes, statute unchanged_"$'\n'
+        body="${body}_• **retire** — removes the statute from the statute book_"$'\n'
+        body="${body}_• **amend: \<new text\>** — replaces the statute with new text_"
     else
         body="${body}_Filed by the brain session. Answer inline in the cockpit pane, or:_"$'\n'
         body="${body}\`.claude/cockpit/ask.sh answered <id> \"<verdict>\"\`"
@@ -164,7 +174,10 @@ create() { # type text why default labels
     # The kind is read off the labels rather than passed separately: the labels are already
     # what every reader — the pane, `ask.sh list`, watch-answers.sh — uses to tell an insight
     # from an ask, and a second source for the same fact is a second thing to get out of step.
-    [ "$kind" = ask ] && case ",$labels," in *,insight,*) kind=insight ;; esac
+    [ "$kind" = ask ] && case ",$labels," in
+        *,insight,*)  kind=insight ;;
+        *,ask-suit,*) kind=suit ;;
+    esac
     # THE ID COMES FROM `--json`, NEVER FROM A GREP OVER THE HUMAN OUTPUT.
     #
     # `bd create` prepends an advisory when a title looks like test data, and that advisory
@@ -346,6 +359,34 @@ promote)
     [ -n "${WHY:-}${DFLT:-}" ] && \
         "$(dirname "$0")/reply.sh" "$id" "Promoted from FYI to $TO.${DFLT:+ Default: $DFLT}${WHY:+ What is blocked: $WHY}" >/dev/null 2>&1
     echo "promoted [$id] FYI -> $TO (kept its id and its thread)"
+    ;;
+
+suit|lawsuit)
+    # FILE A CHALLENGE TO A STATUTE IN FORCE. A suit is not an ask: the operator's verdict
+    # runs rule.sh against the statute book. Three verdicts: uphold (closes, no change),
+    # retire (runs rule.sh retire), amend (runs rule.sh enact with new text).
+    #
+    # FILING IS REFUSED when the slug is not in force, naming it. A suit against a statute
+    # that does not exist would place an action on Ryan's plate whose subject cannot be
+    # found and cannot be acted on. Validate first, so the bead is only created when it
+    # refers to something real.
+    shift; slug="${1:?usage: ask.sh suit <statute-slug> [--why \"<evidence>\"] [--evidence ...]}"
+    shift || true
+    require_title "lawsuit"
+    parse_opts "$@"
+    # Canonicalise: strip the law- prefix so rule.sh slugify adds it back cleanly.
+    clean_slug="${slug#law-}"
+    RULE_SH="$(dirname "$SPIRA_HOME")/rule.sh"
+    if ! "$RULE_SH" show "$clean_slug" >/dev/null 2>&1; then
+        echo "ask: no statute 'law-${clean_slug}' is in force — check 'rule.sh list'" >&2
+        exit 1
+    fi
+    # statute:law-<slug> is the machine-readable label the panel reads to know which statute
+    # to operate on. It avoids body parsing and keeps the panel and the shell tool in sync
+    # by the same convention as enacted:law-<slug> on a promoted insight.
+    id=$(create decision "lawsuit: law-${clean_slug}" "$WHY" "" \
+            "${SPIRA_ASK_LABEL},overseer,ask-suit,statute:law-${clean_slug}") || exit 1
+    echo "suit [$id] against law-${clean_slug}"
     ;;
 
 answered)

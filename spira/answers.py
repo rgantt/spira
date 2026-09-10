@@ -228,11 +228,13 @@ def self_closed_ids(path):
 def verdicts(cfg, rows, mark):
     """Closes made BY THE OPERATOR since the mark.
 
-    Returns [(ts, id, title, reason, is_rejection), ...] where is_rejection is True when the
-    operator dismissed the bead as not theirs to decide. A rejected premise must never render
-    as RYAN ANSWERED -- the scar is answered-since.sh announcing four dismissals as affirmations
-    on 2026-09-10, prompting a session to enact statutes for things Ryan had refused to be
-    asked about (sp-kw9bo, escalation-taxonomy-2026-09-09.md §3).
+    Returns [(ts, id, title, reason, is_rejection, is_suit), ...] where is_rejection is True
+    when the operator dismissed the bead as not theirs to decide, and is_suit is True when the
+    bead is a lawsuit. A rejected premise must never render as RYAN ANSWERED -- the scar is
+    answered-since.sh announcing four dismissals as affirmations on 2026-09-10, prompting a
+    session to enact statutes for things Ryan had refused to be asked about (sp-kw9bo,
+    escalation-taxonomy-2026-09-09.md §3). A suit verdict (retire/amend/uphold) must render
+    with its own label so the session knows the statute book changed.
 
     Detection uses the `premise-rejected` label OR a `premise-rejected:` prefix on the
     close_reason, both of which the panel sets when the operator presses `p`.
@@ -265,8 +267,9 @@ def verdicts(cfg, rows, mark):
         labels = set(r.get("labels") or [])
         is_rejection = ("premise-rejected" in labels
                         or reason.startswith("premise-rejected:"))
+        is_suit = "ask-suit" in labels
         out.append((r.get("closed_at") or r.get("updated_at") or "",
-                    ident, (r.get("title") or "")[:90], reason, is_rejection))
+                    ident, (r.get("title") or "")[:90], reason, is_rejection, is_suit))
     out.sort()
     return out
 
@@ -343,7 +346,7 @@ def main():
             vmark.write([], now)
         else:
             vs = verdicts(cfg, rows, vmark)
-            vmark.write([(t, i) for t, i, _, _, _ in vs], now)
+            vmark.write([(t, i) for t, i, _, _, _, _ in vs], now)
     if cmark is not None:
         if cmark.fresh():
             cmark.write([], now)
@@ -351,12 +354,22 @@ def main():
             cs = comments(cfg, rows, cmark)
             cmark.write([(t, k) for t, _, _, _, k in cs], now)
 
+    def _suit_label(reason):
+        """One-line description of a suit verdict for the watcher output."""
+        if reason.startswith("retire: "):
+            slug = reason[len("retire: "):].split()[0]
+            return "RETIRED %s" % slug
+        if reason.startswith("amend: "):
+            slug = reason[len("amend: "):].split()[0]
+            return "AMENDED %s" % slug
+        return "UPHELD"
+
     if fmt == "session":
         if not vs and not cs:
             return 0
         print("## %s spoke while you were away (%d)" % (who.title(), len(vs) + len(cs)))
         print()
-        for ts, ident, title, reason, is_rejection in vs:
+        for ts, ident, title, reason, is_rejection, is_suit in vs:
             stamp = ts[:16].replace("T", " ")
             if is_rejection:
                 why = reason[len("premise-rejected:"):].strip() if reason.startswith("premise-rejected:") else reason
@@ -365,6 +378,10 @@ def main():
                 if why:
                     body = "%s. reason: %s" % (body, why)
                 print("  > %s" % body.replace("\n", "\n  > "))
+            elif is_suit:
+                label = _suit_label(reason)
+                print("- **%s (`%s`)** (%s) — %s" % (label, ident, stamp, title))
+                print("  > %s" % reason.replace("\n", "\n  > "))
             else:
                 print("- **verdict on `%s`** (%s) — %s" % (ident, stamp, title))
                 print("  > %s" % reason.replace("\n", "\n  > "))
@@ -376,12 +393,15 @@ def main():
         print("generalises, enact it as a statute in this session.")
         return 0
 
-    for ts, ident, title, reason, is_rejection in vs:
+    for ts, ident, title, reason, is_rejection, is_suit in vs:
         if is_rejection:
             why = reason[len("premise-rejected:"):].strip() if reason.startswith("premise-rejected:") else reason
             print("%s REJECTED THE PREMISE %s — not his to decide; proceed on your default" % (who, ident), flush=True)
             if why:
                 print("  reason: %s" % why, flush=True)
+        elif is_suit:
+            label = _suit_label(reason)
+            print("%s %s (%s) — %s" % (who, label, ident, title), flush=True)
         else:
             print("%s ANSWERED %s — %s" % (who, ident, title), flush=True)
             print("  verdict: %s" % reason, flush=True)
