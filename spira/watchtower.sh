@@ -464,19 +464,6 @@ else
     exit 1
 fi
 
-# FILE THE SWEEP AS AN INCIDENT. incident.sh dedupes on the external ref, so a sweep arriving
-# while the previous one is still open bumps a recurrence on the existing bead rather than
-# filing a second. SPIRA_SIN_EXEMPT=1 keeps the routine sweep from reaching the SIN threshold
-# — N counts intervals nobody closed a routine health report, not unremediated failures
-# ($18/day to re-derive "the pipeline is fine", sp-kufh).
-if [ -x "$INC" ] || [ -r "$INC" ]; then
-    snapshot | \
-    SPIRA_INCIDENT_ACTOR=watchtower \
-    SPIRA_SIN_EXEMPT=1 \
-    SPIRA_INCIDENT_REPO=spira \
-    bash "$INC" file "Spira sweep" - >/dev/null || true
-fi
-
 # DRAIN ESCALATION. The prompt above already carries the drain state as a vital sign. When
 # the drain has been armed longer than the threshold, file a dedicated bead so it reaches
 # Ops even if the sweep itself is already open. Filed as P1 task, not a routine chore — a

@@ -159,9 +159,11 @@ fi
 echo
 echo "the watchtower sets SPIRA_SIN_EXEMPT=1:"
 # ======================================================================================
-# Structural: grep the watchtower's incident call for the exemption variable.
-want "watchtower.sh sets SPIRA_SIN_EXEMPT=1" "SPIRA_SIN_EXEMPT=1" \
-    "$(grep -A5 'snapshot |' "$HERE/watchtower.sh" 2>/dev/null)"
+# Structural: the routine snapshot | pipe was removed (sp-8wshp); verify that the
+# DRAINING escalation — the first incident.sh call that remains — still carries the
+# exemption, so drain beads cannot reach the SIN escalation either.
+want "watchtower.sh sets SPIRA_SIN_EXEMPT=1 on the DRAINING escalation" "SPIRA_SIN_EXEMPT=1" \
+    "$(grep -B5 'file "DRAINING:' "$HERE/watchtower.sh" 2>/dev/null)"
 
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
