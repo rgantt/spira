@@ -9,6 +9,19 @@
 # or point $SPIRA_CONF at it directly. Keeping it OUTSIDE the checkout is the safer default:
 # these are your paths, and none of them belong in a repository you might push.
 #
+# TWO KINDS OF KEY IN THIS FILE
+#
+#   TRAP KEYS (marked !! below) — keys whose derived default is plausibly wrong for a fresh
+#   clone. configure.sh asks about them; install.sh refuses when they are unset. Set these
+#   before running install.sh. They are collected at the top of this file.
+#
+#   DERIVABLE KEYS — every other key. The code carries a sensible default for each, derived
+#   from where the harness is installed, so a clean clone runs without setting any of them.
+#
+# configure.sh writes your trap-key answers as active lines and shows every derivable key as
+# a comment with its computed value, so you can see the defaults and override only what you
+# need to change.
+
 # EVERY KEY BELOW IS OPTIONAL. The code carries a default for each, derived from where the
 # harness is installed, so a clean clone runs. What it cannot derive is where your database
 # is, where your binaries live and which repositories exist, which is what you are here for.
@@ -27,6 +40,45 @@
 # breaks the landing gate, which extracts a branch to a scratch tree and runs that tree's own
 # suites: the config would point them back at the installed copy, so the gate would test the
 # code already in force instead of the code being judged, and pass.
+
+# ---- TRAP KEYS !! — set these; the derived default is plausibly wrong ---------------
+#
+# Run `configure.sh` to be asked for each of these interactively, or set them by hand.
+# The marker `!!` in section headings below also marks individual trap keys elsewhere.
+
+# !! SPIRA_PROD — the production checkout's harness subdir.
+# systemd executes every unit's ExecStart from this path. The derived default assumes a
+# directory named "<harness-repo>-prod" beside the dev checkout — that directory does not
+# exist on a fresh clone, and install.sh refuses to write units whose ExecStart target is
+# absent. Set this to the actual path before running install.sh.
+#
+# What it derives to without this key:
+#   ${SPIRA_WORKSPACES}/${SPIRA_HOME_REPO}-prod/<harness-subdir>
+#   e.g.  /srv/checkouts/spira-harness-prod/spira
+# SPIRA_PROD = /srv/checkouts/spira-harness-prod/spira
+
+# !! SPIRA_MAX_AEONS — aeon pool ceiling (task workers, not counting lane fayths).
+# Default is 4. This is a guess about the operator's core count; a single-core box should
+# use 1 or 2; a many-core box can go higher. The fleet ceiling (SPIRA_MAX_LIVE_AEONS)
+# is the right knob when an API account limit matters more than core count.
+# SPIRA_MAX_AEONS = 4
+
+# !! SPIRA_MAX_LIVE_AEONS — whole-fleet ceiling (pool + lane fayths combined).
+# Empty means no ceiling — correct when the constraint is cores, wrong when the constraint
+# is a single API account shared between all aeons and the operator's own sessions.
+# Set it to the total sessions your account can run simultaneously.
+# SPIRA_MAX_LIVE_AEONS =
+
+# !! SPIRA_LOOM_ADDR — where Loom (the live-graph server) listens.
+# Default is 127.0.0.1:8788 (loopback only). Loom has no authentication in front of it;
+# changing this to 0.0.0.0 exposes your beads database to every host on the LAN.
+# SPIRA_LOOM_ADDR = 127.0.0.1:8788
+
+# !! SPIRA_DOLT_DATA — the Dolt server's own data directory.
+# Empty (the default) means you manage the Dolt server yourself; install.sh will not
+# install dolt-beads.service. Set it to the directory dolt sql-server reads from if
+# you want this harness to start and supervise the server.
+# SPIRA_DOLT_DATA = /srv/beads
 
 # ---- the database ---------------------------------------------------------------------
 # The beads database, as a directory `bd -C` is pointed at. Everything the harness raises,
@@ -272,7 +324,7 @@
 # SPIRA_SUITES_STALE = 21600
 
 # ---- the read surface over the live graph --------------------------------------------------
-# Where Loom listens: one route serving the live beads and the dependency edges between them,
+# !! Where Loom listens: one route serving the live beads and the dependency edges between them,
 # and the page that draws them. LOCALHOST BY DEFAULT, deliberately — a bead carries internal
 # working notes and your own judgement, so which interfaces can reach it is a decision to make
 # rather than one a default should make for you. `0.0.0.0:8788` puts it on the LAN.
@@ -381,7 +433,7 @@
 # and wiring those fills the queue with events that have no action.
 # SPIRA_ALERT_GLOB = alert-prod@.service
 
-# The Dolt server's own data directory — NOT the beads project directory above. `bd -C` is
+# !! The Dolt server's own data directory — NOT the beads project directory above. `bd -C` is
 # pointed at the project; this is where the server keeps every database it serves. Set it only
 # if you want this harness to supervise the server with a systemd unit; empty means you run
 # the server yourself and `systemd/install.sh` will not install dolt-beads.service.
@@ -394,8 +446,12 @@
 # the defaults it was written to check (law-gates-run-in-a-clean-environment).
 # SPIRA_FAYTHS = builder ops
 
-# How many aeons may run at once, before the governor's own headroom checks narrow it further.
-# SPIRA_MAX_AEONS = 2
+# !! How many aeons may run at once, before the governor's own headroom checks narrow it further.
+# Default 4. See TRAP KEYS section above.
+# SPIRA_MAX_AEONS = 4
+
+# !! The whole-fleet ceiling (pool + lane fayths). Empty means no ceiling. See TRAP KEYS above.
+# SPIRA_MAX_LIVE_AEONS =
 
 # ---- what the account spends ----------------------------------------------------------------
 # The rolling window the plan is billed against, in hours. Every token figure on the dashboard
