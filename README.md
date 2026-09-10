@@ -380,31 +380,85 @@ You need `bd`, `git`, `flock`, `python3`, and whichever coding-agent CLI your pe
 | `node` | gating the browser page's view model; the loop itself never needs it | that one suite skips; the loop is unaffected |
 
 ```sh
-git clone <this repo> spira && cd spira
-
-mkdir -p ~/.config/spira
-cp spira.conf.example    ~/.config/spira/spira.conf    # then edit it
-cp spira/repo-map.example ~/.config/spira/repo-map     # your repositories, one row each
-$EDITOR ~/.config/spira/spira.conf
-
-bd -C <your SPIRA_DB> init   # a database, OUTSIDE any checkout
-spira/doctor.sh              # what is missing, all of it, in one read-only pass
-spira/seed.sh                # write the shipped statutes into that database
-systemd/install.sh           # render the unit templates for this box and start the timers
+git clone <this repo> spira-harness && cd spira-harness
+./install.sh
 ```
 
-Keep the database outside every repository. It accumulates internal working notes and agent
-memories, and a path inside a checkout is one `git add -A` away from publishing them.
+`install.sh` is the one entry point. It runs eight sequential phases — preflight, conflict
+checks, config, build, database, units, hooks, cockpit — and ends by running `ready.sh`, which
+asserts all five readiness conditions. On a fresh box with prerequisites installed, those two
+commands are enough.
+
+`--dry-run` shows each phase's intended action without changing anything. `--ephemeral` creates
+an isolated instance for CI or test: its own database and runtime directory, statutes seeded,
+agent pointed at a stub, no session hook or alert drop-ins.
+
+### Exit codes
+
+| code | meaning |
+|---|---|
+| `0` | ready — `ready.sh` passes (warns are allowed) |
+| `1` | preflight refused — `doctor.sh` named a fatal missing dependency |
+| `2` | a phase failed — config, build, database, units, or hooks |
+| `3` | installed but not ready — all phases completed, `ready.sh` exited non-zero |
+| `5` | conflict — the box needs attention: another harness copy owns these unit names; a live aeon is running; a landing pass is in flight; the instance argument disagrees with the config; a Dolt server is listening on the configured port with a different data directory |
+
+Every conflict guard names its own override. Bypass the whole conflict phase with
+`SPIRA_INSTALL_CONFLICT_CONSIDERED=1` only when you have verified the conflict does not apply.
+
+### What readiness means
+
+"Running and can receive work" is five conditions, asserted by `ready.sh` at the end of every
+install:
+
+1. **sentinel** — the sentinel timer is active
+2. **world** — the world is not halted
+3. **database** — the database is readable and shipped statutes are in force
+4. **ready work** — `sentinel.sh --report` names an open bead under `SPIRA_GOAL`
+5. **loom** — Loom answers 200 at `/api/beads` inside its budget
+
+The install rehearsal (`spira/test-install-rehearsal.sh`, in the timed suite set) proves
+conditions 1–3 and most of 5 against **real systemd** inside a container. Two conditions run
+against stubs: the `bd` binary is a stub (the container has no database), so condition 4 (filed
+bead visible to sentinel) is not proven there; the Loom HTTP probe is intercepted by
+`SPIRA_LOOM_PROBE` rather than a live Loom binary. The agent binary check is a warning by
+design — an ephemeral install is valid without a credentialled agent.
+
+### Uninstall
+
+```sh
+./uninstall.sh
+```
+
+Three retention tiers:
+
+**Removed by default:** systemd units (stopped, disabled, files deleted, daemon-reload), the
+linger flag, `~/.local/bin` symlinks into this harness tree, session hooks in the agent
+settings file, alert drop-ins, cockpit panes.
+
+**Kept unless `--purge`:** `~/.config/spira/` (your config) and `$SPIRA_RUN` (the runtime
+tree, which holds the transcript archive and worktrees).
+
+**Kept unless `--purge-database`:** `$SPIRA_DB`, `$SPIRA_DOLT_DATA`, and
+`$SPIRA_TESTDB_DATA`. This tier requires typing the bead count back to confirm — the database
+accumulates working notes and agent memories that cannot be recovered once removed.
+
+`--dry-run` shows the plan without changing anything. `--yes` skips the confirmation prompt
+(for CI and scripted teardowns). After removing the manifest-declared inventory, the script
+sweeps for `spira-*` units and the four shared unit names; anything found but not predicted by
+the owned manifest is reported as a stray, so artifacts from an older harness version are
+visible rather than silently left behind.
+
+Keep the database outside every repository. A path inside a checkout is one `git add -A` away
+from publishing internal working notes and agent memories.
 
 `doctor.sh` is read-only and names every missing program, unreadable database and unmapped
 repository in one pass, distinguishing *fatal* (the loop cannot run) from *warn* (one feature
-is off). It exists because a harness that dies with `command not found` from a systemd timer
-has told you nothing: not which program, not what it is for, not where to get it, and not into
-a log anyone reads.
+is off). Run it at any time without changing state.
 
 The units in `systemd/` are **templates**, not units — every path is a placeholder filled from
-your configuration. Never edit an installed unit; edit the template and re-run the installer.
-`install.sh --diff` tells you when somebody did.
+your configuration. Never edit an installed unit; edit the template and re-run `./install.sh`.
+`systemd/install.sh --diff` tells you when somebody did.
 
 ### Running it
 
