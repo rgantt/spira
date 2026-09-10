@@ -287,5 +287,44 @@ nowant "stalled: no BIRTH row"                 "BIRTH"        "$h_stall"
 
 # ======================================================================================
 echo
+echo "health.sh: SP_PASS_SECS rendered in header"
+
+# SP_PASS_SECS present → 'pass Ns' appears in header
+cat > "$RUN/cockpit.env" <<'SNAP'
+SP_AT='1000000000'
+SP_PASS_SECS='247'
+SP_SENTINEL_TIMER='1'
+SP_SENTINEL_AGE='10'
+SP_OPS_TIMER='1'
+SP_OPS_AGE='10'
+SP_SINCE_JUDGEMENT='3'
+SP_SELF_REPEATING_N='0'
+SP_SELF_STILLBORN_W='0'
+SP_SELF_STILLBORN_LAST='-'
+SP_SELF_STARVED_W='0'
+SP_SELF_STARVED_LAST='-'
+SNAP
+h_pass="$(run_health)"
+want   "pass_secs: 'pass 247s' in header"   "pass 247s"  "$h_pass"
+
+# SP_PASS_SECS absent → 'pass' does not appear at all (key is optional)
+cat > "$RUN/cockpit.env" <<'SNAP'
+SP_AT='1000000000'
+SP_SENTINEL_TIMER='1'
+SP_SENTINEL_AGE='10'
+SP_OPS_TIMER='1'
+SP_OPS_AGE='10'
+SP_SINCE_JUDGEMENT='3'
+SP_SELF_REPEATING_N='0'
+SP_SELF_STILLBORN_W='0'
+SP_SELF_STILLBORN_LAST='-'
+SP_SELF_STARVED_W='0'
+SP_SELF_STARVED_LAST='-'
+SNAP
+h_nopass="$(run_health)"
+nowant "no pass_secs: 'pass ' not in header" "pass " "$h_nopass"
+
+# ======================================================================================
+echo
 printf 'test-cockpit-self: %d ok, %d fail\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

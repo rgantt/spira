@@ -51,6 +51,18 @@ else
 fi
 want "keys are printed to stdout" "SP_AT=" "$out"
 want "window key is present"      "SP_WINDOW_HOURS=" "$out"
+want "pass duration key present"  "SP_PASS_SECS="    "$out"
+# SP_AT ORDERING: the freshness badge bounds the OLDEST reading in the snapshot only when
+# SP_AT is stamped at probe() START — before any section data is emitted. Verify this by
+# checking that SP_AT appears in the output before SP_WINDOW_HOURS (the first domain key).
+at_pos="$(printf '%s\n' "$out" | grep -n '^SP_AT=' | head -1 | cut -d: -f1)"
+wh_pos="$(printf '%s\n' "$out" | grep -n '^SP_WINDOW_HOURS=' | head -1 | cut -d: -f1)"
+if [ -n "$at_pos" ] && [ -n "$wh_pos" ] && [ "$at_pos" -lt "$wh_pos" ]; then
+    ok "SP_AT is emitted before section data (ordering invariant)"
+else
+    bad "SP_AT is emitted before section data (ordering invariant)" \
+        "SP_AT at line ${at_pos:-?}, SP_WINDOW_HOURS at line ${wh_pos:-?}"
+fi
 
 # ======================================================================================
 echo

@@ -114,6 +114,14 @@ unit_active() {
 }
 
 probe() {
+    # SP_AT FIRST: stamped at pass START so the badge in health.sh bounds the age of the
+    # OLDEST reading in the snapshot. NEXT is queried near the top of this function; stamping
+    # at the end made the snapshot appear newer than its NEXT rows actually were — by the full
+    # pass duration, which on this box measured 248–434s against an INTERVAL of 60. The pane
+    # will now show the full pass duration as age the moment the file lands; that is the
+    # correct behaviour, because NEXT was that old at write time.
+    _probe_start=$(date +%s)
+    echo "SP_AT=$_probe_start"
     echo "SP_WINDOW_HOURS=$WINDOW_HOURS"
 
     # Partition map — derived from the chamber once per pass, used by NOW, NEXT and RECENT.
@@ -1142,12 +1150,12 @@ for i in awaiting_ids:
     # ---- RATE LIMIT WINDOWS: utilisation from live aeon traces ---------------------------
     ratelim_keys
 
-    # SP_AT LAST: stamped at pass END so the snapshot age the pane computes is the time since
-    # the data was actually collected, not since the pass started. A pass takes ~120s; stamping
-    # at the start made a fresh snapshot read as 120s older than it was the moment it landed —
-    # the STALE warning fired on arrival, and a 182s aeon that started and finished within one
-    # pass read as always-absent because SP_AEON_N was already zero before it was summoned.
-    echo "SP_AT=$(date +%s)"
+    # SP_PASS_SECS: how long this probe pass took end-to-end. Emitted last so it captures
+    # the full duration. When SP_AT moves to the start (as it now does), SP_PASS_SECS lets
+    # health.sh show the collector's own cost — a pass that takes longer than INTERVAL
+    # is the direct cause of a STALE badge on arrival, and a trend in this number is
+    # visible before it becomes a mystery.
+    echo "SP_PASS_SECS=$(( $(date +%s) - _probe_start ))"
 }
 
 # The sphere-grid keys: plan-bead counts (open, in-progress, needs-op) and the poison count.
