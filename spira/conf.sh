@@ -61,7 +61,7 @@ SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE SPIRA_VERDICT_TTL SPIRA_REBASE_ESCALAT
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S SPIRA_LOOM_BIN
 SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS
 SPIRA_GROOMER_LABEL
-COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD
+COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD COCKPIT_SESSIONS COCKPIT_HOST
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_VIEW SPIRA_VIEW_SESSION
 SPIRA_ALERT_GLOB
@@ -546,6 +546,13 @@ spira_conf_defaults() {
     # The multiplexer session whose visible window the follower steers. Only ever consulted
     # when SPIRA_VIEW names something, so it costs an installation without one nothing.
     : "${SPIRA_VIEW_SESSION:=cockpit}"
+    # THE SESSIONS rebuild.sh CREATES WHEN BUILDING A COCKPIT FROM NOTHING. brain and hunk
+    # are structural — the cockpit LINKS their windows. Any additional names are convenience
+    # sessions recreated alongside them. Override in spira.conf to match your own workflow.
+    : "${COCKPIT_SESSIONS:=brain hunk chat}"
+    # THE HOST THE LAPTOP DIALER CONNECTS TO. No default: a wrong default silently dials
+    # somebody else's box. Set in spira.conf on the laptop, or export it in the environment.
+    : "${COCKPIT_HOST:=}"
     # The Dolt server's own data directory, which is NOT the beads project directory: `bd -C`
     # is pointed at the latter, and the former is where the server keeps every database it
     # serves. Empty means this installation does not manage the server, and the unit that

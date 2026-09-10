@@ -60,9 +60,11 @@ LAYOUT="$HERE/layout.sh"
 # configured, the harness root otherwise. It is the right default for tmux sessions because
 # the operator's instructions load from whichever project they work in, not the harness.
 CWD="${COCKPIT_CWD:-$SPIRA_REPO}"
-# brain and hunk are the two the cockpit LINKS and are structural. chat is Ryan's and is
-# recreated because it died with the server, but nothing depends on it.
-SESSIONS="brain hunk chat"
+# brain and hunk are the two the cockpit LINKS and are structural. Any additional sessions
+# are recreated because they died with the server, but nothing depends on them. Override
+# COCKPIT_SESSIONS in spira.conf to add or remove sessions; the default covers the common
+# three-session layout (brain, hunk, and an operator's working session).
+SESSIONS="${COCKPIT_SESSIONS:-brain hunk chat}"
 
 # THE SERVER THIS SCRIPT IS ABOUT TO FORK INHERITS THIS PROCESS'S ENVIRONMENT, AND KEEPS IT
 # FOR LIFE. tmux hands every new pane the environment the server was started with, so running

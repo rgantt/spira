@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# cockpit — the laptop half of the cockpit toolkit.
+#
+# One command: SSH to the remote with a tty and hand off to the orchestrator, which lays
+# out the window for the current review state and attaches.
+#
+#   cockpit          # attach: brain, or hunk-solo if a review is live
+#   cockpit hunk     # attach, forcing the hunk view
+#   cockpit brain    # attach, forcing the brain view
+#   cockpit done     # signal "review phase ended" -> flip to brain, hunk left running
+#   cockpit status   # print what cockpit sees (no attach)
+#
+# COCKPIT_HOST is required — set it in ~/.config/spira/spira.conf or in the environment.
+# A default there is one operator's inventory and the wrong one silently dials somebody
+# else's box (same shape SPIRA_ALERT_GLOB already uses).
+#
+# The heavy lifting lives in `cockpit-remote` on the host; this stays a thin dialer so
+# there's nothing to keep in sync but the one script.
+set -u
+
+: "${COCKPIT_HOST:?COCKPIT_HOST is required — set it to the SSH host alias or address of the remote}"
+REMOTE="${COCKPIT_REMOTE:-\$HOME/.local/bin/cockpit-remote}"
+
+case "${1:-}" in
+  ""|attach)   cmd="attach" ;;
+  brain|hunk)  cmd="attach $1" ;;   # attach, forcing a view
+  *)           cmd="$1" ;;          # done, status, stop, ... run and exit
+esac
+
+exec ssh -t "$COCKPIT_HOST" "exec $REMOTE $cmd"

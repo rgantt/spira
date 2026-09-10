@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+# cockpit-remote — the on-the-remote half of the cockpit toolkit.
+#
+# Runs on the Spira host. Presents two persistent tmux sessions — `brain` (wiki work) and
+# `hunk` (design reviews) — as a single "cockpit" session whose visible window follows
+# review state:
+#
+#     no active review   ->  cockpit shows the `brain` window
+#     active review      ->  cockpit shows the `hunk` window, solo, full focus
+#
+# "Active review" means a live hunk session that has not been DISMISSED — not merely that
+# the hunk TUI is running. When the operator is done reading they signal `done` (bound to
+# <prefix> E in the cockpit), which flips back to brain but LEAVES hunk running so the
+# review agent can still apply queued edits via `hunk session *`. The next review is a new
+# session-id and re-activates the hunk view automatically.
+#
+# HOW (and why it does not fight the design-review skill):
+#   cockpit is a tmux session holding two *linked* windows (`tmux link-window`), one
+#   sharing `brain:0` and one sharing `hunk:0`. A linked window is the SAME live window
+#   displayed in a second session, not a copy — so `brain` and `hunk` keep existing as
+#   their own sessions, and `hunk-open.sh`'s `tmux send-keys -t hunk` still targets the
+#   real hunk session exactly as before. Flipping the cockpit's view is a `select-window`,
+#   which creates/destroys/moves nothing.
+#
+#   The watcher flips ON TRANSITIONS ONLY (idle<->active), never continuously, so peeking
+#   at brain mid-review is not yanked back until the review genuinely starts or ends.
+#
+#   The same loop keeps the cockpit's PANE LAYOUT alive, via `layout.sh ensure`. The
+#   session pane holds a shell the operator can exit, and when they did, nothing noticed:
+#   the two dashboards inherited the window and the top half was simply gone until someone
+#   ran `layout.sh up` by hand. `ensure` repairs only a cockpit that is already up, and is
+#   silent otherwise, so a deliberate `layout.sh down` is never fought back.
+#
+# Subcommands:
+#   attach   (default) build the cockpit, sync its view to current state, ensure the
+#            watcher is running, then attach.
+#   start    start the watcher without attaching. Idempotent.
+#   build    ensure sessions + (re)build the cockpit links. No attach. Idempotent.
+#   sync     select brain-or-hunk in the cockpit per current review state. No attach.
+#   done     dismiss live hunk session(s) and flip to brain; hunk stays running.
+#   keys     (re)install the tmux key binding for `done`.
+#   watch    the transition-driven poll loop (normally launched detached by `attach`).
+#   status   print what cockpit sees: review state, cockpit windows, watcher liveness.
+#   stop     kill the watcher.
+set -u
+
+# ---- config -----------------------------------------------------------------
+HUNK="${HUNK:-$HOME/.local/bin/hunk}"          # absolute: ssh sessions lack the login PATH
+BRAIN_DIR="${COCKPIT_BRAIN_DIR:-$HOME}"
+COCKPIT="${COCKPIT_SESSION:-cockpit}"
+POLL="${COCKPIT_POLL:-3}"                       # seconds between review-state polls
+SELF="${COCKPIT_SELF:-$HOME/.local/bin/cockpit-remote}"
+LOCK="${TMPDIR:-/tmp}/cockpit-watch.lock"
+LOG="${TMPDIR:-/tmp}/cockpit-watch.log"
+STATE_DIR="${COCKPIT_STATE:-$HOME/.local/state/cockpit}"
+DISMISS="$STATE_DIR/dismissed"                  # hunk session-ids dismissed from the view
+DONE_KEY="${COCKPIT_DONE_KEY:-E}"               # <prefix> KEY signals "review phase ended"
+HEAL_EVERY="${COCKPIT_HEAL_EVERY:-5}"           # poll iterations between layout checks
+
+# Locate layout.sh from the harness configuration rather than the wiki checkout, so a
+# host with no wiki can still run layout.sh ensure from the watcher loop. Priority:
+# the COCKPIT_LAYOUT env override, then SPIRA_HOME if already in the environment (a suite
+# or a configured caller), then the harness path from ~/.config/spira/harness.
+_layout_from_harness() {
+    local h l
+    for h in "${SPIRA_HOME:-}" \
+              "$(head -1 "${XDG_CONFIG_HOME:-$HOME/.config}/spira/harness" 2>/dev/null)"; do
+        [ -n "$h" ] || continue
+        l="$(cd "$h/.." 2>/dev/null && pwd)/cockpit/layout.sh"
+        [ -f "$l" ] && { printf '%s' "$l"; return 0; }
+    done
+    return 1
+}
+LAYOUT="${COCKPIT_LAYOUT:-$(_layout_from_harness 2>/dev/null)}"
+unset -f _layout_from_harness
+
+# ---- ~/.local/bin on PATH ---------------------------------------------------
+# `hunk` is a `#!/usr/bin/env node` script, and `node` is only on PATH via the LOGIN
+# shell (it lives in ~/.local/bin here). The watcher runs detached in a NON-login shell,
+# so without this every `hunk session list` dies with "node: not found" and the review
+# probe silently reports idle forever — the exact bug where the view never flipped.
+# Resolve the login shell's node once and prepend its dir. Cheap: only when node is absent.
+#
+# `gt` and `bd` live in that same ~/.local/bin and hit the identical trap one layer down:
+# the watcher now starts the cockpit's collector, and a collector that cannot find `gt`
+# renders every Gas Town probe as `?`. Measured — the watcher's inherited PATH is
+# /usr/local/sbin:...:/snap/bin, with no node, no gt and no bd. So put the DIRECTORY on
+# PATH, not just the one binary that prompted the fix.
+prepend_path() {
+  [ -d "$1" ] || return 0
+  case ":$PATH:" in *":$1:"*) return 0 ;; esac
+  PATH="$1:$PATH"; export PATH
+}
+
+ensure_node_on_path() {
+  local nodebin
+  if command -v node >/dev/null 2>&1; then
+    prepend_path "$(dirname "$(command -v node)")"
+  else
+    nodebin=$(bash -lc 'command -v node' 2>/dev/null) || nodebin=""
+    [ -n "$nodebin" ] && [ -x "$nodebin" ] && prepend_path "$(dirname "$nodebin")"
+  fi
+  prepend_path "$HOME/.local/bin"
+}
+ensure_node_on_path
+
+# ---- tmux helpers -----------------------------------------------------------
+# `=name` is an EXACT target — plain `name` prefix-matches and would confuse brain/hunk.
+has() { tmux has-session -t "=$1" 2>/dev/null; }
+wid() { tmux display-message -p -t "=$1" '#{window_id}' 2>/dev/null; }
+
+ensure_session() {  # name dir
+  has "$1" || tmux new-session -d -s "$1" -c "$2"
+}
+
+# cockpit-local window index whose window_id matches $1 (linked windows share an id).
+cockpit_idx_for() {
+  tmux list-windows -t "=$COCKPIT" -F '#{window_index} #{window_id}' 2>/dev/null \
+    | awk -v w="$1" '$2==w {print $1; exit}'
+}
+
+# ---- review-state signal ----------------------------------------------------
+# "Review active" is NOT "the hunk TUI is running" — the TUI has to stay up through the
+# publish/apply phase so the review agent can still drive `hunk session *`, long after
+# the operator is done *looking* at it. So the signal is: a live hunk session exists that
+# has not been DISMISSED. Dismissal is keyed to the session-id (the UUID `hunk session
+# list` prints), so `cockpit done` flips to brain while the session lives on, and the
+# next review — a fresh id — re-activates on its own with nothing to reset.
+
+# UUIDs of currently-live hunk sessions, one per line.
+live_ids() {
+  "$HUNK" session list 2>/dev/null \
+    | grep -oiE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+}
+
+review_active() {
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  local live; live=$(live_ids)
+  if [ -z "$live" ]; then
+    [ -s "$DISMISS" ] && : >"$DISMISS"          # nothing live -> forget dismissals
+    return 1
+  fi
+  # Self-clean: keep only dismissals whose session is still live.
+  if [ -s "$DISMISS" ]; then
+    grep -Fxf <(printf '%s\n' "$live") "$DISMISS" 2>/dev/null | sort -u >"$DISMISS.tmp" \
+      && mv "$DISMISS.tmp" "$DISMISS" || rm -f "$DISMISS.tmp"
+  fi
+  # Active iff some live session has NOT been dismissed.
+  local id
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    { [ -s "$DISMISS" ] && grep -Fxq "$id" "$DISMISS"; } || return 0
+  done <<<"$live"
+  return 1
+}
+
+want_session() { review_active && echo hunk || echo brain; }
+
+# ---- build ------------------------------------------------------------------
+cockpit_healthy() {
+  has "$COCKPIT" || return 1
+  local bw hw
+  bw=$(wid "brain:0"); hw=$(wid "hunk:0")
+  [ -n "$bw" ] && [ -n "$hw" ] || return 1
+  [ -n "$(cockpit_idx_for "$bw")" ] && [ -n "$(cockpit_idx_for "$hw")" ]
+}
+
+build_cockpit() {
+  ensure_session brain "$BRAIN_DIR"
+  ensure_session hunk  "$BRAIN_DIR"
+
+  # Skip the teardown on the common re-attach path so we don't detach an existing
+  # cockpit client (e.g. the phone) just because the laptop reconnected.
+  cockpit_healthy && return 0
+
+  # kill-session drops only cockpit's links; brain/hunk windows survive because they are
+  # still linked to their own sessions ("closing any windows linked to it and no other
+  # sessions"). Safe.
+  tmux kill-session -t "=$COCKPIT" 2>/dev/null || true
+  tmux new-session -d -s "$COCKPIT" -c "$BRAIN_DIR"
+
+  # A session must own >=1 window, so cockpit is born with a throwaway shell window.
+  # Link brain+hunk in after it, then kill the throwaway (cockpit-only -> safe).
+  local stray
+  stray=$(tmux display-message -p -t "=$COCKPIT" '#{window_index}')
+  tmux link-window -d -s "=brain:0" -t "=$COCKPIT:$stray" -a
+  tmux link-window -d -s "=hunk:0"  -t "=$COCKPIT:$stray" -a
+  tmux kill-window -t "=$COCKPIT:$stray"
+
+  # A tiny direct attach to brain/hunk shouldn't shrink the cockpit's view: size each
+  # linked window only to sessions where it is the *current* window.
+  local bidx hidx
+  bidx=$(cockpit_idx_for "$(wid brain:0)"); hidx=$(cockpit_idx_for "$(wid hunk:0)")
+  [ -n "$bidx" ] && tmux set-window-option -t "=$COCKPIT:$bidx" aggressive-resize on 2>/dev/null || true
+  [ -n "$hidx" ] && tmux set-window-option -t "=$COCKPIT:$hidx" aggressive-resize on 2>/dev/null || true
+}
+
+# ---- view sync --------------------------------------------------------------
+select_want() {  # optional explicit target overrides state
+  local want="${1:-$(want_session)}" idx
+  idx=$(cockpit_idx_for "$(wid "$want:0")")
+  [ -n "$idx" ] && tmux select-window -t "=$COCKPIT:$idx"
+}
+
+# ---- watcher ----------------------------------------------------------------
+# Repair a cockpit whose session pane died. All the judgement lives in `layout.sh ensure`
+# — which windows hold a cockpit, whether one is broken, the cooldown on a repair that
+# keeps failing. It is silent when nothing is wrong, so anything reaching this log is real.
+heal_layout() {
+  # RETIRED, DELIBERATELY. `cockpit-ensure.timer` runs the harness's `layout.sh ensure` every
+  # minute and is the only repair loop. This call ran brain's OLD layout.sh, whose `ensure`
+  # resurrects the retired Gas Town collector; a second writer to one snapshot is never a
+  # repair. Set COCKPIT_LEGACY_HEAL=1 to run it.
+  [ "${COCKPIT_LEGACY_HEAL:-0}" = 1 ] || return 0
+  [ -x "$LAYOUT" ] || return 0
+  "$LAYOUT" ensure 2>&1 | sed "s/^/cockpit-heal: /"
+}
+
+watch_loop() {
+  local last="" cur n=0
+  while has "$COCKPIT"; do
+    cur=$(want_session)
+    if [ "$cur" != "$last" ]; then
+      # First pass only seeds `last` (attach already synced the view); flip on real
+      # transitions thereafter.
+      [ -n "$last" ] && select_want "$cur"
+      last="$cur"
+    fi
+    # The view poll is 3s because a flip should feel immediate. A dead pane does not need
+    # that resolution and the check is not free, so it runs every HEAL_EVERY passes.
+    n=$(( n + 1 ))
+    if [ "$n" -ge "$HEAL_EVERY" ]; then n=0; heal_layout; fi
+    sleep "$POLL"
+  done
+}
+
+# The watcher holds an flock on $LOCK for its whole life (released on death). Probing that
+# lock is the definitive liveness test — unlike `pgrep`, it can't match the very shell doing
+# the check. `( flock -n 8 8>>$LOCK )`: acquires iff the lock is FREE (=> not running).
+watcher_running() { ( flock -n 8 8>>"$LOCK" ) 2>/dev/null && return 1 || return 0; }
+
+start_watcher() {
+  watcher_running && return 0
+  if command -v setsid >/dev/null 2>&1; then
+    setsid -f "$SELF" watch >>"$LOG" 2>&1 || nohup "$SELF" watch >>"$LOG" 2>&1 &
+  else
+    nohup "$SELF" watch >>"$LOG" 2>&1 &
+  fi
+}
+
+# ---- dismiss / keybinding ---------------------------------------------------
+# Signal "review phase ended": dismiss every live hunk session and flip to brain, WITHOUT
+# quitting hunk — the agent keeps its live session to apply queued edits and reply.
+cmd_done() {
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  local live; live=$(live_ids)
+  if [ -n "$live" ]; then
+    { [ -f "$DISMISS" ] && cat "$DISMISS"; printf '%s\n' "$live"; } | sort -u >"$DISMISS.tmp" \
+      && mv "$DISMISS.tmp" "$DISMISS"
+    select_want brain
+    tmux display-message "cockpit: review dismissed — back to brain (hunk left running)" 2>/dev/null || true
+    echo "dismissed $(printf '%s\n' "$live" | grep -c .) session(s); flipped to brain"
+  else
+    select_want brain
+    echo "no live hunk session to dismiss; showing brain"
+  fi
+}
+
+# Bind <prefix> DONE_KEY to `cockpit-remote done`, so it can be signalled from inside the
+# pane where there's no shell prompt. `-b` runs it off the server loop so the keypress
+# never stalls tmux while hunk/node spin up. tmux keys are global; harmless elsewhere.
+#
+# stdout MUST be discarded here. run-shell(1): "any output to stdout is displayed in view
+# mode (in the pane specified by -t or the current pane) after the command finishes" — so
+# `done`'s one-line confirmation was being pasted over the pane as a COPY-MODE overlay.
+# The window flip had already happened underneath it; the overlay was dismissed by dragging
+# to select the text. `|| true` likewise suppresses tmux's exit-status overlay on a nonzero
+# return. The status-line `display-message` inside cmd_done is the feedback channel.
+set_keybindings() {
+  tmux bind-key "$DONE_KEY" run-shell -b "'$SELF' done >/dev/null 2>&1 || true" 2>/dev/null || true
+}
+
+# ---- subcommands ------------------------------------------------------------
+cmd_attach() {
+  build_cockpit
+  set_keybindings
+  select_want "${1:-}"
+  start_watcher
+  exec tmux attach -t "=$COCKPIT"
+}
+
+cmd_status() {
+  printf 'review:   %s\n' "$(review_active && echo ACTIVE || echo idle)"
+  printf 'want:     %s\n' "$(want_session)"
+  printf 'sessions: %s live, %s dismissed\n' \
+    "$(live_ids | grep -c .)" "$([ -s "$DISMISS" ] && grep -c . "$DISMISS" || echo 0)"
+  if has "$COCKPIT"; then
+    # window_active is client-independent; #{window_name} on a session target is not.
+    printf 'cockpit:  present  (showing: %s)\n' \
+      "$(tmux list-windows -t "=$COCKPIT" -F '#{?window_active,#{window_name},}' | tr -d '\n')"
+    tmux list-windows -t "=$COCKPIT" -F '  win #{window_index} #{window_id} #{window_name}#{?window_active, *,}'
+  else
+    printf 'cockpit:  absent\n'
+  fi
+  printf 'watcher:  %s\n' "$(watcher_running && echo running || echo stopped)"
+}
+
+case "${1:-attach}" in
+  attach) shift; cmd_attach "${1:-}" ;;
+  build)  build_cockpit; set_keybindings ;;
+  start)
+    # `start_watcher` backgrounds a setsid fork, so the lock is not held the instant it
+    # returns. Checking immediately reported FAILED on a watcher that was fine.
+    start_watcher
+    for _ in 1 2 3 4 5 6 7 8 9 10; do watcher_running && break; sleep 0.3; done
+    watcher_running && echo "watcher running" || { echo "watcher FAILED — see $LOG" >&2; exit 1; }
+    ;;
+  sync)   select_want "${2:-}" ;;
+  done)   cmd_done ;;
+  keys)   set_keybindings ;;
+  watch)
+    exec 9>"$LOCK"
+    flock -n 9 || { echo "cockpit watcher already running" >&2; exit 0; }
+    watch_loop
+    ;;
+  status) cmd_status ;;
+  stop)   pkill -f "$SELF watch" && echo "watcher stopped" || echo "no watcher running" ;;
+  *) echo "usage: cockpit-remote {attach [brain|hunk]|build|start|sync|done|keys|watch|status|stop}" >&2; exit 2 ;;
+esac

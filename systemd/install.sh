@@ -42,14 +42,14 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # PARSE THE INSTANCE ARGUMENT AND THE MODE FLAG BEFORE SOURCING conf.sh SO THAT conf.sh
 # DERIVES SPIRA_RUN, SPIRA_DB, ETC. FOR THE CORRECT INSTANCE. conf.sh reads SPIRA_INSTANCE
 # from the environment before the config file, so setting it here in the environment wins.
-_install_mode=""             # --diff | --render | empty (install)
+_install_mode=""             # --diff | --render | --laptop | empty (install)
 _install_instance=""         # explicit instance arg, empty means use conf.sh default
 _skip_migrate_watchers=0     # 1 when --no-migrate-watchers is passed
 for _a in "$@"; do
     case "$_a" in
-        --diff|--render)       _install_mode="$_a" ;;
-        --no-migrate-watchers) _skip_migrate_watchers=1 ;;
-        --*)                   ;;
+        --diff|--render|--laptop) _install_mode="$_a" ;;
+        --no-migrate-watchers)    _skip_migrate_watchers=1 ;;
+        --*)                      ;;
         *) [ -z "$_install_instance" ] && _install_instance="$_a" ;;
     esac
 done
@@ -133,6 +133,22 @@ if left:
 sys.stdout.write(out)
 PY
 }
+
+# --laptop: link only the cockpit dialer on this machine and exit. The two halves of the
+# cockpit install on different machines; the server half uses the full install, the laptop
+# half only needs the dialer. "Symlink this file yourself" rots — one command should do it.
+if [ "$_install_mode" = "--laptop" ]; then
+    _dialer="$(dirname "$SPIRA_HOME")/cockpit/remote/cockpit"
+    if [ ! -x "$_dialer" ]; then
+        printf 'install: --laptop: cockpit dialer not found at %s\n' "$_dialer" >&2
+        printf 'install: --laptop: run the full install on the host; only the server needs systemd units\n' >&2
+        exit 1
+    fi
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$_dialer" "$HOME/.local/bin/cockpit"
+    printf 'install: linked cockpit dialer: %s -> %s\n' "$HOME/.local/bin/cockpit" "$_dialer"
+    exit 0
+fi
 
 if [ "$_install_mode" = "--render" ]; then
     for u in "${UNITS[@]}"; do
@@ -622,6 +638,22 @@ fi
 # write rather than the only one, and both are silent when there is nothing to change.
 "$SPIRA_HOME/install-session-hook.sh" install || \
     echo "note: the session hook was not registered — run $SPIRA_HOME/install-session-hook.sh install" >&2
+
+# LINK THE COCKPIT VIEW FOLLOWER. The server-side half of the cockpit is now shipped in the
+# harness at cockpit/remote/cockpit-remote; link it to ~/.local/bin/cockpit-remote so that
+# SPIRA_VIEW, rebuild.sh, and the design-review skill all find it at its canonical name.
+# Silent when the target is already correct; updates the link when the harness moved.
+_cr_src="$(dirname "$SPIRA_HOME")/cockpit/remote/cockpit-remote"
+_cr_dst="$HOME/.local/bin/cockpit-remote"
+if [ -x "$_cr_src" ]; then
+    mkdir -p "$HOME/.local/bin"
+    _cr_current="$(readlink "$_cr_dst" 2>/dev/null || true)"
+    if [ "$_cr_current" != "$_cr_src" ]; then
+        ln -sf "$_cr_src" "$_cr_dst"
+        printf 'install: linked cockpit-remote: %s -> %s\n' "$_cr_dst" "$_cr_src"
+    fi
+fi
+unset _cr_src _cr_dst _cr_current
 
 # A ROW THAT HAS GONE MUST STOP RUNNING. Otherwise the manifest is the source of truth only
 # for what starts, and a watcher deleted from it goes on polling — and goes on being believed
