@@ -187,7 +187,7 @@ file_one() {
     if [ -n "${id:-}" ]; then
         n="$(recurrences_of "$id")"; n="${n:-1}"; n=$((n+1))
         if [ "$_was_closed" = 1 ]; then
-            bdq reopen "$id" --reason "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ) — same failure fingerprint, dedup within ${DEDUP_LOOKBACK_DAYS}-day window" >/dev/null 2>&1
+            bead_reopen "$id" "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ) — same failure fingerprint, dedup within ${DEDUP_LOOKBACK_DAYS}-day window"
         fi
         bdq label add "$id" "sp-recur-$n" >/dev/null 2>&1
         _reopen_note="" _log_suffix=""
