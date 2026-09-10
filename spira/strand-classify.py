@@ -60,6 +60,16 @@ live = int(os.environ.get("LIVE") or 0)
 grace = int(os.environ.get("GHOST_GRACE") or 300)
 now = datetime.now(timezone.utc).timestamp()
 
+# CAPACITY AWARENESS. When the account is out of capacity, the sentinel correctly
+# declines to summon — that is the fix from sp-mdm — and a correct refusal reads as
+# starvation from the outside: ready work exists and nothing is working it.
+# CAPACITY_PAUSED=1 is set by classify_one() in strand.sh when capacity_paused() returns
+# true; injectable so tests can exercise this path without a live capacity.sh call.
+# CAPACITY_DETAIL carries the human-readable window from the pause file, so the row
+# names the reset time rather than recommending a check that would find nothing wrong.
+_cap_paused = os.environ.get("CAPACITY_PAUSED", "0") == "1"
+_cap_detail = os.environ.get("CAPACITY_DETAIL", "the account is out of capacity")
+
 by_id = {b["id"]: b for b in beads if b.get("id")}
 OPEN = lambda b: b.get("status") != "closed"
 lab  = lambda b: set(b.get("labels") or [])
@@ -118,10 +128,23 @@ for b in beads:
 
 # -- starved: the condition this check is named for. Claimable work exists and nothing alive
 # is working it. Aeons at their concurrency cap is NOT starvation — work is moving.
+#
+# CAPACITY PAUSE IS NOT STARVATION. When the sentinel is correctly refusing to summon
+# because the account is out of capacity, both predicates are true: beads are ready,
+# no aeon is live. But nothing is wrong — the harness is doing the right thing. A
+# 'starved' row in this state recommends checking the sentinel timer, which is healthy,
+# and files a needs-ryan escalation for a condition that clears itself. Instead emit a
+# distinct 'capacity-paused' info row naming the window; cmd_check() skips info rows.
 if ready and live == 0:
-    row("starved", "-", "escalate",
-        "%d bead(s) ready and no live aeon: %s" % (len(ready), " ".join(sorted(ready)[:6])),
-        "check spira-sentinel.timer and the tail of sentinel.log")
+    if _cap_paused:
+        row("capacity-paused", "-", "info",
+            "no aeon summoned: %s — %d bead(s) will be claimed when capacity reopens: %s" % (
+                _cap_detail, len(ready), " ".join(sorted(ready)[:6])),
+            "none — the sentinel will summon when the account is open again")
+    else:
+        row("starved", "-", "escalate",
+            "%d bead(s) ready and no live aeon: %s" % (len(ready), " ".join(sorted(ready)[:6])),
+            "check spira-sentinel.timer and the tail of sentinel.log")
 
 # -- per-pilgrimage analysis. An epic whose open children are none of ready, in progress,
 # escalated or poisoned is stuck, and the interesting part is WHY.

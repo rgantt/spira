@@ -244,8 +244,20 @@ print("\n".join(r["id"] for r in rows if r.get("status") == "in_progress"))' 2>/
     local tmp; tmp="$(mktemp -d)" || return 1
     printf '%s' "$beads" > "$tmp/beads.json"
     printf '%s' "$ready" > "$tmp/ready.json"
+    # CAPACITY STATE IS DETERMINED HERE, IN SHELL, and passed to the classifier rather than
+    # having the classifier probe it. This keeps the classifier stateless (it reads env),
+    # lets tests inject a specific state without writing to the live capacity pause file,
+    # and ensures the detail text comes from the same source as capacity.sh status rather
+    # than being re-derived inside Python. capacity_paused() is from lib.sh; it sets
+    # SPIRA_CAPACITY_LEFT as a side-effect and reads the pause file named by SPIRA_CAPACITY_PAUSE.
+    local _cap_paused=0 _cap_detail=""
+    if capacity_paused; then
+        _cap_paused=1
+        _cap_detail="the account is out for another ${SPIRA_CAPACITY_LEFT}s (until $(date -d "@$(capacity_pause_until)" +%H:%M 2>/dev/null))"
+    fi
     BEADS_FILE="$tmp/beads.json" READY_FILE="$tmp/ready.json" HOLDERS="$holders" LIVE="$live" \
-    GHOST_GRACE="$GHOST_GRACE" python3 "$HERE/strand-classify.py"
+    GHOST_GRACE="$GHOST_GRACE" CAPACITY_PAUSED="$_cap_paused" CAPACITY_DETAIL="$_cap_detail" \
+    python3 "$HERE/strand-classify.py"
     local rc=$?
     rm -rf "$tmp"
     return "$rc"
@@ -394,10 +406,23 @@ $(tail -n 12 "$SENTINEL_LOG" 2>/dev/null || echo '(sentinel log unreadable)')"
     # the same defect as a pager that cries wolf (law-alerts-must-be-actionable).
     local why="$detail — nothing in the plan below it can move until this clears"
     [ "$kind" = reclaim-ceiling ] && why="$detail — the bead is still claimable and nothing below it is blocked"
+    # MOOT-WHEN: the condition that fired this escalation is checked by moot-sweep.sh on
+    # a timer. Exit 0 when the strand of this kind/id is no longer present for this
+    # partition; exit 1 while it persists; exit non-0 (via the empty-response guard) when
+    # the probe itself fails. A predicate that errors must never read as "cleared"
+    # (law-absence-needs-a-positive-control). $part/$kind/$id are expanded at heredoc
+    # evaluation time; \$_r escapes so it survives as a literal in the predicate string
+    # run later by moot-sweep.sh under bash -c.
+    local _moot_pred
+    _moot_pred=$(cat <<MOOTEOF
+_r=\$(SPIRA_LABELS='$part' '$HERE/strand.sh' report --json 2>/dev/null); [ -n "\$_r" ] || { printf 'probe: strand.sh report returned nothing\n'; exit 1; }; printf '%s' "\$_r" | python3 -c 'import json,sys; d=json.load(sys.stdin); exit(0 if not any(s.get("kind")=="$kind" and s.get("id")=="$id" for s in d.get("strands",[])) else 1)'
+MOOTEOF
+)
     "$ASK" add "$title" \
         --default "$action" \
         --why "$why" \
-        --evidence "$ctx" >/dev/null 2>&1
+        --evidence "$ctx" \
+        --moot-when "$_moot_pred" >/dev/null 2>&1
 }
 
 cmd_check() {
