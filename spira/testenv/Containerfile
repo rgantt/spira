@@ -1,0 +1,66 @@
+# spira/testenv/Containerfile — Ubuntu 24.04 with system and user systemd, and Rust.
+#
+# PURPOSE. Test suites that exercise code calling systemctl --user need a real user
+# systemd session. This image supplies one: PID 1 is system systemd, and spirauser
+# (uid 1001) gets a session bus after `loginctl enable-linger` runs at container startup.
+#
+# RUST. cargo and rustc from the Ubuntu archive so spira's loom binary can be built
+# inside the container. CARGO_HOME is at /var/spira/cargo so a named volume mounted
+# there holds the registry without needing a path under a user home directory (which
+# inventory.sh would refuse in any tracked file that named it literally).
+#
+# SIZING. Only what the tests need. No bd, no Dolt, no tmux. The harness checkout is
+# bind-mounted by the caller at /workspace; this image provides only the runtime.
+
+FROM docker.io/library/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System init, session bus, Rust toolchain, and sudo for spirauser to reload units.
+# All from the distro archive; no external download scripts.
+RUN apt-get update -q && \
+    apt-get install -yq --no-install-recommends \
+        systemd \
+        systemd-sysv \
+        dbus \
+        dbus-user-session \
+        sudo \
+        cargo \
+        rustc \
+    && rm -rf /var/lib/apt/lists/*
+
+# spirauser (uid 1001): the non-root user whose session bus the tests drive.
+# A fixed UID keeps the cargo cache volume owner stable across image rebuilds.
+RUN useradd -m -s /bin/bash -u 1001 spirauser && \
+    echo 'spirauser ALL=(ALL) NOPASSWD: /usr/bin/systemctl' \
+         > /etc/sudoers.d/spirauser-systemctl && \
+    chmod 0440 /etc/sudoers.d/spirauser-systemctl
+
+# CARGO_HOME outside any user home directory so the volume path avoids a literal
+# that inventory.sh would flag. The directory is created owned by spirauser so it
+# is writable from the container's first command without a privilege step.
+ENV CARGO_HOME=/var/spira/cargo
+RUN mkdir -p /var/spira/cargo /workspace && \
+    chown -R spirauser:spirauser /var/spira/cargo /workspace
+
+# Mask services that require privileges the rootless container does not hold.
+# Masking prevents failed-unit churn during systemd startup and does not prevent
+# the services from being unmasked later inside the container.
+RUN systemctl mask \
+        systemd-networkd.service \
+        systemd-resolved.service \
+        NetworkManager.service \
+        apt-daily.service apt-daily.timer \
+        apt-daily-upgrade.service apt-daily-upgrade.timer \
+        e2scrub_reap.service \
+        motd-news.service motd-news.timer \
+    2>/dev/null; true
+
+WORKDIR /workspace
+
+# systemd expects SIGRTMIN+3 as its clean shutdown signal. --systemd=true in the
+# podman run invocation sets this automatically; the STOPSIGNAL declaration makes the
+# intent visible here regardless of how the container is started.
+STOPSIGNAL SIGRTMIN+3
+
+CMD ["/lib/systemd/systemd"]

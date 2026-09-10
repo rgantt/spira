@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+# testenv.sh up|down|exec|probe — rootless podman test environment with user systemd.
+#
+# USAGE
+#   testenv.sh up   [--name NAME] [--checkout PATH]
+#   testenv.sh down [--name NAME] [--volumes]
+#   testenv.sh exec [--name NAME] [--user USER] CMD ARGS...
+#   testenv.sh probe [--name NAME]
+#
+# HOW USER SYSTEMD WORKS. The container runs with --systemd=true so PID 1 is system
+# systemd. After startup, `loginctl enable-linger` inside the container causes systemd
+# to start user@1001.service; once that unit is active, `systemctl --user` connects via
+# XDG_RUNTIME_DIR=/run/user/1001. The `up` command waits for user@1001.service before
+# returning. The `probe` command exits 0 when user systemd is confirmed working.
+#
+# CARGO CACHE. Two named volumes (${NAME}-cargo-reg and ${NAME}-cargo-git) hold the
+# Cargo registry and git sources at CARGO_HOME=/var/spira/cargo. They survive `down`
+# and are reused on the next `up` so each build after the first is incremental. Pass
+# --volumes to `down` to also remove them.
+#
+# CHECKOUT. The caller's checkout (default: the repository this file lives in) is
+# bind-mounted read-write at /workspace inside the container. Build artifacts written
+# there persist on the host between container runs.
+#
+# FALLBACK. If user@1001.service does not start, `probe` exits non-zero. Callers
+# that need systemctl --user should then set SPIRA_SYSTEMCTL to a recording stub and
+# drive the code under test through that seam rather than the real unit manager
+# (law-gates-run-in-a-clean-environment).
+
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+TESTENV_DIR="$HERE/testenv"
+
+# These constants are baked into the container image. They must agree with the
+# Containerfile: a mismatch between the UID here and the one useradd used means
+# the cargo cache volume has the wrong owner and the first build fails with EACCES.
+_SPIRA_USER="spirauser"
+_SPIRA_UID=1001
+_CONTAINER_CHECKOUT="/workspace"
+_CONTAINER_CARGO="/var/spira/cargo"
+_USER_RUNTIME="/run/user/${_SPIRA_UID}"
+_DEFAULT_NAME="spira-testenv"
+
+# Image tag derived from the Containerfile hash. When the Containerfile changes, the
+# old tag is a miss and a fresh build runs automatically. The old image accumulates
+# but is never used, and `podman image prune` cleans it when needed.
+_image_tag() {
+    sha256sum "$TESTENV_DIR/Containerfile" 2>/dev/null | cut -c1-12
+}
+
+_image_ref() {
+    printf 'localhost/spira-testenv:%s' "$(_image_tag)"
+}
+
+# Build the image if the computed tag is not present. Prints the image ref on stdout
+# so callers can capture it; all progress goes to stderr.
+_ensure_image() {
+    local img; img="$(_image_ref)"
+    if ! podman image exists "$img" 2>/dev/null; then
+        printf 'testenv: building image %s\n' "$img" >&2
+        podman build -q -t "$img" "$TESTENV_DIR" >&2 || {
+            printf 'testenv: image build failed — check Containerfile in %s\n' "$TESTENV_DIR" >&2
+            return 1
+        }
+    fi
+    printf '%s' "$img"
+}
+
+# Wait up to N half-second ticks for CMD ARGS to exit 0.
+_wait_for() {   # _wait_for N CMD ARGS... -> 0 if satisfied within N*0.5s, 1 if timed out
+    local n="$1"; shift
+    local i=0
+    while [ "$i" -lt "$n" ]; do
+        "$@" >/dev/null 2>&1 && return 0
+        sleep 0.5
+        i=$((i+1))
+    done
+    return 1
+}
+
+cmd_up() {
+    local name="$_DEFAULT_NAME" checkout=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name)     name="$2";     shift 2 ;;
+            --checkout) checkout="$2"; shift 2 ;;
+            *) printf 'testenv up: unknown argument: %s\n' "$1" >&2; return 1 ;;
+        esac
+    done
+
+    # Default checkout: the repository root this script lives in.
+    [ -z "$checkout" ] && checkout="$(cd "$HERE/.." && pwd -P)"
+
+    if podman container exists "$name" 2>/dev/null; then
+        printf 'testenv: %s already exists; nothing to do\n' "$name" >&2
+        return 0
+    fi
+
+    local img; img="$(_ensure_image)" || return 1
+
+    # Named volumes for the cargo registry and git sources. They are created by podman
+    # on first use and reused on every subsequent `up`, so crate downloads only happen
+    # once across the lifetime of the volume.
+    local vol_reg="${name}-cargo-reg"
+    local vol_git="${name}-cargo-git"
+
+    podman run -d \
+        --name "$name" \
+        --systemd=true \
+        --volume "${checkout}:${_CONTAINER_CHECKOUT}:z" \
+        --volume "${vol_reg}:${_CONTAINER_CARGO}/registry" \
+        --volume "${vol_git}:${_CONTAINER_CARGO}/git" \
+        "$img" >/dev/null
+
+    # Wait for system systemd to reach basic.target (~1s normally). Failing here
+    # means something is wrong with the image or the cgroup setup, not the test code.
+    if ! _wait_for 20 podman exec "$name" systemctl is-active basic.target; then
+        printf 'testenv: system systemd did not reach basic.target\n' >&2
+        podman stop "$name" >/dev/null 2>&1 || true
+        podman rm   "$name" >/dev/null 2>&1 || true
+        return 1
+    fi
+
+    # loginctl enable-linger writes /var/lib/systemd/linger/spirauser, which causes the
+    # system systemd to start user@1001.service and keep it running without a login session.
+    podman exec "$name" loginctl enable-linger "$_SPIRA_USER" 2>/dev/null || true
+
+    # Wait for the user session manager to become active (~1-2s after enable-linger).
+    if _wait_for 20 podman exec "$name" systemctl is-active "user@${_SPIRA_UID}.service"; then
+        printf 'testenv: user@%s.service active; systemctl --user ready\n' "$_SPIRA_UID" >&2
+    else
+        printf 'testenv: WARNING user@%s.service did not start\n' "$_SPIRA_UID" >&2
+        printf 'testenv: probe exits non-zero; use SPIRA_SYSTEMCTL stub for systemctl --user\n' >&2
+    fi
+}
+
+cmd_down() {
+    local name="$_DEFAULT_NAME" rm_volumes=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name)    name="$2"; shift 2 ;;
+            --volumes) rm_volumes=1; shift ;;
+            *) printf 'testenv down: unknown argument: %s\n' "$1" >&2; return 1 ;;
+        esac
+    done
+
+    # stop and rm are no-ops when the container does not exist, satisfying the
+    # "second down exits 0" requirement without extra checks.
+    podman stop "$name" >/dev/null 2>&1 || true
+    podman rm   "$name" >/dev/null 2>&1 || true
+
+    if [ "$rm_volumes" = 1 ]; then
+        podman volume rm "${name}-cargo-reg" >/dev/null 2>&1 || true
+        podman volume rm "${name}-cargo-git" >/dev/null 2>&1 || true
+    fi
+}
+
+cmd_exec() {
+    local name="$_DEFAULT_NAME" user="root"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name) name="$2"; shift 2 ;;
+            --user) user="$2"; shift 2 ;;
+            --) shift; break ;;
+            -*) printf 'testenv exec: unknown option: %s\n' "$1" >&2; return 1 ;;
+            *)  break ;;
+        esac
+    done
+
+    [ $# -gt 0 ] || { printf 'testenv exec: command required\n' >&2; return 1; }
+
+    # When running as spirauser, inject the environment variables that make systemctl
+    # --user and cargo connect to the right places. Running as root needs none of these.
+    if [ "$user" = "$_SPIRA_USER" ]; then
+        podman exec --user "$user" \
+            -e "XDG_RUNTIME_DIR=${_USER_RUNTIME}" \
+            -e "DBUS_SESSION_BUS_ADDRESS=unix:path=${_USER_RUNTIME}/bus" \
+            -e "CARGO_HOME=${_CONTAINER_CARGO}" \
+            "$name" "$@"
+    else
+        podman exec --user "$user" "$name" "$@"
+    fi
+}
+
+cmd_probe() {
+    local name="$_DEFAULT_NAME"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name) name="$2"; shift 2 ;;
+            *) printf 'testenv probe: unknown argument: %s\n' "$1" >&2; return 1 ;;
+        esac
+    done
+
+    # Confirm that user@UID.service is active AND that systemctl --user can connect to
+    # the session bus. Both must hold: the service being active is necessary but not
+    # sufficient if the bus socket is not yet accepting connections.
+    podman exec "$name" systemctl is-active "user@${_SPIRA_UID}.service" >/dev/null 2>&1 && \
+    podman exec --user "$_SPIRA_USER" \
+        -e "XDG_RUNTIME_DIR=${_USER_RUNTIME}" \
+        "$name" systemctl --user is-active default.target >/dev/null 2>&1
+}
+
+case "${1:-}" in
+    up)    shift; cmd_up    "$@" ;;
+    down)  shift; cmd_down  "$@" ;;
+    exec)  shift; cmd_exec  "$@" ;;
+    probe) shift; cmd_probe "$@" ;;
+    *)
+        printf 'usage: testenv.sh up|down|exec|probe [OPTIONS]\n' >&2
+        printf '  up   [--name NAME] [--checkout PATH]\n' >&2
+        printf '  down [--name NAME] [--volumes]\n' >&2
+        printf '  exec [--name NAME] [--user USER] CMD ARGS...\n' >&2
+        printf '  probe [--name NAME]\n' >&2
+        exit 1 ;;
+esac
