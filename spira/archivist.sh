@@ -109,8 +109,30 @@ get_hwm() { sed -n 's/^band=//p' "$ARC/$1.hwm" 2>/dev/null | head -1; }
 # IT IS WRITTEN ONLY AFTER A RUN SUCCEEDS. A failed pass has covered nothing, whatever it read.
 covered() { sed -n 's/^turn=//p' "$ARC/$1.covered" 2>/dev/null | head -1; }
 set_covered() {          # set_covered <session> <turn>
-    local tmp="$ARC/.$1.covered.$$"
-    printf 'turn=%s\n' "$2" > "$tmp" && mv -f "$tmp" "$ARC/$1.covered"
+    local sid="$1" turn="$2"
+    # REFUSE a non-numeric turn. Writing "-" or "?" as a cursor is what turned one bad meter
+    # read into a 4.5-hour archivist outage: every subsequent sweep dies on that cursor, killing
+    # the entire pass, not just the affected session (sp-ci5cn).
+    if ! [[ "$turn" =~ ^[0-9]+$ ]]; then
+        log "archivist: REFUSED set_covered $sid — turn='${turn:-(empty)}' is not numeric; cursor unchanged"
+        return 1
+    fi
+    local tmp="$ARC/.$sid.covered.$$"
+    printf 'turn=%s\n' "$turn" > "$tmp" && mv -f "$tmp" "$ARC/$sid.covered"
+}
+
+# Coerce a meter or cursor value to a non-negative integer. The established "unreadable"
+# sentinel in this codebase is "-" or "?"; ${x:-0} does not replace either because both are
+# non-empty strings, so they pass silently into arithmetic and produce a syntax error. Pass
+# every meter value and cursor through this before arithmetic. Returns 0 always — the log line
+# is the signal, not the exit code; the caller must not fail just because the meter was blind.
+arc_numeric() {   # arc_numeric <value> <context-for-log> → echoes the number
+    local v="${1:-}" ctx="${2:-value}"
+    if [[ "$v" =~ ^[0-9]+$ ]]; then echo "$v"; return 0; fi
+    # STDERR: this function is always called via $( ), so stdout is captured as the return value.
+    # log() writes to stdout; redirecting to stderr keeps the log line out of the captured output.
+    log "archivist: $ctx is '${v:-(empty)}' — treating as 0 (not covered)" >&2
+    echo "0"
 }
 
 # ---- which transcripts are a live session at the keyboard -------------------------------
@@ -206,7 +228,7 @@ for ln in sys.stdin:
 
 archive() {              # archive <session> <transcript> <at_turn> <ctx> <why> [wait]
     local sid="$1" tp="$2" at="$3" ctx="$4" why="$5" lock_mode="${6:-try}" from
-    from="$(covered "$sid")"; from="${from:-0}"
+    from="$(arc_numeric "$(covered "$sid")" "session $sid prior cursor")"
     [ -f "$PROMPT_FILE" ] || { log "archivist: no prompt at $PROMPT_FILE"; return 1; }
     mkdir -p "$ARC/cwd" || return 1
 
@@ -348,8 +370,14 @@ sweep|list)
         # covers is turns — covered() is a turn cursor, the prompt takes {{FROM_TURN}}, and the
         # cost of a run is proportional to the turns since the last one. Context depth tells you
         # the session is expensive; turns since the last sweep tells you work is uncovered.
-        cov="$(covered "$sid")"; cov="${cov:-0}"
-        drift=$(( ${turns:-0} - cov ))
+        #
+        # arc_numeric GUARDS BOTH INPUTS. ctx-meter.sh emits "-" when a field could not be read
+        # (SP_CTX_TURNS_LEFT=- appears in the same trace that produced the outage). ${x:-0} does
+        # not replace "-" — it is not empty — so the raw value would reach the arithmetic and
+        # crash the entire sweep, stopping all sessions, not just the one with the bad cursor.
+        cov="$(arc_numeric "$(covered "$sid")" "session $sid cursor")"
+        turns_n="$(arc_numeric "${turns:-}" "session $sid turns")"
+        drift=$(( turns_n - cov ))
 
         # A SESSION WHOSE LAST RUN FAILED IS NOT RE-FIRED. covered is written only on success,
         # so without this gate a failure would re-trigger on every pass — drift stays above the
@@ -364,7 +392,7 @@ sweep|list)
         if [ "$MODE" = list ]; then
             printf '%-40s %10s %6s %8s %5s %s\n' "$sid" "${ctx:--}" "${turns:--}" "$band" "$drift" "$would"
         fi
-        C_SID+=("$sid"); C_TP+=("$tp"); C_CTX+=("${ctx:-0}"); C_TURNS+=("${turns:-0}")
+        C_SID+=("$sid"); C_TP+=("$tp"); C_CTX+=("${ctx:-0}"); C_TURNS+=("$turns_n")
         C_NXT+=("${nxt:-}"); C_BAND+=("$band"); C_DRIFT+=("$drift"); C_WOULD+=("$would")
         C_PREV+=("$prev_state")
     done < <(live_transcripts)
@@ -470,7 +498,10 @@ PY
     e="$("$HERE/ctx-meter.sh" env "$tp" 2>/dev/null)" || e=""
     ctx="$(sed -n 's/^SP_CTX_NOW=//p' <<<"$e")"
     turns="$(sed -n 's/^SP_CTX_TURNS=//p' <<<"$e")"
-    archive "$sid" "$tp" "${turns:-0}" "${ctx:-0}" "asked for by hand" wait
+    archive "$sid" "$tp" \
+        "$(arc_numeric "${turns:-}" "session $sid turns")" \
+        "$(arc_numeric "${ctx:-}" "session $sid ctx")" \
+        "asked for by hand" wait
     ;;
 
 mark)
