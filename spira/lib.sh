@@ -401,6 +401,36 @@ aeon_count() {           # how many aeons of a fayth are genuinely running
     printf '%d' "$n"
 }
 
+# aeons_live_total -> how many aeons exist right now, across every persona and every lane.
+#
+# THE UNIT LIST, NOT THE PID FILES, and that difference is the whole point of this function.
+# aeon.sh writes its pidfile only after it has claimed a bead (aeon.sh:509), while
+# systemd-run returns the moment the transient unit exists — so within a single sentinel
+# pass an aeon summoned one second ago is invisible to any pid-file count. A ceiling built
+# on that count does not clamp the second summon of the same pass, which is precisely the
+# lag that let a pool of one run a builder and an ops aeon in the same second on
+# 2026-09-09 21:46:47. The unit is authoritative the instant it is asked for.
+#
+# THE PID FALLBACK IS FOR SUITES, not for production: a test overrides SPIRA_SUMMON with a
+# stub, no unit is ever created, and a systemd count would be 0 forever — a ceiling that
+# never binds and never says so. Counting pid files there keeps the ceiling testable, and
+# the lag does not apply because a stub does not race.
+aeons_live_total() {
+    local n=0 pf
+    if [ "${SPIRA_SUMMON:-systemd-run}" = systemd-run ]; then
+        # `| wc -l` and never `grep -c`: grep exits 1 on no matches, which under pipefail
+        # turns an idle fleet into a failed read (law-no-grep-q-under-pipefail, same shape).
+        n="$(systemctl --user list-units 'spira-aeon-*' --no-legend 2>/dev/null | wc -l)"
+        printf '%d' "${n:-0}"
+        return
+    fi
+    for pf in "$SPIRA_RUN"/aeon-*.pid; do
+        [ -e "$pf" ] || continue
+        if aeon_alive "$pf"; then n=$((n+1)); else rm -f "$pf"; fi
+    done
+    printf '%d' "$n"
+}
+
 # --------------------------------------------------------------------------------------
 # THE CHAMBER. A fayth carries FAYTH_LABELS / FAYTH_EXCLUDE_LABELS precisely so that its
 # partition of the graph is ITS OWN, and every question the harness asks about a persona
@@ -977,6 +1007,32 @@ summon_fayth() {         # summon_fayth <fayth> [pool-remaining]
     if capacity_paused; then
         log "CHECK7 $f: the account is out of capacity for another ${SPIRA_CAPACITY_LEFT}s — not summoning"
         return 1
+    fi
+    # THE FLEET CEILING, ABOVE EVERY PER-PERSONA CAP AND ABOVE THE POOL.
+    #
+    # SPIRA_MAX_AEONS is the TASK pool, and a lane fayth is deliberately outside it — that is
+    # what "ops cannot be starved by builders" buys. The cost is that neither number is the
+    # answer to "how many aeons may run at once": the real ceiling is the pool PLUS one per
+    # declared lane, so a host set to a pool of 1 summoned a builder and an ops aeon in the
+    # same second (2026-09-09 21:46:47) while its own log read `pool: 1 slot(s)`.
+    #
+    # That arithmetic is right when the binding constraint is this box's cores, because a
+    # lane aeon is work the box agreed to make room for. It is wrong when the binding
+    # constraint is ONE SHARED ACCOUNT, because every aeon draws on the same five-hour
+    # window regardless of which partition scheduled it — and that window is shared with the
+    # operator's own sessions and the concierge, so overspending it locks a person out.
+    #
+    # Asked here, at the one chokepoint every summon path goes through, and before
+    # fayth_ready because a filesystem-free count is cheaper than a graph query.
+    #
+    # UNSET MEANS NO CEILING AND TODAY'S BEHAVIOUR EXACTLY, so a host that never wanted this
+    # cannot acquire it by upgrading, and every existing suite passes unchanged.
+    if [ -n "${SPIRA_MAX_LIVE_AEONS:-}" ]; then
+        local live_all; live_all="$(aeons_live_total)"
+        if [ "${live_all:-0}" -ge "$SPIRA_MAX_LIVE_AEONS" ] 2>/dev/null; then
+            log "CHECK7 $f: $live_all/$SPIRA_MAX_LIVE_AEONS aeon(s) live across the whole fleet — not summoning"
+            return 1
+        fi
     fi
     r="$(fayth_ready "$f")" || { log "CHECK7 $f: no fayth in the chamber — skipped"; return 1; }
     if [ "${r:-0}" -eq 0 ]; then log "CHECK7 $f: nothing ready in its partition"; return 1; fi
