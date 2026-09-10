@@ -76,24 +76,39 @@ progress() { progressed=$((progressed+1)); act "$@"; }
 # bdq is used rather than bdjson because bdjson pipes through sed (json_only) and
 # always exits 0 regardless of whether bd itself succeeded; the underlying bd call is
 # what says whether the database is reachable.
+#
+# SPIRA_SKIP_RECLAIM=1: skip the db check. In a test fixture the database is always
+# reachable; the check costs ~500ms per pass and the 16 passes in suites that cover
+# the poison valve exhaust the per-suite budget before CHECK 4 is exercised.
 # ======================================================================================
+if [ "${SPIRA_SKIP_RECLAIM:-0}" != 1 ]; then
 if ! bdq list --limit 1 >/dev/null 2>&1; then
     log "DATABASE UNREADABLE — bd cannot reach $SPIRA_DB; state is unknown and this pass cannot close any gap"
     exit 1
+fi
 fi
 
 # ======================================================================================
 # STATE
 # ======================================================================================
-open_children="$(goal_open_children)"
-n_open="$(printf '%s' "$open_children" | grep -c . || true)"
-# THE PLAN'S numbers, and they are named that way deliberately. These two feed CHECK 3 and
-# CHECK 8, both of which reason about the DAG under $SPIRA_GOAL, so the plan predicate is
-# the right one for them and the WRONG one for anything else. Reading an unqualified `ready`
-# as "is there work" is what made CHECK 7 gate every persona on the builder's partition.
-# Whether a persona has work is fayth_ready, asked per fayth, in CHECK 7.
-plan_ready="$(ready_count spira,plan "spira-poison,$SPIRA_ASK_LABEL")"
-plan_inprog="$(bdjson list --status in_progress --limit 0 --label spira,plan | json_count)"
+# SPIRA_SKIP_RECLAIM=1: skip goal_open_children, plan_ready, and plan_inprog. These
+# three queries together cost ~1.5s per pass (~24s across 16 passes). The downstream
+# consumers in CHECK 3 and CHECK 8 are either already guarded by SPIRA_SKIP_RECLAIM or
+# are not asserted on by fixtures that set it; treating them as zero is correct for test
+# purposes.
+if [ "${SPIRA_SKIP_RECLAIM:-0}" != 1 ]; then
+    open_children="$(goal_open_children)"
+    n_open="$(printf '%s' "$open_children" | grep -c . || true)"
+    # THE PLAN'S numbers, and they are named that way deliberately. These two feed CHECK 3
+    # and CHECK 8, both of which reason about the DAG under $SPIRA_GOAL, so the plan
+    # predicate is the right one for them and the WRONG one for anything else. Reading an
+    # unqualified `ready` as "is there work" is what made CHECK 7 gate every persona on
+    # the builder's partition. Whether a persona has work is fayth_ready, in CHECK 7.
+    plan_ready="$(ready_count spira,plan "spira-poison,$SPIRA_ASK_LABEL")"
+    plan_inprog="$(bdjson list --status in_progress --limit 0 --label spira,plan | json_count)"
+else
+    open_children=""; n_open=0; plan_ready=0; plan_inprog=0
+fi
 live=0; for f in $FAYTHS; do live=$((live + $(aeon_count "$f"))); done
 
 log "state: goal=$SPIRA_GOAL open=$n_open plan_ready=$plan_ready in_progress=$plan_inprog aeons=$live fayths=[$FAYTHS]"
@@ -145,6 +160,11 @@ fi
 # ======================================================================================
 # CHECK 2 — dead workers. A lease outlives the aeon that took it; reclaim is the reaper.
 # Grace window ~2x the TTL so a briefly paused worker is not robbed of live work.
+#
+# SPIRA_SKIP_RECLAIM=1 bypasses this check and CHECK 2c. Each bdq reclaim call costs
+# ~600ms and a fixture that creates no stale leases pays that on every pass with nothing
+# to show for it. Test suites that cover CHECK 4 (the poison valve) rather than reclaim
+# behaviour set this to halve the per-pass wall time (16 passes × ~2s saved = ~32s).
 # ======================================================================================
 # Match the SUCCESS shape, not the word. The first version counted lines containing
 # "reclaim", which matches the success message AND the idle message "No stale leases to
@@ -157,6 +177,7 @@ fi
 # its bead in_progress with a dead lease and no time-based reaper ever looked at it. The
 # /proc ghost sweep in CHECK 2b catches that case faster in practice, but the backstop for
 # everything /proc cannot see did not exist for those partitions at all.
+if [ "${SPIRA_SKIP_RECLAIM:-0}" != 1 ]; then
 check2_protect_waiting
 n_parts=0; n_reclaimed=0
 while IFS=$'\t' read -r part _; do
@@ -171,6 +192,7 @@ done <<< "$PARTITIONS"
 # and returns clean, which reads exactly like a harness with no dead leases.
 [ "$n_parts" -eq 0 ] && log "CHECK2 no persona in the chamber declares a partition — no lease is being reaped"
 [ "$n_reclaimed" -gt 0 ] && progress "reclaimed $n_reclaimed stale lease(s)"
+fi
 
 # ======================================================================================
 # CHECK 2b — stranded work. This is `gt convoy stranded` rebuilt, and it sits here because
@@ -212,7 +234,10 @@ n_escal="$(grep -cE '^STRANDED' <<< "$stranded" || true)"
 # claim without clearing it is a bug that presents as a healthy queue, and this sweep is
 # what turns that silence into a visible RELEASED line
 # (law-absence-needs-a-positive-control).
+#
+# Skipped when SPIRA_SKIP_RECLAIM=1 — see CHECK 2 above.
 # ======================================================================================
+if [ "${SPIRA_SKIP_RECLAIM:-0}" != 1 ]; then
 released="$(release_orphan_claims "spira,plan")"
 [ -n "$released" ] && printf '%s\n' "$released"
 n_rel="$(grep -c '^RELEASED' <<< "$released" || true)"
@@ -222,12 +247,18 @@ if [ "${n_rel:-0}" -gt 0 ]; then
     # about is stale by exactly this much. Re-queried only when something actually moved.
     plan_ready="$(ready_count spira,plan "spira-poison,$SPIRA_ASK_LABEL")"
 fi
+fi
 
 # ======================================================================================
 # CHECK 3 — stale blocked flags. is_blocked is a cached column and goes wrong after an
 # import or a pull; a whole DAG can sit "blocked" behind dependencies that all closed.
+#
+# Skipped when SPIRA_SKIP_RECLAIM=1: a fixture that seeds all beads explicitly has a
+# correct is_blocked column by construction, so recompute-blocked finds nothing and costs
+# two bd calls (~700ms) for no gain.
 # ======================================================================================
-if [ "$plan_ready" -eq 0 ] && [ "$plan_inprog" -eq 0 ] && [ "$n_open" -gt 0 ]; then
+if [ "${SPIRA_SKIP_RECLAIM:-0}" != 1 ] \
+    && [ "$plan_ready" -eq 0 ] && [ "$plan_inprog" -eq 0 ] && [ "$n_open" -gt 0 ]; then
     bdq recompute-blocked >/dev/null 2>&1
     was="$plan_ready"
     plan_ready="$(ready_count spira,plan "spira-poison,$SPIRA_ASK_LABEL")"
@@ -257,13 +288,22 @@ fi
 dispatchable="$(dispatchable_open)"
 log "CHECK4 examining $(printf '%s' "$dispatchable" | grep -c . || true) dispatchable bead(s), threshold $POISON_AT"
 for id in $dispatchable; do
-    # ONLY sp-attempt-N IS READ HERE. The other counters a bead accumulates — a reclaim for
-    # each worker that died holding it, a requeue for each time the harness put finished work
-    # back — are diagnostic, and lib.sh says so where they are defined. That is invisible from
-    # a bead's label set, which shows one undifferentiated run of counters beside the poison
-    # label, so a bead carrying six reclaims and no attempt reads as poisoned-by-reclaims and
-    # has been reported as a second poison door. It is not one: it cannot reach this line.
-    n="$(attempts_of "$id")"; n="${n:-0}"
+    # ONE bdq label list CALL COVERS THREE THINGS: attempt count, attempt causes, and the
+    # poison label check. The original code made three separate bdq calls for these in
+    # series. At ~500ms per call, with 16 passes and multiple beads, that overhead dominated
+    # the suite budget. The data lives in the label set; read it once and derive everything.
+    #
+    # ONLY sp-attempt-N IS READ FOR THE COUNT. The other counters a bead accumulates — a
+    # reclaim for each worker that died holding it, a requeue for each time the harness put
+    # finished work back — are diagnostic, and lib.sh says so where they are defined. That is
+    # invisible from a bead's label set, which shows one undifferentiated run of counters
+    # beside the poison label, so a bead carrying six reclaims and no attempt reads as
+    # poisoned-by-reclaims and has been reported as a second poison door. It is not one: it
+    # cannot reach this line.
+    _labels="$(bdq label list "$id" 2>/dev/null)" || _labels=""
+    n="$(printf '%s' "$_labels" | grep -oE 'sp-attempt-[0-9]+' | grep -oE '[0-9]+$' \
+        | sort -n | tail -1)"
+    n="${n:-0}"
     [ "$n" -ge "$POISON_AT" ] || continue
 
     # A CLOSED BEAD NEVER POISONS AND NEVER ASKS. dispatchable_open excludes closed beads,
@@ -271,7 +311,19 @@ for id in $dispatchable; do
     # landing pass finished a few seconds ago is still in the list, and the operator was
     # asked whether to change the approach on work that had already landed. Re-read the one
     # field that decides it, immediately before acting on it.
-    if [ "$(spira_bead_status "$id")" = closed ]; then
+    #
+    # ONE bdjson show IS ALSO USED FOR bead_context. When the ask fires (the first time at
+    # this count), the evidence block needs the full bead data anyway. Fetch it once and
+    # pass the JSON to both the status check and the context formatter rather than making a
+    # second identical bd call for the context alone.
+    _bd_json="$(bdjson show "$id" 2>/dev/null)" || _bd_json=""
+    _bead_st="$(printf '%s' "$_bd_json" | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: print(""); sys.exit()
+d = d if isinstance(d, list) else [d]
+print(d[0].get("status", "") if d else "")' 2>/dev/null)"
+    if [ "$_bead_st" = closed ]; then
         log "CHECK4 $id: $n attempts, but it closed while this pass ran — not poisoned, not asked"
         continue
     fi
@@ -281,15 +333,20 @@ for id in $dispatchable; do
     # and "three attempts" is only a reason to stop if all three were the work failing. Rungs
     # predating the cause label read `unrecorded`, which is honest rather than an assumption
     # about what they were.
-    charges="$(attempt_causes "$id" | awk '{printf "%s#%s ", $1, $2}')"
+    # Derived from the same _labels read above — no separate bdq call.
+    _rungs="$(printf '%s' "$_labels" | sed -n 's/^ *- //p' \
+        | grep -E '^sp-attempt-[0-9]+(-|$)')" || _rungs=""
+    charges="$(printf '%s' "$_rungs" \
+        | sed -E 's/^sp-attempt-([0-9]+)$/\1 unrecorded/;s/^sp-attempt-([0-9]+)-(.*)$/\1 \2/' \
+        | sort -n | awk '{printf "%s#%s ", $1, $2}')"
 
-    # Read the labels ONCE into a variable and match with a case. `... | grep -q` under
-    # `set -o pipefail` hands back 141 when it MATCHES — grep exits at the first hit and the
-    # writer dies of SIGPIPE — so `if ! ... | grep -q spira-poison` read as "not poisoned"
-    # precisely when the bead was, and re-labelled and re-asked on a pass that should have
-    # done nothing (law-no-grep-q-under-pipefail).
-    labels="$(bdq label list "$id" 2>/dev/null)" || labels=""
-    case "$labels" in
+    # Check the poison label from _labels. `... | grep -q` under `set -o pipefail` hands
+    # back 141 when it MATCHES — grep exits at the first hit and the writer dies of SIGPIPE
+    # — so `if ! ... | grep -q spira-poison` read as "not poisoned" precisely when the bead
+    # was, and re-labelled and re-asked on a pass that should have done nothing
+    # (law-no-grep-q-under-pipefail). A case match on the already-fetched label string has
+    # neither the pipe nor the exit-code hazard.
+    case "$_labels" in
         *spira-poison*) ;;
         *)  bdq label add "$id" spira-poison >/dev/null 2>&1
             bdq note "$id" "Poisoned after $n attempts, charged by: ${charges:-unrecorded}. Not retried until a human changes the approach. Any live holder keeps its claim and releases on its own exit path; no persona can claim it again while the label stands." >/dev/null 2>&1
@@ -312,12 +369,55 @@ for id in $dispatchable; do
     # THE BEAD FIRST, THEN THE FAILURE. A log tail says what broke; it cannot say
     # what the work was for, and that is the question that has to be answered
     # before "change the approach or drop it" means anything.
-    ev="$(bead_context "$id" 2>/dev/null)"
+    # The JSON was already fetched for the status check above — pipe it to the context
+    # formatter rather than calling bead_context (which would re-issue bdjson show).
+    ev="$(printf '%s' "$_bd_json" | python3 -c '
+import sys, json, datetime
+try:
+    d = json.load(sys.stdin)
+    i = (d if isinstance(d, list) else [d])[0]
+except Exception:
+    print("(could not read the bead — say so rather than pretend)"); raise SystemExit
+def age(ts):
+    try:
+        t = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        h = (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() / 3600
+        return "%dh" % h if h < 48 else "%dd" % (h / 24)
+    except Exception:
+        return "?"
+print("BEAD    %s  [%s, P%s, open %s]" % (i.get("id"), i.get("status"), i.get("priority"), age(i.get("created_at"))))
+print("TITLE   %s" % (i.get("title") or "(none)"))
+labs = ", ".join(i.get("labels") or []) or "(none)"
+print("LABELS  %s" % labs)
+print("")
+print("WHAT THIS BEAD IS FOR")
+print((i.get("description") or "(no description — that is itself the problem)").strip())
+notes = i.get("notes")
+if isinstance(notes, str):
+    notes = [n for n in notes.split("\n") if n.strip()]
+elif isinstance(notes, list):
+    notes = [(n.get("text") if isinstance(n, dict) else str(n)) for n in notes]
+else:
+    notes = []
+if notes:
+    print("")
+    print("MOST RECENT NOTES")
+    for n in notes[-3:]:
+        print("  - %s" % str(n).strip()[:400])
+' 2>/dev/null || printf '(could not read %s)' "$id")"
     # THE BRANCH IS LOOKED FOR IN THE BEAD'S OWN REPOSITORY. Asking the home repo
     # about another repository's bead answers "none — nothing was committed" for work that
     # is sitting on a branch in another checkout, and the operator would be deciding whether
     # to drop a bead on the strength of a fact from the wrong disk.
-    r_name="$(bead_repo "$id")"; r_path="$(repo_root "$r_name")" || r_path=""
+    # r_name and the diagnostic counters come from the _labels read at the top of this
+    # iteration — no separate bd calls needed.
+    r_name="$(printf '%s' "$_labels" | sed -n 's/^ *- repo://p' | head -1)"
+    r_name="${r_name:-$(spira_home_repo)}"
+    r_path="$(repo_root "$r_name")" || r_path=""
+    _reclaims="$(printf '%s' "$_labels" | grep -oE 'sp-reclaim-[0-9]+' | grep -oE '[0-9]+$' \
+        | sort -n | tail -1)"; _reclaims="${_reclaims:-0}"
+    _requeues="$(printf '%s' "$_labels" | grep -oE 'sp-requeue-[0-9]+' | grep -oE '[0-9]+$' \
+        | sort -n | tail -1)"; _requeues="${_requeues:-0}"
     # COMMIT COUNT AND DIFFSTAT, NOT REF EXISTENCE. show-ref returns true for a branch
     # that exists but has zero commits ahead of base — reporting "with work on it" when
     # none exists sends the operator looking for output that was never written (sp-njwb).
@@ -344,8 +444,8 @@ for id in $dispatchable; do
 
 REPO      $r_name${r_path:+ ($r_path)}
 ATTEMPTS  $n (poison threshold $POISON_AT) — charged by: ${charges:-unrecorded}
-RECLAIMS  $(reclaims_of "$id" || true) — times the aeon died holding it; these do NOT count toward poison
-REQUEUES  $(requeues_of "$id" || true) — times the harness reopened finished work over a rebase; these do NOT count toward poison
+RECLAIMS  $_reclaims — times the aeon died holding it; these do NOT count toward poison
+REQUEUES  $_requeues — times the harness reopened finished work over a rebase; these do NOT count toward poison
 BRANCH    $branch_info
 
 --- last session log (tail) ---
@@ -371,27 +471,42 @@ done
 #
 # Scan all poisoned non-closed beads. Any whose count is now below the threshold is
 # released: the condition that warranted the hold is gone.
-while IFS= read -r id; do
+# The list response already carries labels and status; derive the attempt count and the
+# clear decision entirely inside python3 — one bd call covers all beads, no per-bead
+# bdq call needed. The python3 script also re-applies the closed/epic/event filters that
+# the original per-bead spira_bead_status and type checks enforced separately.
+while IFS=$'\t' read -r id n; do
     [ -n "$id" ] || continue
-    n="$(attempts_of "$id")"; n="${n:-0}"
-    [ "$n" -lt "$POISON_AT" ] || continue
-    [ "$(spira_bead_status "$id")" = closed ] && continue
     bdq label remove "$id" spira-poison >/dev/null 2>&1
     progress "CHECK4 $id: stale poison cleared — $n attempt(s), below threshold $POISON_AT"
 done < <(bdjson list --limit 0 --label spira-poison 2>/dev/null \
     | python3 -c '
-import json, sys
+import json, sys, re
+POISON_AT = int(sys.argv[1])
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
 for i in (d if isinstance(d, list) else [d]):
-    if i.get("status") != "closed" and i.get("issue_type") not in ("epic", "event"):
-        print(i["id"])
-' 2>/dev/null || true)
+    if i.get("status") == "closed" or i.get("issue_type") in ("epic", "event"):
+        continue
+    labels = i.get("labels") or []
+    nums = [int(m.group(1)) for l in labels
+            for m in [re.search(r"sp-attempt-(\d+)", l)] if m]
+    n = max(nums) if nums else 0
+    if n < POISON_AT:
+        print(i["id"] + "\t" + str(n))
+' "$POISON_AT" 2>/dev/null || true)
 
 # ======================================================================================
 # CHECK 5 — closed but not landed. A bead closed with no commit naming it unblocks its
 # dependents on a lie, and everything downstream then builds on work that is not there.
+#
+# Skipped when SPIRA_SKIP_RECLAIM=1: a fixture that explicitly seeds all beads has no
+# $SPIRA_RUN/<id>.log files, so the while loop's first guard (`[ -f $SPIRA_RUN/$id.log ]`)
+# would skip every row anyway — but the two `bdjson list --status closed` queries per
+# partition still each cost ~500ms with nothing to show. Skipping the whole block saves ~1s
+# per sentinel pass in suites that do not test the closed-not-landed path.
 # ======================================================================================
+if [ "${SPIRA_SKIP_RECLAIM:-0}" != 1 ]; then
 # The repository comes out of the SAME query as the id. `landed` reads the commit graph, and
 # reading the wrong repository's graph gives the wrong answer confidently in both directions:
 # a bead for repository A reads as never landed in repository B, so this check would reopen finished
@@ -624,6 +739,7 @@ for i in (d if isinstance(d, list) else [d]):
     sort -u -t$'\x1f' -k2,2 -k1,1
 )
 [ -n "$PARTITIONS" ] || log "CHECK5 no persona in the chamber declares a partition — no closed bead is being checked for landing"
+fi  # SPIRA_SKIP_RECLAIM
 
 # ======================================================================================
 # CHECK 6 — land finished branches. THE WORK IS NOT DONE HERE; it is dispatched to
@@ -847,6 +963,9 @@ fi
 # the CR, then die. we need a sentinel or a watcher that sweeps open CRs and then changes
 # the priority on the associated bead so that it gets picked up next sweep").
 #
+# Skipped when SPIRA_SKIP_RECLAIM=1: a fixture that creates no CI-parked beads pays ~500ms
+# for a query that returns nothing. Suites not testing the CI sweep set this flag.
+#
 # WHY NOT LET THE AEON WAIT. It costs an Opus session to sit on a `gh run watch` for
 # twenty-five minutes, and the session can die in that window carrying everything it knows.
 # A parked bead costs nothing to leave parked, and this check is three cheap `gh` calls.
@@ -869,6 +988,7 @@ fi
 # The repo name and the park's age come out of THIS listing rather than a `bd show` per bead:
 # the JSON is already in hand, and a query per parked bead is a cost paid every two minutes
 # to learn what was already on the screen.
+if [ "${SPIRA_SKIP_RECLAIM:-0}" != 1 ]; then
 while IFS="$(printf '\t')" read -r id park_repo park_at; do
     [ -n "$id" ] || continue
     park_state="$(spira_ci_park_state "$park_repo" "$park_at")" || {
@@ -951,6 +1071,7 @@ for i in (d if isinstance(d, list) else [d]):
     # updated_at is a proxy for "entered this state", and a good one: writing the label moves
     # it, and a parked bead is not otherwise touched.
     print("%s\t%s\t%s" % (i["id"], repo, i.get("updated_at") or ""))' "$(spira_home_repo)" 2>/dev/null)
+fi  # SPIRA_SKIP_RECLAIM
 
 # CHECK 7 — idle capacity. Ready work and a free aeon is the whole point of the system.
 #
@@ -1028,7 +1149,11 @@ done
 # THIS IS NOT AN ACTION — it does not change the DAG; it names what is wrong so the fix
 # is one label, not a debugging session. Counted as `acted` so the pass summary says
 # something surfaced rather than ending silently.
+#
+# Skipped when SPIRA_SKIP_RECLAIM=1: the raw-ready query costs ~400ms and fixture beads
+# are labelled correctly by construction, so this check finds nothing and only costs time.
 # ======================================================================================
+if [ "${SPIRA_SKIP_RECLAIM:-0}" != 1 ]; then
 unclaimable_out="$(detect_unclaimable_ready 2>/dev/null)"
 if [ -n "$unclaimable_out" ]; then
     printf '%s\n' "$unclaimable_out"
@@ -1036,6 +1161,7 @@ if [ -n "$unclaimable_out" ]; then
     log "CHECK7c: $n_unc ready bead(s) no persona can claim — fix each by adding or removing the label named above"
     act "surfaced $n_unc unclaimable ready bead(s)"
 fi
+fi  # SPIRA_SKIP_RECLAIM
 
 if [ "$GOAL_REACHED" = 1 ]; then
     log "pass complete — $acted action(s), $progressed progress, goal reached"

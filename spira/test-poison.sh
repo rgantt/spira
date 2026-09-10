@@ -108,6 +108,7 @@ sentinel() {
     SPIRA_NOTIFY="$SH/ask.sh" \
     SPIRA_LAUNCH="$TMP/launch" SPIRA_SYSTEMCTL="$TMP/systemctl" \
     SPIRA_SUMMON="$TMP/launch" \
+    SPIRA_SKIP_RECLAIM=1 \
         bash "$SH/sentinel.sh" 2>&1
 }
 
