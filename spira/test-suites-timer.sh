@@ -40,6 +40,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 UNIT_DIR="$HERE/../systemd"
 INSTALL_SH="$UNIT_DIR/install.sh"
+UNITS_SH="$UNIT_DIR/units.sh"
 
 pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
@@ -118,15 +119,17 @@ fi
 
 # ============================================================================
 echo
-echo "spira-suites.timer is in install.sh's enable list:"
+echo "spira-suites.timer is in units.sh's enable list:"
 # ============================================================================
-[ -r "$INSTALL_SH" ] || { bad "install.sh is readable" "not found at $INSTALL_SH"; }
+[ -r "$UNITS_SH" ] || { bad "units.sh is readable" "not found at $UNITS_SH"; }
 
-# Parse the _ENABLE_TMPL array from install.sh source. The pattern is:
+# Parse the _ENABLE_TMPL array from units.sh source. The pattern is:
 #   _ENABLE_TMPL=(... spira-sentinel.timer ... spira-suites.timer ...)
 # across multiple continuation lines. We extract the block and check for each name.
+# NOTE: units.sh unsets _ENABLE_TMPL after building ENABLE, so this reads the source
+# file, not a live shell variable.
 enable_block="$(awk '/_ENABLE_TMPL=\(/{found=1} found{print} found && /\)/{found=0}' \
-    "$INSTALL_SH" 2>/dev/null)"
+    "$UNITS_SH" 2>/dev/null)"
 
 # POSITIVE CONTROL: a timer known to be in the list (spira-sentinel.timer) must
 # appear in the parsed block before any absence verdict is trusted. A parser that
@@ -160,7 +163,7 @@ fi
 # A unit in _ENABLE_TMPL must also be in UNITS (the install set). Enabled means nothing
 # if the file is never written to ~/.config/systemd/user in the first place.
 units_block="$(awk '/^UNITS=\(/{found=1} found{print} found && /\)/{found=0}' \
-    "$INSTALL_SH" 2>/dev/null)"
+    "$UNITS_SH" 2>/dev/null)"
 if [ -z "$units_block" ]; then
     bad "UNITS block is parseable (positive control)" "awk found nothing"
 else
