@@ -74,3 +74,10 @@ spira/test-sop-lint.sh
 # Moving it here ends that loop: gated suites run without a per-suite slice and this suite
 # can reach its natural completion.
 spira/test-gate-budget.sh
+
+# NOT IN THE GATE (budget): test-owned, test-uninstall, test-ready, test-install-conflicts,
+# test-configure, test-build. These hermetic suites cover the install/uninstall/configure/
+# ready/owned/build paths and run in the timed set (suites.sh). They are kept out of the gate
+# because the gate was already over budget before this epic landed (sp-rg2du, sp-ba2a) and
+# every entry here costs every branch. A gap: regressions in these paths are caught within
+# one timed-run window (~1h), not at landing. Promote one when a suite leaves the gate.
