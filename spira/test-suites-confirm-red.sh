@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
 #
-# test-suites-confirm-red.sh — a red that passes in an aeon's environment files an
-# environment finding, not a suite defect.
+# test-suites-confirm-red.sh — the timed runner strips runner-injected variables from
+# each suite's primary launch; env-sensitive suites pass cleanly instead of filing false
+# alarms. A genuinely broken suite still files a suite defect. A suite that goes red
+# but cannot be confirmed before the budget expires is recorded as red-unconfirmed
+# without filing a bead.
 #
-# WHAT THIS GUARDS. The timed runner's systemd unit injects SPIRA_HOME into every suite it
-# starts. A suite that fails because SPIRA_HOME is set (e.g. by redirecting a repo-map lookup
-# onto the installed copy) files a bead an aeon cannot reproduce — the bead's own reproduce
-# line runs without SPIRA_HOME and comes back green. The aeon closes the bead truthfully,
-# commits nothing, and the next pass files the same red again. This test requires that such a
-# red is detected and filed as an environment finding, not as a suite defect (sp-ezs7o).
+# WHAT THIS GUARDS. The timed runner's systemd unit injects SPIRA_HOME (and other
+# RUNNER_VARS) into every suite it starts. Before sp-mug21, a suite that failed because
+# SPIRA_HOME was set filed a bead an aeon cannot reproduce — the bead's reproduce line
+# runs without SPIRA_HOME and comes back green. The fix (sp-mug21) strips RUNNER_VARS
+# from each suite's primary launch so the mismatch cannot form in the first place: an
+# env-sensitive suite passes under the runner rather than going red and filing a bead
+# nobody can act on. The confirming-run machinery remains in place for the cases where
+# a suite fails in the primary launch despite RUNNER_VARS being stripped.
 #
-# THE KEY INVARIANT. For each red, suites.sh re-runs the suite once without runner-injected
-# variables (RUNNER_VARS). If the second run passes, the finding is environmental. If it
-# fails too, the suite is genuinely broken. This test uses planted suites that check whether
-# SPIRA_HOME is set, so the invariant is directly observable.
-#
-# defect: sp-ezs7o
+# defect: sp-ezs7o sp-xw80r
 # covers: spira/suites.sh spira/incident.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
+
+# RUNNER-INJECTED VARIABLES. The systemd unit injects SPIRA_HOME and SPIRA_SUITES_MAXSEC
+# into this suite's environment. testdb.sh (sourced below) always sources conf.sh, and
+# conf.sh uses SPIRA_HOME to resolve SPIRA_REPO — pointing it at the production checkout.
+# That exports SPIRA_BD and SPIRA_RUN pointing at production rather than the fixture,
+# which can shadow what testdb_up sets and break the test. The confirming run strips both;
+# unset them here to match that environment.
+unset SPIRA_HOME SPIRA_SUITES_MAXSEC
+
 pass=0; fail=0
 ok()     { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
 bad()    { fail=$((fail+1)); printf '  FAIL  %s: %s\n' "$1" "$2"; }
@@ -46,13 +55,13 @@ printf '#!/usr/bin/env bash\nHOME=%s exec %s "$@"\n' "$HOME" "$(type -P bd)" > "
 chmod +x "$TOOLPATH/bd"
 
 # RUNNER_VARS=SPIRA_HOME so the test controls exactly one variable. The default also includes
-# SPIRA_SUITES_MAXSEC which is not exercised here; naming only SPIRA_HOME makes the confirming
-# run strip only SPIRA_HOME, and the env-sensitive suite detects exactly that.
+# SPIRA_SUITES_MAXSEC which is not exercised here; naming only SPIRA_HOME makes the primary
+# launch strip only SPIRA_HOME, and the env-sensitive suite detects exactly that variable.
 RUNNER_VAR="SPIRA_HOME"
 
 # sut: run suites.sh in an environment that includes SPIRA_HOME (simulating the systemd unit).
-# The SPIRA_HOME here points at the fixture's own spira dir, which is the runner-injected value
-# that the confirming run must strip.
+# suites.sh strips RUNNER_VARS from each suite's primary launch (sp-mug21), so the injected
+# SPIRA_HOME is visible to suites.sh itself (for confirming-run logic) but not to the suites.
 sut() {
     local cmd="$1"; shift
     env -i PATH="$PATH" HOME="$TMP/home" \
@@ -82,15 +91,6 @@ for i in (d if isinstance(d, list) else [d]):
 ' "$1"
 }
 count() { printf '%s\n' "$1" | grep -c . || true; }
-bead_body() {
-    B show "$1" --json 2>/dev/null | sed -n '/^[[{]/,$p' | python3 -c '
-import sys, json
-try: d = json.load(sys.stdin)
-except Exception: sys.exit(0)
-d = d[0] if isinstance(d, list) else d
-print(d.get("description") or "")
-' 2>/dev/null || true
-}
 
 # Gate file: one gated suite so timed set is non-empty.
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SH/test-cx-gated.sh"
@@ -98,11 +98,11 @@ printf 'spira/test-cx-gated.sh\n' > "$GATEF"
 
 # ======================================================================================
 echo
-echo "an env-sensitive red files an environment finding, not a suite defect:"
+echo "an env-sensitive suite passes cleanly (RUNNER_VARS stripped from primary launch):"
 # ======================================================================================
-# THE PLANTED SUITE fails when SPIRA_HOME is set (the runner injects it) and passes when
-# SPIRA_HOME is absent (the aeon's environment). The confirming run strips SPIRA_HOME;
-# the suite passes there; suites.sh must file an ENV-MISMATCH finding, NOT a suite defect.
+# THE PLANTED SUITE fails when SPIRA_HOME is set and passes when it is absent. Under the
+# timed runner, suites.sh strips SPIRA_HOME from the suite's primary launch environment
+# (sp-mug21), so the suite passes — the mismatch cannot form in the first place.
 plant test-cx-env-sensitive.sh <<'S'
 #!/usr/bin/env bash
 # covers: spira/nothing.sh
@@ -111,33 +111,33 @@ printf '  FAIL  SPIRA_HOME is set: %s\n' "$SPIRA_HOME"
 exit 1
 S
 
-out="$(sut run)"
-want "an env-sensitive red is labelled ENV-MISMATCH in the pass output" "ENV-MISMATCH" "$out"
-nowant "and is not labelled RED (which would mislead an aeon)" " RED " "$out"
-want "the pass output names the stripped variable" "$RUNNER_VAR" "$out"
+# POSITIVE CONTROL. Before trusting "the suite passed under the runner", prove it IS
+# sensitive to SPIRA_HOME when the variable is set — otherwise a suite that always exits 0
+# would produce the same pass appearance (law-absence-needs-a-positive-control).
+_pc_rc=0
+SPIRA_HOME="$SH" bash "$SH/test-cx-env-sensitive.sh" >/dev/null 2>&1 || _pc_rc=$?
+is "positive control: env-sensitive suite fails when SPIRA_HOME is set" "1" "$_pc_rc"
 
-# AN ENVIRONMENT FINDING, NOT A SUITE DEFECT.
+out="$(sut run)"
+# The suite appears in the output and is labelled ok — RUNNER_VARS were stripped.
+want "the env-sensitive suite is labelled ok (RUNNER_VARS stripped)" \
+    "test-cx-env-sensitive.sh   ok" "$out"
+nowant "its output line does not say RED" " RED " "$out"
+nowant "its output line does not say ENV-MISMATCH" "ENV-MISMATCH" "$out"
+
+# No bead of any kind: no red was detected, so nothing to file.
 env_ids="$(beads_with 'passes in an aeon')"
-is "one environment-finding bead is filed" "1" "$(count "$env_ids")"
+is "no environment-finding bead is filed (no red occurred)" "0" "$(count "$env_ids")"
 suite_ids="$(beads_with 'test-cx-env-sensitive.sh is red in the timed suite run')"
 is "no suite-defect bead is filed" "0" "$(count "$suite_ids")"
-
-env_id="$(printf '%s\n' "$env_ids" | head -1)"
-if [ -n "$env_id" ]; then
-    body="$(bead_body "$env_id")"
-    want "the finding names the differing variable" "$RUNNER_VAR" "$body"
-    want "it says an aeon should not reproduce it"  "Do not send an aeon" "$body"
-fi
-
-# THE ENV-MISMATCH COUNT IS IN THE SUMMARY.
-want "the env-mismatch count appears in the summary" "env-mismatch" "$out"
 
 # ======================================================================================
 echo
 echo "a genuinely broken suite still files a suite defect (not suppressed by confirming run):"
 # ======================================================================================
 # POSITIVE CONTROL. A suite that fails regardless of SPIRA_HOME must still be filed as a
-# suite defect — the confirming run finds it red too, so it goes through the normal path.
+# suite defect — the primary launch (RUNNER_VARS stripped) finds it red, the confirming
+# run (also without RUNNER_VARS) finds it red too, so it goes through the confirmed-red path.
 plant test-cx-always-red.sh <<'S'
 #!/usr/bin/env bash
 # covers: spira/nothing.sh
@@ -146,7 +146,7 @@ exit 1
 S
 
 out2="$(sut run)"
-# The env-sensitive suite (still planted) will also appear as ENV-MISMATCH; only assert
+# The env-sensitive suite (still planted) will also appear as ok; only assert
 # that test-cx-always-red.sh specifically shows RED in its output line.
 want "a genuinely broken suite is labelled RED in its output line" \
     "test-cx-always-red.sh      RED" "$out2"
@@ -168,24 +168,25 @@ echo "when budget is exhausted after the suite runs, file nothing and record red
 # STRATEGY: run this test with a clean timed set so previous suites do not consume budget.
 rm -f "$SH/test-cx-always-red.sh" "$SH/test-cx-env-sensitive.sh"
 
-# Budget-sensitive suite: sleeps 3s (fast to fail but needs to TAKE time so left < 5 on exit).
+# Budget-sensitive suite: always fails (independent of SPIRA_HOME) but sleeps to consume
+# budget, so that left ≤ 5 when it exits and the confirming run cannot start.
 plant test-cx-budget-red.sh <<'S'
 #!/usr/bin/env bash
 # covers: spira/nothing.sh
 sleep 3
-[ -z "${SPIRA_HOME:-}" ] && exit 0
-printf '  FAIL  env-sensitive but budget is about to be zero\n'
+printf '  FAIL  this suite always fails (budget exhaustion test)\n'
 exit 1
 S
 
-# BUDGET=7: suite starts (left=7 > 5), runs for 3s, exits. left ≈ 7-3=4 ≤ 5.
-# No budget for confirming run → red-unconfirmed.
+# BUDGET=7: suite starts (left=7 > 5), runs for 3s, exits. left ≈ 4 ≤ 5.
+# SPIRA_HOME is set in sut()'s environment, so confirm_differing is non-empty; the
+# budget check fires before the confirming run starts → red-unconfirmed.
 BUDGET=7
 rm -f "$STATE/test-cx-budget-red.sh.result"
 out3="$(sut run)"
 BUDGET=120
 want "when no budget for confirming run, output says so" "RED-UNCONFIRMED" "$out3"
-# Nothing should be filed since we can't confirm whether it is a real defect or env-only.
+# Nothing should be filed since we cannot confirm whether this is a defect or env-only.
 budget_suite_ids="$(beads_with 'test-cx-budget-red.sh')"
 is "no bead is filed for an unconfirmed red" "0" "$(count "$budget_suite_ids")"
 # The result file IS written, as red-unconfirmed, so the next pass tries again.
@@ -194,5 +195,5 @@ is "the result file records red-unconfirmed" "red-unconfirmed" "$red_status"
 
 # ======================================================================================
 echo
-echo "  $pass passed, $fail failed"
+printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
