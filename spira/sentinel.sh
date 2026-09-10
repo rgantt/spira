@@ -550,7 +550,14 @@ print(len([x for x in (d if isinstance(d,list) else [d]) if x.get("id")]))' 2>/d
         log "CHECK5 $id: cannot resolve the ref $r_name lands on — not judging whether it landed"
     elif ! grep -qF "$id" <<< "$subjects"; then
         if git -C "$r_path" show-ref --verify -q "refs/heads/spira/$id"; then
-            continue   # work exists on a branch; CHECK 6 lands it
+            # ZERO COMMITS AHEAD IS NOT WORK ON A BRANCH. An empty branch kept by the
+            # Sending (content_landed now returns non-zero for zero-ahead) looks like "work
+            # on a branch" from here, but has no commits to land and CHECK 6 cannot advance
+            # it. Only exempt when the branch actually has commits of its own.
+            _c5_base="${subj_base:-}"
+            _c5_ahead="$(git -C "$r_path" rev-list --count \
+                "${_c5_base:+${_c5_base}..}spira/$id" 2>/dev/null)" || _c5_ahead=0
+            [ "${_c5_ahead:-0}" -gt 0 ] 2>/dev/null && continue  # work exists; CHECK 6 lands it
         fi
         # COUNT IT. A bead that closes itself without committing a working change is
         # reopened here, becomes ready, is claimed, and closes itself again — a loop

@@ -99,7 +99,9 @@ is "and carries content-landed"        "yes" "$(has sp-cont content-landed)"
 
 echo
 echo "the branch with no commits of its own:"
-is "sp-empty was sent"                 "yes" "$(case "$out" in *"SENT sp-empty"*) echo yes;; *) echo no;; esac)"
+# An empty branch must NOT be sent — it carries nothing, and reaping it would exempt
+# the bead from CHECK 5's closed-not-landed reopen (sp-qc4kn). The Sending keeps it.
+is "sp-empty was NOT sent (kept)"      "no"  "$(case "$out" in *"SENT sp-empty"*) echo yes;; *) echo no;; esac)"
 is "and is NOT labelled content-landed" "no"  "$(has sp-empty content-landed)"
 
 [ "$fail" -eq 0 ] || { echo; echo "--- sending output ---"; echo "$out"; }

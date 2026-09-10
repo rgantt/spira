@@ -2293,7 +2293,14 @@ landed() {
 # the check would fail exactly when merge-tree succeeded (law-no-grep-q-under-pipefail).
 # Capture whole, then trim.
 content_landed() {
-    local repo="$1" br="$2" base="$3" merged basetree
+    local repo="$1" br="$2" base="$3" merged basetree ahead
+    # ZERO COMMITS AHEAD IS NOT LANDED. An empty branch IS an ancestor of the base by
+    # definition — merge-base --is-ancestor returns the same 0 it gives for a branch whose
+    # work merged by fast-forward, and the two are indistinguishable from commit-graph alone
+    # (law-absence-needs-a-positive-control). Return non-zero; callers that need to reap a
+    # zero-ahead branch use landed() as the positive control.
+    ahead="$(git -C "$repo" rev-list --count "$base..$br" 2>/dev/null)" || return 1
+    [ "${ahead:-0}" -gt 0 ] 2>/dev/null || return 1
     git -C "$repo" merge-base --is-ancestor "$br" "$base" 2>/dev/null && return 0
     merged="$(git -C "$repo" merge-tree --write-tree "$base" "$br" 2>/dev/null)" || return 1
     merged="${merged%%$'\n'*}"

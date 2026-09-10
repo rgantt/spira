@@ -298,6 +298,23 @@ sys.exit(0 if d and d[0].get("status") == "closed" else 1)' 2>/dev/null; then
                 fi
             fi
             n="$(git -C "$REPO" rev-list --count "$LANDREF..$br" 2>/dev/null || echo '?')"
+            # FAST-FORWARD MERGED. After a push-mode landing the base advances to the branch
+            # tip, so the branch has zero commits ahead and IS an ancestor of the base.
+            # content_landed returns non-zero for all zero-ahead branches (cannot tell landed
+            # from empty without a positive control), but a commit on the base that names the
+            # bead IS that control (law-landed-is-content, law-absence-needs-a-positive-control).
+            # Reap it. No content-landed label is needed — CHECK 5 finds the commit itself.
+            # An empty branch falls through: no such commit means landed() returns non-zero.
+            if [ "${n:-?}" = 0 ] \
+               && git -C "$REPO" merge-base --is-ancestor "$br" "$LANDREF" 2>/dev/null \
+               && landed "$id" "$REPO" 2>/dev/null; then
+                if [ "$DRY" = 1 ]; then
+                    say "WOULD  $id  send branch $br (zero ahead, commit on $LANDREF names it)"
+                    continue
+                fi
+                send_branch "$id" "$br"
+                continue
+            fi
             if bdjson show "$id" 2>/dev/null | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
