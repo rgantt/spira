@@ -230,7 +230,12 @@ sweep_repo() {
         # the first version read only the show spelling off a list row and the exemption never
         # fired once).
         if ! content_landed "$REPO" "$br" "$LANDREF"; then
-            if bdjson show "$id" 2>/dev/null | python3 -c '
+            # THREE CHECKS BELOW ALL READ THE SAME BEAD. Fetch once, reuse via printf —
+            # each bdjson call starts the binary fresh and costs ~0.5s on a cold path, so
+            # three calls for one unlanded branch compound into a per-pass tax that pushed
+            # this suite past the harness's slice (sp-8ekik).
+            _bead_json="$(bdjson show "$id" 2>/dev/null)"
+            if printf '%s\n' "$_bead_json" | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(1)
@@ -278,7 +283,7 @@ sys.exit(0 if any((x.get("dependency_type") or x.get("type")) == "supersedes"
             #
             # NETWORK CALL. ghq reaches GitHub, so this runs only after content_landed and
             # superseded have both said no — never on the common path.
-            if bdjson show "$id" 2>/dev/null | python3 -c '
+            if printf '%s\n' "$_bead_json" | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(1)
@@ -315,7 +320,7 @@ sys.exit(0 if d and d[0].get("status") == "closed" else 1)' 2>/dev/null; then
                 send_branch "$id" "$br"
                 continue
             fi
-            if bdjson show "$id" 2>/dev/null | python3 -c '
+            if printf '%s\n' "$_bead_json" | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(1)
