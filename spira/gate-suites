@@ -71,3 +71,11 @@ spira/test-yield.sh
 # cannot detect anything look identical. This suite plants a malformed SOP via the back door
 # and requires lint to name it, then confirms the gate's call exists in gate-spira.sh.
 spira/test-sop-lint.sh
+
+# THE GATE'S OWN BUDGET ENFORCEMENT. gate-spira.sh times itself and files a bead when it
+# overruns SPIRA_GATE_BUDGET; this suite proves the timing, the bead filing, and the dedup.
+# In the timed suite run it consistently exceeds the per-suite slice (it invokes gate-spira.sh
+# internally, whose own suites add up beyond the slice) and is killed as a false red.
+# Moving it here ends that loop: gated suites run without a per-suite slice and this suite
+# can reach its natural completion.
+spira/test-gate-budget.sh

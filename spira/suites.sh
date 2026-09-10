@@ -358,8 +358,13 @@ cmd_run() {
         fi
         slice="$PER_SUITE"; [ "$left" -lt "$slice" ] && slice="$left"
         t0="$(date +%s)"
-        local tmp suite_pid killer
+        local tmp suite_pid killer watchdog_flag
         tmp="$(mktemp)" || return 1
+        # The watchdog flag: the killer writes it before sending SIGTERM, giving the runner
+        # an authoritative record that the watchdog fired regardless of the suite's exit code.
+        # A suite that traps TERM runs its own cleanup and exits 1, not 143 — so the rc>=128
+        # check alone misses the kill and files a false red (sp-prhs2).
+        watchdog_flag="$(mktemp)"; rm -f "$watchdog_flag"
         # PROCESS GROUP ISOLATION. setsid makes the suite the leader of its own process
         # group (PGID = suite_pid), so kill -- -suite_pid reaches every descendant it leaves
         # running. Without this, a suite that hangs before its own cleanup lines keeps
@@ -370,12 +375,15 @@ cmd_run() {
         # KILLER IN ITS OWN PROCESS GROUP so that `kill -- -$killer` sweeps both the bash
         # and the `sleep` child in one shot.  Without setsid the `sleep` orphans in the
         # caller's PGID — the harness detects it as a background job left after exit (sp-pdwve).
-        setsid bash -c "sleep ${slice} && kill -- -${suite_pid} 2>/dev/null" &
+        # The flag is written before kill so it is set even if kill returns non-zero.
+        setsid bash -c "sleep ${slice} && printf '1' > '$watchdog_flag' && kill -- -${suite_pid} 2>/dev/null" &
         killer=$!
         wait "$suite_pid" 2>/dev/null; rc=$?
         kill -- -"$killer" 2>/dev/null; wait "$killer" 2>/dev/null || true
-        # A suite killed by SIGTERM exits 128+15=143; map to 124 (timeout's convention).
-        [ "$rc" -ge 128 ] && rc=124
+        # Classify as timeout when the watchdog fired, regardless of exit code.
+        # Belt-and-suspenders: also remap rc>=128 (SIGTERM without a trap → 143).
+        if [ -f "$watchdog_flag" ] || [ "$rc" -ge 128 ]; then rc=124; fi
+        rm -f "$watchdog_flag"
         # SWEEP SURVIVORS. If any process remains in the suite's process group after it
         # exited, the suite has a cleanup defect. Kill them and, if the suite otherwise
         # passed, mark it red so the defect surfaces rather than being silently absorbed.
