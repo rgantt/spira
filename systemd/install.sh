@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # install.sh — render the unit TEMPLATES for this box, install them, and start their timers.
 #
+# THIS IS THE UNIT RENDERER. For the full install (config, build, database, units,
+# hooks, cockpit, verify), use install.sh at the REPOSITORY ROOT instead. If you ran
+# this file first and wanted the full installer, go one directory up: ../install.sh
+#
 #   ./install.sh [<instance>]                      render, install, enable and start for the
 #                                                  named instance (default: $SPIRA_INSTANCE
 #                                                  from conf.sh, which is 'prod' on a clean
