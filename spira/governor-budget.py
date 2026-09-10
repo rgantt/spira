@@ -32,6 +32,7 @@ Every breach â€” idle average under the floor, memory, disk, a busy CI runner â€
 and names itself, because a governor that withholds without saying why is a knob the reader
 cannot find.
 """
+import math
 import os
 
 def env(name, default=None):
@@ -73,7 +74,7 @@ else:
 # -- the decision ----------------------------------------------------------------------
 cores    = int(num("CORES", 1))
 floor    = num("FLOOR", 25)
-per_aeon = num("PER_AEON") or max(1.0, round(100.0 / max(cores, 1)))
+per_aeon = num("PER_AEON") or max(1.0, math.ceil(50.0 / max(cores, 1)))
 running  = int(num("RUNNING", 0))
 mem      = num("MEM_MB"); min_mem = num("MIN_MEM_MB", 1500)
 disk_root = num("DISK_ROOT"); disk_ws = num("DISK_WS"); min_disk = num("MIN_DISK_PCT", 10)
