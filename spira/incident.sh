@@ -92,68 +92,80 @@ mkdir -p "$SPOOL" "$(dirname "$ILOG")"
 ilog() { printf '%s incident: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$ILOG"; }
 
 # --------------------------------------------------------------------------------------
-# The open incident for a dedupe key, or empty. external-ref is the key rather than the
-# title, because a title is prose someone will eventually reword and a ref is an identifier.
+# Dedupe key for an incident ref. Prints "open <id> <n>", "closed <id> <n>", or nothing.
+# <n> is the current highest sp-recur-N count, extracted from the bead's labels so the
+# caller can skip a separate bdq label list call.
 # --------------------------------------------------------------------------------------
-open_incident() {        # open_incident <ref> -> bead id or empty
-    # CLIENT-SIDE FILTER ON external_ref, not --external-ref on the command line.
-    # bd list --external-ref is a server-side filter that only the dev build supports;
-    # the embedded binary (bd-embedded, used in test fixtures) lacks it, so the flag
-    # was silently ignored in tests, making every call look like no open incident and
-    # creating one fresh bead per filing instead of bumping recurrences.  The JSON
-    # payload has always carried external_ref, so filtering in Python works with every
-    # version.  The label filter keeps the result set small in practice.
-    #
-    # DEDUPE LABELS EXCLUDE repo: — a repo: label identifies the filer, not the event.
-    # Two callers declaring different repos must still find each other's open incident;
-    # including repo: in the filter silently partitions dedup so they cannot (sp-jvlrs).
-    local _dedupe_labels
+# TWO PASSES, NOT ONE. Pass 1 queries open/in_progress; pass 2 (only when pass 1 finds
+# nothing) queries recently-closed. They cannot be merged into one call because
+# --closed-after filters on the closed_at field: open beads carry no closed_at and are
+# silently excluded when --closed-after is present, making the combined query always return
+# empty for the common recurrence case.
+#
+# CLIENT-SIDE FILTER ON external_ref (not --external-ref). bd list --external-ref is a
+# server-side filter that only the dev build supports; bd-embedded silently ignores it,
+# making every call look like "no open incident" and creating one fresh bead per filing
+# instead of bumping recurrences. The JSON payload carries external_ref on every version,
+# so filtering in Python works everywhere. The label filter keeps the candidate set small.
+#
+# DEDUPE LABELS EXCLUDE repo: — a repo: label identifies the filer, not the event.
+# Two callers declaring different repos must still find each other's open incident;
+# including repo: in the filter silently partitions dedup so they cannot (sp-jvlrs).
+#
+# RECURRENCE COUNT FROM LABELS. bd list --json includes the full labels array; extracting
+# sp-recur-N here avoids a separate bdq label list call on every recurrence (one fewer
+# bd process spawn per filing on the common recurrence path).
+#
+# DATE ARITHMETIC IS GNU date(1). The -v flag is a BSD/macOS fallback. An empty since
+# skips the closed-bead search rather than scanning with an unbounded window.
+# REOPENING IS THE CHOSEN STRATEGY, not linking: a closed bead within the lookback is
+# the same incident returning. One bead that says "red 6 times over 2 days" lets Ops
+# see the pattern; a chain of six single-occurrence beads does not (sp-srgr6).
+# --------------------------------------------------------------------------------------
+_dedup_incident() {      # _dedup_incident <ref> -> "open <id> <n>" | "closed <id> <n>" | nothing
+    local ref="$1" _dedupe_labels _since _result
     _dedupe_labels="$(printf '%s' "$LABELS" | tr ',' '\n' | grep -v '^repo:' | paste -sd, -)"
-    bdjson list --status open,in_progress --limit 0 --label "$_dedupe_labels" \
-          2>/dev/null \
+
+    # PASS 1 — open / in_progress. No --closed-after: open beads have no closed_at and would
+    # be silently excluded by that filter, making every recurrence look like a new filing.
+    _result="$(bdjson list --status open,in_progress --limit 0 --label "$_dedupe_labels" \
+        2>/dev/null \
       | python3 -c '
-import sys, json
+import sys, json, re
 target = sys.argv[1]
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
-for i in (d if isinstance(d, list) else [d]):
-    if i.get("external_ref") == target:
-        print(i["id"]); break
-' "$1" 2>/dev/null
-}
+rows = d if isinstance(d, list) else [d]
+for i in rows:
+    if i.get("external_ref") == target and i.get("status") in ("open", "in_progress"):
+        ns = [int(m.group(1)) for lbl in (i.get("labels") or [])
+              for m in [re.match(r"^sp-recur-(\d+)$", lbl)] if m]
+        print("open", i["id"], max(ns) if ns else 0); sys.exit(0)
+' "$ref" 2>/dev/null)"
+    if [ -n "$_result" ]; then
+        printf '%s' "$_result"
+        return
+    fi
 
-recent_closed_incident() {   # recent_closed_incident <ref> -> bead id or empty
-    # REOPENING IS THE CHOSEN STRATEGY, not linking. A closed bead found within the lookback
-    # window is the same incident returning: reopening keeps the recurrence count and the full
-    # timeline on one record. Linking would produce a chain of single-occurrence beads that
-    # must each be tracked and worked separately; one bead that says "red 6 times over 2 days"
-    # is what lets Ops see the pattern and break the cycle.
-    #
-    # DATE ARITHMETIC IS GNU date(1). The fallback -v flag is for BSD/macOS in case this
-    # ever runs there; on Linux only the -d form is used. An empty _since means the date
-    # command is unavailable — skip the closed-bead search rather than returning stale data
-    # with an unbounded window.
-    local _since _dedupe_labels
+    # PASS 2 — recently-closed. Only reached when no open bead matched.
     _since="$(date -u -d "-${DEDUP_LOOKBACK_DAYS} days" '+%Y-%m-%d' 2>/dev/null \
            || date -u -v "-${DEDUP_LOOKBACK_DAYS}d" '+%Y-%m-%d' 2>/dev/null || true)"
-    [ -n "$_since" ] || return 0
-    _dedupe_labels="$(printf '%s' "$LABELS" | tr ',' '\n' | grep -v '^repo:' | paste -sd, -)"
+    [ -z "$_since" ] && return
+
     bdjson list --status closed --closed-after "$_since" --limit 0 --label "$_dedupe_labels" \
-          2>/dev/null \
+        2>/dev/null \
       | python3 -c '
-import sys, json
+import sys, json, re
 target = sys.argv[1]
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
-for i in (d if isinstance(d, list) else [d]):
-    if i.get("external_ref") == target:
-        print(i["id"]); break
-' "$1" 2>/dev/null
-}
-
-recurrences_of() {       # recurrences_of <id> -> integer
-    bdq label list "$1" 2>/dev/null | grep -oE 'sp-recur-[0-9]+' | grep -oE '[0-9]+$' \
-        | sort -n | tail -1 || true
+rows = d if isinstance(d, list) else [d]
+for i in rows:
+    if i.get("external_ref") == target and i.get("status") == "closed":
+        ns = [int(m.group(1)) for lbl in (i.get("labels") or [])
+              for m in [re.match(r"^sp-recur-(\d+)$", lbl)] if m]
+        print("closed", i["id"], max(ns) if ns else 0); sys.exit(0)
+' "$ref" 2>/dev/null
 }
 
 # --------------------------------------------------------------------------------------
@@ -162,30 +174,21 @@ recurrences_of() {       # recurrences_of <id> -> integer
 # so a transient failure costs a retry rather than the event.
 # --------------------------------------------------------------------------------------
 file_one() {
-    local ref="$1" title="$2" pf="$3" id n _was_closed _reopen_note _log_suffix
+    local ref="$1" title="$2" pf="$3" id n _was_closed _reopen_note _log_suffix _hit _rest _recur_n
 
-    # A bd that cannot even answer is a bd that must not be treated as "no open incident" —
-    # that reading is how one outage becomes one bead per alert. Probe first, and bail.
-    if ! bdq list --limit 1 >/dev/null 2>&1; then
-        ilog "database unreachable — $ref stays spooled"
-        return 1
-    fi
-
-    id="$(open_incident "$ref")"
-    _was_closed=0
-    if [ -z "${id:-}" ]; then
-        # THE FIX FOR sp-srgr6. open_incident only sees open/in_progress beads, so a bead
-        # closed while the underlying condition persisted was invisible — the next filing
-        # created a fresh bead and the cycle repeated. recent_closed_incident checks closed
-        # beads within SPIRA_INCIDENT_DEDUP_LOOKBACK days; when found, the bead is REOPENED
-        # (not a new bead filed) so the recurrence count and timeline stay on one record.
-        # Pre-fix output for this case: "filed sp-<new> for incident:<ref>" — a second bead.
-        # Post-fix output: "recurred (N) — sp-<original> (reopened from closed)".
-        id="$(recent_closed_incident "$ref")"
-        [ -n "${id:-}" ] && _was_closed=1
-    fi
+    # DEDUP QUERY — two passes (open first, closed second if needed). If the database is
+    # unreachable, _dedup_incident prints nothing; id stays empty and the probe below catches
+    # it. The probe is skipped on the recurrence path because a result from _dedup_incident
+    # proves the database is reachable. The recurrence count comes from the JSON labels,
+    # so no separate bdq label list call is needed on the common recurrence path.
+    _hit="$(_dedup_incident "$ref")"
+    id="" _was_closed=0 _recur_n=0
+    case "$_hit" in
+        "open "*)   _rest="${_hit#open }";   id="${_rest%% *}"; _recur_n="${_rest##* }" ;;
+        "closed "*) _rest="${_hit#closed }"; id="${_rest%% *}"; _recur_n="${_rest##* }"; _was_closed=1 ;;
+    esac
     if [ -n "${id:-}" ]; then
-        n="$(recurrences_of "$id")"; n="${n:-1}"; n=$((n+1))
+        n=$((_recur_n + 1))
         if [ "$_was_closed" = 1 ]; then
             bead_reopen "$id" "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ) — same failure fingerprint, dedup within ${DEDUP_LOOKBACK_DAYS}-day window"
         fi
@@ -240,6 +243,15 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
         fi
         printf '%s' "$id"
         return 0
+    fi
+
+    # No existing bead found. Distinguish "no open incident" from "database unreachable":
+    # _dedup_incident returned empty in both cases, but the right response differs.
+    # A bd that cannot answer must not be treated as "no open incident" — that reading is
+    # how one outage becomes one bead per alert.
+    if ! bdq list --limit 1 >/dev/null 2>&1; then
+        ilog "database unreachable — $ref stays spooled"
+        return 1
     fi
 
     # THE TYPE AND THE ACTOR ARE THE CALLER'S, because not every intake is a failure. A
