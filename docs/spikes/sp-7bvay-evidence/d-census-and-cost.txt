@@ -1,0 +1,67 @@
+# Evidence D — the census of what the timed runner has filed, and what it cost
+# retrieved: 2026-09-10 by the sp-7bvay spike. Paths rewritten to config keys.
+
+## D1. Every bead whose external ref begins suite: — status, and whether it closed with a reason
+suite-filed beads                : 131
+closed                           : 122
+closed with a NULL close_reason  : 44
+
+refs filed more than once        : 14
+surplus beads from re-filing     : 38
+
+most re-filed refs:
+  5 x suite:test-gate-budget.sh:3722960463212
+  5 x suite:test-spike.sh:1652778364210
+  5 x suite:test-sin-exempt.sh:113763511386
+  5 x suite:test-loom-rebuild.sh:2752036388339
+  4 x suite:test-hold.sh:53368537278
+  4 x suite:test-incident.sh:2831969284430
+  4 x suite:test-cockpit-layout.sh:420935486688
+  4 x suite:test-cockpit-landed.sh:4114956268379
+
+## D2. The five beads for one fingerprint of one suite — all the same failure,
+##     four of them closed, none with a reason, four with no commit naming them.
+  2026-09-09T07:00:50 sp-2kpk2 closed  close_reason="Restored after a false mass-reopen. CHECK 5 reopened this bead and charged an attempt because an empty delivers column collapsed against a tab field separator and was read as started_at's timestamp — 'delivers:<timestamp> is not a recognised type'. 360 closed beads were reopened in one pass; this is one of them. The close was correct and the reopen was the defect. Fixed and tested in 139001a. The spurious attempt label, and any poison that followed from it, have been removed."
+  2026-09-09T12:22:12 sp-vws3h closed  close_reason=None
+  2026-09-09T17:01:09 sp-l5l20 closed  close_reason=None
+  2026-09-10T04:04:41 sp-htwlh closed  close_reason=None
+  2026-09-10T10:25:35 sp-wf42k open    close_reason=None
+
+## D3. Commits on the base branch naming them:
+  sp-2kpk2   cbea98c fix: sp-2kpk2 — document repo-map requirement in file_budget_bead
+  sp-vws3h   NO COMMIT ON THE BASE NAMES IT
+  sp-l5l20   NO COMMIT ON THE BASE NAMES IT
+  sp-htwlh   NO COMMIT ON THE BASE NAMES IT
+  sp-wf42k   NO COMMIT ON THE BASE NAMES IT
+
+## D4. What the aeons spent. From the aeon ledger.
+  suite-filed beads                        : 131
+    named by a commit on the base          : 68
+    named by NO commit at all              : 63
+  total aeon spend on suite-filed beads    : $275.71
+    on beads that produced no commit       : $98.89 across 61 aeon sessions
+  spend on the one proven-false red        : $17.49 across 6 aeon sessions
+
+## D5. Reds per pass, and the suite runtime distribution, from the runner's own log.
+62 ran, 2 red, 0 skipped, 1809s
+69 ran, 3 red, 0 skipped, 1818s
+66 ran, 2 red, 0 skipped, 1817s
+76 ran, 7 red, 0 skipped, 1867s
+68 ran, 2 red, 0 skipped, 1805s
+65 ran, 1 red, 0 skipped, 1821s
+69 ran, 2 red, 0 skipped, 1806s
+54 ran, 2 red, 0 skipped, 1805s
+84 ran, 2 red, 0 skipped, 1806s
+45 ran, 0 red, 0 skipped, 1798s
+65 ran, 1 red, 0 skipped, 1860s
+65 ran, 2 red, 0 skipped, 1838s
+  n=2214 runs  median=11.0s  p90=63s  max=490s
+
+## D6. bd close always records something; bd update --status closed records NOTHING.
+##     A NULL close_reason therefore identifies a close that bypassed bd close.
+bd update --status closed rc=0
+   close_reason = None status = closed
+bd close --reason-file - rc=0
+   close_reason = 'from stdin\n' status = closed
+bd close --reason '' rc=0
+   close_reason = 'Closed' status = closed

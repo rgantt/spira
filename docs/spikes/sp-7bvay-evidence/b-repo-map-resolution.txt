@@ -1,0 +1,53 @@
+# Evidence B — why the repo-map lookup goes wrong, traced through conf.sh
+# retrieved: 2026-09-10 by the sp-7bvay spike. Paths rewritten to config keys.
+
+## B1. The trace, from a debug copy of gate-spira.sh with set -x and stderr unmuted.
+##     bdq create refuses because repo_names() read the SHIPPED EXAMPLE map.
++ bdq create 'gate: budget exceeded — 1s over (1s vs 0s); ...' --labels spira,plan,repo:spira ...
++ _bdq_check_repo_label create ...
++ labels=spira,plan,repo:spira
++ repo_val=spira
+++ spira_home_repo
+++ printf %s spira-harness
++ '[' spira = spira-harness ']'
+++ repo_names
++ valid='home legacy service vendor'          <-- spira/repo-map.example, not the real map
++ repo_names
++ grep -qxF spira
++ printf 'spira: repo:%s is not in the repo map; valid keys: %s\n' spira 'home legacy service vendor'
+spira: repo:spira is not in the repo map; valid keys: home legacy service vendor
++ return 1
++ return 1
+  FAIL  a bead is filed against the harness: wanted [1] got [0]
+
+## B2. The branch in conf.sh that selects it (spira/conf.sh, repo-map resolution).
+        # AN EXPLICIT SPIRA_HOME PUTS ITS OWN MAP FIRST. Otherwise the config-dir map leads,
+        # for an operator whose harness lives in a repository they did not write.
+        #
+        # The conditional is not a nicety. Every fixture in these suites plants a map at
+        # $SPIRA_HOME/repo-map and sets SPIRA_HOME to reach it; with the config-dir map
+        # unconditionally ahead, all of them silently read the operator's REAL seven
+        # repositories instead — four suites at once, reporting "0 movements" and "not an
+        # ancestor" as though landing were broken, with nothing naming the map they read
+        # (law-gates-run-in-a-clean-environment).
+        if [ -n "$_spira_conf_home_env" ]; then
+            set -- "$SPIRA_HOME/repo-map" ${d:+"$d/repo-map"} "$SPIRA_HOME/repo-map.example"
+        else
+            set -- ${d:+"$d/repo-map"} "$SPIRA_HOME/repo-map" "$SPIRA_HOME/repo-map.example"
+        fi
+        for c in "$@"; do
+            [ -f "$c" ] && { SPIRA_REPO_MAP="$c"; break; }
+        done
+        : "${SPIRA_REPO_MAP:=$SPIRA_HOME/repo-map}"
+
+## B3. $SPIRA_HOME/repo-map does not exist in the installed checkout, so the
+##     explicit-SPIRA_HOME branch falls straight through to repo-map.example:
+ls: cannot access '$SPIRA_REPO/spira/repo-map': No such file or directory
+-rw-rw-r-- 1 ryangantt ryangantt 7015 Sep 8 14:29 $SPIRA_REPO/spira/repo-map.example
+
+## B4. The suite's own fixture map, which the leak causes to LOSE (test-gate-budget.sh:47)
+[ -f "$HERE/inventory-deny" ] && cp "$HERE/inventory-deny" "$SH/"
+# A REPO-MAP so _bdq_check_repo_label allows repo:spira when file_budget_bead fires. The
+# check only tests that "spira" is a known name — the path is not used by the check.
+printf 'spira | %s\n' "$TMP" > "$SH/repo-map"
+

@@ -1,0 +1,36 @@
+# Evidence E — why nothing reopened a bead that closed with no work
+# retrieved: 2026-09-10 by the sp-7bvay spike. Paths rewritten to config keys.
+
+## E1. CHECK 5 exempts any bead the Sending labelled content-landed (spira/sentinel.sh).
+411:while IFS=$'\x1f' read -r id r_name superseded dropped sentcontent delivers started_at; do
+446:    [ "${sentcontent:-0}" = 1 ] && continue
+
+## E2. content_landed's FIRST test is an ancestry test (spira/lib.sh).
+##     A branch with no commits on it IS an ancestor of the base, so an aeon that
+##     changed nothing gets the same answer as an aeon whose work merged.
+content_landed() {
+    local repo="$1" br="$2" base="$3" merged basetree
+    git -C "$repo" merge-base --is-ancestor "$br" "$base" 2>/dev/null && return 0
+    merged="$(git -C "$repo" merge-tree --write-tree "$base" "$br" 2>/dev/null)" || return 1
+    merged="${merged%%$'\n'*}"
+    [ -n "$merged" ] || return 1
+    basetree="$(git -C "$repo" rev-parse "$base^{tree}" 2>/dev/null)" || return 1
+    [ "$merged" = "$basetree" ]
+}
+
+## E3. The Sending's own log, on the two beads closed with no reason and no commit.
+2026-09-09T20:46:19Z spira: sending: ASSERT sp-l5l20 — content landed but no landstate/sp-l5l20; landing.sh may not have selected this branch (sp-qj8n shape)
+SENT sp-l5l20  spira spira/sp-l5l20
+2026-09-09T22:16:41Z spira: sending: ASSERT sp-l5l20 — content landed but no landstate/sp-l5l20; landing.sh may not have selected this branch (sp-qj8n shape)
+SENT sp-l5l20  spira spira/sp-l5l20
+2026-09-10T02:52:09Z spira: sending: ASSERT sp-l5l20 — content landed but no landstate/sp-l5l20; landing.sh may not have selected this branch (sp-qj8n shape)
+SENT sp-l5l20  spira spira/sp-l5l20
+
+## E4. Neither branch exists any more; neither ever carried a commit.
+  spira/sp-htwlh: no branch — reaped after content_landed said yes
+  spira/sp-l5l20: no branch — reaped after content_landed said yes
+  spira/sp-vws3h: no branch — reaped after content_landed said yes
+
+## E5. The aeon did its job. From its session log, the reproduce command's verdict,
+##     run repeatedly in an aeon environment (no SPIRA_HOME):
+      8 14 passed, 0 failed

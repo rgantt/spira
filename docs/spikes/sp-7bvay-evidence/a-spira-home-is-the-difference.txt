@@ -1,0 +1,55 @@
+# Evidence A — SPIRA_HOME in the environment is the whole difference
+# retrieved: 2026-09-10 by the sp-7bvay spike, on the operator's box
+# paths are rewritten to their config keys: this repository ships (spira/inventory.sh)
+# suite under test: spira/test-gate-budget.sh, from the installed harness checkout
+
+## A1. The runner's environment (systemd/spira-suites.service sets SPIRA_HOME)
+$ env -i HOME=~ USER=... PATH=/usr/local/bin:/usr/bin:/bin \
+    SPIRA_HOME=$SPIRA_REPO/spira SPIRA_RUN=$SPIRA_RUN TESTDB_SHARED=1 TESTDB_* ... \
+    bash $SPIRA_REPO/spira/test-gate-budget.sh
+test-gate-budget.sh — timing, budget enforcement, bead filing
+  ok    gate exits 0 when suites pass and budget is not exceeded
+  ok    per-check cost appears in output
+  ok    total cost appears in output
+  ok    the budget appears in the total line
+  ok    exit is 0 when suites pass though budget is exceeded
+  ok    output names the overrun
+  ok    output names the budget
+  ok    output says this is a gate fault
+  FAIL  a bead is filed against the harness: wanted [1] got [0]
+  ok    exit is 1 when suites fail (budget overrun does not mask it)
+  FAIL  bead is still filed even when suites fail: wanted [1] got [0]
+  FAIL  a second overrun does not file a second bead: wanted [1] got [0]
+  ok    no bead filed when gate finishes under budget
+  ok    total line still appears when within budget
+
+11 passed, 3 failed
+
+## A2. The same command with SPIRA_HOME removed and NOTHING else changed
+test-gate-budget.sh — timing, budget enforcement, bead filing
+  ok    gate exits 0 when suites pass and budget is not exceeded
+  ok    per-check cost appears in output
+  ok    total cost appears in output
+  ok    the budget appears in the total line
+  ok    exit is 0 when suites pass though budget is exceeded
+  ok    output names the overrun
+  ok    output names the budget
+  ok    output says this is a gate fault
+  ok    a bead is filed against the harness
+  ok    exit is 1 when suites fail (budget overrun does not mask it)
+  ok    bead is still filed even when suites fail
+  ok    a second overrun does not file a second bead
+  ok    no bead filed when gate finishes under budget
+  ok    total line still appears when within budget
+
+14 passed, 0 failed
+
+## A3. Positive control — inject SPIRA_HOME into the passing environment
+  FAIL  a bead is filed against the harness: wanted [1] got [0]
+  ok    exit is 1 when suites fail (budget overrun does not mask it)
+  FAIL  bead is still filed even when suites fail: wanted [1] got [0]
+  FAIL  a second overrun does not file a second bead: wanted [1] got [0]
+  ok    no bead filed when gate finishes under budget
+  ok    total line still appears when within budget
+
+11 passed, 3 failed

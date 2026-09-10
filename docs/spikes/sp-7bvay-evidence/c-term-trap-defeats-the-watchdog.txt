@@ -1,0 +1,50 @@
+# Evidence C — a suite that traps TERM survives the watchdog kill and is filed as RED
+# retrieved: 2026-09-10 by the sp-7bvay spike. Paths rewritten to config keys.
+
+## C1. A minimal suite with the cleanup trap every suite in this tree uses:
+#!/usr/bin/env bash
+set -uo pipefail
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT INT TERM
+echo "scratch=$TMP"
+printf 'data\n' > "$TMP/file"
+sleep 5
+echo "--- after sleep, still alive; scratch exists? ---"
+[ -f "$TMP/file" ] && echo "EXISTS" || echo "GONE"
+cat "$TMP/file"
+exit 1
+
+## C2. Driven by suites.sh's own kill machinery, copied verbatim from cmd_run:
+#!/usr/bin/env bash
+set -uo pipefail
+setsid bash /tmp/termtrap.sh > /tmp/termtrap.out 2>&1 &
+p=$!
+setsid bash -c "sleep 2 && kill -- -${p} 2>/dev/null" &
+k=$!
+wait "$p" 2>/dev/null; rc=$?
+kill -- -"$k" 2>/dev/null; wait "$k" 2>/dev/null || true
+[ "$rc" -ge 128 ] && echo "suites.sh would map rc=$rc -> 124 (TIMEOUT, not filed as red)" \
+                  || echo "suites.sh sees rc=$rc -> status=red, fingerprinted over the assertion cascade"
+echo "raw rc=$rc"
+echo "--- suite output as the runner would capture it ---"
+cat /tmp/termtrap.out
+
+## C3. Result:
+suites.sh sees rc=1 -> status=red, fingerprinted over the assertion cascade
+raw rc=1
+--- suite output as the runner would capture it ---
+scratch=/tmp/tmp.Z2Se4TESWm
+Terminated
+--- after sleep, still alive; scratch exists? ---
+GONE
+cat: /tmp/tmp.Z2Se4TESWm/file: No such file or directory
+
+## C4. For comparison, the shape sp-3r97d recorded in production (604s, filed RED):
+test-gate-budget.sh — timing, budget enforcement, bead filing
+Terminated
+cat: /tmp/tmp.XXXXXXXX/gate-out: No such file or directory
+FAIL  gate exits 0 when suites pass and budget is not exceeded: wanted [0] got [143]
+...
+2 passed, 12 failed
+
+## C5. How many suites carry a TERM trap (the blast radius):
+43 of 160 suites in the tree trap TERM
