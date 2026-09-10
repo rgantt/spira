@@ -183,5 +183,14 @@ When the fix has landed and the SOP is committed:
 `--reason-file -`, never `--reason -`: `bd close` does not read stdin for `--reason`, it
 stores the literal dash and exits 0, so the incident record becomes a hyphen.
 
+**A bead whose deliverable is child beads closes with `--force`.** From bd v1.2.1 a close is
+refused while the bead has open children — *"cannot close X: 1 open child issue(s); close
+children first or use --force to override"*. When you filed those children deliberately and
+said so with `delivers:beads`, that refusal is aimed at the wrong thing: the children ARE the
+work, and closing them first would be a lie. Pass `--force` in that case and only that case —
+if you did not declare `delivers:beads`, an open child means you are not finished. A close
+that fails leaves the bead `in_progress`, so the verdict finds no commit and reopens it, and
+the attempt counts toward poisoning the bead.
+
 An honest failure is cheap. An incident closed on a fix nobody verified is expensive,
 because the alert will fire again and the queue will say it was already handled.

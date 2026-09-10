@@ -90,6 +90,15 @@ value is its evidence silently becomes a dash. Prose belongs on stdin anyway —
 and `$( )` inside a double-quoted argument are command substitution
 (`law-commit-messages-via-stdin`).
 
+**A bead whose deliverable is child beads closes with `--force`.** From bd v1.2.1 a close is
+refused while the bead has open children — *"cannot close X: 1 open child issue(s); close
+children first or use --force to override"*. When you filed those children deliberately and
+said so with `delivers:beads`, that refusal is aimed at the wrong thing: the children ARE the
+work, and closing them first would be a lie. Pass `--force` in that case and only that case —
+if you did not declare `delivers:beads`, an open child means you are not finished. A close
+that fails leaves the bead `in_progress`, so the verdict finds no commit and reopens it, and
+the attempt counts toward poisoning the bead.
+
 If you cannot finish — the bead is ambiguous, needs a credential, or needs a decision that
 is the operator's to make — do **not** close it. Leave it open, add a note saying precisely what is
 blocked and what you would do by default, and exit non-zero:

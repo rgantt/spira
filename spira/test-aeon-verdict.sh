@@ -94,7 +94,12 @@ case "$finish" in
         # Labels the bead with delivers:beads, creates a child bead, then closes.
         bd -C "$SPIRA_DB" label add "$id" "delivers:beads" >/dev/null 2>&1
         bd -C "$SPIRA_DB" create --title "filed by $id" --type task --parent "$id" >/dev/null 2>&1
-        bd -C "$SPIRA_DB" close "$id" --reason "diagnosis complete; child beads filed" >/dev/null 2>&1
+        # --force BECAUSE THE CHILDREN ARE THE DELIVERABLE. From bd v1.2.1 a close is refused
+        # while the bead has open children -- "cannot close X: 1 open child issue(s)". For
+        # delivers:beads that is precisely the success case, so the aeon closes over it. Without
+        # --force the close silently fails here (this shim discards stderr, as the real aeon's
+        # tooling did), the bead stays in_progress, and CHECK 5 reopens it for having no commit.
+        bd -C "$SPIRA_DB" close "$id" --reason "diagnosis complete; child beads filed" --force >/dev/null 2>&1
         ;;
     delivers-beads-empty:close)
         # Labels the bead with delivers:beads but files NO child bead, then closes.
