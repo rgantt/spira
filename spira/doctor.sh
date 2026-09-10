@@ -521,9 +521,23 @@ if [ -d "$_dr_unit_dir" ] && [ -n "${SPIRA_INSTANCE:-}" ]; then
         # Check for a sibling with the instance suffix.
         if [ -e "$_dr_unit_dir/$_dr_inst_name" ]; then
             _dr_dup_found=$((_dr_dup_found + 1))
-            WARN "duplicate unit pair: $_dr_base and $_dr_inst_name both exist in $_dr_unit_dir" \
-                 "The plain-named file is a stale legacy copy. Re-run install.sh to remove it,
-        or delete it by hand: rm $_dr_unit_dir/$_dr_base && systemctl --user daemon-reload"
+            # The sentinel uses the unit name as its ONLY concurrency control — sentinel.sh
+            # says so at the lock comment. Two enabled units with the same ExecStart means
+            # the mutex is gone: every pass runs twice, against the same free-slot count,
+            # and strand.sh produces duplicate escalations for the same episode. This is a
+            # fatal defect, not a warning. Other duplicate pairs are WARN because no other
+            # unit here carries that invariant.
+            case "$_dr_stem" in
+                spira-sentinel)
+                    FAIL "duplicate unit pair: $_dr_base and $_dr_inst_name both exist in $_dr_unit_dir" \
+                         "The sentinel uses the unit name as its mutex; two copies running simultaneously is a defect.
+        Delete the stale plain-named file and daemon-reload:
+        rm $_dr_unit_dir/$_dr_base && systemctl --user daemon-reload" ;;
+                *)
+                    WARN "duplicate unit pair: $_dr_base and $_dr_inst_name both exist in $_dr_unit_dir" \
+                         "The plain-named file is a stale legacy copy. Re-run install.sh to remove it,
+        or delete it by hand: rm $_dr_unit_dir/$_dr_base && systemctl --user daemon-reload" ;;
+            esac
         fi
     done
 fi

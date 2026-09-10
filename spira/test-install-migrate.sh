@@ -208,27 +208,39 @@ nowant  "clean install: no 'migrated' in output" "migrated" "$clean_out"
 
 # ==========================================================================
 echo
-echo "--NO-MIGRATE-WATCHERS — legacy units present but skip flag suppresses disable:"
+echo "--NO-MIGRATE-WATCHERS — skips only watcher loops; sentinel is still migrated:"
 # ==========================================================================
+# Add a watcher to the fixture so the skip is observable: the sentinel
+# legacy unit should be disabled, the watcher legacy unit should not.
+printf 'testwatcher|daemon|/bin/true|\n' >> "$FIXTURE/spira/watchers"
 
 rm -rf "$DEST"; mkdir -p "$DEST"
 
-skip_out="$(MOCK_LEGACY_UNITS="spira-sentinel.service spira-sentinel.timer" \
+skip_out="$(MOCK_LEGACY_UNITS="spira-sentinel.service spira-sentinel.timer \
+    spira-watch-testwatcher.service spira-watch@testwatcher.service" \
     MOCK_AEONS= MOCK_IS_ACTIVE=active MOCK_WATCH_LIST= \
     inst --no-migrate-watchers)"
 skip_rc=$?
 skip_log="$(cat "$MOCK_LOG")"
 
 iszero  "--no-migrate-watchers: install.sh exits 0" "$skip_rc"
-# The flag must suppress disable calls for legacy units even when MOCK_LEGACY_UNITS is set.
-nowant  "--no-migrate-watchers: no disable call for spira-sentinel.service" \
+# NON-WATCHER legacy units (sentinel) ARE still migrated even when the flag is set —
+# the unit name is the sentinel's only concurrency control, and leaving a stale plain
+# unit alongside the instance unit defeats the mutex.
+want    "--no-migrate-watchers: sentinel disable fires despite flag" \
         "disable --now spira-sentinel.service" "$skip_log"
-# install.sh should announce that the skip is in effect.
+# Watcher legacy units must still be skipped by the flag.
+nowant  "--no-migrate-watchers: watcher legacy unit not disabled" \
+        "disable --now spira-watch-testwatcher" "$skip_log"
+# install.sh should announce that the watcher skip is in effect.
 want    "--no-migrate-watchers: output notes the skip" \
         "no-migrate-watchers" "$skip_out"
 # Normal units still get installed — the flag touches nothing else.
 want    "--no-migrate-watchers: sentinel per-instance unit still enabled" \
         "spira-sentinel-test" "$skip_log"
+
+# Restore empty watchers file for subsequent tests.
+printf '# empty\n' > "$FIXTURE/spira/watchers"
 
 # ==========================================================================
 echo

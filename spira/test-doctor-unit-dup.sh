@@ -121,16 +121,18 @@ write_unit "$UNIT_DIR/spira-sentinel.service"      "/harness/spira/sentinel.sh"
 write_unit "$UNIT_DIR/spira-sentinel-prod.service" "/harness/spira/sentinel.sh"
 
 ctrl_out="$(run_doctor)"
-want "positive control: WARN appears for duplicate pair" \
-     "duplicate unit pair" "$ctrl_out"
-want "positive control: plain unit named in warning" \
+# The sentinel uses the unit name as its only concurrency control; a duplicate pair
+# means the mutex is gone. This must be FAIL, not a warning.
+want "positive control: FAIL line for sentinel duplicate pair" \
+     "  FAIL  duplicate unit pair" "$ctrl_out"
+want "positive control: plain unit named in FAIL" \
      "spira-sentinel.service" "$ctrl_out"
-want "positive control: instance unit named in warning" \
+want "positive control: instance unit named in FAIL" \
      "spira-sentinel-prod.service" "$ctrl_out"
 
 # ===========================================================================
 echo
-echo "duplicate case — both plain and instance unit exist: WARN reported:"
+echo "duplicate case — both plain and instance unit exist: FAIL reported:"
 # ===========================================================================
 # Same setup as positive control, but verify nowant on the clean message.
 nowant "duplicate case: 'no duplicate' line absent when pair exists" \

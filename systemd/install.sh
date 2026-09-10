@@ -10,12 +10,13 @@
 #                                                  nothing
 #   ./install.sh [<instance>] --render             show the rendered units on stdout and change
 #                                                  nothing
-#   ./install.sh [<instance>] --no-migrate-watchers  install and enable/restart units but skip
-#                                                  _migrate_legacy, leaving any running watchers
-#                                                  untouched. Use when the migration is unsafe
-#                                                  (e.g., the replacement unit is unstable) and
-#                                                  you still need other unit changes to reach the
-#                                                  box.
+#   ./install.sh [<instance>] --no-migrate-watchers  install and enable/restart units; migrate
+#                                                  non-watcher legacy units normally but skip
+#                                                  only the watcher migration loops, leaving any
+#                                                  running watcher units untouched. The sentinel
+#                                                  and all other non-watcher spira units ARE still
+#                                                  migrated. Spared: spira-watch-* and
+#                                                  spira-watch@* legacy forms only.
 #
 # THE FILES HERE ARE TEMPLATES, NOT UNITS. Every path in them is a placeholder — @SPIRA_HOME@,
 # @SPIRA_DB@ and so on — filled from spira.conf. A unit file with a path baked into it runs on
@@ -618,31 +619,38 @@ _migrate_legacy() {
               printf 'migrated  %s (disabled and removed; superseded by %s)\n' \
                      "$old" "$(inst_name "$old")"; disabled=$((disabled+1)); }
     done
-    # Old per-watcher units also lacked the instance suffix.
-    for _wn in "${_watch_names[@]}"; do
-        old="spira-watch-${_wn}.service"
-        systemctl --user disable --now "$old" 2>/dev/null && \
-            { rm -f "$DEST/$old"
-              printf 'migrated  %s (disabled and removed; superseded by %s)\n' \
-                     "$old" "$(inst_watch_name "$_wn")"; disabled=$((disabled+1)); }
-        # Before per-instance naming, watchers were started via the spira-watch@.service
-        # systemd template, so running units were named spira-watch@<name>.service (with @),
-        # not spira-watch-<name>.service (with hyphen). The hyphen form was never what ran;
-        # both forms must be retired to avoid a surviving instance that holds the work the
-        # new per-instance unit tries to start — which produces a crash-looping new unit
-        # racing a still-running old one.
-        old_at="spira-watch@${_wn}.service"
-        systemctl --user disable --now "$old_at" 2>/dev/null && \
-            { rm -f "$DEST/$old_at"
-              printf 'migrated  %s (disabled and removed; superseded by %s)\n' \
-                     "$old_at" "$(inst_watch_name "$_wn")"; disabled=$((disabled+1)); }
-    done
+    # --no-migrate-watchers spares the per-watcher unit pairs only. Non-watcher units
+    # (sentinel, ops, etc.) are always migrated above because the unit name IS their only
+    # concurrency control: two units with the same ExecStart running simultaneously breaks
+    # the design. Watcher units are spared because a running watcher holds stateful
+    # positions in the output stream; tearing one down mid-operation can lose lines.
+    if [ "$_skip_migrate_watchers" = 1 ]; then
+        printf 'install: --no-migrate-watchers: sparing watcher legacy units (spira-watch-* and spira-watch@*)\n'
+    else
+        # Old per-watcher units also lacked the instance suffix.
+        for _wn in "${_watch_names[@]}"; do
+            old="spira-watch-${_wn}.service"
+            systemctl --user disable --now "$old" 2>/dev/null && \
+                { rm -f "$DEST/$old"
+                  printf 'migrated  %s (disabled and removed; superseded by %s)\n' \
+                         "$old" "$(inst_watch_name "$_wn")"; disabled=$((disabled+1)); }
+            # Before per-instance naming, watchers were started via the spira-watch@.service
+            # systemd template, so running units were named spira-watch@<name>.service (with @),
+            # not spira-watch-<name>.service (with hyphen). The hyphen form was never what ran;
+            # both forms must be retired to avoid a surviving instance that holds the work the
+            # new per-instance unit tries to start — which produces a crash-looping new unit
+            # racing a still-running old one.
+            old_at="spira-watch@${_wn}.service"
+            systemctl --user disable --now "$old_at" 2>/dev/null && \
+                { rm -f "$DEST/$old_at"
+                  printf 'migrated  %s (disabled and removed; superseded by %s)\n' \
+                         "$old_at" "$(inst_watch_name "$_wn")"; disabled=$((disabled+1)); }
+        done
+    fi
     [ "$disabled" -gt 0 ] && \
         printf 'install: migrated %d legacy unit(s) to per-instance naming\n' "$disabled"
 }
-[ "$_skip_migrate_watchers" = 1 ] \
-    && echo "install: --no-migrate-watchers set; skipping legacy watcher migration" \
-    || _migrate_legacy
+_migrate_legacy
 
 # Wait for a running oneshot service to finish before restarting it.
 # A long-running service is not drained — we restart it directly.
