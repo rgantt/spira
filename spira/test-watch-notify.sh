@@ -103,6 +103,18 @@ wd() {
 # chained — `|| echo 0` appends a second line and every comparison against it fails.
 asks() { local n; n="$(grep -c '=== ask' "$ASKS" 2>/dev/null)" || n=0; printf '%s' "$n"; }
 reset() { : > "$A"; : > "$B"; rm -rf "$RUN/watchd"; : > "$ASKS"; }
+# mature_pending — backdate every pending file by 3600 s so any standing event appears
+# older than any threshold used in this suite. Without this, each maturation test must
+# sleep 1 s (threshold=1) per event, which accumulates to more than the 25 s suite timeout.
+# The format is "<line-number> <epoch>", written and read only by cmd_notify in watchd.sh.
+mature_pending() {
+    local d="$RUN/watchd" f apos at
+    for f in "$d/"*.pending; do
+        [ -f "$f" ] || continue
+        read -r apos at < "$f"
+        printf '%s %s\n' "$apos" "$(( at - 3600 ))" > "$f"
+    done
+}
 
 echo "test-watch-notify.sh"
 
@@ -153,14 +165,13 @@ is "and it records where the oldest actionable line is" "2" \
 # `[ "$age" -ge "$SPIRA_NOTIFY_AGE" ]` outright left the suite at 75/75 green, on a mechanism
 # that then escalated on the second pass — five minutes rather than the configured thirty.
 # That is the false-alarm direction (law-alerts-must-be-actionable), so it is the direction
-# worth a positive control. The clock is already stamped here and is one second into 3600.
-sleep 1
+# worth a positive control. The clock is stamped here and the event is zero seconds into 3600.
 notify 3600; rc=$?
 is "a later pass before the threshold is still silent"  "0" "$rc"
 is "and still asks nothing"                            "0" "$(asks)"
 
-sleep 1
-notify 1; rc=$?
+mature_pending
+notify 0; rc=$?
 is "once it has matured, it escalates"                 "1" "$rc"
 is "exactly once"                                      "1" "$(asks)"
 has "and the ask carries the event itself"             "$(cat "$ASKS")" "$FILTER the operator answered"
@@ -216,9 +227,9 @@ is "the clock is gone"  "no" "$([ -e "$RUN/watchd/alpha.pending" ] && echo yes |
 is "and so is the suppression" "no" \
    "$([ -e "$RUN/watchd/notify.escalated" ] && echo yes || echo no)"
 printf '%s a new one, hours later\n' "$FILTER" >> "$A"
-notify 3600
-sleep 1
-notify 1; is "a new backlog escalates"                  "1" "$?"
+notify 0
+mature_pending
+notify 0; is "a new backlog escalates"                  "1" "$?"
 is "and it is a second ask, not a suppressed one"       "2" "$(asks)"
 
 # AND THE SAME EVENT AGAIN, BYTE FOR BYTE — the case the file check above cannot see, and
@@ -228,12 +239,12 @@ is "and it is a second ask, not a suppressed one"       "2" "$(asks)"
 # occurrence entirely, and nothing about it looks wrong from outside.
 reset
 printf '%s the very same line\n' "$FILTER" >> "$A"
-notify 3600; sleep 1; notify 1
+notify 0; mature_pending; notify 0
 is "the first occurrence is escalated"                  "1" "$(asks)"
-wd drain alpha >/dev/null; notify 1
+wd drain alpha >/dev/null; notify 0
 : > "$A"; rm -f "$RUN/watchd/alpha.cursor"
 printf '%s the very same line\n' "$FILTER" >> "$A"
-notify 3600; sleep 1; notify 1
+notify 0; mature_pending; notify 0
 is "and an identical one, after the first was cleared, is heard again" "2" "$(asks)"
 
 # =======================================================================================
@@ -256,10 +267,10 @@ echo
 echo "a second watcher is new information"
 reset
 printf '%s alpha needs you\n' "$FILTER" >> "$A"
-notify 3600; sleep 1; notify 1
+notify 0; mature_pending; notify 0
 is "the first watcher asks"                            "1" "$(asks)"
 printf '%s beta needs you too\n' "$FILTER" >> "$B"
-notify 3600; sleep 1; notify 1; rc=$?
+notify 0; mature_pending; notify 0; rc=$?
 is "and the second one asks as well"                   "2" "$(asks)"
 is "still reporting the condition"                     "1" "$rc"
 has "with both watchers in the report"                 "$(cat "$TMP/out")" "beta"
@@ -273,7 +284,9 @@ echo
 echo "a large backlog is summarised, and says how much it left out"
 reset
 for i in $(seq 1 30); do printf '%s event %s\n' "$FILTER" "$i" >> "$A"; done
-notify 3600; sleep 1; notify 1
+notify 0
+mature_pending
+notify 0
 out="$(cat "$TMP/out")"
 has "the count is stated in full"                      "$out" "30 actionable event(s)"
 n="$(grep -c "    $FILTER event" <<< "$out" || true)"
@@ -304,7 +317,7 @@ is "nor start a clock for a watcher that cannot tick"  "no" \
    "$([ -e "$RUN/watchd/ghost.pending" ] && echo yes || echo no)"
 # The control: the very same pass over the very same manifest still finds a real one.
 printf '%s alpha still needs you\n' "$FILTER" >> "$A"
-notify 0 "$OFFMAN"; sleep 1; notify 0 "$OFFMAN"; rc=$?
+notify 0 "$OFFMAN"; notify 0 "$OFFMAN"; rc=$?
 is "while a watcher that IS installed is still heard"  "1" "$rc"
 is "and escalated"                                     "1" "$(asks)"
 hasnt "with the uninstalled row absent from the report" "$(cat "$TMP/out")" "ghost"
@@ -346,13 +359,14 @@ echo
 echo "a refused escalation is retried, not swallowed"
 reset
 printf '%s the channel is down\n' "$FILTER" >> "$A"
-notify 3600; sleep 1
-NOTIFY_REFUSE=1 notify 1; rc=$?
+notify 0
+mature_pending
+NOTIFY_REFUSE=1 notify 0; rc=$?
 is "an escalation path that refuses is a broken mechanism, not a clean pass" "3" "$rc"
 is "and nothing was recorded as asked"                 "0" "$(asks)"
 is "so no suppression was written" "no" \
    "$([ -e "$RUN/watchd/notify.escalated" ] && echo yes || echo no)"
-notify 1; rc=$?
+notify 0; rc=$?
 is "once the path is repaired the same backlog is delivered" "1" "$rc"
 is "and the event finally reaches somebody"            "1" "$(asks)"
 has "carrying what it was holding all along"           "$(cat "$ASKS")" "the channel is down"
