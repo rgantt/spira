@@ -83,7 +83,7 @@ want "positional sop- key refused"                 "BLOCKED by bd-remember-guard
 out=$(run_guard 'bd remember law-foo "body"' || true)
 want "positional law- key refused"                 "BLOCKED by bd-remember-guard" "$out"
 
-out=$(run_guard 'bd -C /workspaces/spira remember sop-reclaim-loop "text"' || true)
+out=$(run_guard 'bd -C /some/db remember sop-reclaim-loop "text"' || true)
 want "bd -C path remember sop- refused"            "BLOCKED by bd-remember-guard" "$out"
 
 # ==========================================================================
