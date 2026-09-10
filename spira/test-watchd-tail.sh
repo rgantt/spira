@@ -98,7 +98,16 @@ echo "the override transfers the stream"
 p2="$(SPIRA_RUN="$RUN" bash "$WATCHD" tail answers --takeover >"$TMP/a3.out" 2>"$TMP/a3.err" & kids="$kids $!"; echo $!)"
 sleep 3
 is  "the incumbent is gone"                  "no"  "$(kill -0 "$p1" 2>/dev/null && echo yes || echo no)"
-has "and the lock names the challenger"      "$(SPIRA_RUN="$RUN" bash "$WATCHD" tailers)" "answers|$p2|"
+# The takeover completes once p2 has the exclusive flock AND has written its own PID to the
+# lock file.  On a loaded machine that two-step can lag behind the sleep above, so poll
+# rather than asserting at a single point in time.
+_tailers_got=""; _tailers_t=0
+while [ "$_tailers_t" -lt 8 ]; do
+    _tailers_got="$(SPIRA_RUN="$RUN" bash "$WATCHD" tailers 2>/dev/null)"
+    case "$_tailers_got" in *"answers|$p2|"*) break ;; esac
+    sleep 1; _tailers_t=$((_tailers_t+1))
+done
+has "and the lock names the challenger"      "$_tailers_got" "answers|$p2|"
 # THE REAL PROOF OF A TAKEOVER is the next event, not the pid in the lock file. The incumbent's
 # `tail` and `awk` survive their wrapper and go on delivering; a takeover that killed only the
 # wrapper would show a clean lock here and still hand this line to two readers.
