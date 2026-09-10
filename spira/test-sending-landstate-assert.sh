@@ -53,13 +53,28 @@ mkdir -p "$RUN/worktree" "$RUN/landstate"
 
 HOME_REPO="$(basename "$REPO")"
 
-# sp-noland: a branch fully contained by main (an ancestor), with NO landstate record.
-# This is the sp-qj8n shape: content on the base but landing.sh never saw the branch.
-git -C "$REPO" branch spira/sp-noland main
+# sp-noland: a branch carrying a commit whose content is already on origin/main (squash-merged
+# under a different commit), with NO landstate record. This is the sp-qj8n shape: content on
+# the base but landing.sh never saw the branch. content_landed returns true for this branch,
+# which triggers the assertion path in sending.sh.
+git -C "$REPO" checkout -q -b spira/sp-noland
+printf 'sp-noland content\n' > "$REPO/sp-noland.txt"
+git -C "$REPO" add sp-noland.txt && git -C "$REPO" commit -q -m "sp-noland: add content"
+git -C "$REPO" checkout -q main
+printf 'sp-noland content\n' > "$REPO/sp-noland.txt"
+git -C "$REPO" add sp-noland.txt && git -C "$REPO" commit -q -m "squash sp-noland"
 
-# sp-haslot: a branch also fully contained by main, but WITH a landstate record.
-# This is the normal path: landing.sh processed and landed the work.
-git -C "$REPO" branch spira/sp-haslot main
+# sp-haslot: same squash-merged shape, but WITH a landstate record (the normal path:
+# landing.sh processed this branch and wrote the record before the Sending cleaned it up).
+git -C "$REPO" checkout -q -b spira/sp-haslot
+printf 'sp-haslot content\n' > "$REPO/sp-haslot.txt"
+git -C "$REPO" add sp-haslot.txt && git -C "$REPO" commit -q -m "sp-haslot: add content"
+git -C "$REPO" checkout -q main
+printf 'sp-haslot content\n' > "$REPO/sp-haslot.txt"
+git -C "$REPO" add sp-haslot.txt && git -C "$REPO" commit -q -m "squash sp-haslot"
+
+git -C "$REPO" push -q origin main
+
 printf 'LANDED %s %s %s\n' \
     "$(git -C "$REPO" rev-parse spira/sp-haslot)" \
     "$(date +%s)" fixture-repo > "$RUN/landstate/sp-haslot"
