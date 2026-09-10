@@ -226,7 +226,17 @@ def self_closed_ids(path):
 
 
 def verdicts(cfg, rows, mark):
-    """Closes made BY THE OPERATOR since the mark. [(ts, id, title, reason), ...]"""
+    """Closes made BY THE OPERATOR since the mark.
+
+    Returns [(ts, id, title, reason, is_rejection), ...] where is_rejection is True when the
+    operator dismissed the bead as not theirs to decide. A rejected premise must never render
+    as RYAN ANSWERED -- the scar is answered-since.sh announcing four dismissals as affirmations
+    on 2026-09-10, prompting a session to enact statutes for things Ryan had refused to be
+    asked about (sp-kw9bo, escalation-taxonomy-2026-09-09.md §3).
+
+    Detection uses the `premise-rejected` label OR a `premise-rejected:` prefix on the
+    close_reason, both of which the panel sets when the operator presses `p`.
+    """
     ask, overseer = cfg["ask_label"], "overseer"
     mine = self_closed_ids(cfg.get("self_closed"))
     cands = []
@@ -252,8 +262,11 @@ def verdicts(cfg, rows, mark):
         if closed_by(cfg, ident) != cfg["operator_actor"]:
             continue
         reason = (r.get("close_reason") or "").strip() or "(closed with no reason given)"
+        labels = set(r.get("labels") or [])
+        is_rejection = ("premise-rejected" in labels
+                        or reason.startswith("premise-rejected:"))
         out.append((r.get("closed_at") or r.get("updated_at") or "",
-                    ident, (r.get("title") or "")[:90], reason))
+                    ident, (r.get("title") or "")[:90], reason, is_rejection))
     out.sort()
     return out
 
@@ -330,7 +343,7 @@ def main():
             vmark.write([], now)
         else:
             vs = verdicts(cfg, rows, vmark)
-            vmark.write([(t, i) for t, i, _, _ in vs], now)
+            vmark.write([(t, i) for t, i, _, _, _ in vs], now)
     if cmark is not None:
         if cmark.fresh():
             cmark.write([], now)
@@ -343,9 +356,18 @@ def main():
             return 0
         print("## %s spoke while you were away (%d)" % (who.title(), len(vs) + len(cs)))
         print()
-        for ts, ident, title, reason in vs:
-            print("- **verdict on `%s`** (%s) — %s" % (ident, ts[:16].replace("T", " "), title))
-            print("  > %s" % reason.replace("\n", "\n  > "))
+        for ts, ident, title, reason, is_rejection in vs:
+            stamp = ts[:16].replace("T", " ")
+            if is_rejection:
+                why = reason[len("premise-rejected:"):].strip() if reason.startswith("premise-rejected:") else reason
+                print("- **PREMISE REJECTED on `%s`** (%s) — %s" % (ident, stamp, title))
+                body = "not his to decide; proceed on your default"
+                if why:
+                    body = "%s. reason: %s" % (body, why)
+                print("  > %s" % body.replace("\n", "\n  > "))
+            else:
+                print("- **verdict on `%s`** (%s) — %s" % (ident, stamp, title))
+                print("  > %s" % reason.replace("\n", "\n  > "))
         for ts, ident, title, text, _ in cs:
             print("- **comment on `%s`** (%s) — %s" % (ident, ts[:16].replace("T", " "), title))
             print("  > %s" % text.replace("\n", "\n  > "))
@@ -354,9 +376,15 @@ def main():
         print("generalises, enact it as a statute in this session.")
         return 0
 
-    for ts, ident, title, reason in vs:
-        print("%s ANSWERED %s — %s" % (who, ident, title), flush=True)
-        print("  verdict: %s" % reason, flush=True)
+    for ts, ident, title, reason, is_rejection in vs:
+        if is_rejection:
+            why = reason[len("premise-rejected:"):].strip() if reason.startswith("premise-rejected:") else reason
+            print("%s REJECTED THE PREMISE %s — not his to decide; proceed on your default" % (who, ident), flush=True)
+            if why:
+                print("  reason: %s" % why, flush=True)
+        else:
+            print("%s ANSWERED %s — %s" % (who, ident, title), flush=True)
+            print("  verdict: %s" % reason, flush=True)
     for ts, ident, title, text, _ in cs:
         print("%s COMMENTED ON %s — %s" % (who, ident, title), flush=True)
         for line in text.splitlines() or [""]:
