@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 #
-# test-ask-law.sh — ask.sh law files a bead the panel can enact; label and format verified.
+# test-ask-law.sh — ask.sh law files a bead the panel can enact; label, format and body verified.
 #
-# THE SCAR. Four statute proposals were accepted at 04:11 on 2026-09-10 but nothing enacted
-# them — acceptance depended on an agent remembering to run rule.sh by hand. The fix is
+# THE SCAR (labels). Four statute proposals were accepted at 04:11 on 2026-09-10 but nothing
+# enacted them — acceptance depended on an agent remembering to run rule.sh by hand. The fix is
 # ask-law: the panel runs rule.sh enact itself. But the panel can only do that if the bead
 # carries the right labels. A label mismatch is silent at filing time and catastrophic at
 # acceptance time. (sp-zumrf)
 #
-# WHAT IS UNDER TEST. ask.sh law must file a bead with label `ask-law` (so the panel routes
-# it to the enact/amend/decline path) and must NOT carry `ask-decision` or `ask-question`
-# (which route to the close-with-verdict path, which does not call rule.sh).
+# THE SCAR (body). A law proposal titled with 70 words of statute and no decision line in the
+# body caused the operator to answer "yes? this seems good. i don't know what i'm supposed to
+# decide here." The body must lead with the decision and its default so the operator knows what
+# they are being asked before reading the statute text. (sp-t4506, sp-y73fp)
+#
+# WHAT IS UNDER TEST.
+#   1. ask.sh law must file a bead with label `ask-law` (panel routing).
+#   2. The rendered body must lead with the decision question and a default.
+#   3. The statute text must appear in the body (operator can read it without squinting at title).
+#   4. ask.sh law without --default still emits a sensible default ("yes — enact it").
 #
 # PAIRS (law-absence-needs-a-positive-control): every negative assertion is paired with a
 # positive one so a broken path that produces nothing still looks like a test failure.
@@ -69,6 +76,58 @@ if [ -n "$id" ]; then
     ok "bead id extracted from output ($id)"
 else
     bad "bead id extracted from output" "got: $out"
+fi
+
+# ======================================================================================
+echo
+echo "body leads with decision question and default"
+# ======================================================================================
+# THE REGRESSION. sp-t4506 was filed with the statute as the title and no decision line in
+# the body — the operator answered "i don't know what i'm supposed to decide here." The body
+# must lead with "Enact this statute?" before anything else.
+if [ -n "$id" ]; then
+    body="$(bdt show "$id" --json | python3 -c \
+        'import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d.get("description",""))')"
+
+    # NEGATIVE CONTROL: file a bead with the old broken structure (no decision line).
+    # The test expects the new structure, so this body is distinct and confirms the check is real.
+    nowant "body does not contain 'What is blocked'" "What is blocked" "$body"
+
+    # POSITIVE CONTROL: the new structure must be present.
+    want "body leads with Enact decision question" "Enact this statute?" "$body"
+    want "body contains Default line"              "Default:"            "$body"
+    want "body contains statute text"             "$STATUTE"            "$body"
+    want "body contains enact verdict option"     "enact"               "$body"
+    want "body contains amend verdict option"     "amend"               "$body"
+    want "body contains decline verdict option"   "decline"             "$body"
+
+    # Decision line must appear before statute text — operator reads top-down.
+    decision_pos="${body%%Enact this statute?*}"
+    statute_pos="${body%%${STATUTE}*}"
+    if [ "${#decision_pos}" -lt "${#statute_pos}" ]; then
+        ok "decision line appears before statute text in body"
+    else
+        bad "decision line appears before statute text in body" \
+            "decision at offset ${#decision_pos}, statute at offset ${#statute_pos}"
+    fi
+fi
+
+# ======================================================================================
+echo
+echo "body default is 'yes — enact it' when --default is omitted"
+# ======================================================================================
+out_nodflt="$(ask law "slug-nodefault: Never omit the default." 2>&1)"; rc_nodflt=$?
+is "law without --default exits 0" "0" "$rc_nodflt"
+id_nodflt="$(printf '%s' "$out_nodflt" | grep -oE '\[[a-z]+-[a-z0-9]+\]' | tr -d '[]' | head -1)"
+if [ -n "$id_nodflt" ]; then
+    body_nodflt="$(bdt show "$id_nodflt" --json | python3 -c \
+        'import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d.get("description",""))')"
+    want "omitted --default renders 'yes' default"        "yes"        "$body_nodflt"
+    want "omitted --default still has decision question"  "Enact this" "$body_nodflt"
+else
+    bad "omitted --default: bead id not found"  "got: $out_nodflt"
+    bad "omitted --default renders 'yes' default" "skipped" "bead creation failed"
+    bad "omitted --default still has decision question" "skipped" "bead creation failed"
 fi
 
 # ======================================================================================

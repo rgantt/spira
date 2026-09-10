@@ -91,6 +91,30 @@ strip_warn() { grep -vE '^(warning:|  Fix:|  Or:)'; }
 # stored, which cannot be rewritten.
 compose() { # kind why default evidence from
     local kind="$1" why="$2" dflt="$3" ev="${4:-}" from="${5:-}" body=""
+    if [ "$kind" = law ]; then
+        # A LAW PROPOSAL LEADS WITH THE DECISION AND ITS DEFAULT. The operator reads the pane
+        # top-to-bottom; a body that opens with statute text forces them to read the whole thing
+        # before knowing what they are being asked. The first line states the question and the
+        # default so the answer is ready before the reading begins.
+        # The default is supplied by the caller (always "yes — enact it" for law proposals filed
+        # without --default), so an empty dflt here is a caller bug rather than a valid state.
+        body="**Enact this statute?** Default: ${dflt:-yes — enact it}."$'\n\n'
+        [ -n "${STATUTE_TEXT:-}" ] && \
+            body="${body}**Statute:**"$'\n\n'"${STATUTE_TEXT}"$'\n\n'
+        [ -n "$why" ] && \
+            body="${body}**Context:** ${why}"$'\n\n'
+        [ -n "$ev" ] && \
+            body="${body}**Evidence**"$'\n'"\`\`\`"$'\n'"${ev}"$'\n'"\`\`\`"$'\n\n'
+        [ -n "${MOOT_WHEN:-}" ] && \
+            body="${body}MOOT-WHEN: ${MOOT_WHEN}"$'\n\n'
+        # THREE VERDICTS, executed by the panel against the statute book.
+        body="${body}_Filed by the brain session. Verdict in the cockpit pane (⏎ to type):_"$'\n'
+        body="${body}_• **enact** — writes the statute and closes this bead_"$'\n'
+        body="${body}_• **amend: \<new text\>** — replaces the statute text before enacting_"$'\n'
+        body="${body}_• **decline** — closes without enacting_"
+        printf '%s' "$body"
+        return
+    fi
     [ -n "$dflt" ] && body="${body}**Default — what I would do:** ${dflt}"$'\n\n'
     if [ -n "$why" ]; then
         case "$kind" in
@@ -177,6 +201,7 @@ create() { # type text why default labels
     [ "$kind" = ask ] && case ",$labels," in
         *,insight,*)  kind=insight ;;
         *,ask-suit,*) kind=suit ;;
+        *,ask-law,*)  kind=law ;;
     esac
     # THE ID COMES FROM `--json`, NEVER FROM A GREP OVER THE HUMAN OUTPUT.
     #
@@ -287,9 +312,12 @@ decide|decision)
 
 law|propose-law)
     # A law proposal whose body carries the statute text ready to enact.
-    # Title format: "<slug>: <statute text>" — the panel's parse_enact splits on the first colon.
-    # --why carries context for the operator (why this statute is needed).
-    # No --default: the panel offers enact / amend-and-enact / decline, not a binary yes/no.
+    # Title format: "<slug>: <statute text>" — the panel's parse_enact splits on the first colon
+    # to extract the slug and statute text it passes to rule.sh. The title keeps the full form
+    # so the panel can work without parsing the body.
+    # --default: if omitted, defaults to "yes — enact it". A law proposal without a recommended
+    # verdict leaves the operator deciding from scratch, which is what the escalation policy
+    # exists to prevent (law-escalate-decisions-not-problems).
     shift; text="${1:?usage: ask.sh law \"<slug>: <statute text>\" [--why \"<context>\"]}"; shift || true
     require_title "$text"
     parse_opts "$@"
@@ -298,7 +326,14 @@ law|propose-law)
         *:*) ;;
         *) echo "ask: law proposal must be '<slug>: <statute text>' — the panel splits on the first colon" >&2; exit 1 ;;
     esac
-    id=$(create decision "$text" "$WHY" "" "$SPIRA_ASK_LABEL,overseer,ask-law") || exit 1
+    # Default: enact it. The rendered body must lead with the decision and its default so the
+    # operator knows what they are being asked in the first line (law-escalate-decisions-not-problems).
+    [ -z "$DFLT" ] && DFLT="yes — enact it"
+    # Extract the statute text (everything after the first ": ") for the body. The title keeps
+    # the full "<slug>: <statute>" form so the panel's parse_enact can still find both parts.
+    STATUTE_TEXT="${text#*: }"
+    export STATUTE_TEXT
+    id=$(create decision "$text" "$WHY" "$DFLT" "$SPIRA_ASK_LABEL,overseer,ask-law") || exit 1
     echo "law [$id] $text"
     ;;
 
