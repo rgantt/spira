@@ -66,11 +66,11 @@ echo "POSITIVE CONTROL — exact invocation that closed 44 beads with close_reas
 # aeon-shiva used this form to close sp-vws3h (commit 5cm1a8a0, 2026-09-09 12:41:07).
 # This must fire; silence here means the guard could never have caught those 44 beads.
 
-out=$(run_guard 'bd -C /workspaces/spira update sp-vws3h --status closed' || true)
+out=$(run_guard 'bd -C /tmp/db update sp-abc --status closed' || true)
 want "bd update --status closed refused in aeon"         "BLOCKED by bd-update-closed-guard" "$out"
 want "names bd close as the correct tool"                "bd close"                           "$out"
 want "names BD_UPDATE_CLOSED_OVERRIDE"                   "BD_UPDATE_CLOSED_OVERRIDE"          "$out"
-rc=0; run_guard 'bd -C /workspaces/spira update sp-vws3h --status closed' >/dev/null 2>&1 || rc=$?
+rc=0; run_guard 'bd -C /tmp/db update sp-abc --status closed' >/dev/null 2>&1 || rc=$?
 wantrc "guard exits 2 to block the tool call"            2                                    "$rc"
 
 # Short-path bd (no -C, no absolute path)
@@ -78,7 +78,7 @@ out=$(run_guard 'bd update sp-abc --status closed' || true)
 want "short-path bd update refused"                      "BLOCKED by bd-update-closed-guard" "$out"
 
 # Absolute path to bd binary
-out=$(run_guard '/workspaces/gt/settings/bin/bd update sp-abc --status closed' || true)
+out=$(run_guard '/usr/local/bin/bd update sp-abc --status closed' || true)
 want "absolute-path bd update refused"                   "BLOCKED by bd-update-closed-guard" "$out"
 
 # With env var prefix (BEADS_ACTOR=aeon-foo)
@@ -94,7 +94,7 @@ echo
 echo "NEGATIVE CONTROL — bd close is the sanctioned path and must not be blocked"
 # ==========================================================================
 
-out=$(run_guard 'bd -C /workspaces/spira close sp-abc --reason-file -' || true)
+out=$(run_guard 'bd -C /tmp/db close sp-abc --reason-file -' || true)
 nowant "bd close --reason-file - not blocked"            "BLOCKED"                           "$out"
 
 out=$(run_guard 'bd close sp-abc --reason "done"' || true)
