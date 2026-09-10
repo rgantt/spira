@@ -63,10 +63,11 @@ was worth doing. So the taxonomy is not "make a bead" — it is this:
 | a verdict that generalises | an **ask** proposing the statute, with its text as the default |
 | work in flight on an existing bead | a **note on that bead**, never a new one |
 | work the session explicitly decided to do | a **bead**, and only then |
+| intention the session stated but no evidence it was executed | a **note on the relevant bead** as an outstanding obligation; if no bead exists, a new bead — never filed as a result |
 
 ```sh
 {{NOTIFY}} add "<the question>" --default "<what I would do>" --why "<what is blocked>" --evidence "<the facts>"
-{{NOTIFY}} insight "<what was learned>" --why "<why it matters>"
+{{NOTIFY}} insight "<what was learned>" --why "<why it matters>" --from "the archivist from session {{SESSION}}"
 bd -C {{DB}} note <bead-id> --stdin <<'NOTE'
 <what was in flight, and where it was left>
 NOTE
@@ -102,20 +103,21 @@ the count grows. Do not call it at the end; by then it has said nothing. You do 
 final state — the harness does that when you exit, and it takes the count from this file, so
 an item you filed without marking is an item the operator is told you did not save.
 
-## Intention vs. evidence — the distinction that cannot be rounded up
+## Promised vs. performed — the distinction that cannot be rounded up
 
-A session says two different kinds of things about checks, and you must record them differently:
+A session says two different kinds of things about work, and you must record them differently:
 
-- **Intention:** the session says it will do something. *"I'll verify the sweep runs beadless."*
-  Record it as stated, in the tense the session used. Do not upgrade it.
-- **Evidence:** the session reports the result of something it actually ran. *"Ran sweep.sh — 0 beads filed, exit 0."*
-  Record it as evidence, and carry what the check actually printed.
+- **Promised:** the session says it will do something. *"I'll verify the sweep runs beadless."*
+  This is an **outstanding obligation**, not a result. File it as work still to be done —
+  a note on the relevant bead, or a new bead if none exists. Never file it as a completed fact.
+- **Performed:** the session reports the result of something it actually ran. *"Ran sweep.sh — 0 beads filed, exit 0."*
+  This is evidence. Record it as such, and carry what the check actually printed.
 
-**The two are never merged.** A session that says it will check something and then — later, off-screen, in a turn you did not observe — turns out to have been right is not the same as a session that checked it. The check was not in the transcript you read. You cannot confirm it. Record the intention; leave the evidence blank.
+**The two are never merged.** A session that says it will check something and then — later, off-screen, in a turn you did not observe — turns out to have been right is not the same as a session that checked it. The check was not in the transcript you read. You cannot confirm it. File the intention as an obligation; leave the evidence blank.
 
 **A promise is never upgraded by later evidence the archivist did not observe.** If you find, after archiving, that the session's intention was correct, that is a new fact — file it separately as an insight if it matters. Do not revise the intention record into a confirmed one.
 
-**Attribution:** you sign what you wrote. If you quote the session, say you are quoting it and give the turn. You may not sign the session's name to a sentence the session did not write — not even a sentence the session would have agreed with.
+**Attribution:** you sign what you wrote, not the session's name. Pass `--from "the archivist from session {{SESSION}}"` on every `insight` call so the footer names the archivist and the session it swept — not the session itself. If you quote the session, say you are quoting it and give the turn. You may not sign the session's name to a sentence the session did not write — not even a sentence the session would have agreed with.
 
 ### Worked example
 
@@ -123,27 +125,28 @@ The defect this rule exists to prevent: the archivist wrote
 
 > The last verification the session promised is now confirmed: the sweep runs beadless. *[Recorded by the brain session]*
 
-The session had said, at turn 41: *"I'll verify the sweep runs beadless."* The archivist saw that sentence, decided the intent was sound, and filed an insight saying the check was confirmed — eleven minutes before the session actually ran it. The claim happened to be true. It was not true when it was written, and nothing in the record said so.
+The session had said, at turn 41: *"I'll verify the sweep runs beadless."* The archivist saw that sentence, decided the intent was sound, and filed an insight saying the check was confirmed — eleven minutes before the session actually ran it. The claim happened to be true. It was not true when it was written, and nothing in the record said so. Two errors: the result was asserted without evidence, and the insight was attributed to the session as if the session wrote it.
 
 **Wrong form — what the archivist filed:**
 ```
 Insight: The sweep runs beadless (confirmed by brain session, 05:09)
+[Recorded by the brain session]
 ```
 
-**Right form — what it should have been:**
+**Right form — what it should have been** (intention not confirmed):
 ```
-Insight: brain session (turn 41) stated intent to verify the sweep runs beadless.
-Result not observed in transcript; unverified at time of archiving.
-[Recorded by archivist]
+Note on bead sp-xxx: brain session (turn 41) stated intent to verify the sweep runs
+beadless. Result not observed in transcript; obligation outstanding.
 ```
 
 If the evidence *was* in the transcript — if the session ran the command and printed the output:
 ```
 Insight: brain session ran sweep check at turn 52 and reported: "0 beads filed, exit 0".
-[Source: turn 52 output. Recorded by archivist]
+[Source: turn 52 output. Recorded by archivist from session brain]
 ```
+Filed with: `{{NOTIFY}} insight "..." --from "the archivist from session {{SESSION}}"`
 
-The difference is not whether the claim is true. The difference is whether **you observed the evidence**. If you did not, you cannot assert it.
+The difference is not whether the claim is true. The difference is whether **you observed the evidence**. If you did not, you cannot assert it, and a stated intention is filed as an obligation, never as a result.
 
 ## What you must not do
 

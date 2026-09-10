@@ -4,7 +4,7 @@
 #
 #   ask.sh add "<question>"        [--why "<what is blocked>"] [--default "<what I'd do>"] [--moot-when "<cmd>"]
 #   ask.sh decide "<the choice>"   [--why ...] [--default ...]
-#   ask.sh insight "<what was learned>" [--why "<why it matters>"]
+#   ask.sh insight "<what was learned>" [--why "<why it matters>"] [--from "<who is recording>"]
 #   ask.sh note "<what happened>" --kind <event.kind> [--why ...] [--target <bead>]
 #   ask.sh list [needs-you|insights|events|all]
 #   ask.sh answered <bead-id> "<verdict>"
@@ -86,8 +86,8 @@ strip_warn() { grep -vE '^(warning:|  Fix:|  Or:)'; }
 # So the trailer is kind-dependent: an ask says how to answer it, a record says nothing is
 # owed. `$1` is the kind, and the pane strips the old wording from the insights already
 # stored, which cannot be rewritten.
-compose() { # kind why default evidence
-    local kind="$1" why="$2" dflt="$3" ev="${4:-}" body=""
+compose() { # kind why default evidence from
+    local kind="$1" why="$2" dflt="$3" ev="${4:-}" from="${5:-}" body=""
     [ -n "$dflt" ] && body="${body}**Default — what I would do:** ${dflt}"$'\n\n'
     if [ -n "$why" ]; then
         case "$kind" in
@@ -117,7 +117,8 @@ compose() { # kind why default evidence
         # every insight ever recorded came to open with "**What is blocked:**".
         body="${body}_An outcome, recorded by the machinery. Nothing is owed and there is no thread._"
     elif [ "$kind" = insight ]; then
-        body="${body}_Recorded by the brain session. Nothing is owed — this is a record, not a_"$'\n'
+        local recorder="${from:-brain session}"
+        body="${body}_Recorded by ${recorder}. Nothing is owed — this is a record, not a_"$'\n'
         body="${body}_request. Press \`d\` in the cockpit pane to dismiss it; \`h\` brings it back._"
     else
         body="${body}_Filed by the brain session. Answer inline in the cockpit pane, or:_"$'\n'
@@ -175,7 +176,7 @@ create() { # type text why default labels
     # sp-pane EPIC, its three labels and all seven of its dependency edges. Restored from
     # Dolt history; nothing about the command said it had addressed the wrong bead.
     out=$(bdt create --title "$text" --type "$type" -p "$prio" \
-            --labels "$labels" -d "$(compose "$kind" "$why" "$dflt" "$EV")" \
+            --labels "$labels" -d "$(compose "$kind" "$why" "$dflt" "$EV" "${FROM:-}")" \
             ${extra+"${extra[@]}"} --json 2>&1)
     id=$(python3 -c '
 import json, re, sys
@@ -198,8 +199,8 @@ for line in t.splitlines():
     printf '%s' "$id"
 }
 
-parse_opts() { # sets WHY / DFLT / KIND / TARGET / MOOT_WHEN from remaining args
-    WHY=""; DFLT=""; EV=""; KIND=""; TARGET=""; MOOT_WHEN=""
+parse_opts() { # sets WHY / DFLT / KIND / TARGET / MOOT_WHEN / FROM from remaining args
+    WHY=""; DFLT=""; EV=""; KIND=""; TARGET=""; MOOT_WHEN=""; FROM=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --why)     WHY="${2:-}"; shift 2 ;;
@@ -219,6 +220,10 @@ parse_opts() { # sets WHY / DFLT / KIND / TARGET / MOOT_WHEN from remaining args
             # A shell command exiting 0 when the condition that fired this alert has cleared.
             # moot-sweep.sh runs it on a timer and resolves the ask without human involvement.
             --moot-when) MOOT_WHEN="${2:-}"; shift 2 ;;
+            # --from overrides the default "brain session" attribution in insight footers.
+            # The archivist uses this to sign as "the archivist from session <name>" rather
+            # than appearing to be the session it swept.
+            --from)    FROM="${2:-}"; shift 2 ;;
             *) shift ;;
         esac
     done
