@@ -322,6 +322,8 @@ fn section(it: &Item) -> &'static str {
         // condition rather than a request. Prefix-matched because the badge carries the flap
         // count — "alert ×3".
         "the condition"
+    } else if it.badge == "law proposal" {
+        "the statute"
     } else if it.badge == "decision" {
         "the decision"
     } else if it.badge == "task" {
@@ -482,7 +484,12 @@ pub fn reader(
     // including insights — where the key is not even bound, so the one affordance saying
     // loudest that a record wanted an answer also did nothing when pressed. It now names what
     // ⏎ actually does here, and on a notification it names nothing because ⏎ does nothing.
+    let is_law = crate::model::is_ask_law(it);
     let enter = match view {
+        View::Decisions if is_law => format!(
+            " · {}e{} enact · {}E{} amend+enact · {}d{} decline · {}c{} comment",
+            KEY, BAR, KEY, BAR, KEY, BAR, KEY, BAR
+        ),
         View::Decisions => format!(
             " · {}⏎{} decide · {}p{} reject · {}c{} comment",
             KEY, BAR, KEY, BAR, KEY, BAR
@@ -650,6 +657,10 @@ pub fn input_label(mode: Option<&str>) -> Option<&'static str> {
         "comment" => "comment",
         "decide" => "verdict",
         "enact" => "statute",
+        // amend: operator is rewriting the proposed statute text before enacting.
+        "amend" => "amended statute",
+        // decline: optional training signal (why this law was not needed).
+        "decline" => "why declined (optional)",
         // THE WHY IS THE TRAINING SIGNAL. A key that prompts "reason" over a rejection
         // reads the same as the one that prompts for a verdict, which is exactly the
         // confusion that made dismissals look like answers.
@@ -1001,22 +1012,27 @@ fn footer(f: &Frame, pos: usize, total: usize) -> String {
     let mut s = format!(" {} · {}d{} {}", where_, KEY, BAR, f.view.verb(f.dismissed));
     match f.view {
         View::Decisions => {
-            // `a` is only offered when there is actually a default to accept — a key
-            // advertised on an item it cannot act on teaches you to distrust the footer.
-            let has_default = f
-                .items
-                .as_ref()
-                .ok()
-                .and_then(|v| v.get(f.sel))
-                .map(|it| !it.lead.is_empty())
-                .unwrap_or(false);
-            if has_default {
-                s.push_str(&format!(" · {}a{} accept default", KEY, BAR));
+            let cur = f.items.as_ref().ok().and_then(|v| v.get(f.sel));
+            let is_law = cur.map(crate::model::is_ask_law).unwrap_or(false);
+            if is_law {
+                // Law proposals: enact runs rule.sh; amend opens the editor with the title;
+                // d declines without touching the statute book.
+                s.push_str(&format!(
+                    " · {}e{} enact · {}E{} amend+enact · {}d{} decline · {}c{} comment",
+                    KEY, BAR, KEY, BAR, KEY, BAR, KEY, BAR
+                ));
+            } else {
+                // `a` is only offered when there is actually a default to accept — a key
+                // advertised on an item it cannot act on teaches you to distrust the footer.
+                let has_default = cur.map(|it| !it.lead.is_empty()).unwrap_or(false);
+                if has_default {
+                    s.push_str(&format!(" · {}a{} accept default", KEY, BAR));
+                }
+                s.push_str(&format!(
+                    " · {}⏎{} decide · {}p{} reject · {}c{} comment",
+                    KEY, BAR, KEY, BAR, KEY, BAR
+                ));
             }
-            s.push_str(&format!(
-                " · {}⏎{} decide · {}p{} reject · {}c{} comment",
-                KEY, BAR, KEY, BAR, KEY, BAR
-            ));
         }
         // NO `a accept default` AND NO `⏎ decide` HERE, ever — those are the two keys that
         // made the view read as a queue of asks. `h` is the retrieval half of dismissal: an

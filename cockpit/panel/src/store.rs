@@ -811,6 +811,8 @@ pub fn view_items(
                         r["event_kind"].as_str().unwrap_or("event")
                     } else if l.contains(&"insight") {
                         "insight"
+                    } else if l.contains(&"ask-law") {
+                        "law proposal"
                     } else if l.contains(&"ask-decision") {
                         "decision"
                     } else if l.contains(&"ask-task") {

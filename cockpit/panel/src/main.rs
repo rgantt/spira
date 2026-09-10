@@ -46,7 +46,7 @@ mod store;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal;
-use model::{act, comment, enact, reject_premise, Act, Item, View};
+use model::{act, comment, decline_law, enact, enact_law, is_ask_law, reject_premise, Act, Item, View};
 use render::{frame, Frame};
 use std::io::{stdout, Write};
 use std::sync::{Arc, Mutex};
@@ -528,6 +528,71 @@ impl App {
         let n = self.items().map(|v| v.len()).unwrap_or(0);
         self.sel = self.sel.min(n.saturating_sub(1));
     }
+
+    /// Enact a law proposal from the panel.
+    ///
+    /// When `input` is empty, the title is used verbatim (`<slug>: <statute>`). When the
+    /// operator typed an amendment (`E` key), `input` carries the edited text. The bead is
+    /// closed only when `rule.sh enact` succeeds; a failed enact leaves it open and surfaces
+    /// the refusal so the operator can amend and retry (law-absence-needs-a-positive-control).
+    fn do_enact_law(&mut self, input: &str) {
+        let Some(it) = self.current() else { return };
+        let (errors, inflight, shared, unhide) = (
+            Arc::clone(&self.errors),
+            Arc::clone(&self.inflight),
+            Arc::clone(&self.shared),
+            Arc::clone(&self.unhide),
+        );
+        self.pending.push((it.id.clone(), store::Expect::Closed));
+        self.pending_rev = self.pending_rev.wrapping_add(1);
+        self.flash = format!("enacting law proposal {}…", it.id);
+        let raw = input.to_string();
+        let draft = Arc::clone(&self.draft);
+        *inflight.lock().unwrap() += 1;
+        thread::spawn(move || {
+            match enact_law(&it, &raw) {
+                Err(e) => {
+                    errors.lock().unwrap().push(format!("{}: {e}", it.id));
+                    unhide.lock().unwrap().push(it.id.clone());
+                    // Keep the draft so `E` can hand it back.
+                    if !raw.trim().is_empty() {
+                        *draft.lock().unwrap() = Some(raw);
+                    }
+                }
+                Ok(()) => *draft.lock().unwrap() = None,
+            }
+            *inflight.lock().unwrap() -= 1;
+            store::refresh(&shared);
+        });
+        let n = self.items().map(|v| v.len()).unwrap_or(0);
+        self.sel = self.sel.min(n.saturating_sub(1));
+    }
+
+    /// Decline a law proposal: close without touching the statute book.
+    fn do_decline_law(&mut self, why: &str) {
+        let Some(it) = self.current() else { return };
+        self.pending.push((it.id.clone(), store::Expect::Closed));
+        self.pending_rev = self.pending_rev.wrapping_add(1);
+        self.flash = format!("declined law proposal {}", it.id);
+        let (errors, inflight, shared, unhide) = (
+            Arc::clone(&self.errors),
+            Arc::clone(&self.inflight),
+            Arc::clone(&self.shared),
+            Arc::clone(&self.unhide),
+        );
+        let why = why.to_string();
+        *inflight.lock().unwrap() += 1;
+        thread::spawn(move || {
+            if let Err(e) = decline_law(&it, &why) {
+                errors.lock().unwrap().push(format!("{}: {e}", it.id));
+                unhide.lock().unwrap().push(it.id.clone());
+            }
+            *inflight.lock().unwrap() -= 1;
+            store::refresh(&shared);
+        });
+        let n = self.items().map(|v| v.len()).unwrap_or(0);
+        self.sel = self.sel.min(n.saturating_sub(1));
+    }
 }
 
 /// The close reason `d` records, which only two of the four views have one to record.
@@ -799,10 +864,15 @@ fn main() {
                     // "premise-rejected". Every other mode requires text before acting.
                     if m == "premise" {
                         app.do_reject_premise(&v);
+                    } else if m == "decline" {
+                        // decline accepts empty why — it is optional.
+                        app.do_decline_law(&v);
                     } else if !v.is_empty() {
                         match m.as_str() {
                             "comment" => app.do_comment(&v),
                             "enact" => app.do_enact(&v),
+                            // amend-and-enact: the edited text replaces the proposed title.
+                            "amend" => app.do_enact_law(&v),
                             // decide and reason both close; the text is the record.
                             _ => app.do_act(&v, Act::Primary),
                         }
@@ -815,7 +885,7 @@ fn main() {
                     // cancelling a paragraph written with the insight in view costs the
                     // paragraph, and a fat-fingered esc would then be the most expensive key
                     // in the pane. `L` hands it straight back.
-                    if m == "enact" && !app.buf.trim().is_empty() {
+                    if (m == "enact" || m == "amend") && !app.buf.trim().is_empty() {
                         *app.draft.lock().unwrap() = Some(app.buf.clone());
                         app.flash = "draft kept — L to resume".into();
                     }
@@ -883,13 +953,23 @@ fn main() {
                     app.scroll.reset();
                 }
                 KeyCode::Char('d') => {
-                    app.do_act(primary_reason(app.view), Act::Primary);
-                    // ACKNOWLEDGING DOES NOT CLOSE THE READER, because the item is still
-                    // there — the condition has not changed and there is nothing to move on
-                    // from. Every other view's `d` empties the thing being read.
-                    if model::act_hides(app.view, Act::Primary) {
+                    // `d` on a law proposal in DECISIONS declines it; elsewhere standard act.
+                    if app.view == View::Decisions
+                        && app.current().map(|it| is_ask_law(&it)).unwrap_or(false)
+                    {
+                        app.mode = Some("decline".into());
+                        app.buf.clear();
                         app.reading = false;
                         app.scroll.reset();
+                    } else {
+                        app.do_act(primary_reason(app.view), Act::Primary);
+                        // ACKNOWLEDGING DOES NOT CLOSE THE READER, because the item is still
+                        // there — the condition has not changed and there is nothing to move on
+                        // from. Every other view's `d` empties the thing being read.
+                        if model::act_hides(app.view, Act::Primary) {
+                            app.reading = false;
+                            app.scroll.reset();
+                        }
                     }
                 }
                 KeyCode::Char('s') if app.view == View::Alerts && !app.dismissed => {
@@ -904,6 +984,25 @@ fn main() {
                     app.buf.clear();
                     app.reading = false;
                     app.scroll.reset();
+                }
+                // `e` ENACTS from the reader too — the reader is where long statute text is read.
+                KeyCode::Char('e') if app.view == View::Decisions => {
+                    if app.current().map(|it| is_ask_law(&it)).unwrap_or(false) {
+                        app.reading = false;
+                        app.scroll.reset();
+                        app.do_enact_law("");
+                    }
+                }
+                // `E` AMEND-AND-ENACT from the reader.
+                KeyCode::Char('E') if app.view == View::Decisions => {
+                    if let Some(it) = app.current() {
+                        if is_ask_law(&it) {
+                            app.mode = Some("amend".into());
+                            app.buf = app.draft.lock().unwrap().clone().unwrap_or_else(|| it.title.clone());
+                            app.reading = false;
+                            app.scroll.reset();
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -973,7 +1072,16 @@ fn main() {
                 store::refresh(&app.shared);
             }
             KeyCode::Char('d') | KeyCode::Char('x') if n > 0 => {
-                app.do_act(primary_reason(app.view), Act::Primary)
+                // `d` on a law proposal in DECISIONS opens the decline prompt (optional why).
+                // Every other view uses the standard act path.
+                if app.view == View::Decisions
+                    && app.current().map(|it| is_ask_law(&it)).unwrap_or(false)
+                {
+                    app.mode = Some("decline".into());
+                    app.buf.clear();
+                } else {
+                    app.do_act(primary_reason(app.view), Act::Primary);
+                }
             }
             // `s` — SILENCE, and only on a firing alert. Silencing something that has already
             // cleared is a key that appears to work on the wrong thing, and the history holds
@@ -1047,6 +1155,28 @@ fn main() {
             KeyCode::Char('p') if n > 0 && app.view == View::Decisions => {
                 app.mode = Some("premise".into());
                 app.buf.clear();
+            }
+            // `e` ENACTS A LAW PROPOSAL. Only when the selected item is a law proposal —
+            // the key is inert on ordinary decisions so it cannot be reached by accident
+            // on the wrong bead. Runs rule.sh enact with the title as input; a failed
+            // enact leaves the bead OPEN and surfaces the refusal verbatim.
+            KeyCode::Char('e') if n > 0 && app.view == View::Decisions => {
+                match app.current() {
+                    Some(it) if is_ask_law(&it) => app.do_enact_law(""),
+                    _ => app.flash = "e only enacts law proposals — use ⏎ for verdicts".into(),
+                }
+            }
+            // `E` AMEND-AND-ENACT. Opens the editor pre-filled with the proposed title so
+            // the operator can edit the slug or statute text before enacting.
+            KeyCode::Char('E') if n > 0 && app.view == View::Decisions => {
+                match app.current() {
+                    Some(it) if is_ask_law(&it) => {
+                        app.mode = Some("amend".into());
+                        // Pre-fill with the proposed text so the operator edits rather than retyping.
+                        app.buf = app.draft.lock().unwrap().clone().unwrap_or_else(|| it.title.clone());
+                    }
+                    _ => app.flash = "E only amends law proposals — use ⏎ for verdicts".into(),
+                }
             }
             _ => {}
         }

@@ -4,6 +4,7 @@
 #
 #   ask.sh add "<question>"        --default "<what I'd do>" [--why "<what is blocked>"] [--moot-when "<cmd>"]
 #   ask.sh decide "<the choice>"   --default "<what I'd do>" [--why ...]
+#   ask.sh law "<slug>: <statute text>"                       [--why "<context>"]
 #   ask.sh insight "<what was learned>" [--why "<why it matters>"] [--from "<who is recording>"]
 #   ask.sh note "<what happened>" --kind <event.kind> [--why ...] [--target <bead>]
 #   ask.sh list [needs-you|insights|events|all]
@@ -269,6 +270,23 @@ decide|decision)
     [ -n "$DFLT" ] || { echo "ask: --default is required for add/decide — a premise-rejected ask proceeds on it, so an ask without one cannot be rejected coherently" >&2; exit 1; }
     id=$(create decision "$text" "$WHY" "$DFLT" "$SPIRA_ASK_LABEL,overseer,ask-decision") || exit 1
     echo "decision [$id] $text"
+    ;;
+
+law|propose-law)
+    # A law proposal whose body carries the statute text ready to enact.
+    # Title format: "<slug>: <statute text>" — the panel's parse_enact splits on the first colon.
+    # --why carries context for the operator (why this statute is needed).
+    # No --default: the panel offers enact / amend-and-enact / decline, not a binary yes/no.
+    shift; text="${1:?usage: ask.sh law \"<slug>: <statute text>\" [--why \"<context>\"]}"; shift || true
+    require_title "$text"
+    parse_opts "$@"
+    # Validate format: must contain a colon separating slug from statute text.
+    case "$text" in
+        *:*) ;;
+        *) echo "ask: law proposal must be '<slug>: <statute text>' — the panel splits on the first colon" >&2; exit 1 ;;
+    esac
+    id=$(create decision "$text" "$WHY" "" "$SPIRA_ASK_LABEL,overseer,ask-law") || exit 1
+    echo "law [$id] $text"
     ;;
 
 insight|learned)

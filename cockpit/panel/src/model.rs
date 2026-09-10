@@ -654,6 +654,9 @@ pub fn enact(item: &Item, slug: &str, text: &str) -> Result<(), String> {
 /// pressing ⏎ closes it with the typed text as the verdict. A work bead in DECISIONS carries no
 /// ask-* label — replying to it means commenting, not deciding, and the bead stays open.
 ///
+/// ask-law is NOT included: a law proposal's lifecycle is enact/amend/decline, not close-with-
+/// verdict. ⏎ on a law proposal opens a comment, same as a work bead.
+///
 /// THE BUG THIS PREVENTS: a P0 work bead reached DECISIONS because it carried `overseer`. The
 /// operator replied "fix it" in the panel. The panel treated the reply as a verdict and CLOSED
 /// the bead with "fix it" as the reason — making it uncaimable and retiring the work unfixed.
@@ -663,6 +666,56 @@ pub fn is_ask(item: &Item) -> bool {
     item.labels
         .iter()
         .any(|l| matches!(l.as_str(), "ask-question" | "ask-decision" | "ask-task"))
+}
+
+/// Whether a bead is a law proposal — label `ask-law`.
+///
+/// A law proposal's body is `<slug>: <statute text>`, ready to feed to `rule.sh enact`.
+/// Its actions are enact, amend-and-enact, and decline — not close-with-verdict.
+/// A FAILED `rule.sh` must leave the bead OPEN so the operator can see what went wrong
+/// and retry with an amendment (law-absence-needs-a-positive-control).
+pub fn is_ask_law(item: &Item) -> bool {
+    item.labels.iter().any(|l| l == "ask-law")
+}
+
+/// Enact a law proposal: run `rule.sh enact`, then close the bead with evidence.
+///
+/// The slug and statute text are taken from the item's title (`<slug>: <statute>`) when
+/// `input` is empty, or from `input` directly when the operator typed an amendment.
+/// `rule.sh` refuses anything over 130 words and the refusal is surfaced verbatim — the
+/// same as in `enact` for insights. A failed enact leaves the bead OPEN.
+///
+/// Two writes, ordered: enact first, close second. A statute that exists with no close
+/// is a real state — the bead stays open and the operator can retry with an amendment.
+/// A close that exists without a statute would be wrong in the other direction.
+pub fn enact_law(item: &Item, input: &str) -> Result<(), String> {
+    let raw = if input.trim().is_empty() {
+        &item.title
+    } else {
+        input
+    };
+    let (slug, text) = parse_enact(raw)?;
+    let rule = rule_sh()?;
+    run_verbose(&rule, &["enact", &slug, &text])?;
+    // Close the bead now that the statute is in force.
+    let db = crate::store::db();
+    let evidence = format!("enacted law-{} from panel", slug.trim_start_matches("law-"));
+    close_decision(&db, &item.id, &evidence)
+        .map_err(|e| format!("enacted law-{slug} but could not close {}: {e}", item.id))
+}
+
+/// Decline a law proposal: close the bead without touching the statute book.
+///
+/// The close reason carries "declined" so it is distinct from a verdict — a law bead
+/// closed this way was read and rejected, not accepted.
+pub fn decline_law(item: &Item, why: &str) -> Result<(), String> {
+    let db = crate::store::db();
+    let reason = if why.trim().is_empty() {
+        "declined".to_string()
+    } else {
+        format!("declined: {}", why.trim())
+    };
+    close_decision(&db, &item.id, &reason)
 }
 
 /// A comment is never a completion. Replying used to mark things done, which once recorded
@@ -841,6 +894,49 @@ mod tests {
     #[test]
     fn a_bead_with_no_labels_is_not_an_ask() {
         assert!(!is_ask(&work_item(&[])));
+    }
+
+    // ── is_ask_law: law proposals have their own lifecycle ──────────────────────────
+    //
+    // A law proposal carries `ask-law` and is NOT an ask in the is_ask sense: ⏎ on one
+    // must open a comment, not close it with a verdict. Its actions are enact/amend/decline.
+    // The positive control: is_ask_law returns true for ask-law beads, and is_ask returns
+    // false for them (so the two predicates agree that law proposals are handled differently).
+
+    fn law_item(labels: &[&str]) -> Item {
+        Item {
+            id: "sp-y".into(),
+            title: "no-close-before-landed: Never close a bead before its commit lands on main.".into(),
+            lead: String::new(),
+            body: String::new(),
+            badge: "law proposal".into(),
+            when: "2026-09-10T04:00:00Z".into(),
+            enacted: None,
+            thread: Vec::new(),
+            labels: labels.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// THE POSITIVE CONTROL: is_ask_law fires on ask-law.
+    #[test]
+    fn a_law_bead_is_recognized_as_ask_law() {
+        let it = law_item(&["ask-law", "needs-ryan", "overseer"]);
+        assert!(is_ask_law(&it), "ask-law must be recognized as a law proposal");
+    }
+
+    /// A law proposal is NOT an ordinary ask — ⏎ must comment, not decide.
+    #[test]
+    fn a_law_bead_is_not_an_ordinary_ask() {
+        let it = law_item(&["ask-law", "needs-ryan", "overseer"]);
+        assert!(!is_ask(&it), "ask-law must NOT match is_ask — its lifecycle is enact/amend/decline");
+    }
+
+    /// Without ask-law, is_ask_law returns false.
+    #[test]
+    fn a_non_law_bead_is_not_ask_law() {
+        let it = law_item(&["ask-question", "needs-ryan", "overseer"]);
+        assert!(!is_ask_law(&it));
+        assert!(!is_ask_law(&work_item(&["overseer", "spira"])));
     }
 
     // ── reject_premise: not a verdict ───────────────────────────────────────────────────
