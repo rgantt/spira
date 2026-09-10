@@ -82,6 +82,7 @@ run_gate() {
     local content="$1" budget="$2"
     printf '%s\n' "$content" > "$SH/gate-suites"
     (
+        unset SPIRA_HOME
         cd "$TMP"
         SPIRA_CONF="/nonexistent.conf" SPIRA_DB="$SPIRA_DB" SPIRA_GATE_BUDGET="$budget" \
             bash spira/gate-spira.sh 2>&1
@@ -147,6 +148,19 @@ testdb_reset
 run_gate "spira/fast-suite.sh" 9999; out="$(cat "$GOUT")"
 is   "no bead filed when gate finishes under budget"                0    "$(beads_open)"
 want "total line still appears when within budget"   "cost total="       "$out"
+
+# --------------------------------------------------------------------------------------
+# REGRESSION sp-rgao1: run_gate must unset SPIRA_HOME before invoking gate-spira.sh.
+# When SPIRA_HOME points elsewhere, conf.sh's _spira_conf_home_env branch tries
+# $SPIRA_HOME/repo-map first — bypassing $SH/repo-map — so _bdq_check_repo_label
+# refuses repo:spira and bdq create returns 1, silently dropping the budget bead.
+# --------------------------------------------------------------------------------------
+testdb_reset
+_shome_bak="${SPIRA_HOME:-}"; _shome_set="${SPIRA_HOME+1}"
+export SPIRA_HOME="/nonexistent-home"
+run_gate "spira/slow-suite.sh" 0
+[ -n "$_shome_set" ] && export SPIRA_HOME="$_shome_bak" || unset SPIRA_HOME
+is   "bead filed even when outer SPIRA_HOME points elsewhere (regression sp-rgao1)"  1  "$(beads_open)"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
