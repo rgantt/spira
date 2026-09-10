@@ -155,6 +155,8 @@ git -C "$git_work" fetch -q origin
 LMAP="$TMP/lrepo-map"
 printf 'lrepo | %s | push | origin/main | |\n' "$git_work" > "$LMAP"
 
+# pilgrimage.sh only READS landstate — landing.sh writes it in production.
+# The test must create the directory or writes to it will silently fail.
 export SPIRA_RUN="$TMP/lrun"; mkdir -p "$SPIRA_RUN/landstate"
 
 run_repo() {
