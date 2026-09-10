@@ -193,16 +193,21 @@ elif [ -n "$repo" ]; then
         # is exactly what the Sending reaps every pass; parking those would fill the namespace
         # with refs nobody will ever read and teach everyone to ignore it.
         parked=""
-        if base="$(spira_landref "$repo" 2>/dev/null)" \
-           && ! content_landed "$repo" "$br" "$base" 2>/dev/null; then
-            if git -C "$repo" update-ref "refs/slain/$ID" "$br" 2>/dev/null; then
-                parked="refs/slain/$ID"
-                say "work: $br carries work $base does not — parked at $parked"
-            else
-                # A parking failure is not a licence to delete: the ref is the only durable
-                # copy, so without it the deletion is the loss this block exists to prevent.
-                say "work: could not park $br at refs/slain/$ID — REFUSING to delete it"
-                fail=1
+        if base="$(spira_landref "$repo" 2>/dev/null)"; then
+            # A zero-ahead branch shares its tip with the base and has nothing to preserve.
+            # content_landed returns non-zero for zero-ahead (law-absence-needs-a-positive-control),
+            # so without this check a branch at main would be incorrectly parked (sp-ru7e5).
+            ahead="$(git -C "$repo" rev-list --count "$base..$br" 2>/dev/null || echo 0)"
+            if [ "${ahead:-0}" -gt 0 ] && ! content_landed "$repo" "$br" "$base" 2>/dev/null; then
+                if git -C "$repo" update-ref "refs/slain/$ID" "$br" 2>/dev/null; then
+                    parked="refs/slain/$ID"
+                    say "work: $br carries work $base does not — parked at $parked"
+                else
+                    # A parking failure is not a licence to delete: the ref is the only durable
+                    # copy, so without it the deletion is the loss this block exists to prevent.
+                    say "work: could not park $br at refs/slain/$ID — REFUSING to delete it"
+                    fail=1
+                fi
             fi
         fi
     fi
