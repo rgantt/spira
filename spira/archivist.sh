@@ -64,7 +64,7 @@ crossed() { case "$1" in warn) echo 0 ;; high) echo 1 ;; limit) echo 2 ;; over) 
 # ctx-meter.sh renders it in the status line and cockpit/health.sh renders it on the
 # dashboard, both from $SPIRA_RUN/archivist/<session>.state as flat key=value lines:
 #
-#   state=sweeping|archiving|safe|failed
+#   state=sweeping|archiving|safe|failed|capacity
 #   at_turn=<the session's turn count when this state was computed>
 #   items_filed=<how many beads and notes were written>
 #
@@ -77,6 +77,11 @@ crossed() { case "$1" in warn) echo 0 ;; high) echo 1 ;; limit) echo 2 ;; over) 
 # AND IT IS WRITTEN AS THE WORK HAPPENS, never only at the end. A long sweep that shows nothing
 # is indistinguishable from an archivist that never ran, which is the state the operator is
 # trying to escape.
+# The exit code `archive` uses to say "the account refused this, and will refuse the next one
+# too". Out of the way of a real failure's own code, and named so the two call sites cannot
+# drift from the site that raises it.
+ARC_RC_CAPACITY=77
+
 write_state() {          # write_state <session> <state> <at_turn> <items>
     mkdir -p "$ARC" 2>/dev/null || return 1
     local tmp="$ARC/.$1.$$"
@@ -322,6 +327,31 @@ home.}"
             write_state "$sid" safe "$at" "$items"
             set_covered "$sid" "$at"
             log "archivist: $sid safe to clear — $items item(s) filed"
+        elif reset_at="$(capacity_reset_at "$logf")"; then
+            # REFUSED IS NOT FAILED, and the difference is whether this session is ever looked
+            # at again. `failed` is excluded from the sweep by design (see prev_state below),
+            # because a run that broke will break identically on the next pass and re-trigger
+            # every two minutes. An account refusal is the opposite: nothing about this session
+            # caused it and the next pass after the window reopens would succeed — so recording
+            # it as `failed` retires the session permanently for a condition that heals itself,
+            # and the dashboard goes on saying "! archive failed" long after capacity returned.
+            #
+            # The sweep-level guard above cannot catch this one. It reads the pause BEFORE the
+            # pass starts, and a window can shut mid-run: on 2026-09-10 this archivist launched
+            # at 16:38:33, was refused at 16:38:34, and the pause file it would have honoured
+            # was not written until 16:39:01 — 27 seconds too late to have been seen.
+            #
+            # THE PAUSE IS SET FROM HERE for the same reason aeon.sh sets it: this is the first
+            # part of the harness to learn the window is shut, and every summon between now and
+            # the next refusal is one the account will reject.
+            capacity_pause_set "$reset_at" "archivist/$sid"
+            write_state "$sid" capacity "$at" "$items"
+            log "archivist: $sid deferred — the account refused the session, retrying when the window reopens at $(date -d "@$reset_at" +%H:%M 2>/dev/null)"
+            # A DISTINCT CODE, because the caller must do a third thing with this. Zero would
+            # count a session that was never read as archived; a plain failure would send the
+            # pass on to the next session, and every one of those launches is a `claude` the
+            # account has already said it will refuse.
+            rc=$ARC_RC_CAPACITY
         else
             write_state "$sid" failed "$at" "$items"
             log "archivist: $sid FAILED rc=$rc after $items item(s) — see $logf"
@@ -423,8 +453,17 @@ for i in sorted(range(len(drifts)), key=lambda i: drifts[i], reverse=True):
             log "archivist: $sid deferred — budget of $SPIRA_ARCHIVIST_PER_PASS reached (drift $drift)"
             continue
         fi
-        archive "$sid" "$tp" "$turns" "$ctx" "turns since last sweep ($drift) >= $SPIRA_ARCHIVIST_EVERY" \
-            || continue
+        archive "$sid" "$tp" "$turns" "$ctx" "turns since last sweep ($drift) >= $SPIRA_ARCHIVIST_EVERY"
+        arc_rc=$?
+        # THE WINDOW IS SHUT FOR THE WHOLE PASS, not for this session. Carrying on would launch
+        # one `claude` per remaining session for the account to refuse in turn, and each would
+        # write its own deferred state for the same single cause. The pause this raised means
+        # the next pass stops at the sweep-level guard instead of reaching here at all.
+        if [ "$arc_rc" -eq "$ARC_RC_CAPACITY" ]; then
+            log "archivist: sweep stopped — the account's window is shut; the rest of this pass is deferred"
+            break
+        fi
+        [ "$arc_rc" -eq 0 ] || continue
         archived=$((archived + 1))
 
         # Record the band so a later sweep can read it without re-deriving. This is only for
@@ -510,7 +549,7 @@ mark)
     # the sweep is happening rather than jumping from nothing to a verdict.
     sid="${2:?mark needs a session}"; st="${3:?mark needs a state}"
     case "$st" in
-        sweeping|archiving|safe|failed) ;;
+        sweeping|archiving|safe|failed|capacity) ;;
         *) die "unknown archivist state '$st'" ;;
     esac
     # AT_TURN IS NEVER INVENTED HERE. There is no state file to take it from unless a run is in

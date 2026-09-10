@@ -466,6 +466,9 @@ tokens_section() {
                             else note="${C_WARN}✓ safe as of ${SP_CTX_ARCHIVIST_BEHIND}t ago${C_RST}$f"; fi ;;
         sweeping|archiving) note="${C_ACC}⟳ ${SP_CTX_ARCHIVIST}${C_RST}" ;;
         failed)             note="${C_BAD}! archive failed${C_RST}" ;;
+        # DEFERRED, NOT BROKEN — the sweep retries once the window reopens, so this is amber
+        # and names the cause. Red here would be a false alarm the operator cannot act on.
+        capacity)           note="${C_WARN}⏸ archive deferred (capacity)${C_RST}" ;;
         ''|'-')             ;;
         *)                  note="${C_BAD}${C_B}archivist ?${C_RST}" ;;
     esac

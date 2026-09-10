@@ -645,6 +645,11 @@ elif arc_name == "safe":
         arc = f" \x1b[33m✓ safe as of {arc_behind}t ago\x1b[0m"
 elif arc_name == "failed":
     arc = " \x1b[31m! archive failed\x1b[0m"
+elif arc_name == "capacity":
+    # DEFERRED, NOT BROKEN. The sweep will retry this session once the window reopens, so this
+    # is amber and says why — a red "failed" here would be a false alarm about a condition that
+    # heals itself, and the operator would have nothing to do about it.
+    arc = " \x1b[33m⏸ archive deferred (capacity)\x1b[0m"
 elif arc_name == "none":
     if sweep_skipped:
         arc = " \x1b[33m⏸ skipped (capacity)\x1b[0m"

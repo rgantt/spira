@@ -405,6 +405,94 @@ _after="$(cat "$T/run/archivist/sess-unit.covered" 2>/dev/null)"
 is   "set_covered refused the '-' turn" "refused" "$_result"
 is   "cursor file unchanged after refused write" "$_before" "$_after"
 
+# ==========================================================================================
+echo
+echo "an account refusal mid-run is deferred, not failed (defect: sp-d6xfe)"
+# ==========================================================================================
+# Pre-fix: any rc!=0 wrote state=failed, and the sweep excludes `failed` from every later
+# pass — so a session the account merely refused was retired permanently, and the dashboard
+# read "! archive failed" long after capacity returned. The sweep-level capacity gate cannot
+# catch this: it reads the pause before the pass starts, and the window shuts mid-run.
+rm -rf "$T/run" "$T/projects" "$T/home" "$T/chamber"
+mkdir -p "$T/home" "$T/run/archivist" "$T/projects/-test-project" "$T/chamber"
+cp "$HERE/chamber/archivist.md" "$T/chamber/" 2>/dev/null || printf 'test prompt {{TRANSCRIPT}}' > "$T/chamber/archivist.md"
+# DRIFT DECIDES THE ORDER, so these are deliberately unequal: with both at 50 turns the pass
+# picked whichever the tie-break happened to yield, and the assertions below name a session.
+mktranscript "$T/projects/-test-project/sess-refused.jsonl" 90 300000
+mktranscript "$T/projects/-test-project/sess-after.jsonl"   50 300000
+
+# A stub that reproduces a real refusal trace: the rate_limit_event carrying resetsAt, then
+# the terminal result record, then a non-zero exit. Written to stdout because that is what
+# archivist.sh redirects into the session log capacity_reset_at reads.
+REFUSE_CLAUDE="$T/stub-claude-refused"
+cat > "$REFUSE_CLAUDE" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1750003600,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":1,"resetsAt":1750003600}}}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"terminal_reason":"api_error","result":"You have hit your session limit"}'
+exit 1
+STUB
+chmod +x "$REFUSE_CLAUDE"
+
+out="$(env -i HOME="$T/home" PATH="$PATH" SPIRA_CONF="$NONE" \
+    SPIRA_RUN="$T/run" SPIRA_TOKEN_PROJECTS="$T/projects" \
+    SPIRA_CTX_WARN="$CW" SPIRA_CTX_HIGH="$CH" SPIRA_CTX_LIMIT="$CL" \
+    SPIRA_NOW="$EPOCH" SPIRA_ARCHIVIST_IDLE="$IDLE" \
+    SPIRA_ARCHIVIST_EVERY="$EVERY" \
+    SPIRA_CLAUDE="$REFUSE_CLAUDE" \
+    SPIRA_ARCHIVIST_TIMEOUT=10 \
+    SPIRA_ARCHIVIST_PER_PASS=5 \
+    SPIRA_CHAMBER="$T/chamber" \
+    bash "$ARC" sweep 2>&1)"
+
+_st="$(sed -n 's/^state=//p' "$T/run/archivist/sess-refused.state" 2>/dev/null)"
+is   "a refused run is recorded as capacity, not failed" "capacity" "$_st"
+has  "the log says deferred, not FAILED" "$out" "deferred"
+hasnt "the log does not call a refusal a failure" "$out" "FAILED"
+
+# THE PASS STOPS. Every remaining session would be refused by the same shut window, and each
+# one costs a `claude` launch to be told so.
+has  "the sweep stops the pass on a refusal" "$out" "sweep stopped"
+# A POSITIVE CONTROL FIRST. "sess-after was not attempted" is equally true of a pass that
+# attempted nothing at all, which is exactly how this test failed the first time it ran.
+[ -s "$T/run/archivist-sess-refused.log" ] \
+    && ok "the refused session really was attempted (control)" \
+    || bad "the refused session really was attempted (control)" "no session log was written"
+_st2="$(sed -n 's/^state=//p' "$T/run/archivist/sess-after.state" 2>/dev/null)"
+is   "the next session was not attempted" "" "$_st2"
+
+# THE PAUSE IS RAISED, so the next pass stops at the sweep-level gate instead of reaching a
+# session at all — and the rest of the harness stops summoning too.
+# NOT THE STUB'S EPOCH. capacity_pause_set refuses a resetsAt that is not in the future and
+# substitutes now + backoff, so the suite's synthetic 1750000000-era clock cannot survive into
+# the file. What is being asserted is that a pause was raised and says who raised it.
+_pause="$(cat "$T/run/capacity-pause" 2>/dev/null)"
+has  "a capacity pause was raised from the refusal" "$_pause" "archivist/sess-refused"
+_pause_at="${_pause%% *}"
+[ "${_pause_at:-0}" -gt "$(date +%s)" ] 2>/dev/null \
+    && ok "the pause runs into the future" \
+    || bad "the pause runs into the future" "got [$_pause_at]"
+
+# AND IT IS RETRYABLE, which is the whole point: the sweep excludes `failed` and must not
+# exclude this. Asking `list` what it would do is the same predicate the sweep uses.
+rm -f "$T/run/capacity-pause"
+out2="$(alist)"
+has  "a capacity-deferred session is still an archive candidate" "$out2" "sess-refused"
+case "$out2" in
+    *sess-refused*archive*) ok "list would archive it on the next pass" ;;
+    *) bad "list would archive it on the next pass" "got [$out2]" ;;
+esac
+
+# CONTROL: a genuine failure must still be excluded. Without this the test above passes
+# equally if the retry gate stopped excluding anything at all.
+rm -rf "$T/run" "$T/projects" "$T/home" "$T/chamber"
+mkdir -p "$T/home" "$T/run/archivist" "$T/projects/-test-project" "$T/chamber"
+cp "$HERE/chamber/archivist.md" "$T/chamber/" 2>/dev/null || printf 'test prompt {{TRANSCRIPT}}' > "$T/chamber/archivist.md"
+mktranscript "$T/projects/-test-project/sess-broke.jsonl" 50 300000
+printf 'state=failed\nat_turn=1\nitems_filed=0\n' > "$T/run/archivist/sess-broke.state"
+out3="$(alist)"
+hasnt "a genuinely failed session is still excluded" "$out3" "archive"
+
 echo
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
