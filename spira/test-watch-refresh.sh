@@ -66,10 +66,13 @@ printf '#!/bin/sh\nsleep 3600\n' > "$COCKPIT/watch-answers.sh"
 printf '#!/bin/sh\n: library\n'   > "$COCKPIT/db.sh"          # the library beside the target
 printf '{}\n'                     > "$COCKPIT/state.json"     # what the watcher writes while running
 printf 'event\n'                  > "$COCKPIT/scratch.log"
-# layout.sh is the ExecStart target for cockpit-ensure.service (@SPIRA_COCKPIT@/layout.sh);
-# the ExecStart fence in install.sh requires it to be executable.
+# layout.sh, moot-sweep.sh, and verify-asks.sh are ExecStart targets for
+# cockpit-ensure.service, spira-moot-sweep.service, and spira-verify-asks.service
+# respectively; the ExecStart fence in install.sh requires each to be executable.
 printf '#!/bin/sh\n: stub\n'      > "$COCKPIT/layout.sh"
-chmod +x "$COCKPIT/watch-answers.sh" "$COCKPIT/layout.sh"
+printf '#!/bin/sh\n: stub\n'      > "$COCKPIT/moot-sweep.sh"
+printf '#!/bin/sh\n: stub\n'      > "$COCKPIT/verify-asks.sh"
+chmod +x "$COCKPIT/watch-answers.sh" "$COCKPIT/layout.sh" "$COCKPIT/moot-sweep.sh" "$COCKPIT/verify-asks.sh"
 CONF="$TMP/spira.conf"
 printf 'SPIRA_COCKPIT = %s\nSPIRA_RUN = %s\n' "$COCKPIT" "$RUN" > "$CONF"
 
