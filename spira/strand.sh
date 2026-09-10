@@ -259,7 +259,7 @@ print("\n".join(r["id"] for r in rows if r.get("status") == "in_progress"))' 2>/
 # ======================================================================================
 state_apply() {   # state_apply <write:0|1> — stdin: rows; stdout: rows + age, acted, escalated
     ROWS="$(cat)" STATE_FILE="$STATE" WRITE="${1:-0}" python3 <<'PY'
-import json, os, time
+import json, os, time, tempfile
 rows = [r.split("\t") for r in (os.environ.get("ROWS") or "").splitlines() if r.strip()]
 path = os.environ["STATE_FILE"]
 try:
@@ -279,23 +279,40 @@ for part, kind, ident, disp, detail, action in rows:
     out.append("\t".join([part, kind, ident, disp, str(now - int(e["first"])),
                           str(e.get("acted") or 0), str(e.get("escalated") or 0), detail, action]))
 if os.environ.get("WRITE") == "1":
-    with open(path + ".tmp", "w") as fh: json.dump(keep, fh)
-    os.replace(path + ".tmp", path)
+    # UNIQUE TEMP FILE PER WRITER — the fixed name path+".tmp" was shared by every concurrent
+    # writer, so two interleaved writers could promote a half-written state from the other process.
+    d = os.path.dirname(path) or '.'
+    fd, tmp = tempfile.mkstemp(dir=d, prefix='.strands-', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w') as fh: json.dump(keep, fh)
+        os.replace(tmp, path)
+    except Exception:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
 print("\n".join(out))
 PY
 }
 
 state_mark() {    # state_mark <partition> <kind> <id> <acted|escalated>
     KEY="$1:$2:$3" FIELD="$4" STATE_FILE="$STATE" python3 <<'PY'
-import json, os, time
+import json, os, time, tempfile
 path = os.environ["STATE_FILE"]
 try:
     with open(path) as fh: st = json.load(fh)
 except Exception: st = {}
 e = st.setdefault(os.environ["KEY"], {"first": int(time.time()), "acted": 0, "escalated": 0})
 e[os.environ["FIELD"]] = int(time.time())
-with open(path + ".tmp", "w") as fh: json.dump(st, fh)
-os.replace(path + ".tmp", path)
+# UNIQUE TEMP FILE PER WRITER — same defect as state_apply: the fixed name was shared.
+d = os.path.dirname(path) or '.'
+fd, tmp = tempfile.mkstemp(dir=d, prefix='.strands-', suffix='.tmp')
+try:
+    with os.fdopen(fd, 'w') as fh: json.dump(st, fh)
+    os.replace(tmp, path)
+except Exception:
+    try: os.unlink(tmp)
+    except OSError: pass
+    raise
 PY
 }
 
@@ -384,9 +401,22 @@ $(tail -n 12 "$SENTINEL_LOG" 2>/dev/null || echo '(sentinel log unreadable)')"
 }
 
 cmd_check() {
-    local rows acted=0 n a; local -a scope
+    local lock="$STATE.lock" rows acted=0 n a; local -a scope
+    # MUTUAL EXCLUSION — the whole read-modify-write of strands.json must be atomic. Without
+    # a lock, two concurrent runners (sentinel + concierge, operator + timer) both read
+    # escalated=0 from state_apply before either writes escalated=1 from state_mark, and both
+    # file the same escalation. The second runner declines rather than proceeding on stale state.
+    exec 9>"$lock"
+    if ! flock --nonblock 9; then
+        log "check: another instance holds the lock — declining to avoid acting on stale state"
+        exec 9>&-
+        return 0
+    fi
     rows="$(classify | state_apply 1)"
-    [ -n "$rows" ] || return 0
+    if [ -z "$rows" ]; then
+        exec 9>&-
+        return 0
+    fi
 
     while IFS=$'\t' read -r part kind id disp age was_acted was_esc detail action; do
         [ -n "${kind:-}" ] || continue
@@ -469,6 +499,7 @@ cmd_check() {
     done <<< "$rows"
 
     [ "$acted" -gt 0 ] && log "check: $acted stranded item(s) handled"
+    exec 9>&-
     return 0
 }
 
