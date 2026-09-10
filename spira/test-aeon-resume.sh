@@ -37,7 +37,16 @@ nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3
 . "$HERE/testdb.sh"
 testdb_require test-aeon-resume
 TMP="$(mktemp -d)"
-trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
+# EXIT handles normal exit and the explicit `exit` below. INT and TERM must call `exit` so
+# that the script does not continue with $TMP deleted — suites.sh kills the process group
+# on TERM when it detects orphaned background jobs, and a trap that omits `exit` deletes
+# $TMP then walks forward, producing spurious "No such file or directory" failures that
+# mask the real cause. sp-82gai: the original failure was the heartbeat sleep child in
+# aeon.sh outliving cleanup; sp-6a72t and sp-1ux75 fixed that, but the guard stays so a
+# future orphan produces a clean signal rather than a misleading one.
+trap 'testdb_drop; rm -rf "$TMP"' EXIT
+trap 'testdb_drop; rm -rf "$TMP"; exit 130' INT
+trap 'testdb_drop; rm -rf "$TMP"; exit 143' TERM
 testdb_up aeonresume || { echo "test-aeon-resume: could not build a fixture database"; exit 1; }
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 
