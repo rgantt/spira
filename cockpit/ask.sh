@@ -2,11 +2,12 @@
 #
 # ask — put a question, decision, insight or event in front of the operator, stored as a bead.
 #
-#   ask.sh add "<question>"        [--why "<what is blocked>"] [--default "<what I'd do>"] [--moot-when "<cmd>"]
-#   ask.sh decide "<the choice>"   [--why ...] [--default ...]
+#   ask.sh add "<question>"        --default "<what I'd do>" [--why "<what is blocked>"] [--moot-when "<cmd>"]
+#   ask.sh decide "<the choice>"   --default "<what I'd do>" [--why ...]
 #   ask.sh insight "<what was learned>" [--why "<why it matters>"] [--from "<who is recording>"]
 #   ask.sh note "<what happened>" --kind <event.kind> [--why ...] [--target <bead>]
 #   ask.sh list [needs-you|insights|events|all]
+#   ask.sh rejected
 #   ask.sh answered <bead-id> "<verdict>"
 #   ask.sh drop <bead-id> "<reason>"
 #
@@ -251,18 +252,21 @@ require_title() {
 case "${1:-list}" in
 
 add|ask|question)
-    shift; text="${1:?usage: ask.sh add \"<question>\" [--why ...] [--default ...]}"; shift || true
+    shift; text="${1:?usage: ask.sh add \"<question>\" --default \"<your default>\" [--why ...]}"; shift || true
     require_title "$text"
     parse_opts "$@"
+    # --default is mandatory: a rejection proceeds on the default, so an ask without one
+    # cannot be rejected coherently — there is nothing to proceed on.
+    [ -n "$DFLT" ] || { echo "ask: --default is required for add/decide — a premise-rejected ask proceeds on it, so an ask without one cannot be rejected coherently" >&2; exit 1; }
     id=$(create decision "$text" "$WHY" "$DFLT" "$SPIRA_ASK_LABEL,overseer,ask-question") || exit 1
     echo "asked [$id] $text"
-    [ -n "$DFLT" ] || echo "  note: no --default given. An ask without a recommendation makes the operator decide from scratch." >&2
     ;;
 
 decide|decision)
-    shift; text="${1:?usage: ask.sh decide \"<the choice>\" [--why ...] [--default ...]}"; shift || true
+    shift; text="${1:?usage: ask.sh decide \"<the choice>\" --default \"<your default>\" [--why ...]}"; shift || true
     require_title "$text"
     parse_opts "$@"
+    [ -n "$DFLT" ] || { echo "ask: --default is required for add/decide — a premise-rejected ask proceeds on it, so an ask without one cannot be rejected coherently" >&2; exit 1; }
     id=$(create decision "$text" "$WHY" "$DFLT" "$SPIRA_ASK_LABEL,overseer,ask-decision") || exit 1
     echo "decision [$id] $text"
     ;;
@@ -398,6 +402,34 @@ for r in sel[:40]:
     print("  [%s] %-19s %-9s %s" % (r["id"], kind(r), r.get("status"), (r.get("title") or "")[:76]))
 print()
 print("  %d %s" % (len(sel), view))' "${2:-needs-you}"
+    ;;
+
+rejected)
+    # Premise-rejected asks are the only training signal the escalation filter has: they
+    # record what the operator considered not worth deciding, with the reason why. Listed
+    # newest first so the most recent signal is the first thing read.
+    bdt list --all --limit 0 --json 2>/dev/null | strip_warn | python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    print("  could not read the town database"); raise SystemExit(1)
+rows = rows if isinstance(rows, list) else rows.get("issues", [])
+sel = [r for r in rows if "premise-rejected" in (r.get("labels") or [])]
+sel.sort(key=lambda r: r.get("closed_at") or r.get("updated_at") or "", reverse=True)
+for r in sel[:40]:
+    reason = (r.get("close_reason") or "").strip()
+    # Strip the "premise-rejected: " prefix to show only the why.
+    if reason.startswith("premise-rejected: "):
+        why = reason[len("premise-rejected: "):]
+    elif reason == "premise-rejected":
+        why = "(no reason given)"
+    else:
+        why = reason or "(no reason given)"
+    print("  [%s] %s" % (r["id"], (r.get("title") or "")[:72]))
+    print("       %s" % why[:100])
+print()
+print("  %d premise-rejected" % len(sel))'
     ;;
 
 *) sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
