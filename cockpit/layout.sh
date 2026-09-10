@@ -258,7 +258,7 @@ detach_idle_clients() {
     | while read -r tty act; do
         [ -n "$tty" ] && [ -n "$act" ] || continue
         local age=$(( now - act ))
-        if [ "$age" -ge "$IDLE_SECS" ]; then
+        if [ "$age" -gt "$IDLE_SECS" ]; then
             heal_log "detach: client $tty idle ${age}s — detaching"
             tmux detach-client -t "$tty" 2>/dev/null || true
         fi
