@@ -176,7 +176,7 @@ clean_out="$(run_skew "$REPO_CLEAN" SPIRA_NOTIFY="$GOOD_NOTIFY")"; clean_rc=$?
 is     "clean: exits 1 (behind)"             "1"                "$clean_rc"
 want   "clean: BEHIND present"               "BEHIND"           "$clean_out"
 nowant "clean: no REFRESH-DECLINED"          "REFRESH-DECLINED" "$clean_out"
-nowant "clean: no DIRTY"                     "DIRTY"            "$clean_out"
+nowant "clean: no DIRTY"                     "DIRTY "           "$clean_out"
 
 # ===========================================================================
 echo
