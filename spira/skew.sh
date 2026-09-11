@@ -102,6 +102,14 @@ foreign() {
     _skew_home_root="$(repo_root "$(spira_home_repo)" 2>/dev/null)" || true
     if [ -n "$_skew_home_root" ] && spira_same_repo "$repo" "$_skew_home_root"; then return 0; fi
 
+    # In split-checkout mode the dev checkout (repo_root of spira_home_repo) and the prod copy
+    # (SPIRA_REPO) are different git repositories. Both are the harness's own: work lands in
+    # the dev checkout and promote.sh carries it to the prod copy. Exempt both so that a bead
+    # in the home repo is not refused when the gate runs from the prod copy.
+    local _home_root
+    _home_root="$(repo_root "$(spira_home_repo)" 2>/dev/null)" || true
+    if [ -n "$_home_root" ] && spira_same_repo "$repo" "$_home_root"; then return 0; fi
+
     dirs="$(harness_in_ref "$repo" "$ref")"
     [ -n "$dirs" ] || return 0          # no copy in that ref; nothing this fence judges
 
