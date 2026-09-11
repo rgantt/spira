@@ -4,33 +4,35 @@
 #
 #   promote.sh [--dry-run] <ref>
 #
-# PURPOSE
-# -------
-# The production checkout (SPIRA_PROD/../) is the ONLY directory systemd executes.
-# Landing a change on the development checkout (SPIRA_REPO) does not touch production
-# until this script is called with the target ref.
+# TWO MODELS
+# ----------
+# This harness supports two installation layouts:
 #
-# A change landed in development is promoted by naming the commit it landed on. The
-# promoted ref is typically a branch tip (main) or an annotated release tag. After
-# promotion, systemd is running the promoted code; before, it was running the old code.
+# SPLIT-CHECKOUT MODEL. SPIRA_PROD resolves to a directory outside SPIRA_REPO — a
+# separate clone that systemd executes. The development checkout (SPIRA_REPO) is where
+# beads land and aeons work; this script carries landed commits across to production.
+# Set SPIRA_PROD in spira.conf to a path outside the development checkout.
 #
-# FAST-FORWARD RULE. The production checkout must be an ancestor of the target ref.
-# A non-fast-forward is always refused. To reverse a promotion, promote to an earlier
-# ref: `promote.sh <previous-sha>` is the rollback. The operation is symmetric.
+# SINGLE-CHECKOUT MODEL. SPIRA_PROD resolves to a directory inside SPIRA_REPO — the
+# same tree that aeons work in is the one systemd executes. There is no separate
+# production checkout, and promote.sh cannot do its job: the fast-forward rule compares
+# a tree to itself, and the "restart only changed units" step has no old and new to diff.
+# In this model the landing pass is the only thing that advances the copy in force.
+# promote.sh exits non-zero and names the right tool: skew.sh refresh.
 #
-# INITIAL CLONE. When SPIRA_PROD does not yet exist, promote.sh creates it by cloning
-# the development repo locally. The first promotion is the one-time setup; all subsequent
-# ones are fast-forwards.
+# DETECTION. If SPIRA_PROD is a subdirectory of SPIRA_REPO (or equal to SPIRA_HOME),
+# this installation is in single-checkout mode. promote.sh exits 1, names the situation,
+# and points to the correct tool.
 #
-# UNIT RESTARTS. Only units whose ExecStart script changed between old and new are
-# restarted. Others are left running, so a promotion of a change to one script does not
-# interrupt every service.
+# UNIT RESTARTS (split-checkout). Only units whose ExecStart script changed between old
+# and new are restarted. Others are left running, so a promotion of a change to one
+# script does not interrupt every service.
 #
 # DRY RUN. --dry-run reports everything that would change without touching the
 # production checkout or restarting any unit.
 #
 # EXIT   0  success
-#        1  usage error or refused (non-fast-forward, unresolvable ref)
+#        1  usage error, refused (non-fast-forward, unresolvable ref), or single-checkout
 #        2  production checkout exists but is not a git repo
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -41,6 +43,22 @@ if [ "${1:-}" = "--dry-run" ]; then DRY_RUN=1; shift; fi
 REF="${1:?usage: promote.sh [--dry-run] <ref>}"
 
 [ -n "${SPIRA_PROD:-}" ] || die "promote: SPIRA_PROD is not set — set it in spira.conf"
+
+# SINGLE-CHECKOUT DETECTION. Resolve both paths to their canonical forms so a symlink
+# or a trailing slash does not defeat the membership test.
+_promote_prod="$(cd "$SPIRA_PROD" 2>/dev/null && pwd -P || printf '%s' "$SPIRA_PROD")"
+_promote_repo="$(cd "$SPIRA_REPO" 2>/dev/null && pwd -P || printf '%s' "$SPIRA_REPO")"
+case "$_promote_prod/" in
+    "$_promote_repo/"*)
+        printf 'promote: single-checkout mode: SPIRA_PROD (%s) is inside SPIRA_REPO (%s)\n' \
+            "$SPIRA_PROD" "$SPIRA_REPO" >&2
+        printf 'promote: in this model the landing pass is the only thing that advances the copy in force\n' >&2
+        printf 'promote: to fast-forward the checkout manually: %s/skew.sh refresh\n' \
+            "$(dirname "$0")" >&2
+        exit 1
+        ;;
+esac
+unset _promote_prod _promote_repo
 
 # SPIRA_PROD is the harness subdir (e.g. spira/) inside the production checkout.
 PROD_HOME="$SPIRA_PROD"

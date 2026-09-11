@@ -525,10 +525,12 @@ the operator is reading, because halting the loop must not also blind the person
 
 The harness ships several other operator-facing scripts this document does not enumerate: run
 any of them with `--help` to see their interface. Highlights: `spira/promote.sh` fast-forwards
-the production checkout and restarts only changed units; `spira/stage.sh` stands up an isolated
-Spira for testing; `spira/canary.sh` runs an end-to-end pipeline canary; `spira/escape.sh`
-summons an aeon directly, bypassing pool and lane checks; `spira/fleet.sh` sets the aeon pool
-ceiling in the operator's own words.
+the production checkout and restarts only changed units in the split-checkout model (where
+`SPIRA_PROD` is a separate clone outside `SPIRA_REPO`); in the single-checkout model it
+exits non-zero and points to `skew.sh refresh`, which is the right tool there;
+`spira/stage.sh` stands up an isolated Spira for testing; `spira/canary.sh` runs an
+end-to-end pipeline canary; `spira/escape.sh` summons an aeon directly, bypassing pool and
+lane checks; `spira/fleet.sh` sets the aeon pool ceiling in the operator's own words.
 
 ---
 

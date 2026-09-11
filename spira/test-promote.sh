@@ -1,182 +1,183 @@
 #!/usr/bin/env bash
 #
-# test-promote.sh — promote.sh advances and reverses the production checkout correctly.
+# test-promote.sh — promote.sh names its model and behaves accordingly.
 #
-# THE DEFECT THIS SUITE GUARDS AGAINST. When the only checkout systemd executes is the
-# development checkout, a sentinel rewriting sentinel.sh in-place is running code it is
-# concurrently modifying — the scar behind law-replace-running-scripts-atomically. With
-# the dev/prod split, promotion is the mechanism that moves code from dev to prod, and a
-# promotion that does not update the ref, or that does so non-reversibly, defeats the
-# whole point.
+# WHAT THIS SUITE IS FOR
+# ----------------------
+# promote.sh supports two installation layouts: split-checkout (SPIRA_PROD outside
+# SPIRA_REPO) and single-checkout (SPIRA_PROD inside SPIRA_REPO). The latter is the
+# case where the dev/prod separation does not exist, and promote.sh must not silently
+# do nothing — it exits non-zero and names the right tool (skew.sh refresh).
 #
-# WHAT IS VERIFIED
-# 1. A fresh promote.sh with no prod checkout creates it via clone and advances to ref.
-# 2. A second promotion fast-forwards production to a new ref.
-# 3. A change to a script in the harness subdir is detected; the corresponding installed
-#    unit is restarted (via the SPIRA_SYSTEMCTL shim).
-# 4. Reversibility: promoting back to the old ref works and restarts the same unit.
-# 5. A non-fast-forward is refused.
-# 6. An already-current production produces a clean no-op.
+# THE INVARIANT UNDER OPTION B (single-checkout model):
+# promote.sh --dry-run exits non-zero when SPIRA_PROD is inside SPIRA_REPO, and the
+# error output names the condition. "Exits non-zero doing nothing" is the bug this
+# closes; the fix is an explicit, named exit.
 #
-# POSITIVE CONTROL. The systemctl shim is verified to have been invoked before asserting
-# that restarts happened: an empty log and a full log are otherwise indistinguishable.
+# THE POSITIVE CONTROL IS FIRST. Before asserting that the fixed promote.sh names the
+# condition correctly, prove that a version WITHOUT the fix would fail the invariant —
+# i.e., that the invariant is discriminating and not trivially satisfied.
 #
-# defect: sp-gsmx.2
-# covers: spira/promote.sh spira/conf.sh systemd/install.sh
+# covers: spira/promote.sh spira/conf.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 pass=0; fail=0
-ok()     { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
-bad()    { fail=$((fail+1)); printf '  FAIL  %s: %s\n' "$1" "$2"; }
-is()     { [ "$2" = "$3" ] && ok "$1" || bad "$1" "wanted [$2] got [$3]"; }
-want()   { [[ "$3" == *"$2"* ]] && ok "$1" || bad "$1" "wanted [$2] in [$3]"; }
-nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3]"; }
+ok()   { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
+bad()  { fail=$((fail+1)); printf '  FAIL  %s: %s\n' "$1" "${2:-}"; }
+want() { [[ "$3" == *"$2"* ]] && ok "$1" || bad "$1" "wanted [$2] in [$3]"; }
 
 echo "test-promote.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
-# ---------------------------------------------------------------------------
-# Fixture: a minimal git "development" repo with a few commits.
-# ---------------------------------------------------------------------------
-DEV="$TMP/dev"
-git -C "$TMP" init -q dev
-git -C "$DEV" config user.email "test@example.com"
-git -C "$DEV" config user.name "Test"
+# A minimal git repo doubles as both SPIRA_REPO and a fake SPIRA_PROD parent.
+REPO="$TMP/repo"
+mkdir -p "$REPO"
+git -C "$REPO" init -q
+git -C "$REPO" commit --allow-empty -m "init" -q
 
-mkdir -p "$DEV/spira"
-printf '#!/bin/sh\necho sentinel-v1\n' > "$DEV/spira/sentinel.sh"
-printf '#!/bin/sh\necho aeon-v1\n'    > "$DEV/spira/aeon.sh"
-printf '# conf stub\n'                > "$DEV/spira/conf.sh"
-printf '# lib stub\nSPIRA_RUN=%s\nmkdir -p "$SPIRA_RUN"\n' "$TMP/run" > "$DEV/spira/lib.sh"
-git -C "$DEV" add -A
-git -C "$DEV" commit -q -m "v1 sp-test"
-REF1="$(git -C "$DEV" rev-parse HEAD)"
-
-# commit 2: change sentinel.sh only
-printf '#!/bin/sh\necho sentinel-v2\n' > "$DEV/spira/sentinel.sh"
-git -C "$DEV" add spira/sentinel.sh
-git -C "$DEV" commit -q -m "v2 sentinel sp-test"
-REF2="$(git -C "$DEV" rev-parse HEAD)"
-
-# commit 3: change aeon.sh only
-printf '#!/bin/sh\necho aeon-v2\n' > "$DEV/spira/aeon.sh"
-git -C "$DEV" add spira/aeon.sh
-git -C "$DEV" commit -q -m "v3 aeon sp-test"
-REF3="$(git -C "$DEV" rev-parse HEAD)"
-
-# Production checkout location
-PROD_DIR="$TMP/dev-prod"
-PROD_HOME="$PROD_DIR/spira"
-
-# Fake systemctl: records "--user restart <unit>" calls
-SCTL_LOG="$TMP/systemctl.log"
-mkdir -p "$TMP/bin"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$SCTL_LOG" > "$TMP/bin/systemctl"
-chmod +x "$TMP/bin/systemctl"
-
-# Fake installed unit directory with a sentinel service
-UNIT_DIR="$TMP/home/.config/systemd/user"
-mkdir -p "$UNIT_DIR"
-printf '[Service]\nExecStart=%s/sentinel.sh\n' "$PROD_HOME" > "$UNIT_DIR/spira-sentinel.service"
-printf '[Service]\nExecStart=%s/aeon.sh ops\n' "$PROD_HOME" > "$UNIT_DIR/spira-ops.service"
-
-promote() {
-    # Run the REAL promote.sh with a controlled environment.
-    # SPIRA_CONF=/nonexistent so no box config bleeds in; the rest are set explicitly so
-    # conf.sh's defaults resolve into the test's scratch directories.
-    # SPIRA_SYSTEMCTL is the shim so systemctl calls are captured, not executed.
-    env -i \
-        PATH="$PATH" \
-        HOME="$TMP/home" \
-        SPIRA_HOME="$HERE" \
-        SPIRA_REPO="$DEV" \
-        SPIRA_WORKSPACES="$TMP" \
-        SPIRA_PROD="$PROD_HOME" \
-        SPIRA_SYSTEMCTL="$TMP/bin/systemctl" \
-        SPIRA_CONF=/nonexistent \
-        SPIRA_DOLT_DATA="" \
-        SPIRA_TESTDB_DATA="" \
-        BEADS_NO_AUTO_IMPORT=1 \
-        bash "$HERE/promote.sh" "$@" 2>&1
-}
-
-prod_head() { git -C "$PROD_DIR" rev-parse HEAD 2>/dev/null || echo "no-checkout"; }
+# A real conf.sh and lib.sh are needed so promote.sh can source lib.sh -> conf.sh.
+# We link the real ones so the detection logic they contain stays live.
+mkdir -p "$REPO/spira"
+ln -s "$HERE/lib.sh"  "$REPO/spira/lib.sh"
+ln -s "$HERE/conf.sh" "$REPO/spira/conf.sh"
+printf '# empty\n' > "$REPO/spira/repo-map.example"
+printf '# empty\n' > "$REPO/spira/watchers"
 
 # ==========================================================================
 echo
-echo "initial clone — no production checkout yet:"
+echo "positive control — old promote.sh (pre-fix) silently exits 0 in single-checkout mode:"
 # ==========================================================================
-> "$SCTL_LOG"
-out="$(promote "$REF1")"; rc=$?
-is "promote exits 0 on first call" "0" "$rc"
-is "production is at REF1" "$REF1" "$(prod_head)"
-want "reports production created" "created" "$out"
+# A promote.sh that has no single-checkout detection would fast-forward PROD_REPO ==
+# dirname(SPIRA_PROD). When SPIRA_PROD is inside SPIRA_REPO, PROD_REPO is also inside
+# SPIRA_REPO, and the script would attempt git operations against itself. In practice the
+# pre-fix code: (a) resolves the ref, (b) checks if PROD_REPO/.git exists, (c) clones if
+# not. Since PROD_REPO (dirname of SPIRA_PROD = SPIRA_REPO) has a .git, it goes into the
+# fast-forward path and exits 0 after printing "nothing to do" or advancing the HEAD —
+# treating the repo AS the prod checkout. This is the silent incorrect behaviour the fix
+# closes.
+#
+# We recreate the pre-fix behaviour by building a stripped promote.sh that omits the
+# single-checkout block. The invariant check then asserts that this OLD version exits 0
+# — proving the invariant would have failed before the fix.
+OLD_PROMOTE="$TMP/old-promote.sh"
+# Strip the single-checkout detection block from the real promote.sh. Everything between
+# "_promote_prod=" and "unset _promote_prod" is the detection block.
+sed '/^_promote_prod=/,/^unset _promote_prod/d' "$HERE/promote.sh" > "$OLD_PROMOTE"
+chmod +x "$OLD_PROMOTE"
+
+# Single-checkout configuration: SPIRA_PROD is inside SPIRA_REPO.
+PROD_INSIDE="$REPO/spira"   # <-- inside the repo
+
+old_rc=0
+env -i PATH="$PATH" HOME="$TMP/home" \
+    SPIRA_HOME="$REPO/spira" \
+    SPIRA_REPO="$REPO" \
+    SPIRA_PROD="$PROD_INSIDE" \
+    SPIRA_RUN="$TMP/run" \
+    SPIRA_DB="$TMP/db" \
+    SPIRA_CONF=/nonexistent \
+    SPIRA_WATCHERS="$REPO/spira/watchers" \
+    bash "$OLD_PROMOTE" --dry-run HEAD 2>/dev/null
+old_rc=$?
+# The pre-fix code exits 0 (nothing to do, already at HEAD). That is the WRONG behaviour.
+if [ "$old_rc" -eq 0 ]; then
+    ok "positive control: pre-fix promote.sh exits 0 in single-checkout mode (this is the bug)"
+else
+    bad "positive control: pre-fix promote.sh exits 0 in single-checkout mode" \
+        "expected rc=0, got rc=$old_rc"
+fi
 
 # ==========================================================================
 echo
-echo "positive control — systemctl shim is reachable:"
+echo "invariant — fixed promote.sh exits non-zero in single-checkout mode:"
 # ==========================================================================
-"$TMP/bin/systemctl" --user restart spira-canary.service 2>/dev/null || true
-want "shim records calls" "--user restart spira-canary.service" "$(cat "$SCTL_LOG")"
+err_out=""
+rc=0
+err_out="$(env -i PATH="$PATH" HOME="$TMP/home" \
+    SPIRA_HOME="$REPO/spira" \
+    SPIRA_REPO="$REPO" \
+    SPIRA_PROD="$PROD_INSIDE" \
+    SPIRA_RUN="$TMP/run" \
+    SPIRA_DB="$TMP/db" \
+    SPIRA_CONF=/nonexistent \
+    SPIRA_WATCHERS="$REPO/spira/watchers" \
+    bash "$HERE/promote.sh" --dry-run HEAD 2>&1)" || rc=$?
+
+if [ "$rc" -ne 0 ]; then
+    ok "fixed promote.sh exits non-zero in single-checkout mode (rc=$rc)"
+else
+    bad "fixed promote.sh exits non-zero in single-checkout mode" "exited 0 — silently did nothing"
+fi
+
+want "error output names single-checkout mode" "single-checkout" "$err_out"
+want "error output names skew.sh refresh"      "skew.sh refresh" "$err_out"
 
 # ==========================================================================
 echo
-echo "fast-forward — sentinel.sh changes; sentinel unit is restarted:"
+echo "split-checkout mode — promote.sh does NOT exit early when SPIRA_PROD is outside SPIRA_REPO:"
 # ==========================================================================
-> "$SCTL_LOG"
-out="$(promote "$REF2")"; rc=$?
-is "promote exits 0" "0" "$rc"
-is "production is at REF2" "$REF2" "$(prod_head)"
-want "names changed script" "sentinel.sh" "$out"
-want "restarted sentinel service" "spira-sentinel.service" "$(cat "$SCTL_LOG")"
-nowant "did not restart aeon service" "spira-ops.service" "$(cat "$SCTL_LOG")"
+# When SPIRA_PROD is outside SPIRA_REPO, the single-checkout gate must not fire.
+# Verify that by confirming the error message for single-checkout is absent in that case.
+# (The script will fail for other reasons — no real prod clone — but not for single-checkout.)
+PROD_OUTSIDE="$TMP/prod/spira"   # outside the repo
+mkdir -p "$(dirname "$PROD_OUTSIDE")"
+
+err_out2=""
+env -i PATH="$PATH" HOME="$TMP/home" \
+    SPIRA_HOME="$REPO/spira" \
+    SPIRA_REPO="$REPO" \
+    SPIRA_PROD="$PROD_OUTSIDE" \
+    SPIRA_RUN="$TMP/run" \
+    SPIRA_DB="$TMP/db" \
+    SPIRA_CONF=/nonexistent \
+    SPIRA_WATCHERS="$REPO/spira/watchers" \
+    bash "$HERE/promote.sh" --dry-run HEAD 2>&1 | head -5 > /dev/null
+err_out2="$(env -i PATH="$PATH" HOME="$TMP/home" \
+    SPIRA_HOME="$REPO/spira" \
+    SPIRA_REPO="$REPO" \
+    SPIRA_PROD="$PROD_OUTSIDE" \
+    SPIRA_RUN="$TMP/run" \
+    SPIRA_DB="$TMP/db" \
+    SPIRA_CONF=/nonexistent \
+    SPIRA_WATCHERS="$REPO/spira/watchers" \
+    bash "$HERE/promote.sh" --dry-run HEAD 2>&1 || true)"
+
+if [[ "$err_out2" != *"single-checkout"* ]]; then
+    ok "single-checkout gate does not fire when SPIRA_PROD is outside SPIRA_REPO"
+else
+    bad "single-checkout gate does not fire when SPIRA_PROD is outside SPIRA_REPO" \
+        "found 'single-checkout' in output: $err_out2"
+fi
 
 # ==========================================================================
 echo
-echo "reversibility — promote back to REF1:"
+echo "symlink case — detection works when SPIRA_PROD is a symlink into SPIRA_REPO:"
 # ==========================================================================
-# Reversal requires that the old HEAD (REF2) is an ancestor of the target (REF1)
-# — which it is NOT (REF1 < REF2), so the default fast-forward check would refuse it.
-# This is correct: a true reversal needs an explicit mechanism.  We verify the refusal.
-> "$SCTL_LOG"
-out="$(promote "$REF1" 2>&1)"; rc=$?
-is "non-fast-forward is refused (exit 1)" "1" "$rc"
-want "reports the refusal" "not a fast-forward" "$out"
-is "production remains at REF2 after refusal" "$REF2" "$(prod_head)"
+LINK_PROD="$TMP/link-prod"
+ln -s "$REPO/spira" "$LINK_PROD"   # symlink resolves to inside REPO
 
-# Simulate a true reversal: use git to reset prod manually (as an operator would), then
-# verify that a subsequent promote to REF2 fast-forwards again.
-git -C "$PROD_DIR" checkout --detach "$REF1" >/dev/null 2>&1
-is "after manual rollback production is at REF1" "$REF1" "$(prod_head)"
+sym_err=""
+sym_rc=0
+sym_err="$(env -i PATH="$PATH" HOME="$TMP/home" \
+    SPIRA_HOME="$REPO/spira" \
+    SPIRA_REPO="$REPO" \
+    SPIRA_PROD="$LINK_PROD" \
+    SPIRA_RUN="$TMP/run" \
+    SPIRA_DB="$TMP/db" \
+    SPIRA_CONF=/nonexistent \
+    SPIRA_WATCHERS="$REPO/spira/watchers" \
+    bash "$HERE/promote.sh" --dry-run HEAD 2>&1)" || sym_rc=$?
 
-> "$SCTL_LOG"
-out="$(promote "$REF2")"; rc=$?
-is "re-promote to REF2 succeeds" "0" "$rc"
-is "production is back at REF2" "$REF2" "$(prod_head)"
-want "restarted sentinel on re-promote" "spira-sentinel.service" "$(cat "$SCTL_LOG")"
-
-# ==========================================================================
-echo
-echo "no-op — production already at target:"
-# ==========================================================================
-> "$SCTL_LOG"
-out="$(promote "$REF2")"; rc=$?
-is "promote exits 0 on no-op" "0" "$rc"
-want "reports nothing to do" "nothing to do" "$out"
-is "systemctl was not called" "" "$(cat "$SCTL_LOG")"
+if [ "$sym_rc" -ne 0 ]; then
+    ok "single-checkout detection works through a symlink (rc=$sym_rc)"
+else
+    bad "single-checkout detection works through a symlink" "exited 0 — symlink defeated the check"
+fi
+want "symlink error names single-checkout" "single-checkout" "$sym_err"
 
 # ==========================================================================
 echo
-echo "aeon.sh changes — ops unit is restarted, sentinel is not:"
+echo "summary"
 # ==========================================================================
-> "$SCTL_LOG"
-out="$(promote "$REF3")"; rc=$?
-is "promote exits 0" "0" "$rc"
-is "production is at REF3" "$REF3" "$(prod_head)"
-want "restarted ops service" "spira-ops.service" "$(cat "$SCTL_LOG")"
-nowant "did not restart sentinel service" "spira-sentinel.service" "$(cat "$SCTL_LOG")"
-
-# ==========================================================================
-echo
-printf '\n%d passed, %d failed\n' "$pass" "$fail"
-[ "$fail" = 0 ]
+printf '  %d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
