@@ -561,7 +561,17 @@ fayth_get() {            # fayth_get <fayth> <VAR> [default] -> one field of a f
 # claim.pools is unset on this installation, so nothing is legitimately pre-assigned to an
 # alias an aeon could still claim. If that ever changes, this is the line that must learn
 # about it: `-u` would then hide pool work that `--claim` would happily take.
+#
+# `--label SPIRA_SCOPE_LABEL` is included when the key is non-empty, keeping beads from
+# other repositories out of every count, claim and strand report. An empty key means the
+# operator has explicitly disabled scope restriction; the ready set is then unrestricted,
+# which is the correct behaviour for a fleet with no scope boundary. The same convention
+# appears in fayth_scope_check (lib.sh) and orphan_claims. When this filter is active,
+# detect_unclaimable_ready will never see a bead missing the scope label — bd ready itself
+# has already excluded it — so the label check inside that function is only reached in
+# installations where SPIRA_SCOPE_LABEL is empty.
 READY_ARGS=(ready --limit 0 --exclude-type epic,event -u)
+[[ -n "${SPIRA_SCOPE_LABEL:-}" ]] && READY_ARGS+=(--label "$SPIRA_SCOPE_LABEL")
 
 # ready_count <labels> <exclude-labels> -> how many beads that predicate can claim.
 ready_count() {
@@ -2524,8 +2534,11 @@ for line in os.environ["PARTS"].splitlines():
     parts[name] = (set(filter(None, inc_str.split(","))),
                    set(filter(None, exc_str.split(","))))
 
-# sp-vvkpn will also need to read SPIRA_SCOPE_LABEL once it lands — the "spira" not in L
-# filter below is the blindness that bead exists to fix; this variable is the coupling.
+# sp-d906p: READY_ARGS now carries --label SPIRA_SCOPE_LABEL when the key is non-empty, so
+# bd ready itself excludes out-of-scope beads before they reach this function. The check
+# below is only reachable when SPIRA_SCOPE_LABEL is empty (unrestricted fleet). Keep it:
+# an operator who has disabled scope restriction still benefits from seeing which beads no
+# persona can claim, and the message correctly names the missing label in that case too.
 scope_label = os.environ.get("SPIRA_SCOPE_LABEL", "spira")
 partition_labels = sorted({lab for inc, _ in parts.values() for lab in inc if lab != scope_label})
 ci_label = os.environ.get("SPIRA_CI_LABEL", "awaiting-ci")
@@ -2541,7 +2554,9 @@ for bead in beads:
         continue
 
     # A bead missing the scope label cannot be claimed by any persona; every predicate
-    # requires it. This is one of the two routes to unclaimable-ready, not an excluded class.
+    # requires it. When SPIRA_SCOPE_LABEL is non-empty, READY_ARGS already filters these
+    # out at the bd level and this branch is unreachable. It fires only when scope
+    # restriction is disabled (SPIRA_SCOPE_LABEL=""), where it correctly names the gap.
     if scope_label not in L:
         print("UNCLAIMABLE %s — missing scope label (%s); "
               "no persona can claim a bead without this label; "
