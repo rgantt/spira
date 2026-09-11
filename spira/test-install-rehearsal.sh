@@ -85,6 +85,7 @@ CEXEC=(podman exec --user spirauser
     -e "SPIRA_PATH=${STUBS_CTR}"
     -e "SPIRA_BD=${STUBS_CTR}/bd"
     -e "SPIRA_RUN=${SPIRA_RUN_CTR}"
+    -e "SPIRA_WORKSPACES=/tmp"
     -e "SPIRA_HOME_REPO=home"
 )
 
