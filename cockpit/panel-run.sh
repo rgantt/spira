@@ -23,4 +23,17 @@
 # the @cockpit tag is derived from /proc rather than from the command the pane was created with.
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../spira" && pwd -P)/conf.sh"
+
+# On a fresh clone the binary will not be built yet. A pane that exits on
+# exec-not-found closes, reducing brain:0 to two panes and breaking the cockpit
+# layout silently. Loop with a hint until the binary exists and ensure respawns
+# this pane via restart_if_stale.
+if [ ! -x "$SPIRA_PANEL" ]; then
+    while true; do
+        printf '\n  panel binary not found: %s\n' "$SPIRA_PANEL"
+        printf '  Build with:  cd cockpit/panel && cargo build --release\n\n'
+        sleep 30
+    done
+fi
+
 exec "$SPIRA_PANEL" "$@"
