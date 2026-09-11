@@ -578,7 +578,7 @@ ledger-init)
     if [ -e "$LEDGER" ]; then
         echo "ledger present: $LEDGER"
     else
-        mkdir -p "$(dirname "$LEDGER")" 2>/dev/null
+        mkdir -p "$(dirname "$LEDGER")" || { echo "sop: cannot create ledger directory for $LEDGER" >&2; exit 1; }
         : >> "$LEDGER" || { echo "sop: cannot create the ledger at $LEDGER" >&2; exit 1; }
         echo "created empty ledger: $LEDGER"
     fi
