@@ -482,6 +482,63 @@ wait "$pid_b" || true
 n="$(count_undeclared_asks "$NOREP_REF")"
 is "two concurrent undeclared-repo filers produce one ask" "1" "$n"
 
+testdb_reset; mkdir -p "$RUN"; > "$ILOG"
+
+# ======================================================================================
+echo
+echo "provenance — undeclared-repo ask leads with unit+host+path, not the ref slug:"
+# ======================================================================================
+# THE REJECTED ASKS (sp-fzxk9, sp-dmjge). Four escalations in one hour were rejected as
+# unreadable. The leading line was the external_ref slug — a dedupe key, not a sentence.
+# "is this from a test container?" was asked three times. This test verifies the fix:
+# the ask title now leads with "<unit> on <host>: <path>", making the origin unmistakable.
+#
+# POSITIVE CONTROL (law-a-regression-test-must-be-seen-to-fail). Against the unfixed code,
+# the ask title starts with "undeclared repo: incident:..." — assertions 1 and 3 below
+# would fail. After the fix, the title starts with unit+host+path and the path appears.
+#
+# SPIRA_INCIDENT_PATH is passed explicitly so the path component is checkable; without it
+# the path renders ? (which is correct, but untestable for a specific value).
+
+# get_ask_title: return the title of the decision bead for this ref (the ask filed by
+# the undeclared-repo escalation). The search key is the stable ref substring, which
+# remains in the new title format as a substring (not the prefix).
+get_ask_title() {   # get_ask_title <ref> -> title of the filed ask
+    local key="undeclared repo: $(printf '%s' "$1" | cut -c1-72)"
+    bd -C "$SPIRA_DB" list --status open --limit 0 --json 2>/dev/null \
+      | python3 -c '
+import sys, json
+want = sys.argv[1]
+try: d = json.load(sys.stdin)
+except Exception: print(""); raise SystemExit(0)
+rows = d if isinstance(d, list) else [d]
+for r in rows:
+    if want in (r.get("title") or "") and r.get("issue_type") == "decision":
+        print(r.get("title", "")); break
+' "$key"
+}
+
+PROV_REF="incident:undeclared-repo-test"
+printf 'provenance payload\n' | inc_ask SPIRA_INCIDENT_PATH="$HERE/test-incident.sh" >/dev/null
+_ask_title="$(get_ask_title "$PROV_REF")"
+# The title must NOT start with the ref slug — that was the unreadable form.
+case "$_ask_title" in
+    "undeclared repo:"*) bad "provenance: ask title starts with ref slug (not provenance)" "got: $_ask_title" ;;
+    *)                   ok "provenance: ask title does not start with ref slug" ;;
+esac
+# The title must contain ' on ' — the provenance format is '<unit> on <host>: <path>'.
+case "$_ask_title" in
+    *" on "*) ok "provenance: ask title contains provenance marker ' on '" ;;
+    *)        bad "provenance: ask title must contain ' on '" "got: $_ask_title" ;;
+esac
+# The declared SPIRA_INCIDENT_PATH must appear — proving it reached the ask title.
+case "$_ask_title" in
+    *"test-incident.sh"*) ok "provenance: ask title contains the declared SPIRA_INCIDENT_PATH" ;;
+    *)  bad "provenance: declared path (test-incident.sh) must appear in ask title" "got: $_ask_title" ;;
+esac
+
+testdb_reset; mkdir -p "$RUN"; > "$ILOG"
+
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -91,6 +91,32 @@ mkdir -p "$SPOOL" "$(dirname "$ILOG")"
 
 ilog() { printf '%s incident: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$ILOG"; }
 
+# PROVENANCE: the three facts an operator needs to decide whether an escalated ask is real.
+#
+# _unit_from_cgroup derives the calling systemd unit from /proc/self/cgroup, whose last
+# path component is the unit name (e.g. spira-suites.service). Outputs ? rather than
+# guessing when the path carries no recognisable unit suffix — a failed probe must render ?
+# and never a plausible-looking name (law-detection-outranks-rejection).
+#
+# _provenance builds "<unit> on <host>: <path>" from SPIRA_INCIDENT_UNIT (env, fallback
+# to cgroup) and SPIRA_INCIDENT_PATH (env, fallback to ?). Callers that know the absolute
+# path of the failing suite or command set SPIRA_INCIDENT_PATH; callers that know their
+# own unit name set SPIRA_INCIDENT_UNIT. The spool captures both so drain retries carry
+# the same provenance the original filing would have shown.
+_unit_from_cgroup() {
+    local _cg _u
+    _cg="$(head -1 /proc/self/cgroup 2>/dev/null)"
+    _u="${_cg##*/}"
+    case "$_u" in *.service|*.timer|*.scope) printf '%s' "$_u" ;; *) printf '?' ;; esac
+}
+_provenance() {
+    local _u _h _p
+    _u="${SPIRA_INCIDENT_UNIT:-$(_unit_from_cgroup)}"
+    _h="$(hostname 2>/dev/null)"; [ -n "${_h:-}" ] || _h='?'
+    _p="${SPIRA_INCIDENT_PATH:-?}"
+    printf '%s on %s: %s' "$_u" "$_h" "$_p"
+}
+
 # --------------------------------------------------------------------------------------
 # Dedupe key for an incident ref. Prints "open <id> <n>", "closed <id> <n>", or nothing.
 # <n> is the current highest sp-recur-N count, extracted from the bead's labels so the
@@ -206,7 +232,11 @@ except: pass
 # so a transient failure costs a retry rather than the event.
 # --------------------------------------------------------------------------------------
 file_one() {
-    local ref="$1" title="$2" pf="$3" id n _was_closed _reopen_note _log_suffix _hit _rest _recur_n
+    local ref="$1" title="$2" pf="$3" id n _was_closed _reopen_note _log_suffix _hit _rest _recur_n _prov
+    # PROVENANCE: built once per filing so both ask-filing paths see the same string.
+    # Derived here, inside file_one, so it reflects the current SPIRA_INCIDENT_UNIT and
+    # SPIRA_INCIDENT_PATH — which drain_one shadows per spool entry (backward-compatible).
+    _prov="$(_provenance)"
 
     # DEDUP QUERY — two passes (open first, closed second if needed). If the database is
     # unreachable, _dedup_incident prints nothing; id stays empty and the probe below catches
@@ -243,11 +273,13 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
             ilog "$ref crossed SIN_AT=$SIN_AT ($n recurrences) but is exempt — no escalation"
         elif [ "$n" -ge "$SIN_AT" ] && ! bdq label list "$id" 2>/dev/null | grep -q '\bsin\b'; then
             bdq label add "$id" sin >/dev/null 2>&1
-            # THE ASK IS BUILT FROM THE BEAD, NEVER FROM $ref. $ref is a dedupe slug
-            # ("incident:Spira-sweep-----is-the-pipeline-moving-"), so an ask titled with it
-            # reaches the operator as a mangled identifier with no subject. He answers in a
-            # tmux pane and cannot open a bead from it, so a default of "go read $id" asks
-            # him to do the work the escalation existed to do
+            # THE ASK LEADS WITH PROVENANCE, not the bead title or $ref. $ref is a dedupe
+            # slug ("incident:Spira-sweep-----is-the-pipeline-moving-"), which reaches the
+            # operator as a mangled identifier with no subject. The title ("test-loom.sh is
+            # red") is equally opaque because it omits where the failure came from — four
+            # escalations in one hour were rejected with "is this from a test container?"
+            # (sp-fzxk9, sp-dmjge). Leading with "$_prov" — the unit, host, and absolute
+            # path — answers that question before it can be asked
             # (law-escalations-carry-their-evidence, law-escalations-lead-with-the-bead).
             local age evf first secs
             # Elapsed beats a bare count: "5 times" says nothing about whether that is an
@@ -265,7 +297,7 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
             # TAIL, so hand it a head-trimmed copy rather than the whole body.
             evf="$(mktemp)"; head -c 2000 "$pf" > "$evf" 2>/dev/null || true
             [ -x "$ASK" ] && "$ASK" add \
-                "$title — recurred $n times$age with no fix holding. Mute it, or keep paging?" \
+                "$_prov — recurred $n times$age with no fix holding. Mute it, or keep paging?" \
                 --default "mute this alert and leave $id open for Ops to work unpaged; keep paging only if you want a decision on every recurrence" \
                 --why "$id is \"$title\". It has fired $n times$age and each recurrence pages you while filing nothing new. Its current vital signs are below — if they show nothing you must act on, muting is the right answer." \
                 --evidence-file "$evf" \
@@ -319,7 +351,14 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
             # id in some code paths and would produce a distinct ask per incident of the same
             # test file. Two concurrent filers reaching this point are already serialised by
             # drain_one's flock, so the check-and-create pair is atomic.
+            #
+            # TITLE VS SEARCH KEY. The ask title leads with provenance so the operator
+            # immediately knows which unit, host and path filed it — the leading ref slug was
+            # rejected as unreadable four times in one hour (sp-fzxk9, sp-dmjge). The dedup
+            # search key (_ask_subj) is still a substring of the new title, so existing asks
+            # are found and commented on rather than creating duplicates.
             _ask_subj="undeclared repo: $(printf '%s' "$ref" | cut -c1-72)"
+            _ask_title="$_prov — $_ask_subj"
             _ask_db="${COCKPIT_DB:-$SPIRA_DB}"
             _ask_open="$(bd -C "$_ask_db" list --status open \
                 --label "${SPIRA_ASK_LABEL:-needs-operator}" --limit 0 --json 2>/dev/null \
@@ -352,7 +391,7 @@ _d=\$(bd -C "\$COCKPIT_DB" show $id --json 2>/dev/null); [ -n "\$_d" ] || { echo
 MOOTEOF
 )
                 "$ASK" add \
-                    "$_ask_subj" \
+                    "$_ask_title" \
                     --default "add repo:<name> to $id once you know which checkout owns the code this incident is about" \
                     --why "$id was filed without a repo: label. Without one an aeon works it in the home-repo fallback, which has not held the harness since sp-9tal." \
                     --moot-when "$_moot_pred" \
@@ -366,13 +405,18 @@ MOOTEOF
 
 # spool_write <ref> <title> <<payload on stdin>> -> path of the spool entry
 spool_write() {
-    local ref="$1" title="$2" safe stamp path
+    local ref="$1" title="$2" safe stamp path _sw_unit _sw_path
     # printf, not a herestring: `<<<` appends a newline, tr turns it into another
     # separator character, and the dedupe key quietly grows a trailing underscore.
+    # PROVENANCE captured at spool time so drain retries use the original values.
+    # hostname is not stored — it is always readable on the same machine at drain time.
+    _sw_unit="${SPIRA_INCIDENT_UNIT:-$(_unit_from_cgroup)}"
+    _sw_path="${SPIRA_INCIDENT_PATH:-?}"
     safe="$(printf '%s' "$ref" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-80)"
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
     path="$SPOOL/$stamp-$safe-$$"
-    { printf 'REF: %s\nTITLE: %s\n--\n' "$ref" "$title"; cat; } > "$path"
+    { printf 'REF: %s\nTITLE: %s\nUNIT: %s\nINCIDENT_PATH: %s\n--\n' \
+        "$ref" "$title" "$_sw_unit" "$_sw_path"; cat; } > "$path"
     printf '%s' "$path"
 }
 
@@ -380,9 +424,14 @@ spool_field() { sed -n "s/^$1: //p" "$2" | head -1; }
 spool_body()  { sed -n '/^--$/,$p' "$1" | tail -n +2; }
 
 drain_one() {            # drain_one <spool-path>
-    local sp="$1" ref title body id
+    # PROVENANCE VARS are shadowed locally so each spool entry's values are isolated.
+    # Both default to ? when the spool entry predates this field (backward-compatible).
+    local SPIRA_INCIDENT_UNIT SPIRA_INCIDENT_PATH
+    local sp="$1" ref title body id _d_unit _d_path
     ref="$(spool_field REF "$sp")"; title="$(spool_field TITLE "$sp")"
     [ -n "$ref" ] || { ilog "spool entry with no REF: $sp — moved aside"; mv "$sp" "$sp.bad"; return 0; }
+    _d_unit="$(spool_field UNIT "$sp")"; SPIRA_INCIDENT_UNIT="${_d_unit:-?}"
+    _d_path="$(spool_field INCIDENT_PATH "$sp")"; SPIRA_INCIDENT_PATH="${_d_path:-?}"
     body="$(mktemp)"; spool_body "$sp" > "$body"
     # An empty payload is a broken probe, not an incident with no detail — and `bd create`
     # refuses an empty --body-file outright, so filing would fail and the event would sit in
@@ -424,6 +473,9 @@ case "${1:-}" in
 systemd)
     unit="${2:?usage: incident.sh systemd <unit>}"
     ref="incident:$unit"
+    # PROVENANCE: the unit name is explicit here; the path is the unit itself since there is
+    # no single file path more authoritative than the unit name for a crashed unit.
+    SPIRA_INCIDENT_UNIT="$unit"
     # The evidence, gathered while it is still fresh. `systemctl show` first because the
     # exit status and the result reason are what distinguish "the command failed" from
     # "the unit timed out" from "the box killed it", and the journal alone does not always
