@@ -25,6 +25,8 @@ set -uo pipefail
 
 REPORT=0; [ "${1:-}" = "--report" ] && REPORT=1
 POISON_AT="${SPIRA_POISON_AT:-3}"
+REQUEUE_AT="${SPIRA_REQUEUE_AT:-5}"
+RECLAIM_AT="${SPIRA_RECLAIM_AT:-5}"
 # THERE IS NO $REPO HERE ANY MORE, and that is the point of this bead. The repositories
 # this harness lands into are plural and come from repo-map, because a bead now names its
 # own through a `repo:` label; a single module-level $REPO is exactly the constant that
@@ -286,24 +288,80 @@ fi
 # so the moment the holder lets go, CHECK 7 stops summoning for it.
 # ======================================================================================
 dispatchable="$(dispatchable_open)"
-log "CHECK4 examining $(printf '%s' "$dispatchable" | grep -c . || true) dispatchable bead(s), threshold $POISON_AT"
+log "CHECK4 examining $(printf '%s' "$dispatchable" | grep -c . || true) dispatchable bead(s), poison=$POISON_AT requeue=$REQUEUE_AT reclaim=$RECLAIM_AT"
 for id in $dispatchable; do
-    # ONE bdq label list CALL COVERS THREE THINGS: attempt count, attempt causes, and the
-    # poison label check. The original code made three separate bdq calls for these in
-    # series. At ~500ms per call, with 16 passes and multiple beads, that overhead dominated
-    # the suite budget. The data lives in the label set; read it once and derive everything.
+    # ONE bdq label list CALL COVERS ALL FOUR COUNTERS: attempts, reclaims, requeues, and
+    # the poison label. The original code made three separate bdq calls in series; the data
+    # lives in the label set, so one read covers everything. All three counters are extracted
+    # here — before the attempt-threshold gate — because the requeue and reclaim caps apply
+    # to every dispatchable bead, not only those that have reached the attempt threshold. A
+    # bead that cycles without ever charging an attempt passes the gate with n=0 indefinitely
+    # if the reads stay behind it.
     #
-    # ONLY sp-attempt-N IS READ FOR THE COUNT. The other counters a bead accumulates — a
-    # reclaim for each worker that died holding it, a requeue for each time the harness put
-    # finished work back — are diagnostic, and lib.sh says so where they are defined. That is
-    # invisible from a bead's label set, which shows one undifferentiated run of counters
-    # beside the poison label, so a bead carrying six reclaims and no attempt reads as
-    # poisoned-by-reclaims and has been reported as a second poison door. It is not one: it
-    # cannot reach this line.
+    # sp-attempt-N IS STILL THE ONLY COUNTER THAT FEEDS THE POISON THRESHOLD. A bead carrying
+    # six reclaims and no attempt reads as poisoned-by-reclaims from a label listing, and has
+    # been reported as a second poison door. It is not one: reclaims and requeues have their
+    # own caps and their own escalation paths, distinct from poison in both wording and effect.
     _labels="$(bdq label list "$id" 2>/dev/null)" || _labels=""
     n="$(printf '%s' "$_labels" | grep -oE 'sp-attempt-[0-9]+' | grep -oE '[0-9]+$' \
         | sort -n | tail -1)"
     n="${n:-0}"
+    _reclaims="$(printf '%s' "$_labels" | grep -oE 'sp-reclaim-[0-9]+' | grep -oE '[0-9]+$' \
+        | sort -n | tail -1)"; _reclaims="${_reclaims:-0}"
+    _requeues="$(printf '%s' "$_labels" | grep -oE 'sp-requeue-[0-9]+' | grep -oE '[0-9]+$' \
+        | sort -n | tail -1)"; _requeues="${_requeues:-0}"
+
+    # REQUEUE CAP. A bead completed and requeued past the cap is stuck in a loop the harness
+    # is causing: the session finished the work, closed the bead, and the harness put it back
+    # each time because the branch could not rebase onto a base that had moved. The work may
+    # be correct; the queue cannot get it to land. Distinct from poison: no poison label is
+    # added, no attempt is charged — the problem is the queue, not the work.
+    # AT MOST ONE ASK PER (BEAD, REQUEUE-COUNT), so a new requeue after the operator acts
+    # still fires, and a count that already asked does not fire on every pass.
+    if [ "$_requeues" -ge "$REQUEUE_AT" ] && ! requeue_asked "$id" "$_requeues"; then
+        _rq_causes="$(printf '%s' "$_labels" | sed -n 's/^ *- //p' \
+            | grep -E '^sp-requeue-[0-9]+(-|$)' \
+            | sed -E 's/^sp-requeue-([0-9]+)$/\1 unrecorded/;s/^sp-requeue-([0-9]+)-(.*)$/\1 \2/' \
+            | sort -n | awk '{printf "%s%s x%s", sep, $2, $1; sep=", "} END{printf "\n"}')" || true
+        _rq_causes="${_rq_causes:-unrecorded}"
+        if "$SPIRA_NOTIFY" add \
+              "Spira bead $id — completed and requeued $_requeues times, never landed (${_rq_causes}) — the harness cannot land it" \
+              --default "check whether the branch has commits ahead of the base (git log origin/main..spira/$id), resolve the rebase conflict by hand and push, or close the bead if the work already landed under a different id" \
+              --why "$id has been closed by an aeon and reopened by the harness $_requeues times without landing. The work may be correct; something about the queue is preventing it from reaching the base. Every requeue is a full aeon session redone from scratch, spending the account window that limits all throughput." \
+              --evidence "$(bead_context "$id" 2>/dev/null || printf '(could not read %s)' "$id")
+
+REQUEUES  $_requeues (cap $REQUEUE_AT) — causes: ${_rq_causes}
+ATTEMPTS  $n — distinct from requeues; a requeue is not a failed attempt and was not charged" >/dev/null 2>&1; then
+            requeue_asked_mark "$id" "$_requeues"
+        else
+            log "CHECK4 $id: requeue escalation path refused the ask — retries next pass"
+        fi
+    fi
+
+    # RECLAIM CAP. A bead N aeons have died holding is on a box that cannot run it. The
+    # sessions never judged the work; the infrastructure killed them. Different from a cycling
+    # requeue: the issue is the box, not the queue. No poison label is added — the work is not
+    # at fault.
+    if [ "$_reclaims" -ge "$RECLAIM_AT" ] && ! reclaim_asked "$id" "$_reclaims"; then
+        _rc_causes="$(printf '%s' "$_labels" | sed -n 's/^ *- //p' \
+            | grep -E '^sp-reclaim-[0-9]+(-|$)' \
+            | sed -E 's/^sp-reclaim-([0-9]+)$/\1 unrecorded/;s/^sp-reclaim-([0-9]+)-(.*)$/\1 \2/' \
+            | sort -n | awk '{printf "%s%s x%s", sep, $2, $1; sep=", "} END{printf "\n"}')" || true
+        _rc_causes="${_rc_causes:-unrecorded}"
+        if "$SPIRA_NOTIFY" add \
+              "Spira bead $id — $_reclaims aeons died holding it, work never judged (${_rc_causes}) — the box cannot run it" \
+              --default "check systemd resource limits and cgroup configuration; if the box is healthy, look for a per-bead crash at $SPIRA_RUN/$id.log and decide whether to label it for a different lane or split the work" \
+              --why "$id has had its lease reclaimed $_reclaims times after the aeon died holding it. The work was never started — the infrastructure killed the workers before they could act. This is a fact about the box, not the work." \
+              --evidence "$(bead_context "$id" 2>/dev/null || printf '(could not read %s)' "$id")
+
+RECLAIMS  $_reclaims (cap $RECLAIM_AT) — causes: ${_rc_causes}
+ATTEMPTS  $n — distinct from reclaims; no attempt was ever charged" >/dev/null 2>&1; then
+            reclaim_asked_mark "$id" "$_reclaims"
+        else
+            log "CHECK4 $id: reclaim escalation path refused the ask — retries next pass"
+        fi
+    fi
+
     [ "$n" -ge "$POISON_AT" ] || continue
 
     # A CLOSED BEAD NEVER POISONS AND NEVER ASKS. dispatchable_open excludes closed beads,
@@ -409,15 +467,11 @@ if notes:
     # about another repository's bead answers "none — nothing was committed" for work that
     # is sitting on a branch in another checkout, and the operator would be deciding whether
     # to drop a bead on the strength of a fact from the wrong disk.
-    # r_name and the diagnostic counters come from the _labels read at the top of this
-    # iteration — no separate bd calls needed.
+    # r_name comes from the _labels read at the top of this iteration. _reclaims and
+    # _requeues are also already set from that read, before the threshold gate above.
     r_name="$(printf '%s' "$_labels" | sed -n 's/^ *- repo://p' | head -1)"
     r_name="${r_name:-$(spira_home_repo)}"
     r_path="$(repo_root "$r_name")" || r_path=""
-    _reclaims="$(printf '%s' "$_labels" | grep -oE 'sp-reclaim-[0-9]+' | grep -oE '[0-9]+$' \
-        | sort -n | tail -1)"; _reclaims="${_reclaims:-0}"
-    _requeues="$(printf '%s' "$_labels" | grep -oE 'sp-requeue-[0-9]+' | grep -oE '[0-9]+$' \
-        | sort -n | tail -1)"; _requeues="${_requeues:-0}"
     # COMMIT COUNT AND DIFFSTAT, NOT REF EXISTENCE. show-ref returns true for a branch
     # that exists but has zero commits ahead of base — reporting "with work on it" when
     # none exists sends the operator looking for output that was never written (sp-njwb).

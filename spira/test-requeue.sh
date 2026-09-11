@@ -145,6 +145,11 @@ want   "the teardown says no attempt was charged" "no attempt charged" "$(cat "$
 want   "the bead carries the decision"         "Requeue 1 (rebase-conflict)" "$(notes sp-rq-1 | tr -s ' ')"
 want   "and the ledger carries the outcome"    "status=requeue-rebase-conflict" \
        "$(cat "$SPIRA_RUN/aeon-ledger.log")"
+# THE BRANCH SURVIVES THE REQUEUE. The aeon committed before closing; the rebase failed
+# after close and was aborted, leaving the branch at its pre-abort tip. The next aeon
+# inherits the work rather than starting from scratch.
+_nc="$(git -C "$REPO" rev-list --count "$(git -C "$REPO" rev-parse origin/main)..spira/sp-rq-1" 2>/dev/null || echo 0)"
+is     "the branch still carries the aeon's commit after the requeue" "1" "$_nc"
 
 echo
 echo "the session did not close the bead at all — that IS an attempt, and still charges:"
