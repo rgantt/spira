@@ -158,6 +158,7 @@ spira_conf_file() {
 # config is a harness that cannot be repaired from the box it is broken on.
 spira_conf_read() {
     local file="$1" line key val n=0
+    [ -f "$file" ] || return 0
     while IFS= read -r line || [ -n "$line" ]; do
         n=$((n+1))
         line="${line#"${line%%[![:space:]]*}"}"          # ltrim
