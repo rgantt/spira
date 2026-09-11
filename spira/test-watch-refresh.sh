@@ -51,7 +51,7 @@ REAL_MKDIR="$(command -v mkdir)"
 # configuration, units or watchers and report a pass it did not earn.
 CLONE="$TMP/clone"
 mkdir -p "$CLONE/spira" "$CLONE/cockpit"
-cp "$HERE/conf.sh" "$HERE/watchd.sh" "$HERE/watch-refresh.sh" "$HERE/auron.sh" "$CLONE/spira/"
+cp "$HERE"/*.sh "$CLONE/spira/"
 cp -r "$ROOT/systemd" "$CLONE/systemd"
 # beads-push.sh and concierge.sh live at repo root (@SPIRA_REPO@); the ExecStart fence in
 # install.sh requires them to be executable. SPIRA_REPO derives to $CLONE (parent of $CLONE/spira).
