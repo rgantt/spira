@@ -418,7 +418,12 @@ $(tail -n 12 "$SENTINEL_LOG" 2>/dev/null || echo '(sentinel log unreadable)')"
 _r=\$(SPIRA_LABELS='$part' '$HERE/strand.sh' report --json 2>/dev/null); [ -n "\$_r" ] || { printf 'probe: strand.sh report returned nothing\n'; exit 1; }; printf '%s' "\$_r" | python3 -c 'import json,sys; d=json.load(sys.stdin); exit(0 if not any(s.get("kind")=="$kind" and s.get("id")=="$id" for s in d.get("strands",[])) else 1)'
 MOOTEOF
 )
+    # --ref keys on partition + kind + id: a starved-plan ask and a starved-incident ask
+    # are different conditions and must not dedupe onto each other. ask.sh uses the ref
+    # to bump a recurrence count rather than filing a new bead when the same strand
+    # persists across passes (law-a-documented-control-must-exist).
     "$ASK" add "$title" \
+        --ref "strand:$part:$kind:$id" \
         --default "$action" \
         --why "$why" \
         --evidence "$ctx" \

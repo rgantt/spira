@@ -376,18 +376,17 @@ ${_legacy_note}    Re-run $installer to bring the installed units into line with
 # findings text. The text carries measurements — commits behind, file list — that drift every
 # pass while the condition stays constant, which produced a new ask every hour as the repo
 # fell further behind (sp-624f). The condition key is versioned (v2:) so a stamp written by
-# the old scheme (a bare cksum number) cannot match and causes one re-escalation on upgrade.
+# an older scheme cannot match and causes one re-escalation on upgrade.
+#
+# The key is passed to ask.sh as --ref, which checks whether an open bead already carries
+# that external_ref. A match bumps the recurrence count on the open bead rather than filing
+# a new one; a new condition or a returning condition (ask was closed/answered) files fresh.
+# This is the mechanism that makes the timer comment above the service unit accurate:
+# BEHIND=1 and DIRTY=1 are distinct keys, so closing the BEHIND ask does not suppress the
+# DIRTY one and vice versa.
 # =======================================================================================
 escalate() {
     local condition_key="$1" findings="$2"
-    local stamp="$SPIRA_RUN/skew.escalated" prev=""
-    [ -f "$stamp" ] && prev="$(cat "$stamp" 2>/dev/null)"
-    # A stamp without the v2: prefix was written by the old fingerprint scheme; treat it as
-    # absent rather than matching — one re-escalation on upgrade is correct.
-    [[ "${prev:-}" = v2:* ]] || prev=""
-    [ "$condition_key" = "$prev" ] && return 0
-    mkdir -p "$SPIRA_RUN" 2>/dev/null
-    printf '%s' "$condition_key" > "$stamp"
 
     # Stdout goes to skew.log under the service unit. Stderr does too (both streams are
     # captured), but everything below writes to stdout so the delivery path is explicit and
@@ -414,6 +413,7 @@ escalate() {
     local notify_out notify_rc
     notify_out="$("$SPIRA_NOTIFY" add \
         "The Spira copy in force is not the code that landed" \
+        --ref "skew:${condition_key}" \
         --default "$default_action" \
         --why "beads can be closed, gated and merged while the behaviour they changed never takes effect — the tree that was edited is self-consistent, so nothing downstream reports a fault" \
         --evidence "$findings" 2>&1)"; notify_rc=$?

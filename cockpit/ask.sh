@@ -66,6 +66,39 @@ DB="$COCKPIT_DB"
 bdt() { "${SPIRA_BD:-bd}" -C "$DB" "$@"; }
 strip_warn() { grep -vE '^(warning:|  Fix:|  Or:)'; }
 
+# _dedup_ask <ref> -> "open <id> <n>" | nothing
+#
+# CLIENT-SIDE FILTER ON external_ref. bd list --external-ref is silently ignored by
+# bd-embedded, so every candidate must be verified via bd show. Only OPEN/in_progress
+# beads are checked: a closed ask is an answered question, and a condition returning
+# after the operator answered is new information, not a recurrence of the old one.
+_dedup_ask() {
+    local ref="$1"
+    bdt list --status open,in_progress --label "$SPIRA_ASK_LABEL" --limit 0 --json 2>/dev/null \
+      | python3 -c "
+import sys, json, re, subprocess
+target = sys.argv[1]
+bd_bin = sys.argv[2]
+db_dir = sys.argv[3]
+try:
+    for bead in json.load(sys.stdin):
+        bid = bead.get('id')
+        if not bid: continue
+        try:
+            show_out = subprocess.run([bd_bin, '-C', db_dir, 'show', bid, '--json'],
+                                     capture_output=True, text=True, timeout=5)
+            if show_out.returncode == 0:
+                show_data = json.loads(show_out.stdout)
+                if isinstance(show_data, list): show_data = show_data[0]
+                if show_data.get('external_ref') == target:
+                    ns = [int(m.group(1)) for lbl in (show_data.get('labels') or [])
+                          for m in [re.match(r'^sp-recur-(\d+)\$', lbl)] if m]
+                    print('open', bid, max(ns) if ns else 0); sys.exit(0)
+        except: pass
+except: pass
+" "$ref" "${SPIRA_BD:-bd}" "$DB" 2>/dev/null
+}
+
 # `--default` is close to mandatory on a question: an ask without a recommendation makes the operator
 # decide from scratch, which is what the escalation policy exists to prevent.
 #
@@ -217,7 +250,7 @@ create() { # type text why default labels
     # Dolt history; nothing about the command said it had addressed the wrong bead.
     out=$(bdt create --title "$text" --type "$type" -p "$prio" \
             --labels "$labels" -d "$(compose "$kind" "$why" "$dflt" "$EV" "${FROM:-}")" \
-            ${extra+"${extra[@]}"} --json 2>&1)
+            ${extra+"${extra[@]}"} ${EXT_REF:+--external-ref "$EXT_REF"} --json 2>&1)
     id=$(python3 -c '
 import json, re, sys
 t = sys.stdin.read()
@@ -239,12 +272,17 @@ for line in t.splitlines():
     printf '%s' "$id"
 }
 
-parse_opts() { # sets WHY / DFLT / KIND / TARGET / MOOT_WHEN / FROM from remaining args
-    WHY=""; DFLT=""; EV=""; KIND=""; TARGET=""; MOOT_WHEN=""; FROM=""
+parse_opts() { # sets WHY / DFLT / KIND / TARGET / MOOT_WHEN / FROM / REF from remaining args
+    WHY=""; DFLT=""; EV=""; KIND=""; TARGET=""; MOOT_WHEN=""; FROM=""; REF=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --why)     WHY="${2:-}"; shift 2 ;;
             --default) DFLT="${2:-}"; shift 2 ;;
+            # A stable dedupe key for this ask. When provided, ask.sh checks for an open
+            # bead with this external_ref before filing: a match bumps a recurrence count
+            # instead of creating a duplicate. Titles carry measurements that change between
+            # passes; the ref is the stable identity (law-a-documented-control-must-exist).
+            --ref)     REF="${2:-}"; shift 2 ;;
             # An event only. --kind is the taxonomy the panel renders as the badge, and
             # --target the bead the outcome happened TO, kept in the row's own `target`
             # column rather than spelled into the title, so a reader can filter on it.
@@ -291,13 +329,34 @@ require_title() {
 case "${1:-list}" in
 
 add|ask|question)
-    shift; text="${1:?usage: ask.sh add \"<question>\" --default \"<your default>\" [--why ...]}"; shift || true
+    shift; text="${1:?usage: ask.sh add \"<question>\" --default \"<your default>\" [--why ...] [--ref <stable-key>]}"; shift || true
     require_title "$text"
     parse_opts "$@"
     # --default is mandatory: a rejection proceeds on the default, so an ask without one
     # cannot be rejected coherently — there is nothing to proceed on.
     [ -n "$DFLT" ] || { echo "ask: --default is required for add/decide — a premise-rejected ask proceeds on it, so an ask without one cannot be rejected coherently" >&2; exit 1; }
-    id=$(create decision "$text" "$WHY" "$DFLT" "$SPIRA_ASK_LABEL,overseer,ask-question") || exit 1
+    # DEDUPE BY REF. When the caller supplies --ref, check for an open bead carrying that
+    # external_ref before creating a new one. A match means the condition has not cleared:
+    # bump the recurrence count and note the repeat rather than filing a duplicate.
+    # No match (or no --ref): create a new bead, recording the ref for future passes.
+    # A closed bead is an answered question; if the condition returns after an answer,
+    # that IS new information and a fresh ask is correct.
+    if [ -n "${REF:-}" ]; then
+        _dedup_hit="$(_dedup_ask "$REF")"
+        if [ -n "$_dedup_hit" ]; then
+            _dedup_rest="${_dedup_hit#open }"
+            _dedup_id="${_dedup_rest%% *}"
+            _dedup_n="${_dedup_rest##* }"
+            n=$((_dedup_n + 1))
+            bdt label add "$_dedup_id" "sp-recur-$n" >/dev/null 2>&1
+            bdt note "$_dedup_id" "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ)." >/dev/null 2>&1
+            echo "recurred [$_dedup_id] ($n) $text"
+            exit 0
+        fi
+        EXT_REF="$REF" id=$(create decision "$text" "$WHY" "$DFLT" "$SPIRA_ASK_LABEL,overseer,ask-question") || exit 1
+    else
+        id=$(create decision "$text" "$WHY" "$DFLT" "$SPIRA_ASK_LABEL,overseer,ask-question") || exit 1
+    fi
     echo "asked [$id] $text"
     ;;
 
