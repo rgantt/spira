@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# timeout: 120
 #
 # test-livelock.sh — detect_livelocked and detect_invalid_closed surface the right beads.
 #
@@ -45,7 +46,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 testdb_require test-livelock
 TMP="$(mktemp -d)"
 testdb_up livelock || { echo "test-livelock: could not build a fixture database"; exit 1; }
-trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
+trap 'testdb_drop; rm -rf "$TMP"' EXIT
+trap 'exit 143' INT TERM
 
 pass=0; fail=0
 ok()     { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
