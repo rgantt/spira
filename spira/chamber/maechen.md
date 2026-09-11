@@ -18,23 +18,15 @@ is a property of the distribution, and the watermark applies to what you act on,
 you count.
 
 Failure labels are spelled `sp-recur-N-<cause>`, `sp-requeue-N-<cause>`, `sp-reclaim-N`.
-Aggregate by cause, rank by frequency:
+Aggregate by cause, rank by frequency, with open-remedy suppression:
 
-    bd -C "$SPIRA_DB" list --all --json | python3 - <<'PY'
-    import sys, json, collections
-    d = json.load(sys.stdin)
-    c = collections.Counter()
-    for b in (d if isinstance(d, list) else [d]):
-        for lbl in (b.get("labels") or []):
-            if any(lbl.startswith(p) for p in ("sp-recur-","sp-requeue-","sp-reclaim-")):
-                c[lbl.rsplit("-",1)[0]] += 1   # strip the monotonic N, group by base+cause
-    for cls, n in c.most_common(10):
-        print(n, cls)
-    PY
+    bash "$SPIRA_HOME/spira/census.sh" --with-suppressed
 
-For each class, check whether an open remedy bead already exists:
-
-    bd -C "$SPIRA_DB" list --status open --label "$SPIRA_MAECHEN_REMEDY_LABEL" --json
+`census.sh` strips the monotonic N and groups by base+cause (so `sp-recur-3-suite-red` and
+`sp-recur-1-suite-red` both count as class `sp-recur-suite-red`). Each `sp-recur-N-<cause>`
+label is one occurrence — a bead that recurred three times carries three such labels and
+contributes three to the class count. A class carrying `[suppressed]` in the output already
+has an open remedy bead and should be skipped.
 
 A class with an open remedy bead is **suppressed** — it is already being worked. Suppress it
 and move to the next highest-frequency class.
@@ -85,12 +77,15 @@ properties. A bead missing any one is refused by the admissibility check (sp-ymw
    `sp-requeue-N-prod-dirty`) and the count at the time of filing. This is how the flatline
    measurement (sp-vt0nj item 7) knows what to watch.
 
-File with `$SPIRA_MAECHEN_REMEDY_LABEL` alongside the partition labels:
+File with `$SPIRA_MAECHEN_REMEDY_LABEL` and a machine-readable `covers:<class>` label
+alongside the partition labels. The `covers:` label is what `census.sh` reads to determine
+suppression — it must be the exact class key (e.g., `covers:sp-recur-suite-red`):
 
+    cls="sp-recur-suite-red"   # replace with the actual class from census output
     bd -C "$SPIRA_DB" create "<failure class: one-line title>" \
         --type task --priority 2 \
         -l "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,repo:spira" \
-        -l "$SPIRA_MAECHEN_REMEDY_LABEL" \
+        -l "$SPIRA_MAECHEN_REMEDY_LABEL,covers:$cls" \
         --description - <<'DESC'
     Class: <label, e.g. sp-requeue-N-prod-dirty>
     Count: <N> occurrences
