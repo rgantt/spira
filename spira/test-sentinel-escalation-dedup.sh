@@ -239,6 +239,7 @@ echo
 echo "6. probe fails (broken DB path) → ask survives, sweep does not resolve it"
 # ======================================================================================
 # File an ask with a predicate that will fail because the DB path is wrong.
+# hermetic-ok: bd is inside a string literal passed as --moot-when; moot-sweep evaluates it, not this suite. Path is non-existent by design.
 broken_moot="_d=\$(bd -C \"/tmp/does-not-exist-$$\" show sp-fake --json 2>/dev/null); [ -n \"\$_d\" ] || { printf 'probe: bd show returned nothing\n'; exit 1; }; printf 'unreachable'; exit 0"
 
 ask add "bead with failing probe" --ref "escalation:reclaim:sp-broken-probe-$$" \
