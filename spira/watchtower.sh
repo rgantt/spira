@@ -479,6 +479,7 @@ if [ -n "$drain_since" ] && [ "$drain_mins" != "?" ] && \
     if [ -x "$INC" ] || [ -r "$INC" ]; then
         printf 'DRAINING for %sm — summons gated since %s\n\nNew aeons cannot be summoned while world.draining exists. Loop, landing and reaping continue.\n\nLift with: world.sh resume\n' \
             "$drain_mins" "$drain_since" | \
+        SPIRA_DB="$SPIRA_DB" \
         SPIRA_INCIDENT_TYPE=task \
         SPIRA_INCIDENT_PRIORITY=1 \
         SPIRA_INCIDENT_ACTOR=watchtower \
@@ -514,6 +515,7 @@ if [ "$_unsent_oldest" != "?" ] && [ "$_unsent_oldest" -ge "$UNSENT_WARN_H" ] 2>
     if [ -x "$INC" ] || [ -r "$INC" ]; then
         printf 'Oldest unsent branch: %sh — threshold is %sh\n\nA branch this old without a landing means the Sending rite has not run or cannot delete it.\nBranches owned by live in_progress beads are work in flight; confirm the branch has no holder before acting.\n\nCheck sending.sh and the rite logs. Reap manually if the owning bead is already closed.\n' \
             "$_unsent_oldest" "$UNSENT_WARN_H" | \
+        SPIRA_DB="$SPIRA_DB" \
         SPIRA_INCIDENT_TYPE=task \
         SPIRA_INCIDENT_PRIORITY=1 \
         SPIRA_INCIDENT_ACTOR=watchtower \
@@ -531,6 +533,7 @@ if [ "$_unadopted" != "?" ] && [ "$_unadopted" -gt 0 ] 2>/dev/null; then
     if [ -x "$INC" ] || [ -r "$INC" ]; then
         printf 'Unadopted refs: %s\n\nA spira/* branch whose suffix resolves to no bead can never be reaped by any rite.\nEach one is a permanent +1 on SP_UNADOPTED until removed by hand.\n\nList with: git -C <repo> for-each-ref --format="%%(*refname:short)" refs/heads/spira/ | while read b; do bd show "${b#spira/}" 2>/dev/null || echo "UNADOPTED: $b"; done\nDelete safely: git -C <repo> branch -D <branch> (no bead, no aeon holds it)\n' \
             "$_unadopted" | \
+        SPIRA_DB="$SPIRA_DB" \
         SPIRA_INCIDENT_TYPE=task \
         SPIRA_INCIDENT_PRIORITY=2 \
         SPIRA_INCIDENT_ACTOR=watchtower \
@@ -571,6 +574,7 @@ if [ "$_dup_refs" != "?" ] && [ "$_dup_refs" -gt 0 ] 2>/dev/null; then
             [ -n "$_row" ] && printf '  %s\n' "$_row"
         done)"
         printf '%s\n' "$_dup_body" | \
+        SPIRA_DB="$SPIRA_DB" \
         SPIRA_INCIDENT_TYPE=task \
         SPIRA_INCIDENT_PRIORITY=1 \
         SPIRA_INCIDENT_ACTOR=watchtower \
