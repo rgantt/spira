@@ -80,6 +80,14 @@ printf '#!/usr/bin/env bash\nHOME=%s exec %s "$@"\n' "$HOME" "$(type -P bd)" > "
 chmod +x "$TOOLPATH/bd"
 
 # sut <subcommand> [VAR=value ...] — the runner in an environment holding nothing else.
+#
+# SPIRA_SUITES_RUNNER_VARS="" disables _suite_env inside suites.sh. Without it, sut
+# passes SPIRA_HOME="$SH" explicitly, suites.sh sees SPIRA_HOME as set, and builds
+# _suite_env="-u SPIRA_HOME" — wrapping every fixture suite in an extra `env` binary.
+# That extra process in the setsid chain adds exec overhead and causes intermittent
+# TIMEOUTs under load. Declaring no runner vars here prevents the wrapping; fixture
+# suites run as plain `setsid bash`, which is the stable form the prior suite tests
+# verified and which the confirming-run path (no RUNNER_VARS to strip) also uses.
 sut() {
     local cmd="$1"; shift
     env -i PATH="$PATH" HOME="$TMP/home" \
@@ -90,7 +98,7 @@ sut() {
         SPIRA_SUITES_BUDGET="$BUDGET" SPIRA_SUITE_TIMEOUT="$PERSUITE" \
         SPIRA_SUITES_STALE="$STALE" SPIRA_SUITES_PRIORITY="$PRIO" \
         SPIRA_NOTIFY="$SH/ask.sh" FX_GATED_RAN="$TMP/gated.ran" \
-        SPIRA_PATH="$TOOLPATH" SPIRA_INCIDENT_LOCK_WAIT="60" \
+        SPIRA_PATH="$TOOLPATH" SPIRA_SUITES_RUNNER_VARS="" SPIRA_INCIDENT_LOCK_WAIT="60" \
         "$@" bash "$SH/suites.sh" "$cmd" 2>&1
 }
 # plant <name> — the suite's body on stdin. No list is edited anywhere; existing is the whole
