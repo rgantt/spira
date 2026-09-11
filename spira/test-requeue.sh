@@ -40,6 +40,7 @@
 #
 # defect: sp-l7f5
 # covers: spira/aeon.sh spira/attempts.sh spira/lib.sh
+# timeout: 120
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
