@@ -70,6 +70,17 @@ now = datetime.now(timezone.utc).timestamp()
 _cap_paused = os.environ.get("CAPACITY_PAUSED", "0") == "1"
 _cap_detail = os.environ.get("CAPACITY_DETAIL", "the account is out of capacity")
 
+# FLEET SLOT AWARENESS. A starved partition under a saturated fleet is queue ordering,
+# not starvation — every slot is held by another persona doing real work. Escalating it
+# pages the operator about correct behaviour: a busy builder holds the only aeon slot
+# while the incident queue waits. TOTAL_LIVE (across all personas) and MAX_AEONS
+# (SPIRA_MAX_LIVE_AEONS from the caller) let the classifier distinguish the two cases.
+# When MAX_AEONS is not configured (0), the distinction cannot be made — escalate as before.
+# TOTAL_LIVE and MAX_AEONS are injected by classify_one() in strand.sh; injectable here so
+# tests can exercise the saturated-fleet path without running the full shell layer.
+_total_live = int(os.environ.get("TOTAL_LIVE") or 0)
+_max_aeons  = int(os.environ.get("MAX_AEONS")  or 0)
+
 by_id = {b["id"]: b for b in beads if b.get("id")}
 OPEN = lambda b: b.get("status") != "closed"
 lab  = lambda b: set(b.get("labels") or [])
@@ -135,15 +146,42 @@ for b in beads:
 # 'starved' row in this state recommends checking the sentinel timer, which is healthy,
 # and files a needs-ryan escalation for a condition that clears itself. Instead emit a
 # distinct 'capacity-paused' info row naming the window; cmd_check() skips info rows.
+#
+# SATURATED FLEET IS NOT STARVATION. When every aeon slot is held by another partition,
+# this partition is waiting in line — a fleet at its cap with active work is doing the
+# right thing. Escalating it would page the operator about correct scheduling. Emit a
+# 'fleet-saturated' info row (skipped by cmd_check) so the condition remains visible in
+# strand.sh report without filing a false alarm.
+#
+# BOTH PATHS CITE ONLY THIS PARTITION'S BEADS — the detail comes from `ready`, which was
+# filtered to this partition's labels by classify_one(). The partition in the title and
+# the beads in the body are the same value, read once from the same source.
 if ready and live == 0:
     if _cap_paused:
         row("capacity-paused", "-", "info",
             "no aeon summoned: %s — %d bead(s) will be claimed when capacity reopens: %s" % (
                 _cap_detail, len(ready), " ".join(sorted(ready)[:6])),
             "none — the sentinel will summon when the account is open again")
+    elif _max_aeons > 0 and _total_live >= _max_aeons:
+        # Every slot is held by another partition. This is queue ordering, not a fault;
+        # do not page the operator. The row is still emitted (as info) so strand.sh report
+        # shows the condition without cmd_check acting on it.
+        row("fleet-saturated", "-", "info",
+            "%d bead(s) ready but all %d aeon slot(s) are held by other partitions (%d live across fleet): %s" % (
+                len(ready), _max_aeons, _total_live, " ".join(sorted(ready)[:6])),
+            "none — will be claimed when a slot opens")
     else:
+        # True starvation: ready work exists, no aeon serves this partition, and the
+        # fleet has capacity. The slot detail names the counts so the operator can verify
+        # at a glance without checking the fleet panel separately.
+        if _max_aeons > 0:
+            slot_info = "; 0 of %d aeon slot(s) are serving this partition (%d live across fleet)" % (
+                _max_aeons, _total_live)
+        else:
+            slot_info = ""
         row("starved", "-", "escalate",
-            "%d bead(s) ready and no live aeon: %s" % (len(ready), " ".join(sorted(ready)[:6])),
+            "%d bead(s) ready and no live aeon%s: %s" % (
+                len(ready), slot_info, " ".join(sorted(ready)[:6])),
             "check spira-sentinel.timer and the tail of sentinel.log")
 
 # -- per-pilgrimage analysis. An epic whose open children are none of ready, in progress,
