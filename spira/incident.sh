@@ -484,7 +484,7 @@ drain_one() {            # drain_one <spool-path>
     # exactly as designed rather than a loss.
     mkdir -p "$(dirname "$SPOOL")" 2>/dev/null
     local lock="${SPIRA_INCIDENT_LOCK:-$SPIRA_RUN/incident.lock}"
-    exec 8>"$lock" || { ilog "cannot open the intake lock at $lock — $ref stays spooled"; rm -f "$body"; return 1; }
+    exec 8>>"$lock" || { ilog "cannot open the intake lock at $lock — $ref stays spooled"; rm -f "$body"; return 1; }
     if ! flock -w "${SPIRA_INCIDENT_LOCK_WAIT:-30}" 8; then
         ilog "another intake held $lock for 30s — $ref stays spooled, drain will retry"
         exec 8>&-; rm -f "$body"; return 1
