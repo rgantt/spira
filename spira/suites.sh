@@ -116,6 +116,19 @@ priority_of() {
     case "$p" in [0-4]) printf '%s' "$p" ;; *) printf '%s' "$PRIORITY" ;; esac
 }
 
+# timeout_of <basename> -> the suite's declared `# timeout: N` in seconds, or empty.
+#
+# A suite that drives the real harness — spinning up aeons, building fixture databases,
+# running full lifecycles — cannot be reliably bounded by the default PER_SUITE ceiling
+# without risking false timeouts under load. The suite author knows the expected worst-case
+# runtime; declaring it here sets both the watchdog ceiling for that suite and the minimum
+# budget required before the runner starts it. A malformed or absent value yields empty,
+# which preserves PER_SUITE as the ceiling and last_secs as the skip threshold.
+timeout_of() {
+    local t; t="$(sed -n 's/^# *timeout: *//p' "$HERE/$1" 2>/dev/null | head -1 | tr -d '[:space:]')"
+    case "$t" in [0-9]*) printf '%s' "$t" ;; esac
+}
+
 # --------------------------------------------------------------------------------------
 # THE RECORD. One file per suite: `<status> <epoch> <seconds> <fingerprint>`.
 #
@@ -502,16 +515,30 @@ cmd_run() {
             [ -n "${next_cursor:-}" ] || next_cursor="$s"
             continue
         fi
-        # Skip before starting if the last known runtime exceeds what is left; starting anyway
-        # produces rc=124 on a killed process, which reads as a test failure rather than a
-        # budget constraint.
+        # Skip before starting if the budget would be insufficient; starting anyway produces
+        # rc=124 on a killed process, which reads as a test failure rather than a budget
+        # constraint.
+        #
+        # Two thresholds, either of which triggers a skip:
+        # 1. last_secs: the suite's last recorded runtime (self-calibrating after each run).
+        # 2. declared_to: the suite's `# timeout: N` annotation, which sets both the minimum
+        #    budget required to start and the watchdog ceiling for that run. A suite that runs
+        #    the real harness lifecycle — aeon.sh, bd calls, git operations — must declare this
+        #    explicitly, because its runtime under load can exceed last_secs by enough to
+        #    produce a false timeout even when last_secs-based skipping would have allowed it.
         last_secs="$(record_read "$s" | awk '{print $3}' | grep -E '^[0-9]+$' || echo 0)"
+        declared_to="$(timeout_of "$s")"
         if [ "$last_secs" -gt 30 ] && [ "$left" -lt "$last_secs" ]; then
             unreached="$unreached $s"
             next_cursor="${next_cursor:-$s}"
             continue
         fi
-        slice="$PER_SUITE"; [ "$left" -lt "$slice" ] && slice="$left"
+        if [ -n "$declared_to" ] && [ "$left" -lt "$declared_to" ]; then
+            unreached="$unreached $s"
+            next_cursor="${next_cursor:-$s}"
+            continue
+        fi
+        slice="${declared_to:-$PER_SUITE}"; [ "$left" -lt "$slice" ] && slice="$left"
         t0="$(date +%s)"
         local tmp suite_pid killer watchdog_flag
         tmp="$(mktemp)" || return 1

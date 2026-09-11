@@ -261,6 +261,51 @@ fi
     || bad "pass elapsed ~${elapsed}s — did the hung suite actually get killed?" \
           "wanted < $(( PERSUITE * 10 + 30 ))s"
 
+# ======================================================================================
+echo
+echo "declared timeout: # timeout: N skips the suite when budget < N:"
+# ======================================================================================
+# A SUITE THAT DECLARES A TIMEOUT LARGER THAN THE AVAILABLE BUDGET IS SKIPPED, not killed.
+# The distinction matters: killed produces rc=124 and a filed bead (a signal that the suite
+# is broken); skipped produces an `unreached` record and a "budget spent" line in the output
+# (a signal that the suite deferred to a future pass). Declaring a minimum budget is how a
+# suite that drives the real harness lifecycle — 8 aeon invocations, ~80s each — avoids
+# being filed as broken every time it lands at the tail of a 7-minute budget.
+#
+# POSITIVE CONTROL FIRST. Without it, "the suite was skipped" could mean the selector is
+# broken and no suite with a declared timeout ever runs. Plant the suite with a declared
+# timeout larger than the pass budget, then verify it was skipped — not killed — and that
+# without the declaration the same suite body would have run (law-absence-needs-a-positive-control).
+
+# Remove the hung/after-hang suites so they don't consume budget.
+rm -f "$SH/test-fx-hung.sh" "$SH/test-fx-after-hang.sh"
+
+# A suite that declares a 60s timeout, but completes in under 1s if the runner starts it.
+# This separates "skipped by the declared-timeout check" from "killed by the watchdog".
+plant test-fx-declared-timeout.sh <<'S'
+#!/usr/bin/env bash
+# covers: spira/suites.sh
+# timeout: 60
+echo "  ok    declared-timeout suite ran — budget was sufficient"
+S
+
+# POSITIVE CONTROL: with BUDGET=90 (> declared 60), the suite runs.
+find "$STATE" -maxdepth 1 -name '*.result' -delete 2>/dev/null; true
+out_pos="$(BUDGET=90 sut run)"
+pos_st="$( { read -r s _ < "$STATE/test-fx-declared-timeout.sh.result"; printf '%s' "${s:-MISSING}"; } 2>/dev/null )"
+is "positive control: declared-timeout suite runs when budget >= declared" "ok" "$pos_st"
+want "positive control: pass output shows the suite passed" "test-fx-declared-timeout.sh" "$out_pos"
+
+# SKIP: with BUDGET=30 (< declared 60), the suite should be deferred, not killed.
+find "$STATE" -maxdepth 1 -name '*.result' -delete 2>/dev/null; true
+out_skip="$(BUDGET=30 sut run)"
+skip_st="$( { read -r s _ < "$STATE/test-fx-declared-timeout.sh.result"; printf '%s' "${s:-MISSING}"; } 2>/dev/null )"
+is "suite is deferred (unreached) when budget < declared timeout" "unreached" "$skip_st"
+# The pass output names the deferred suite rather than silently dropping it.
+want "deferred suite appears in pass output" "test-fx-declared-timeout.sh" "$out_skip"
+# Crucially: NOT killed (which would produce a filed bead and look like a broken suite).
+nowant "deferred suite was not killed with rc=124" "TIMEOUT" "$out_skip"
+
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

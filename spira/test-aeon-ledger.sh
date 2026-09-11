@@ -32,6 +32,7 @@
 #
 # defect: sp-214
 # covers: spira/aeon.sh spira/lib.sh
+# timeout: 180
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
