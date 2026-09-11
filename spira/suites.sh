@@ -209,6 +209,7 @@ file_red() {             # file_red <basename> <status> <rc> <seconds> <fp> <out
           SPIRA_INCIDENT_ACTOR=suites \
           SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,repo:$SPIRA_HOME_REPO" \
           SPIRA_INCIDENT_REF="suite:$s:$fp" \
+          SPIRA_DB="$SPIRA_DB" \
           bash "$INC" file "$s is $status in the timed suite run" - <<PAYLOAD
 The timed full run — every \`spira/test-*.sh\` the landing gate does not run — found this
 suite $status. It is filed and nothing is blocked: this run reopens no bead and refuses no
@@ -263,6 +264,7 @@ file_env_red() {    # file_env_red <basename> <rc> <seconds> <fp> <output> <diff
           SPIRA_INCIDENT_ACTOR=suites \
           SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,repo:$SPIRA_HOME_REPO" \
           SPIRA_INCIDENT_REF="runner-env:$s" \
+          SPIRA_DB="$SPIRA_DB" \
           bash "$INC" file "$s is red under the timed runner but passes in an aeon's environment" - <<PAYLOAD
 The timed runner found this suite red, but a confirming run without the runner's injected
 variables passed. Do not send an aeon to reproduce this: the bead's reproduce line runs in an
@@ -321,6 +323,7 @@ file_fixture_fault() {  # file_fixture_fault <n> <suite-list> <fixture-name>
           SPIRA_INCIDENT_ACTOR=suites \
           SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,repo:$SPIRA_HOME_REPO" \
           SPIRA_INCIDENT_REF="fixture-fault:${fixture}" \
+          SPIRA_DB="$SPIRA_DB" \
           bash "$INC" file "shared fixture collapsed — ${n} suite(s) could not start" - <<PAYLOAD
 The shared fixture failed to reset during the timed suite run. Every suite listed below
 exited before running a single assertion. These are not red suites: running any of them
