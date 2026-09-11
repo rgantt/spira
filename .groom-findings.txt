@@ -1,0 +1,31 @@
+GROOM PASS sp-ijhpj - Graph Hygiene Results
+============================================
+
+COMPLETED ACTIONS (from prior passes, now recorded):
+
+1. CLOSED sp-xiuzi
+   - Title: The QA persona is running again despite your disable
+   - Premise: QA persona timer has been successfully disabled and removed from systemd
+   - Evidence: Commits 99c8dde, 2ee9468, 708bbce show work completed
+   - Status: CLOSED with proper close reason
+
+2. MERGED sp-jzpnw → sp-s4f8f
+   - sp-jzpnw: Gatekeeper persona for qa-proposed (unratified design)
+   - sp-s4f8f: qa-proposed gatekeeper persona (approved design + Ryan's decision)
+   - Action: sp-jzpnw work superseded by sp-s4f8f
+   - Status: Merge recorded in bead graph
+
+3. DECISION ESCALATION sp-zgk83
+   - Question: Close QA beads or keep record?
+   - Status: Correctly left OPEN for Ryan to decide
+
+CURRENT STATE:
+- 140 open beads across all partitions
+- Graph structure: healthy
+- Test timeout beads: distinct issues, not duplicates
+- Epic structures: well-formed
+- Lane alignment: correct
+
+NO NEW HYGIENE ISSUES FOUND in current pass.
+
+Graph ready for continued work.
