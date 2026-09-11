@@ -73,6 +73,7 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
        spira-suites.service spira-suites.timer
        spira-qa.service spira-qa.timer
        spira-groom.service spira-groom.timer
+       spira-maechen.service spira-maechen.timer
        spira-moot-sweep.service spira-moot-sweep.timer
        spira-verify-asks.service spira-verify-asks.timer
        )
@@ -87,6 +88,7 @@ _ENABLE_TMPL=(cockpit-ensure.timer concierge.timer spira-watch-refresh.timer
               spira-suites.timer
               spira-qa.timer
               spira-groom.timer
+              spira-maechen.timer
               spira-moot-sweep.timer
               spira-verify-asks.timer
               spira-cockpit.service spira-loom.service)

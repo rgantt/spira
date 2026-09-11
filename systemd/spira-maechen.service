@@ -1,0 +1,39 @@
+[Unit]
+# The Maechen persona's TIMER trigger. The timer path evaluates two trigger conditions
+# — a landing count and a time gap — against a shared watermark, then files a sweep
+# bead carrying SPIRA_MAECHEN_LABEL. The sentinel detects the bead and summons a
+# Maechen aeon to claim it. This service evaluates the trigger; it does not run the
+# aeon.
+#
+# TWO CONDITIONS, ONE BEAD. maechen-trigger.sh checks both the landing count
+# (SPIRA_MAECHEN_LANDING_INTERVAL, default 25) and the time gap
+# (SPIRA_MAECHEN_MAX_GAP_SECONDS, default 3h) against the same watermark. At most one
+# trigger bead exists at a time; deduplication is in the script, not the timer.
+#
+# LANDING COUNT, NOT BEAD STATUS. Landings are counted from the commit graph — commits
+# on managed repos' base branches naming a bead id (law-closed-is-not-landed). Bead
+# status is never consulted; a closed bead whose commit is not on the base inflates no
+# counter.
+#
+# ExecCondition makes the unit inert until maechen.fayth lands on main. Between arming
+# the timer and the branch landing there is a window in which ExecStart would fail on
+# every tick; ExecCondition that exits non-zero makes systemd SKIP the pass and record
+# success, so the timer sits silent and starts working the moment the file is present.
+Description=Spira Maechen trigger — evaluate landing/gap conditions and file a sweep bead
+Documentation=file://@SPIRA_HOME@/chamber/maechen.fayth
+After=default.target
+
+[Service]
+Type=oneshot
+ExecCondition=/usr/bin/test -f @SPIRA_PROD@/chamber/maechen.fayth
+ExecStart=@SPIRA_PROD@/maechen-trigger.sh
+# The trigger script queries bd and counts git commits; 120 seconds is generous.
+TimeoutStartSec=120
+# bd queries and git log calls — no CPU worth fencing.
+CPUQuota=10%
+Nice=10
+StandardOutput=append:@SPIRA_RUN@/maechen.log
+StandardError=append:@SPIRA_RUN@/maechen.log
+
+[Install]
+WantedBy=default.target
