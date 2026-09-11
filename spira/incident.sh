@@ -130,7 +130,7 @@ _dedup_incident() {      # _dedup_incident <ref> -> "open <id> <n>" | "closed <i
     # be silently excluded by that filter, making every recurrence look like a new filing.
     # NOTE: bd list --json does NOT include external_ref field, so we get the id list and
     # fetch external_ref via bd show --json on each candidate.
-    _result="$(bdq list --status open,in_progress --limit 0 --label "$_dedupe_labels" 2>/dev/null \
+    _result="$($SPIRA_BD list --status open,in_progress --limit 0 --label "$_dedupe_labels" 2>/dev/null \
       | python3 -c "
 import sys, json, re, subprocess
 target = sys.argv[1]
@@ -159,7 +159,7 @@ for line in sys.stdin:
            || date -u -v "-${DEDUP_LOOKBACK_DAYS}d" '+%Y-%m-%d' 2>/dev/null || true)"
     [ -z "$_since" ] && return
 
-    bdq list --status closed --closed-after "$_since" --limit 0 --label "$_dedupe_labels" 2>/dev/null \
+ $SPIRA_BD list --status closed --closed-after "$_since" --limit 0 --label "$_dedupe_labels" 2>/dev/null \
       | python3 -c "
 import sys, json, re, subprocess
 target = sys.argv[1]
@@ -204,14 +204,14 @@ file_one() {
         if [ "$_was_closed" = 1 ]; then
             bead_reopen "$id" "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ) — same failure fingerprint, dedup within ${DEDUP_LOOKBACK_DAYS}-day window"
         fi
-        bdq label add "$id" "sp-recur-$n" >/dev/null 2>&1
+ $SPIRA_BD label add "$id" "sp-recur-$n" >/dev/null 2>&1
         _reopen_note="" _log_suffix=""
         if [ "$_was_closed" = 1 ]; then
             _reopen_note="
 Reopened by dedup — same external ref seen again within ${DEDUP_LOOKBACK_DAYS} days of close."
             _log_suffix=" (reopened from closed)"
         fi
-        bdq note "$id" "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ).${_reopen_note}
+ $SPIRA_BD note "$id" "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ).${_reopen_note}
 $(head -c 2000 "$pf")" >/dev/null 2>&1
         ilog "$ref recurred ($n) — $id${_log_suffix}"
         # A Sin: it keeps coming back because nothing has broken the cycle. Escalated once,
@@ -221,8 +221,8 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
         # to raise an ask against the operator. The log still says the threshold was crossed.
         if [ "$SIN_EXEMPT" = 1 ] && [ "$n" -ge "$SIN_AT" ]; then
             ilog "$ref crossed SIN_AT=$SIN_AT ($n recurrences) but is exempt — no escalation"
-        elif [ "$n" -ge "$SIN_AT" ] && ! bdq label list "$id" 2>/dev/null | grep -q '\bsin\b'; then
-            bdq label add "$id" sin >/dev/null 2>&1
+        elif [ "$n" -ge "$SIN_AT" ] && ! $SPIRA_BD label list "$id" 2>/dev/null | grep -q '\bsin\b'; then
+ $SPIRA_BD label add "$id" sin >/dev/null 2>&1
             # THE ASK IS BUILT FROM THE BEAD, NEVER FROM $ref. $ref is a dedupe slug
             # ("incident:Spira-sweep-----is-the-pipeline-moving-"), so an ask titled with it
             # reaches the operator as a mangled identifier with no subject. He answers in a
@@ -234,7 +234,7 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
             # hour of noise or a fortnight of it. Guarded, because a date this cannot parse
             # must cost the phrase and not the ask.
             age=""
-            first="$(bdq show "$id" --json 2>/dev/null \
+            first="$($SPIRA_BD show "$id" --json 2>/dev/null \
                 | grep -m1 -oE '"created"[^,]*' \
                 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:]+' || true)"
             if [ -n "$first" ]; then
@@ -261,7 +261,7 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
     # _dedup_incident returned empty in both cases, but the right response differs.
     # A bd that cannot answer must not be treated as "no open incident" — that reading is
     # how one outage becomes one bead per alert.
-    if ! bdq list --limit 1 >/dev/null 2>&1; then
+    if ! $SPIRA_BD list --limit 1 >/dev/null 2>&1; then
         ilog "database unreachable — $ref stays spooled"
         return 1
     fi
@@ -272,7 +272,7 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
     # the operator's queue looking like a defect he had been assigned. Defaults unchanged, so
     # the systemd path files exactly as it always did.
     id="$(BEADS_ACTOR="${SPIRA_INCIDENT_ACTOR:-${BEADS_ACTOR:-}}" \
-          bdq create "$title" --type "${SPIRA_INCIDENT_TYPE:-bug}" \
+ $SPIRA_BD create "$title" --type "${SPIRA_INCIDENT_TYPE:-bug}" \
             --priority "${SPIRA_INCIDENT_PRIORITY:-1}" \
             --labels "$LABELS" --external-ref "$ref" \
             --body-file "$pf" --silent 2>/dev/null | tr -d '[:space:]')"
@@ -286,14 +286,14 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
     # late. At SIN_AT=5 (10-minute sweep) that is 60 min rather than the 50 min the comment
     # promises. The label makes the initial bead indistinguishable from a recurrence in the
     # counter, so N filings reliably produce sp-recur-N and the SIN fires on the Nth.
-    bdq label add "$id" "sp-recur-1" >/dev/null 2>&1
+ $SPIRA_BD label add "$id" "sp-recur-1" >/dev/null 2>&1
     # AN UNDECLARED REPO STAYS VISIBLE. Filed but labelled needs-repo-triage so an aeon
     # that would claim it in the home-repo fallback is stopped by its own confusion rather
     # than silently working in the wrong checkout. Escalated once so the operator can
     # correct the label before any aeon touches it (sp-io5e, law-a-split-repoints-nothing).
     if [ "${INCIDENT_REPO_DECLARED:-1}" = 0 ]; then
-        bdq label add "$id" "needs-repo-triage" >/dev/null 2>&1
-        bdq note "$id" "Repository not declared — SPIRA_INCIDENT_REPO was not set and LABELS carried no repo: label. An aeon claiming this bead works it in the home-repo fallback, which may be the wrong checkout. Add repo:<name> before claiming." >/dev/null 2>&1
+ $SPIRA_BD label add "$id" "needs-repo-triage" >/dev/null 2>&1
+ $SPIRA_BD note "$id" "Repository not declared — SPIRA_INCIDENT_REPO was not set and LABELS carried no repo: label. An aeon claiming this bead works it in the home-repo fallback, which may be the wrong checkout. Add repo:<name> before claiming." >/dev/null 2>&1
         if [ "${SIN_EXEMPT:-0}" != 1 ]; then
             # DEDUPE: the ref is the stable key — not the title, which embeds the incident bead
             # id in some code paths and would produce a distinct ask per incident of the same
@@ -457,7 +457,7 @@ drain)
     ;;
 
 list)
-    bdq list --status open,in_progress --limit 0 --label "$LABELS" 2>/dev/null \
+ $SPIRA_BD list --status open,in_progress --limit 0 --label "$LABELS" 2>/dev/null \
         | grep -vE '^💡|^warning|^  Fix|^  Or'
     n="$(find "$SPOOL" -maxdepth 1 -type f ! -name '*.bad' 2>/dev/null | wc -l)"
     [ "$n" -gt 0 ] && printf '\n%s event(s) still in the spool — run: incident.sh drain\n' "$n"
