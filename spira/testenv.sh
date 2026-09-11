@@ -200,16 +200,106 @@ cmd_probe() {
         "$name" systemctl --user is-active default.target >/dev/null 2>&1
 }
 
+cmd_scratch() {
+    # scratch — create a fresh throwaway bd database, print its path, and exit.
+    # The database persists after exit; the caller is responsible for cleanup:
+    #   path="$(testenv.sh scratch)"; bd -C "$path" list; rm -rf "$path"
+    #
+    # A session running suites sets TESTDB_SHARED=1 so suites reset the shared fixture
+    # rather than rebuilding it. scratch always wants a NEW database, independent of any
+    # suite's fixture, so override unconditionally before sourcing testdb.sh.
+    TESTDB_SHARED=0
+    TESTDB_NAME=
+    TESTDB_DIR=
+    TESTDB_BASELINE=
+    TESTDB_BIN=
+    TESTDB_MODE=
+
+    . "$HERE/testdb.sh"
+
+    testdb_available || {
+        printf 'testenv scratch: no bd engine available\n' >&2
+        printf 'testenv scratch:   embedded: install bd-embedded (npm install -g @beads/bd)\n' >&2
+        printf 'testenv scratch:   server: set SPIRA_TESTDB_DATA in spira.conf\n' >&2
+        return 1
+    }
+
+    testdb_up scratch || {
+        printf 'testenv scratch: database build failed\n' >&2
+        return 1
+    }
+
+    printf '%s\n' "$SPIRA_DB"
+    # Do NOT call testdb_drop: the caller holds the path and cleans it up.
+    # Cleanup: rm -rf the printed path when done.
+}
+
+cmd_shell() {
+    # shell — drop into a subshell with SPIRA_DB, SPIRA_RUN and SPIRA_SPOOL pointing at
+    # throwaway directories. Every harness command typed inside targets the fixture.
+    # Leaving the shell (exit or Ctrl-D) tears the fixture down.
+    #
+    # Same override rationale as cmd_scratch: always build fresh, never reset a suite's fixture.
+    TESTDB_SHARED=0
+    TESTDB_NAME=
+    TESTDB_DIR=
+    TESTDB_BASELINE=
+    TESTDB_BIN=
+    TESTDB_MODE=
+
+    . "$HERE/testdb.sh"
+
+    testdb_available || {
+        printf 'testenv shell: no bd engine available\n' >&2
+        printf 'testenv shell:   embedded: install bd-embedded (npm install -g @beads/bd)\n' >&2
+        printf 'testenv shell:   server: set SPIRA_TESTDB_DATA in spira.conf\n' >&2
+        return 1
+    }
+
+    testdb_up shell || {
+        printf 'testenv shell: database build failed\n' >&2
+        return 1
+    }
+
+    local scratch_run scratch_spool
+    scratch_run="$(mktemp -d)"
+    scratch_spool="$(mktemp -d)"
+
+    # testdb_drop + scratch dirs on exit, regardless of how the shell exits.
+    # TESTDB_SHARED is already 0, so testdb_drop will actually drop.
+    trap 'testdb_drop; rm -rf "$scratch_run" "$scratch_spool"' EXIT INT TERM
+
+    printf 'testenv: scratch shell — harness commands use throwaway database\n' >&2
+    printf 'testenv:   SPIRA_DB=%s\n' "$SPIRA_DB" >&2
+    printf 'testenv:   SPIRA_RUN=%s\n' "$scratch_run" >&2
+    printf 'testenv:   exit or Ctrl-D to tear down\n' >&2
+
+    # Use -i (interactive) when stdin is a terminal so the prompt appears and job
+    # control works. Without -i, piped stdin works fine for scripted use (test suites).
+    if [ -t 0 ]; then
+        SPIRA_DB="$SPIRA_DB" SPIRA_RUN="$scratch_run" SPIRA_SPOOL="$scratch_spool" \
+        PS1="[scratch] \$ " bash --norc --noprofile -i
+    else
+        SPIRA_DB="$SPIRA_DB" SPIRA_RUN="$scratch_run" SPIRA_SPOOL="$scratch_spool" \
+        bash --norc --noprofile
+    fi
+    return $?
+}
+
 case "${1:-}" in
-    up)    shift; cmd_up    "$@" ;;
-    down)  shift; cmd_down  "$@" ;;
-    exec)  shift; cmd_exec  "$@" ;;
-    probe) shift; cmd_probe "$@" ;;
+    up)      shift; cmd_up      "$@" ;;
+    down)    shift; cmd_down    "$@" ;;
+    exec)    shift; cmd_exec    "$@" ;;
+    probe)   shift; cmd_probe   "$@" ;;
+    scratch) shift; cmd_scratch "$@" ;;
+    shell)   shift; cmd_shell   "$@" ;;
     *)
-        printf 'usage: testenv.sh up|down|exec|probe [OPTIONS]\n' >&2
-        printf '  up   [--name NAME] [--checkout PATH]\n' >&2
-        printf '  down [--name NAME] [--volumes]\n' >&2
-        printf '  exec [--name NAME] [--user USER] CMD ARGS...\n' >&2
-        printf '  probe [--name NAME]\n' >&2
+        printf 'usage: testenv.sh up|down|exec|probe|scratch|shell [OPTIONS]\n' >&2
+        printf '  up      [--name NAME] [--checkout PATH]\n' >&2
+        printf '  down    [--name NAME] [--volumes]\n' >&2
+        printf '  exec    [--name NAME] [--user USER] CMD ARGS...\n' >&2
+        printf '  probe   [--name NAME]\n' >&2
+        printf '  scratch          # print a throwaway SPIRA_DB path; caller cleans up\n' >&2
+        printf '  shell            # subshell with SPIRA_DB/RUN/SPOOL on throwaway paths\n' >&2
         exit 1 ;;
 esac

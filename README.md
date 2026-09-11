@@ -619,6 +619,11 @@ with the reason it earns the wait; everything the glob finds that the list does 
 by `suites.sh` on a schedule, which files a bead per failure and blocks nothing. The two sets
 cannot be edited into overlapping, and a deleted suite stops being run with no edit anywhere.
 
+To try a harness command against a real database without touching production, run
+`spira/testenv.sh scratch` to get a throwaway database path, then address it with
+`bd -C "$(spira/testenv.sh scratch)" <command>`. `testenv.sh shell` drops into a subshell
+where every harness command targets the fixture; leaving it tears the fixture down.
+
 Every suite declares what it covers on a `# covers:` line. Three properties the existing ones
 have and a new one should too:
 
