@@ -1041,6 +1041,14 @@ specific problem — do not redo work that is already committed."
 esac
 unset _n_prior _prior_log
 
+# ---- the assigned worktree, exported for the commit guard ----------------------------
+# SPIRA_WORK is the canonical path of this aeon's worktree. Exported HERE, after the
+# worktree path is fully settled (WORK may be redirected above when a branch is already
+# checked out elsewhere), so every subprocess — including the model session and any git
+# hook it triggers — inherits the value. branch-guard.sh staged reads it to refuse commits
+# that happen outside this path (law-worktrees-in-the-sanctioned-root, rung 4).
+export SPIRA_WORK="$WORK"
+
 # ---- pre-session dirty-files guard -----------------------------------------------
 # AN AEON THAT RUNS `git add -A` IN A SHARED CHECKOUT STAGES WHATEVER HAPPENS TO BE
 # DIRTY — archivist drafts, operator edits, any uncommitted change from any other process.

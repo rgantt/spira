@@ -60,6 +60,33 @@ staged)
     # NOT AN AEON: nothing to check. Most commits exit here.
     is_aeon_email "${GIT_COMMITTER_EMAIL:-}" || exit 0
 
+    # WRONG WORKTREE. If the aeon was assigned a worktree (SPIRA_WORK is set by aeon.sh),
+    # any commit from a different directory is refused. The check compares ROOT — the git
+    # toplevel of wherever `git commit` is running — against the assigned path.
+    #
+    # This is the rung-4 mechanism for law-worktrees-in-the-sanctioned-root: a statute (rung
+    # 3) already says to cut worktrees only under $SPIRA_RUN/worktree; this makes committing
+    # outside the assigned one structurally impossible rather than merely advisory. The defect
+    # it prevents: aeon-yojimbo committed to the production checkout directly, creating a
+    # commit that existed only there, diverged from origin/main, and froze the promote path.
+    #
+    # NOT a wall. Override: git commit --no-verify  (the landing gate still runs inventory.sh).
+    if [ -n "${SPIRA_WORK:-}" ] && [ "$ROOT" != "$SPIRA_WORK" ]; then
+        {
+            printf '\n'
+            printf 'REFUSED by branch-guard.sh — an aeon must commit in its assigned worktree.\n'
+            printf '\n'
+            printf '  committer   : %s <%s>\n' "${GIT_COMMITTER_NAME:-}" "${GIT_COMMITTER_EMAIL:-}"
+            printf '  this tree   : %s\n' "$ROOT"
+            printf '  assigned to : %s  (SPIRA_WORK)\n' "$SPIRA_WORK"
+            printf '\n'
+            printf 'Commit in the worktree: git -C "$SPIRA_WORK" commit ...\n'
+            printf 'Override: git commit --no-verify   (the landing gate still runs)\n'
+            printf '\n'
+        } >&2
+        exit 1
+    fi
+
     # The current branch. A detached HEAD is not the base branch, so let the commit proceed.
     current="$(git -C "$ROOT" symbolic-ref --short HEAD 2>/dev/null)" || exit 0
 
