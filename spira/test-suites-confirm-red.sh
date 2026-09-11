@@ -74,6 +74,7 @@ sut() {
         SPIRA_NOTIFY="$SH/ask.sh" \
         SPIRA_PATH="$TOOLPATH" \
         SPIRA_SUITES_RUNNER_VARS="$RUNNER_VAR" \
+        SPIRA_INCIDENT_LOCK_WAIT="60" \
         "$@" bash "$SH/suites.sh" "$cmd" 2>&1
 }
 plant() { cat > "$SH/$1"; chmod +x "$SH/$1"; }
