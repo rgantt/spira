@@ -133,14 +133,31 @@ unit_active() {
     [ "$(systemctl --user is-active "$1" 2>/dev/null)" = active ] && printf 1 || printf 0
 }
 
+
 probe() {
-    # SP_AT FIRST: stamped at pass START so the badge in health.sh bounds the age of the
-    # OLDEST reading in the snapshot. NEXT is queried near the top of this function; stamping
-    # at the end made the snapshot appear newer than its NEXT rows actually were — by the full
-    # pass duration, which on this box measured 248–434s against an INTERVAL of 60. The pane
-    # will now show the full pass duration as age the moment the file lands; that is the
-    # correct behaviour, because NEXT was that old at write time.
-    _probe_start=$(date +%s)
+    # Backward-compat wrapper: calls the three tier functions sequentially then the
+    # existing per-subcommand functions, keeping cockpit.sh once/loop working unchanged.
+    # SP_AT FIRST: now_keys emits it as its very first output line.
+    local _probe_start; _probe_start=$(date +%s)
+    now_keys
+    core_keys
+    unsent_keys
+    sphere_keys
+    repo_label_keys
+    strand_keys
+    dup_refs_keys
+    livelock_keys
+    sop_keys
+    ratelim_keys
+    # SP_PASS_SECS: captures the total pass duration including all tier functions.
+    echo "SP_PASS_SECS=$(( $(date +%s) - _probe_start ))"
+}
+
+# Fast-tier keys: filesystem and /proc only. Called as `cockpit.sh now` by collect.sh;
+# also called by probe() as part of the backward-compat serial pass.
+# Emits SP_AT first so the badge in health.sh bounds the age of the oldest reading.
+now_keys() {
+    local _probe_start; _probe_start=$(date +%s)
     echo "SP_AT=$_probe_start"
     echo "SP_WINDOW_HOURS=$WINDOW_HOURS"
 
@@ -248,6 +265,153 @@ for j, l in enumerate(lines[-n:]):
         i=$((i+1))
     done
     echo "SP_AEON_N=$i"
+
+    # ---- the harness itself -----------------------------------------------------------
+    # strand.sh names this as its own blind spot: a check cannot observe the failure of the
+    # thing running it. The collector is not the sentinel, so it can — and this is what
+    # makes every number below interpretable, because a stale graph under a dead sentinel
+    # looks exactly like a quiet one under a live sentinel.
+    echo "SP_SENTINEL_TIMER=$(unit_active "$(spira_unit sentinel timer)")"
+    echo "SP_SENTINEL_AGE=$(age_of "$SPIRA_RUN/sentinel.log")"
+    echo "SP_OPS_TIMER=$(unit_active "$(spira_unit ops timer)")"
+    # SP_OPS_AGE: "ops is inside a session" vs "ops has stopped". ops.log only gets new lines
+    # from aeon.sh's own log() calls, which are silent during the 480s claude session itself,
+    # so its mtime is frozen while ops is actually working — indistinguishable from a dead
+    # collector. A live ops pid file is the authoritative "busy" signal (law-alerts-must-be-actionable).
+    _ops_age="$(age_of "$SPIRA_RUN/ops.log")"
+    for _ops_pf in "$SPIRA_RUN"/aeon-ops-*.pid; do
+        [ -e "$_ops_pf" ] || continue
+        if aeon_alive "$_ops_pf"; then _ops_age=0; break; fi
+    done
+    echo "SP_OPS_AGE=$_ops_age"
+    unset _ops_pf _ops_age
+    # AURON'S OWN PULSE, and it is here for the same reason the two above are: a check
+    # cannot observe the failure of the thing running it. Auron watches the loop, so the
+    # one thing IT cannot report is that it has stopped — and a silent watchdog and a
+    # healthy system look identical, with the pane rendering the healthy reading
+    # (law-absence-needs-a-positive-control).
+    #
+    # THE HEARTBEAT, NOT THE LOG. auron.log is appended to by systemd on every run
+    # including a run that died on its first line; auron.status is written by auron.sh
+    # itself, last, only once a whole pass has completed. Only the second one distinguishes
+    # "it ran" from "it worked".
+    echo "SP_AURON_TIMER=$(unit_active "$(spira_unit auron timer)")"
+    echo "SP_AURON_AGE=$(age_of "$SPIRA_RUN/auron.status")"
+    # What it is currently saying. A failed read renders `?`, never 0: "no alerts firing"
+    # is the reassuring answer and must never be the one a broken probe produces.
+    if [ -r "$SPIRA_RUN/auron.status" ]; then
+        echo "SP_AURON_FIRING=$(. "$SPIRA_RUN/auron.status" 2>/dev/null; printf '%s' "${SP_AURON_FIRING:-?}")"
+        echo "SP_AURON_KEYS='$(. "$SPIRA_RUN/auron.status" 2>/dev/null; printf '%s' "${SP_AURON_KEYS:-}")'"
+    else
+        echo "SP_AURON_FIRING=?"
+        echo "SP_AURON_KEYS=''"
+    fi
+
+
+    # gate-run/ — live gate runs. LIVENESS FROM /proc ON argv, never from directory existence
+    # or pgrep -f (law-absence-needs-a-positive-control). Nothing prunes gate-run/, so stale
+    # directories are the trap: a pid file that points at a dead process, or one recycled by
+    # another program, must never render as a live gate.
+    local gate_n=0 gate_live=0
+    if [ -d "$SPIRA_RUN/gate-run" ]; then
+        for _gd in "$SPIRA_RUN/gate-run"/*/; do
+            [ -e "$_gd/pid" ] || continue
+            local _g_slug _g_pid _g_started _g_age _g_state _g_cmd _g_phase
+            _g_slug="$(basename "$_gd")"
+            _g_pid="$(cat "$_gd/pid" 2>/dev/null)"; [ -n "${_g_pid:-}" ] || continue
+            _g_started="$(cat "$_gd/started" 2>/dev/null)"
+
+            _g_state=dead
+            if [ -d "/proc/$_g_pid" ]; then
+                # The same stderr-safe pattern as gate-run.sh itself: the shell's failed
+                # redirection to a vanished /proc entry goes to stderr, which pollutes the
+                # snapshot if not suppressed.
+                { _g_cmd="$(tr '\0' ' ' < "/proc/$_g_pid/cmdline")"; } 2>/dev/null
+                # argv decides, not the directory. A recycled pid belongs to a different
+                # process whose cmdline will not contain 'gate'.
+                [[ "${_g_cmd:-}" == *gate* ]] && _g_state=live
+            fi
+
+            [ "$_g_state" = live ] || continue
+            gate_live=$((gate_live+1))
+
+            if [ -n "${_g_started:-}" ]; then
+                _g_age=$(( $(date +%s) - _g_started ))
+            else
+                _g_age="?"
+            fi
+
+            # Waiting on the tree lock vs running suites: gate.sh produces no output
+            # until after flock, so an empty out file means the gate is queued.
+            if [ -s "$_gd/out" ]; then
+                _g_phase=running
+            else
+                _g_phase=waiting
+            fi
+
+            # Why a run is slow — "selecting all" is the line that explains a 650s run.
+            local _g_why=""
+            if [ "$_g_phase" = running ] && [ -r "$_gd/out" ]; then
+                _g_why="$(grep -m1 'selecting' "$_gd/out" 2>/dev/null)"
+                _g_why="$(printf '%s' "${_g_why:-}" | tr -c 'A-Za-z0-9 ._/:,()#+-' ' ' | tr -s ' ')"
+                _g_why="${_g_why:0:100}"
+            fi
+
+            printf 'SP_GATE%d_SLUG=%s\n' "$gate_n" "$_g_slug"
+            printf 'SP_GATE%d_AGE=%s\n' "$gate_n" "${_g_age:-?}"
+            printf 'SP_GATE%d_PHASE=%s\n' "$gate_n" "$_g_phase"
+            [ -n "$_g_why" ] && printf 'SP_GATE%d_WHY=%s\n' "$gate_n" "$_g_why"
+            gate_n=$((gate_n+1))
+        done
+    fi
+    echo "SP_GATE_N=$gate_n"
+    echo "SP_GATE_LIVE=$gate_live"
+
+    # ---- live aeons --------------------------------------------------------------------
+    # /proc, never a directory count and never `pgrep -f`. `gt polecat list` counting
+    # DIRECTORIES is the original scar; `pgrep -f` is the second one, where the pattern
+    # matches the searching process's own command line. aeon_alive reads argv of the
+    # recorded pid.
+    #
+    # Read-only: a stale pidfile is left where it is rather than swept, because a collector
+    # that mutates the state it reports can race the harness that owns it.
+    local n=0 pf
+    for pf in "$SPIRA_RUN"/aeon-*.pid; do
+        [ -e "$pf" ] || continue
+        aeon_alive "$pf" && n=$((n+1))
+    done
+    echo "SP_AEONS=$n"
+
+    # ---- the account's own capacity -----------------------------------------------------
+    # "Nothing is moving" and "nothing is moving because the account is out until 15:00" are
+    # the same pixels without this, and the first of those is the reading that prompts
+    # somebody to go looking for a fault that does not exist.
+    #
+    # READ-ONLY, unlike everywhere else this predicate is asked. capacity_paused deletes an
+    # expired pause file and announces the reopening; a collector that ran every minute would
+    # win that race against the sentinel and swallow the announcement into a snapshot nobody
+    # reads. So the epoch is compared here by hand and the file is left for its owner.
+    local cap_at cap_now
+    cap_at="$(capacity_pause_until)"; cap_now="$(date +%s)"
+    if [ "${cap_at:-0}" -gt "$cap_now" ] 2>/dev/null; then
+        echo "SP_CAPACITY_PAUSED=1"
+        echo "SP_CAPACITY_LEFT=$(( cap_at - cap_now ))"
+        echo "SP_CAPACITY_AT=$(date -d "@$cap_at" +%H:%M 2>/dev/null)"
+        echo "SP_CAPACITY_WHY=$(capacity_pause_why 2>/dev/null)"
+    else
+        echo "SP_CAPACITY_PAUSED=0"
+        echo "SP_CAPACITY_LEFT=0"
+        echo "SP_CAPACITY_AT="
+        echo "SP_CAPACITY_WHY="
+    fi
+}
+
+# Medium-tier keys: bounded database queries and log scans.
+# Called as `cockpit.sh core` by collect.sh; also called by probe().
+core_keys() {
+    # core_keys computes its own partition map — runs independently of now_keys.
+    local _PART_MAP
+    _PART_MAP="$(_chamber_part_map)" || _PART_MAP=""
 
     # ---- NEXT: ready beads from EVERY declared partition, ordered by priority ------------
     # PARTITIONS COME FROM THE CHAMBER. Each .fayth defines its own label predicate; a new
@@ -709,6 +873,54 @@ else:
     print("SP_BEADS_LANDED_24H=?")
 PY
 
+
+    # ---- TOKENS: what the account is spending, and which half is spending it ------------
+    # The rate limit is the binding constraint on everything else on this pane — when the
+    # account is out of capacity no aeon can be summoned, no bead can move, and every other
+    # figure here is frozen for reasons nothing else reports. It was also unattributed: the
+    # harness and the interactive session were both plausible culprits and optimising the
+    # wrong one is the expensive mistake.
+    #
+    # `tokens.sh env` READS ONLY FILES TOUCHED INSIDE THE WINDOW, which is why it can run on
+    # every pass at all. The full corpus is billions of tokens of history and re-reading it
+    # here would make the instrument cost more than the thing it measures. Do not "simplify"
+    # that away by calling `report`.
+    "$HERE/tokens.sh" env 2>/dev/null \
+      || { for k in SP_TOK_WINDOW_H SP_TOK_AEON_WIN SP_TOK_SESS_WIN SP_TOK_WIN \
+                    SP_TOK_AEON_TURNS SP_TOK_SESS_TURNS SP_TOK_AEON_CTX SP_TOK_SESS_CTX \
+                    SP_TOK_AEON_OUT SP_TOK_SESS_OUT SP_TOK_AEON_RECENT SP_TOK_SESS_RECENT; do
+               echo "$k=?"
+           done; }
+
+    # ---- LIVE CONTEXT: how close the session in front of the operator is to the edge -----
+    # A total says what was spent; only the proximity says whether to act now, and acting is
+    # what the operator can actually do about it. Measured by ctx-meter.sh — the same program
+    # the status line calls, deliberately, so the pane and the status line cannot disagree
+    # about how close to a threshold a session is.
+    "$HERE/ctx-meter.sh" env 2>/dev/null \
+      || { for k in SP_CTX_NOW SP_CTX_TURNS SP_CTX_GROWTH SP_CTX_NEXT SP_CTX_HEADROOM \
+                    SP_CTX_TURNS_LEFT SP_CTX_AGE SP_CTX_ARCHIVIST SP_CTX_ARCHIVIST_BEHIND \
+                    SP_CTX_SCAN_BYTES SP_CTX_ARCHIVIST_FILED \
+                    SP_LIMIT_5H_PCT SP_LIMIT_5H_ETA SP_LIMIT_7D_PCT SP_LIMIT_7D_ETA \
+                    SP_LIMIT_AGE; do
+               echo "$k=?"
+           done; }
+
+    # ---- the four numbers this build got wrong -----------------------------------------
+    SPIRA_SELF_WINDOW="${SPIRA_SELF_WINDOW:-60}" \
+    python3 "$HERE/cockpit-metrics.py" \
+        "$SPIRA_RUN/sentinel.log" "$SPIRA_RUN/aeon-ledger.log" "$WINDOW_HOURS" 2>/dev/null \
+      || { for k in SP_PASSES SP_ACTS SP_FALSE_ACTS SP_FALSE_PER_PASS SP_SINCE_JUDGEMENT \
+                    SP_AEON_BORN SP_AEON_LIVED SP_AEON_STILLBORN SP_AEON_WORKED \
+                    SP_SELF_REPEATING_N SP_SELF_STILLBORN_W SP_SELF_STILLBORN_LAST \
+                    SP_SELF_STARVED_W SP_SELF_STARVED_LAST; do
+               echo "$k=?"
+           done; }
+}
+
+# Slow-tier keys: git graph walks, landing checks, unbounded queries.
+# Called as `cockpit.sh unsent` by collect.sh; also called by probe().
+unsent_keys() {
     # ---- the unsent backlog ------------------------------------------------------------
     # Current state, not log history: how many spira/* branches exist right now and how old
     # the oldest is. A branch that keeps ageing is work that landed nowhere, which is how a
@@ -800,58 +1012,6 @@ except Exception: print("")' 2>/dev/null)"
     echo "SP_YIELD_CONC_MED=$_y_conc"
     echo "SP_YIELD_TOP_FAULT=$_y_worst"
 
-    # ---- the harness itself -----------------------------------------------------------
-    # strand.sh names this as its own blind spot: a check cannot observe the failure of the
-    # thing running it. The collector is not the sentinel, so it can — and this is what
-    # makes every number below interpretable, because a stale graph under a dead sentinel
-    # looks exactly like a quiet one under a live sentinel.
-    echo "SP_SENTINEL_TIMER=$(unit_active "$(spira_unit sentinel timer)")"
-    echo "SP_SENTINEL_AGE=$(age_of "$SPIRA_RUN/sentinel.log")"
-    echo "SP_OPS_TIMER=$(unit_active "$(spira_unit ops timer)")"
-    # SP_OPS_AGE: "ops is inside a session" vs "ops has stopped". ops.log only gets new lines
-    # from aeon.sh's own log() calls, which are silent during the 480s claude session itself,
-    # so its mtime is frozen while ops is actually working — indistinguishable from a dead
-    # collector. A live ops pid file is the authoritative "busy" signal (law-alerts-must-be-actionable).
-    _ops_age="$(age_of "$SPIRA_RUN/ops.log")"
-    for _ops_pf in "$SPIRA_RUN"/aeon-ops-*.pid; do
-        [ -e "$_ops_pf" ] || continue
-        if aeon_alive "$_ops_pf"; then _ops_age=0; break; fi
-    done
-    echo "SP_OPS_AGE=$_ops_age"
-    unset _ops_pf _ops_age
-    # AURON'S OWN PULSE, and it is here for the same reason the two above are: a check
-    # cannot observe the failure of the thing running it. Auron watches the loop, so the
-    # one thing IT cannot report is that it has stopped — and a silent watchdog and a
-    # healthy system look identical, with the pane rendering the healthy reading
-    # (law-absence-needs-a-positive-control).
-    #
-    # THE HEARTBEAT, NOT THE LOG. auron.log is appended to by systemd on every run
-    # including a run that died on its first line; auron.status is written by auron.sh
-    # itself, last, only once a whole pass has completed. Only the second one distinguishes
-    # "it ran" from "it worked".
-    echo "SP_AURON_TIMER=$(unit_active "$(spira_unit auron timer)")"
-    echo "SP_AURON_AGE=$(age_of "$SPIRA_RUN/auron.status")"
-    # What it is currently saying. A failed read renders `?`, never 0: "no alerts firing"
-    # is the reassuring answer and must never be the one a broken probe produces.
-    if [ -r "$SPIRA_RUN/auron.status" ]; then
-        echo "SP_AURON_FIRING=$(. "$SPIRA_RUN/auron.status" 2>/dev/null; printf '%s' "${SP_AURON_FIRING:-?}")"
-        echo "SP_AURON_KEYS='$(. "$SPIRA_RUN/auron.status" 2>/dev/null; printf '%s' "${SP_AURON_KEYS:-}")'"
-    else
-        echo "SP_AURON_FIRING=?"
-        echo "SP_AURON_KEYS=''"
-    fi
-
-    # ---- the sphere grid ---------------------------------------------------------------
-    # Scoped by LABEL, not by the goal epic's children: the goal epic is one pilgrimage, and
-    # a dashboard that describes exactly one of them describes nothing the moment a second
-    # design is in flight. Scoped to `spira,plan` for the reason in
-    # law-spira-is-a-replica-until-cutover — imported beads are a snapshot of work another
-    # system's workers are still doing, and counting them here would report that system's
-    # backlog as this one's.
-    sphere_keys
-    repo_label_keys
-
-    # ---- closed versus landed ----------------------------------------------------------
     # law-closed-is-not-landed as a 24h figure matching the header it sits under. The
     # population is beads an aeon worked AND closed within the last 24 hours, so the row's
     # window agrees with the throughput row above it. Previously this was all-time, which
@@ -1029,168 +1189,6 @@ for i in awaiting_ids:
         done < "$SPIRA_RUN/landing.progress"
     fi
     echo "SP_LANDPROG_N=$lp_n"
-
-    # gate-run/ — live gate runs. LIVENESS FROM /proc ON argv, never from directory existence
-    # or pgrep -f (law-absence-needs-a-positive-control). Nothing prunes gate-run/, so stale
-    # directories are the trap: a pid file that points at a dead process, or one recycled by
-    # another program, must never render as a live gate.
-    local gate_n=0 gate_live=0
-    if [ -d "$SPIRA_RUN/gate-run" ]; then
-        for _gd in "$SPIRA_RUN/gate-run"/*/; do
-            [ -e "$_gd/pid" ] || continue
-            local _g_slug _g_pid _g_started _g_age _g_state _g_cmd _g_phase
-            _g_slug="$(basename "$_gd")"
-            _g_pid="$(cat "$_gd/pid" 2>/dev/null)"; [ -n "${_g_pid:-}" ] || continue
-            _g_started="$(cat "$_gd/started" 2>/dev/null)"
-
-            _g_state=dead
-            if [ -d "/proc/$_g_pid" ]; then
-                # The same stderr-safe pattern as gate-run.sh itself: the shell's failed
-                # redirection to a vanished /proc entry goes to stderr, which pollutes the
-                # snapshot if not suppressed.
-                { _g_cmd="$(tr '\0' ' ' < "/proc/$_g_pid/cmdline")"; } 2>/dev/null
-                # argv decides, not the directory. A recycled pid belongs to a different
-                # process whose cmdline will not contain 'gate'.
-                [[ "${_g_cmd:-}" == *gate* ]] && _g_state=live
-            fi
-
-            [ "$_g_state" = live ] || continue
-            gate_live=$((gate_live+1))
-
-            if [ -n "${_g_started:-}" ]; then
-                _g_age=$(( $(date +%s) - _g_started ))
-            else
-                _g_age="?"
-            fi
-
-            # Waiting on the tree lock vs running suites: gate.sh produces no output
-            # until after flock, so an empty out file means the gate is queued.
-            if [ -s "$_gd/out" ]; then
-                _g_phase=running
-            else
-                _g_phase=waiting
-            fi
-
-            # Why a run is slow — "selecting all" is the line that explains a 650s run.
-            local _g_why=""
-            if [ "$_g_phase" = running ] && [ -r "$_gd/out" ]; then
-                _g_why="$(grep -m1 'selecting' "$_gd/out" 2>/dev/null)"
-                _g_why="$(printf '%s' "${_g_why:-}" | tr -c 'A-Za-z0-9 ._/:,()#+-' ' ' | tr -s ' ')"
-                _g_why="${_g_why:0:100}"
-            fi
-
-            printf 'SP_GATE%d_SLUG=%s\n' "$gate_n" "$_g_slug"
-            printf 'SP_GATE%d_AGE=%s\n' "$gate_n" "${_g_age:-?}"
-            printf 'SP_GATE%d_PHASE=%s\n' "$gate_n" "$_g_phase"
-            [ -n "$_g_why" ] && printf 'SP_GATE%d_WHY=%s\n' "$gate_n" "$_g_why"
-            gate_n=$((gate_n+1))
-        done
-    fi
-    echo "SP_GATE_N=$gate_n"
-    echo "SP_GATE_LIVE=$gate_live"
-
-    # ---- live aeons --------------------------------------------------------------------
-    # /proc, never a directory count and never `pgrep -f`. `gt polecat list` counting
-    # DIRECTORIES is the original scar; `pgrep -f` is the second one, where the pattern
-    # matches the searching process's own command line. aeon_alive reads argv of the
-    # recorded pid.
-    #
-    # Read-only: a stale pidfile is left where it is rather than swept, because a collector
-    # that mutates the state it reports can race the harness that owns it.
-    local n=0 pf
-    for pf in "$SPIRA_RUN"/aeon-*.pid; do
-        [ -e "$pf" ] || continue
-        aeon_alive "$pf" && n=$((n+1))
-    done
-    echo "SP_AEONS=$n"
-
-    # ---- the account's own capacity -----------------------------------------------------
-    # "Nothing is moving" and "nothing is moving because the account is out until 15:00" are
-    # the same pixels without this, and the first of those is the reading that prompts
-    # somebody to go looking for a fault that does not exist.
-    #
-    # READ-ONLY, unlike everywhere else this predicate is asked. capacity_paused deletes an
-    # expired pause file and announces the reopening; a collector that ran every minute would
-    # win that race against the sentinel and swallow the announcement into a snapshot nobody
-    # reads. So the epoch is compared here by hand and the file is left for its owner.
-    local cap_at cap_now
-    cap_at="$(capacity_pause_until)"; cap_now="$(date +%s)"
-    if [ "${cap_at:-0}" -gt "$cap_now" ] 2>/dev/null; then
-        echo "SP_CAPACITY_PAUSED=1"
-        echo "SP_CAPACITY_LEFT=$(( cap_at - cap_now ))"
-        echo "SP_CAPACITY_AT=$(date -d "@$cap_at" +%H:%M 2>/dev/null)"
-        echo "SP_CAPACITY_WHY=$(capacity_pause_why 2>/dev/null)"
-    else
-        echo "SP_CAPACITY_PAUSED=0"
-        echo "SP_CAPACITY_LEFT=0"
-        echo "SP_CAPACITY_AT="
-        echo "SP_CAPACITY_WHY="
-    fi
-
-    # ---- fiends ------------------------------------------------------------------------
-    strand_keys
-
-    # ---- duplicate external_refs — the dedup meter -------------------------------------
-    dup_refs_keys
-
-    # ---- livelocked and invalid-closed beads -------------------------------------------
-    livelock_keys
-
-    # ---- SOP: which runbooks never fire, and which do not hold -------------------------
-    sop_keys
-
-    # ---- TOKENS: what the account is spending, and which half is spending it ------------
-    # The rate limit is the binding constraint on everything else on this pane — when the
-    # account is out of capacity no aeon can be summoned, no bead can move, and every other
-    # figure here is frozen for reasons nothing else reports. It was also unattributed: the
-    # harness and the interactive session were both plausible culprits and optimising the
-    # wrong one is the expensive mistake.
-    #
-    # `tokens.sh env` READS ONLY FILES TOUCHED INSIDE THE WINDOW, which is why it can run on
-    # every pass at all. The full corpus is billions of tokens of history and re-reading it
-    # here would make the instrument cost more than the thing it measures. Do not "simplify"
-    # that away by calling `report`.
-    "$HERE/tokens.sh" env 2>/dev/null \
-      || { for k in SP_TOK_WINDOW_H SP_TOK_AEON_WIN SP_TOK_SESS_WIN SP_TOK_WIN \
-                    SP_TOK_AEON_TURNS SP_TOK_SESS_TURNS SP_TOK_AEON_CTX SP_TOK_SESS_CTX \
-                    SP_TOK_AEON_OUT SP_TOK_SESS_OUT SP_TOK_AEON_RECENT SP_TOK_SESS_RECENT; do
-               echo "$k=?"
-           done; }
-
-    # ---- LIVE CONTEXT: how close the session in front of the operator is to the edge -----
-    # A total says what was spent; only the proximity says whether to act now, and acting is
-    # what the operator can actually do about it. Measured by ctx-meter.sh — the same program
-    # the status line calls, deliberately, so the pane and the status line cannot disagree
-    # about how close to a threshold a session is.
-    "$HERE/ctx-meter.sh" env 2>/dev/null \
-      || { for k in SP_CTX_NOW SP_CTX_TURNS SP_CTX_GROWTH SP_CTX_NEXT SP_CTX_HEADROOM \
-                    SP_CTX_TURNS_LEFT SP_CTX_AGE SP_CTX_ARCHIVIST SP_CTX_ARCHIVIST_BEHIND \
-                    SP_CTX_SCAN_BYTES SP_CTX_ARCHIVIST_FILED \
-                    SP_LIMIT_5H_PCT SP_LIMIT_5H_ETA SP_LIMIT_7D_PCT SP_LIMIT_7D_ETA \
-                    SP_LIMIT_AGE; do
-               echo "$k=?"
-           done; }
-
-    # ---- the four numbers this build got wrong -----------------------------------------
-    SPIRA_SELF_WINDOW="${SPIRA_SELF_WINDOW:-60}" \
-    python3 "$HERE/cockpit-metrics.py" \
-        "$SPIRA_RUN/sentinel.log" "$SPIRA_RUN/aeon-ledger.log" "$WINDOW_HOURS" 2>/dev/null \
-      || { for k in SP_PASSES SP_ACTS SP_FALSE_ACTS SP_FALSE_PER_PASS SP_SINCE_JUDGEMENT \
-                    SP_AEON_BORN SP_AEON_LIVED SP_AEON_STILLBORN SP_AEON_WORKED \
-                    SP_SELF_REPEATING_N SP_SELF_STILLBORN_W SP_SELF_STILLBORN_LAST \
-                    SP_SELF_STARVED_W SP_SELF_STARVED_LAST; do
-               echo "$k=?"
-           done; }
-
-    # ---- RATE LIMIT WINDOWS: utilisation from live aeon traces ---------------------------
-    ratelim_keys
-
-    # SP_PASS_SECS: how long this probe pass took end-to-end. Emitted last so it captures
-    # the full duration. When SP_AT moves to the start (as it now does), SP_PASS_SECS lets
-    # health.sh show the collector's own cost — a pass that takes longer than INTERVAL
-    # is the direct cause of a STALE badge on arrival, and a trend in this number is
-    # visible before it becomes a mystery.
-    echo "SP_PASS_SECS=$(( $(date +%s) - _probe_start ))"
 }
 
 # The sphere-grid keys: plan-bead counts (open, in-progress, needs-op) and the poison count.
@@ -1968,5 +1966,17 @@ livelock)
 dup_refs)
     dup_refs_keys
     ;;
-*) echo "usage: cockpit.sh [once|loop|history|strands|sops|ratelim|sphere|repo_labels|livelock|dup_refs]" >&2; exit 1 ;;
+# Fast-tier keys only — the seam collect.sh drives on every 5s tick.
+now)
+    now_keys
+    ;;
+# Medium-tier keys only — the seam collect.sh drives on each 60s tick.
+core)
+    core_keys
+    ;;
+# Slow-tier keys only — the seam collect.sh drives on each 600s tick.
+unsent)
+    unsent_keys
+    ;;
+*) echo "usage: cockpit.sh [once|loop|history|now|core|unsent|strands|sops|ratelim|sphere|repo_labels|livelock|dup_refs]" >&2; exit 1 ;;
 esac

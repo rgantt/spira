@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+#
+# test-cockpit-tiered-collector.sh — tiered cockpit collector fragment lifecycle.
+#
+#   ./test-cockpit-tiered-collector.sh
+#
+# WHAT THIS SUITE TESTS:
+#
+#   1. NEVER → ? (positive control first): a probe fragment with status=never contributes
+#      no value keys, so health.sh's ${SP_FOO:-?} renders '?' for those keys.
+#
+#   2. OK → value: a probe fragment with status=ok and value keys merges those values into
+#      cockpit.env.
+#
+#   3. _PROBE_AT_<name> appears in the merged file with the fragment's timestamp.
+#
+#   4. STALE retains values: a probe fragment with status=stale keeps its previous values
+#      so the pane renders last-known-good rather than blanking (blanking reads as 0 on a
+#      pane that lays rows by position — the defect sp-xrkuu fixed).
+#
+#   5. FIRST-WINS per key: the fast probe's copy of a key wins over the slow probe's copy
+#      (alphabetical fragment order: 'now.env' sorts before 'unsent.env').
+#
+#   6. SUPERVISION: collect.sh loop refuses without INVOCATION_ID, same guard as cockpit.sh.
+#
+# covers: spira/collect.sh spira/cockpit.sh
+
+# covers: spira/collect.sh spira/cockpit.sh
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+pass=0; fail=0
+ok()     { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
+bad()    { fail=$((fail+1)); printf '  FAIL  %s: %s\n' "$1" "$2"; }
+is()     { [ "$2" = "$3" ] && ok "$1" || bad "$1" "wanted [$2] got [$3]"; }
+want()   { [[ "$3" == *"$2"* ]] && ok "$1" || bad "$1" "wanted [$2] in [$3]"; }
+nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3]"; }
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+FRAG_DIR="$TMP/cockpit.d"
+SNAP="$TMP/cockpit.env"
+mkdir -p "$FRAG_DIR"
+
+# Write a fragment file atomically, same way collect.sh does.
+write_frag() {
+    local name="$1" status="$2" at="$3"; shift 3
+    {
+        printf '_PROBE_AT=%s\n' "$at"
+        printf '_PROBE_STATUS=%s\n' "$status"
+        printf '%s\n' "$@"
+    } > "$FRAG_DIR/${name}.env"
+}
+
+# Run the Python merge logic from collect.sh directly, in the same temp dir.
+run_merge() {
+    python3 - "$FRAG_DIR" "$SNAP" <<'PY' 2>/dev/null
+import sys, os, glob
+
+frag_dir, snap_tmp_path = sys.argv[1], sys.argv[2]
+
+meta_lines  = []
+value_seen  = set()
+value_lines = []
+
+for frag_path in sorted(glob.glob(os.path.join(frag_dir, "*.env"))):
+    name = os.path.basename(frag_path)[:-4]
+    probe_at     = "0"
+    probe_status = "never"
+    val_pairs = []
+    try:
+        for line in open(frag_path, errors="replace"):
+            line = line.rstrip("\n")
+            if "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            k = k.strip()
+            if k == "_PROBE_AT":
+                probe_at = v
+            elif k == "_PROBE_STATUS":
+                probe_status = v
+            elif k and (k[0].isalpha() or k[0] == "_"):
+                val_pairs.append((k, v))
+    except OSError:
+        pass
+    meta_lines.append("_PROBE_AT_%s=%s"     % (name, probe_at))
+    meta_lines.append("_PROBE_STATUS_%s=%s" % (name, probe_status))
+    if probe_status != "never":
+        for k, v in val_pairs:
+            if k not in value_seen:
+                value_seen.add(k)
+                value_lines.append((k, v))
+
+def shq(v):
+    return "'" + v.replace("'", "'\\''") + "'"
+
+with open(snap_tmp_path, "w") as f:
+    for line in meta_lines:
+        k, _, v = line.partition("=")
+        f.write("%s=%s\n" % (k, shq(v)))
+    for k, v in value_lines:
+        f.write("%s=%s\n" % (k, shq(v)))
+PY
+}
+
+# ============================================================
+echo "1. never → ? (positive control first):"
+
+# POSITIVE CONTROL: probe with status=ok should produce a value.
+write_frag "now" "ok" "1000000" "SP_AT=1000000" "SP_WINDOW_HOURS=24"
+run_merge
+snap="$(cat "$SNAP" 2>/dev/null)"
+want "status=ok probe: SP_AT present"           "SP_AT="           "$snap"
+want "status=ok probe: SP_WINDOW_HOURS present"  "SP_WINDOW_HOURS=" "$snap"
+
+# Now overwrite with never status.
+write_frag "now" "never" "0"
+run_merge
+snap="$(cat "$SNAP" 2>/dev/null)"
+nowant "status=never probe: SP_AT absent from values"          "SP_AT="          "$snap"
+nowant "status=never probe: SP_WINDOW_HOURS absent from values" "SP_WINDOW_HOURS=" "$snap"
+# But the meta keys must still be present.
+want "status=never probe: _PROBE_AT_now present"   "_PROBE_AT_now="   "$snap"
+want "status=never probe: _PROBE_STATUS_now present" "_PROBE_STATUS_now='never'" "$snap"
+
+# ============================================================
+echo
+echo "2. ok → value:"
+
+rm -f "$FRAG_DIR"/*.env
+write_frag "core" "ok" "1000001" "SP_READY=5" "SP_NEXT_N=5"
+run_merge
+snap="$(cat "$SNAP" 2>/dev/null)"
+want "status=ok: SP_READY present"        "SP_READY=" "$snap"
+want "status=ok: _PROBE_AT_core present"  "_PROBE_AT_core=" "$snap"
+want "status=ok: _PROBE_STATUS_core=ok"   "_PROBE_STATUS_core='ok'" "$snap"
+
+# ============================================================
+echo
+echo "3. _PROBE_AT_<name> matches fragment timestamp:"
+
+rm -f "$FRAG_DIR"/*.env
+EPOCH=1725000000
+write_frag "sphere" "ok" "$EPOCH" "SP_SPHERE_N=3"
+run_merge
+snap="$(cat "$SNAP" 2>/dev/null)"
+want "_PROBE_AT_sphere matches epoch" "_PROBE_AT_sphere='$EPOCH'" "$snap"
+
+# ============================================================
+echo
+echo "4. stale retains values:"
+
+rm -f "$FRAG_DIR"/*.env
+# First write a good fragment.
+write_frag "unsent" "ok" "1000002" "SP_UNSENT=7" "SP_UNSENT_OLDEST_H=3"
+run_merge
+snap_before="$(cat "$SNAP" 2>/dev/null)"
+want "ok fragment: SP_UNSENT present before stale" "SP_UNSENT=" "$snap_before"
+
+# Now write the stale version (simulating a failed probe that kept old values).
+write_frag "unsent" "stale" "1000002" "SP_UNSENT=7" "SP_UNSENT_OLDEST_H=3"
+run_merge
+snap_after="$(cat "$SNAP" 2>/dev/null)"
+want "stale fragment: SP_UNSENT still present"         "SP_UNSENT=" "$snap_after"
+want "stale fragment: _PROBE_STATUS_unsent=stale"      "_PROBE_STATUS_unsent='stale'" "$snap_after"
+
+# ============================================================
+echo
+echo "5. first-wins: earlier alphabetical probe wins shared key:"
+
+rm -f "$FRAG_DIR"/*.env
+# 'now.env' < 'unsent.env' alphabetically. Both emit SP_AT.
+write_frag "now"    "ok" "1000003" "SP_AT=1000003"
+write_frag "unsent" "ok" "1000004" "SP_AT=9999999"
+run_merge
+snap="$(cat "$SNAP" 2>/dev/null)"
+want "first-wins: now's SP_AT wins"        "SP_AT='1000003'" "$snap"
+nowant "first-wins: unsent's SP_AT absent" "SP_AT='9999999'" "$snap"
+
+# ============================================================
+echo
+echo "6. supervision: collect.sh loop refuses without INVOCATION_ID:"
+
+BASE_PATH="$PATH"
+loop_out="$(env -i PATH="$BASE_PATH" HOME="$TMP" LC_ALL=C.UTF-8 \
+    SPIRA_CONF="$TMP/no.conf" SPIRA_HOME="$HERE" SPIRA_REPO="$TMP" \
+    SPIRA_RUN="$TMP" SPIRA_DB="$TMP/nodb" \
+    SPIRA_REPO_MAP="$TMP/no-map" SPIRA_GOAL=sp-test SPIRA_FAYTHS=t \
+    SPIRA_COCKPIT="$TMP" \
+    bash "$HERE/collect.sh" loop 2>&1)" || true
+want "collect.sh loop: refusal message present" "not the supervised process" "$loop_out"
+
+# ============================================================
+echo
+echo "7. cockpit.sh now subcommand emits SP_AT:"
+
+# Run cockpit.sh now in a minimal env that can at least parse the script.
+BASE_PATH="$PATH"
+now_out="$(env -i PATH="$BASE_PATH" HOME="$TMP" LC_ALL=C.UTF-8 \
+    SPIRA_CONF="$TMP/no.conf" SPIRA_HOME="$HERE" SPIRA_REPO="$TMP" \
+    SPIRA_RUN="$TMP" SPIRA_DB="$TMP/nodb" \
+    SPIRA_REPO_MAP="$TMP/no-map" SPIRA_GOAL=sp-test SPIRA_FAYTHS=t \
+    bash "$HERE/cockpit.sh" now 2>/dev/null)" || true
+want "cockpit.sh now: SP_AT present"         "SP_AT="         "$now_out"
+want "cockpit.sh now: SP_WINDOW_HOURS present" "SP_WINDOW_HOURS=" "$now_out"
+
+# SP_AT ordering: SP_AT before SP_WINDOW_HOURS (same invariant as test-cockpit.sh checks).
+at_pos="$(printf '%s\n' "$now_out" | grep -n '^SP_AT=' | head -1 | cut -d: -f1)"
+wh_pos="$(printf '%s\n' "$now_out" | grep -n '^SP_WINDOW_HOURS=' | head -1 | cut -d: -f1)"
+if [ -n "$at_pos" ] && [ -n "$wh_pos" ] && [ "$at_pos" -lt "$wh_pos" ]; then
+    ok "cockpit.sh now: SP_AT before SP_WINDOW_HOURS (ordering invariant)"
+else
+    bad "cockpit.sh now: SP_AT before SP_WINDOW_HOURS (ordering invariant)" \
+        "SP_AT at line ${at_pos:-?}, SP_WINDOW_HOURS at line ${wh_pos:-?}"
+fi
+
+# ============================================================
+echo
+printf 'test-cockpit-tiered-collector: %d ok, %d fail\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

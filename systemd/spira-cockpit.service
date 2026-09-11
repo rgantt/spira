@@ -5,12 +5,12 @@
 # updating still renders, and a stale panel is the failure mode this whole surface exists
 # to prevent.
 Description=Spira cockpit collector (snapshot for the ops pane)
-Documentation=file://@SPIRA_HOME@/cockpit.sh
+Documentation=file://@SPIRA_HOME@/collect.sh
 After=default.target
 
 [Service]
 Type=simple
-ExecStart=@SPIRA_PROD@/cockpit.sh loop
+ExecStart=@SPIRA_PROD@/collect.sh loop
 Restart=always
 RestartSec=15
 # A pass shells out to bd and git several times. This box also runs prod, so it is fenced
