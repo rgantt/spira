@@ -1804,7 +1804,7 @@ if [ "$SOP_REQUIRED" = 1 ] && [ "$st" = "closed" ] && [ "$superseded" != 1 ]; th
     if [ "$sop_wrote" = yes ] || [ "$sop_applied" = 0 ]; then
         :
     elif [ "$sop_wrote" = unreadable ] || [ "$sop_applied" != 1 ]; then
-        log "$FAYTH: $BEAD_ID closing rule NOT judged — the shelf or the applications ledger could not be read (wrote=$sop_wrote applied=$sop_applied). Absence is not proven, so nothing is poisoned."
+        printf '%s spira: %s: %s closing rule NOT judged — the shelf or the applications ledger could not be read (wrote=%s applied=%s). Absence is not proven, so nothing is poisoned.\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$FAYTH" "$BEAD_ID" "$sop_wrote" "$sop_applied"
     else
         # The close is undone AND the bead is taken out of circulation, because this is not
         # a bead the next aeon should retry blind: a session already resolved the incident
@@ -1814,7 +1814,7 @@ if [ "$SOP_REQUIRED" = 1 ] && [ "$st" = "closed" ] && [ "$superseded" != 1 ]; th
         # without a second notification path to build and forget.
         bead_reopen "$BEAD_ID" "Reopened and poisoned by aeon.sh: this incident was closed and no runbook came out of it. The session recorded neither an SOP written or amended (sop.sh write) nor a runbook whose CHECK confirmed (sop.sh applied --check pass), so nothing on the shelf is any better for this incident having happened and the next occurrence costs exactly as much. The closing rule is not optional: an incident resolved without an SOP must produce one. To clear this, write the runbook this incident should have left — or, if one already fitted and held, record it — then remove the spira-poison label."
         bdq label add "$BEAD_ID" spira-poison >/dev/null 2>&1
-        log "$FAYTH: $BEAD_ID REOPENED and POISONED — closed with no runbook written and no SOP application recorded"
+        printf '%s spira: %s: %s REOPENED and POISONED — closed with no runbook written and no SOP application recorded\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$FAYTH" "$BEAD_ID"
         SOP_SILENT=1
         # THE ATTEMPT COUNTER MUST NOT ALSO CHARGE FOR THIS. The bead is open because this
         # process reopened it, and the teardown cannot see that: it reads the session's trace,
