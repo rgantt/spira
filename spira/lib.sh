@@ -201,7 +201,7 @@ die() { log "FATAL $*" >&2; exit 1; }
 # into a parser. This strips anything before the first JSON token.
 json_only() { sed -n '/^[[{]/,$p'; }
 
-bdq() { "$SPIRA_BD" -C "$SPIRA_DB" "$@"; }
+bdq() { timeout 5 "$SPIRA_BD" -C "$SPIRA_DB" "$@"; }
 bdjson() { bdq "$@" --json 2>/dev/null | json_only; }
 
 # ask_already_open <subject> -> 0 when an OPEN operator ask already carries that subject.
