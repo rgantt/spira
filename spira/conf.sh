@@ -61,6 +61,7 @@ SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE SPIRA_VERDICT_TTL SPIRA_REBASE_ESCALAT
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S SPIRA_LOOM_BIN
 SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS
 SPIRA_GROOMER_LABEL SPIRA_SCOPE_LABEL
+SPIRA_MAECHEN_LABEL SPIRA_MAECHEN_LANDING_INTERVAL SPIRA_MAECHEN_MAX_GAP_SECONDS SPIRA_MAECHEN_MAX_BEADS SPIRA_MAECHEN_REMEDY_LABEL
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD COCKPIT_SESSIONS COCKPIT_HOST
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_VIEW SPIRA_VIEW_SESSION
@@ -419,10 +420,11 @@ spira_conf_defaults() {
     # A new lane is added here and given a name; fayths join it with FAYTH_LANE=<name>.
     # The ops and groomer lanes are declared by default because ops.fayth and groomer.fayth
     # ship using them. The qa lane is declared alongside them because qa.fayth ships using it.
+    # The maechen lane is declared because maechen.fayth ships using it.
     # A lane fayth still functions if its lane name is absent from this list (the mechanism is
     # FAYTH_LANE set, not membership here), but the declaration makes it visible to operators
     # reading SPIRA_LANES for the list of scheduled partitions.
-    : "${SPIRA_LANES:=ops groomer qa}"
+    : "${SPIRA_LANES:=ops groomer qa maechen}"
     # THE WHOLE-FLEET CEILING — how many aeons may exist at once, counting lane fayths.
     # SPIRA_MAX_AEONS is the task pool and a lane draws outside it, so the two of them
     # together are the box's real ceiling (pool + one per lane) and neither one alone is the
@@ -490,6 +492,31 @@ spira_conf_defaults() {
     # and by any scanner that queries for groom trigger beads. One definition keeps the label
     # name consistent across fayth, scanner and anything else that files trigger beads.
     : "${SPIRA_GROOMER_LABEL:=groom}"
+    # THE MAECHEN PARTITION AND TUNING KNOBS. Maechen is the retrospective persona: it reads
+    # the failure distribution, names recurring classes, and cuts remedy beads.
+    #
+    # SPIRA_MAECHEN_LABEL — the sweep label that wakes Maechen. Read by maechen.fayth's
+    # predicate and by whatever trigger files sweep beads (sp-emzov). One definition keeps
+    # them consistent.
+    : "${SPIRA_MAECHEN_LABEL:=maechen-sweep}"
+    #
+    # SPIRA_MAECHEN_REMEDY_LABEL — the label applied to every bead Maechen cuts. The
+    # admissibility check (sp-ymwz5) and the flatline measurement query by this label.
+    : "${SPIRA_MAECHEN_REMEDY_LABEL:=maechen-remedy}"
+    #
+    # SPIRA_MAECHEN_LANDING_INTERVAL — how many landings trigger a pass (counted from the
+    # commit graph, not from bead status). At the 2026-09-11 rate of ~6/hour, 25 landings
+    # takes ~4h, so the 3h gap ceiling binds and this is the volume floor.
+    : "${SPIRA_MAECHEN_LANDING_INTERVAL:=25}"
+    #
+    # SPIRA_MAECHEN_MAX_GAP_SECONDS — maximum gap between passes. Even if the landing volume
+    # threshold has not been reached, a pass fires after this many seconds. 3h = 10800.
+    : "${SPIRA_MAECHEN_MAX_GAP_SECONDS:=10800}"
+    #
+    # SPIRA_MAECHEN_MAX_BEADS — output bound per pass. A retrospective that files twelve
+    # findings has not prioritised; it has flooded. Three is the default: enough to address
+    # the top class with its test and its guard, not enough to flood the board.
+    : "${SPIRA_MAECHEN_MAX_BEADS:=3}"
     # THE SCOPE LABEL prepended to every persona's partition. Every fayth predicate reads
     # this key rather than the literal "spira", so the fleet's work scope is a runtime choice.
     # Two values matter: "spira" (today — the default, unchanged behaviour) and "" (empty —

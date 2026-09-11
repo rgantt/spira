@@ -1,0 +1,67 @@
+# maechen.fayth — Maechen: the retrospective persona. Reads the failure distribution,
+# identifies recurring failure classes, and cuts the work to end them — post-landing,
+# incremental, watermarked.
+#
+# A fayth is a persona DEFINITION; an aeon is one summoned instance of it. Four things:
+# a predicate carving its partition out of the graph, the memories it must read, the tools
+# it may use, and what wakes it.
+
+FAYTH_NAME=maechen
+FAYTH_DESC="Maechen — the unsent historian: reads the failure distribution, names recurring classes, cuts the work to end them"
+
+# THE PARTITION. Maechen runs in beadless sweep mode, like QA: it is not summoned by
+# claiming a work bead but by a trigger that fires a sweep. The label is read from
+# SPIRA_MAECHEN_LABEL so the operator can rename it without touching this file.
+FAYTH_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}$SPIRA_MAECHEN_LABEL"
+FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"
+
+# Statutes only. Maechen reads failure patterns and writes designs — a runbook shelf
+# for production incidents would push the statutes it actually needs off the context budget.
+FAYTH_MEMORY_PREFIXES="law-"
+
+# NO FAYTH_REPO. The repository comes from the BEAD — a `repo:spira` label resolved
+# through .claude/spira/repo-map. The sweep bead carries repo:spira, which is the home
+# repo, because Maechen's failure record is the harness's own.
+
+# OPUS 5. The census step is recognition and enumeration, which a small model handles.
+# But diagnosing a mechanism and writing a design is not — it requires understanding
+# causality, forming a hypothesis, running commands to verify it, and converting a
+# finding into a concrete deliverable for a builder. Starting expensive and correct
+# beats cheap and silently useless.
+#
+# VERIFIED, NOT ASSUMED. `claude --model claude-opus-5 -p ...` answers on this box,
+# exit 0, verified 2026-09-11. qa.fayth carries the scar for skipping that check: an
+# id the CLI rejects does not fail loudly, every summon dies and the role looks merely
+# quiet, which is the outage shape this harness is worst at noticing. Probe a candidate
+# id before writing it here. Cost basis for revisiting: ~8 passes/day at the 3h ceiling.
+# If census turns out to be most of the tokens, splitting census (small model) from
+# diagnosis (large) is the likely optimisation — item 7's scorecard makes that
+# evidence-based rather than a guess. (Ryan, 2026-09-11: "Start with Opus 5, get that
+# working, then we'll tweak with other models later.")
+FAYTH_MODEL=claude-opus-5
+FAYTH_MAX_CONCURRENT=1
+
+# THE MAECHEN LANE. Maechen draws from its own capacity rather than from SPIRA_MAX_AEONS,
+# so a fully-occupied builder pool cannot prevent a retrospective pass. The maechen lane
+# is declared in SPIRA_LANES; without that declaration the lane still functions (the
+# mechanism is FAYTH_LANE set, not membership in the list), but the declaration makes it
+# visible to operators reading SPIRA_LANES for the list of scheduled partitions.
+FAYTH_LANE=maechen
+
+# TIMEOUT AND LEASE. A Maechen pass reads the whole corpus, demonstrates a mechanism,
+# and writes at most SPIRA_MAECHEN_MAX_BEADS beads — more than QA's enumeration pass
+# but bounded by the same one-pass constraint. One hour matches QA's ceiling; the 3h
+# trigger gap means a pass that fills its wall cannot start another before that gap
+# expires. The lease extends past the wall so a killed session's bead is reclaimable
+# before the next trigger fires.
+FAYTH_TIMEOUT_SECONDS=3600
+FAYTH_LEASE_MINUTES=70
+FAYTH_HEARTBEAT_SECONDS=120
+FAYTH_STALL_BEATS=8
+
+# READ-AND-FILE TOOLSET. Maechen reads the corpus, runs diagnostic commands, and files
+# beads. It does not write code; it does not edit the harness. A retrospective that lands
+# code also decides whether the fix is worth its runtime — that is the judgement that
+# produced the 17-minute gate. Withholding Edit and Write enforces "Maechen proposes;
+# it does not build."
+FAYTH_TOOLS="Bash,Read,Glob,Grep,TodoWrite"
