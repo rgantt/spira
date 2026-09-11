@@ -600,6 +600,17 @@ cmd_run() {
             printf '  %-26s FIXTURE-FAULT  shared fixture collapsed\n' "$s"
             continue
         fi
+        # SILENT-FAILURE GUARD. A suite that exits non-zero with no combined output has
+        # redirected its failure stream away from stdout/stderr. Without this guard the
+        # filed bead carries no evidence and the failure is undiagnosable: the output
+        # section in the bead body would be empty, with nothing to reason from. Append a
+        # sentinel so the body is never empty on a failure path. Skip rc=77 (intentional
+        # skip, not a failure) and rc=0 (pass). rc=124 (watchdog timeout) may also produce
+        # empty output when a suite is killed before printing anything, and the diagnostic
+        # is equally useful there.
+        if [ -z "$out" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 77 ]; then
+            out="[no output — suite exited rc=$rc with nothing on stdout/stderr; check for exec redirects discarding output]"
+        fi
         case "$rc" in
             0)  status=ok
                 record_write "$s" ok "$secs" -
