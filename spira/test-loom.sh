@@ -23,6 +23,7 @@
 #
 # defect: sp-wok.3
 # covers: loom/*
+# timeout: 120
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LOOM_ROOT="$HERE/../loom"
