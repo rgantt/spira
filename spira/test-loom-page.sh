@@ -288,7 +288,18 @@ if ! testdb_available; then
 else
     testdb_up loom >/dev/null || { printf 'FATAL: testdb_up loom failed\n' >&2; exit 1; }
     trap 'testdb_drop >/dev/null 2>&1; rm -rf "$TMP"' EXIT INT TERM
-    bdq() { bd -C "$SPIRA_DB" "$@"; }
+    # Use $SPIRA_BD explicitly — testdb_up sets it alongside SPIRA_DB, so using it
+    # here ensures both point at the same engine. Bare `bd` resolves through PATH,
+    # which may not have the embedded shim if TESTDB_BIN was not exported to this
+    # suite (scar: SPIRA_DB pointed at production while PATH missed the shim, so
+    # bare `bd` used a binary that fell back to the default database — sp-p064p).
+    bdq() { "${SPIRA_BD:-bd}" -C "$SPIRA_DB" "$@"; }
+    # POSITIVE CONTROL: assert the fixture starts empty. If SPIRA_DB were pointing
+    # at production here, this would fail with "want [0] got [N]" and name the cause
+    # before any bead-count assertion further down obscures it.
+    _pre="$(bdq list --limit 0 --json 2>/dev/null | sed -n '/^[[{]/,$p' \
+            | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).length))' 2>/dev/null)"
+    is "fixture starts empty" "0" "${_pre:-?}"
     bdq create "a bead that blocks another" -t task -p 1 -l repo:alpha >/dev/null 2>&1
     bdq create "the bead it blocks" -t task -p 2 -l repo:alpha >/dev/null 2>&1
     ids="$(bdq list --limit 0 --json 2>/dev/null | sed -n '/^[[{]/,$p' \
