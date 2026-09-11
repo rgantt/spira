@@ -92,7 +92,7 @@ FAKE_PROD="$TMP/prod-checkout/spira"
 mkdir -p "$FAKE_PROD"
 for _s in sentinel.sh archive.sh archivist.sh auron.sh cockpit.sh loom.sh \
            aeon.sh skew.sh suites.sh watch-refresh.sh watchd.sh watchtower.sh \
-           install-session-hook.sh; do
+           collect.sh install-session-hook.sh; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_PROD/$_s"
     chmod +x "$FAKE_PROD/$_s"
 done
