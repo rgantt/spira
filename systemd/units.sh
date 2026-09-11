@@ -59,6 +59,7 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
        spira-auron.service spira-auron.timer
        spira-watchtower.service spira-watchtower.timer
        spira-skew.service spira-skew.timer
+       spira-promote.service spira-promote.timer
        spira-archivist.service spira-archivist.timer
        spira-cockpit.service
        spira-loom.service
@@ -79,7 +80,7 @@ UNITS=(spira-sentinel.service spira-sentinel.timer
 # Template names mapped through inst_name so the enabled unit matches its installed name.
 _ENABLE_TMPL=(cockpit-ensure.timer concierge.timer spira-watch-refresh.timer
               beads-push.timer spira-sentinel.timer spira-ops.timer spira-auron.timer
-              spira-watchtower.timer spira-skew.timer
+              spira-watchtower.timer spira-skew.timer spira-promote.timer
               spira-archive.timer
               spira-archivist.timer spira-watch-notify.timer
               spira-suites.timer

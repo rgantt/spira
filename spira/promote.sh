@@ -4,25 +4,23 @@
 #
 #   promote.sh [--dry-run] <ref>
 #
-# TWO MODELS
-# ----------
-# This harness supports two installation layouts:
+# EXPECTED MODEL: SPLIT-CHECKOUT
+# --------------------------------
+# SPIRA_PROD is a separate clone outside SPIRA_REPO. The development checkout (SPIRA_REPO)
+# is where beads land and aeons work; this script carries landed commits across to the
+# production checkout on a timer (spira-promote.timer, every 2 minutes). Set SPIRA_PROD
+# in spira.conf to a path outside SPIRA_REPO (e.g. adjacent to the dev checkout, named
+# with a "-prod" suffix). The
+# first call creates the clone when absent; subsequent calls fast-forward it.
 #
-# SPLIT-CHECKOUT MODEL. SPIRA_PROD resolves to a directory outside SPIRA_REPO — a
-# separate clone that systemd executes. The development checkout (SPIRA_REPO) is where
-# beads land and aeons work; this script carries landed commits across to production.
-# Set SPIRA_PROD in spira.conf to a path outside the development checkout.
+# In split-checkout mode a dirty or mid-landing SPIRA_REPO does not reach the executing
+# copy. An aeon that leaves changes uncommitted cannot disrupt a live session.
 #
-# SINGLE-CHECKOUT MODEL. SPIRA_PROD resolves to a directory inside SPIRA_REPO — the
-# same tree that aeons work in is the one systemd executes. There is no separate
-# production checkout, and promote.sh cannot do its job: the fast-forward rule compares
-# a tree to itself, and the "restart only changed units" step has no old and new to diff.
-# In this model the landing pass is the only thing that advances the copy in force.
-# promote.sh exits non-zero and names the right tool: skew.sh refresh.
-#
-# DETECTION. If SPIRA_PROD is a subdirectory of SPIRA_REPO (or equal to SPIRA_HOME),
-# this installation is in single-checkout mode. promote.sh exits 1, names the situation,
-# and points to the correct tool.
+# SINGLE-CHECKOUT LEGACY MODE (REFUSED)
+# ---------------------------------------
+# If SPIRA_PROD is inside SPIRA_REPO, promote.sh exits 1 and names skew.sh refresh as the
+# correct tool. doctor.sh reports this as a FAIL. To fix: set SPIRA_PROD to a path outside
+# SPIRA_REPO and run install.sh.
 #
 # UNIT RESTARTS (split-checkout). Only units whose ExecStart script changed between old
 # and new are restarted. Others are left running, so a promotion of a change to one

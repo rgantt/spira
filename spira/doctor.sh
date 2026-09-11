@@ -553,27 +553,24 @@ else FAIL "cannot write $SPIRA_RUN" "Leases, logs and worktrees live here. Set S
 
 echo
 echo "promote"
-# WHICH MODEL IS IN USE. promote.sh supports two layouts; they call for different
-# operator actions and one of them makes promote.sh itself a no-op. Name the model
-# clearly so the operator knows which one they have, rather than discovering it by
-# running promote.sh and reading its error.
+# SPLIT-CHECKOUT IS THE EXPECTED MODEL. SPIRA_PROD must resolve to a directory outside
+# SPIRA_REPO. promote.sh carries commits from the dev checkout to a separate production
+# clone on a timer; a dirty or mid-landing SPIRA_REPO does not reach the executing copy.
 #
-# SINGLE-CHECKOUT: SPIRA_PROD is inside SPIRA_REPO. The landing pass is the only
-# thing that advances the copy in force; promote.sh exits non-zero and points to
-# skew.sh refresh. This is a valid configuration — named here, not a FAIL.
-#
-# SPLIT-CHECKOUT: SPIRA_PROD is outside SPIRA_REPO. promote.sh works as described.
-# If the path does not yet exist the first promotion will clone it; if it exists,
-# the loop is ready to run.
+# SINGLE-CHECKOUT (SPIRA_PROD inside SPIRA_REPO) is a FAIL: promote.sh exits non-zero,
+# skew.sh incorrectly classifies the dev checkout as a second copy, and an in-progress
+# landing can swap code under a live session. Fix: set SPIRA_PROD in spira.conf to a
+# path outside SPIRA_REPO and run install.sh.
 _dr_prod_norm="$(cd "${SPIRA_PROD:-/nonexistent}" 2>/dev/null && pwd -P || printf '%s' "${SPIRA_PROD:-}")"
 _dr_repo_norm="$(cd "$SPIRA_REPO" 2>/dev/null && pwd -P || printf '%s' "$SPIRA_REPO")"
 case "$_dr_prod_norm/" in
     "$_dr_repo_norm/"*)
-        OK "single-checkout mode: SPIRA_PROD ($SPIRA_PROD) is inside SPIRA_REPO — promote defers to skew.sh refresh"
+        FAIL "single-checkout mode: SPIRA_PROD ($SPIRA_PROD) is inside SPIRA_REPO" \
+             "Set SPIRA_PROD in ${CONF:-spira.conf} to a path outside SPIRA_REPO and run install.sh."
         ;;
     *)
         if [ -z "${SPIRA_PROD:-}" ]; then
-            WARN "SPIRA_PROD is not set — promote.sh will refuse to run" \
+            FAIL "SPIRA_PROD is not set — promote.sh will refuse to run" \
                  "Set SPIRA_PROD in ${CONF:-spira.conf} to the harness subdir inside the production clone."
         elif [ -d "$SPIRA_PROD" ]; then
             OK "split-checkout mode: production at $SPIRA_PROD"
