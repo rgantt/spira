@@ -177,6 +177,78 @@ want "symlink error names single-checkout" "single-checkout" "$sym_err"
 
 # ==========================================================================
 echo
+echo "fetch-before-resolve — local branch stale, origin/main is ahead, prod needs advancing:"
+# ==========================================================================
+# WHAT THIS TESTS. The timer runs 'promote.sh origin/main' from the dev checkout. The dev
+# checkout's local 'main' is typically stale (the landing pass pushes to origin without
+# fast-forwarding the local branch). If promote.sh does not fetch before resolving the ref,
+# 'origin/main' resolves to the stale local ref, which may be behind the production checkout
+# — causing every timer tick to report "not a fast-forward" and stall.
+#
+# Set up: a dev repo whose local 'main' is at A; a bare 'origin' at B (B descends from A);
+# a prod checkout at A. Verify that 'promote.sh --dry-run origin/main' exits 0 even though
+# local 'main' == prod HEAD, by proving it fetched and resolved origin/main to B.
+FF_DEV="$TMP/ff-dev"
+FF_ORIGIN="$TMP/ff-origin.git"
+FF_PROD="$TMP/ff-prod"
+mkdir -p "$FF_DEV/spira"
+
+# Bootstrap: dev repo with an initial commit A on main.
+git -C "$TMP" init -q ff-dev 2>/dev/null
+git -C "$FF_DEV" commit --allow-empty -m "commit-A" -q
+COMMIT_A="$(git -C "$FF_DEV" rev-parse HEAD)"
+
+# Bare origin cloned from dev at commit A.
+git clone --bare -q "$FF_DEV" "$FF_ORIGIN"
+git -C "$FF_DEV" remote add origin "$FF_ORIGIN"
+
+# Advance origin to commit B (one commit ahead of A).
+git -C "$FF_DEV" checkout -q -b tmp-branch
+git -C "$FF_DEV" commit --allow-empty -m "commit-B" -q
+git -C "$FF_DEV" push origin tmp-branch:main -q 2>/dev/null
+git -C "$FF_DEV" checkout -q main
+git -C "$FF_DEV" branch -D tmp-branch -q 2>/dev/null || true
+COMMIT_B="$(git -C "$FF_ORIGIN" rev-parse refs/heads/main)"
+
+# Prod checkout pinned at A (local main is stale; origin/main is at B).
+git clone -q "$FF_ORIGIN" "$FF_PROD" 2>/dev/null
+git -C "$FF_PROD" checkout --detach -q "$COMMIT_A"
+
+# Symlink lib.sh and conf.sh so promote.sh can source them from the dev fixture.
+ln -sf "$HERE/lib.sh"  "$FF_DEV/spira/lib.sh"
+ln -sf "$HERE/conf.sh" "$FF_DEV/spira/conf.sh"
+printf '# empty\n' > "$FF_DEV/spira/repo-map.example"
+printf '# empty\n' > "$FF_DEV/spira/watchers"
+
+ff_err="" ff_rc=0
+ff_err="$(env -i PATH="$PATH" HOME="$TMP/home" \
+    SPIRA_HOME="$FF_DEV/spira" \
+    SPIRA_REPO="$FF_DEV" \
+    SPIRA_PROD="$FF_PROD/spira" \
+    SPIRA_RUN="$TMP/run" \
+    SPIRA_DB="$TMP/db" \
+    SPIRA_CONF=/nonexistent \
+    SPIRA_WATCHERS="$FF_DEV/spira/watchers" \
+    SPIRA_SYSTEMCTL=/bin/true \
+    bash "$HERE/promote.sh" --dry-run origin/main 2>&1)" || ff_rc=$?
+
+if [ "$ff_rc" -eq 0 ]; then
+    ok "fetch-before-resolve: promote.sh --dry-run origin/main exits 0 when local main is stale"
+else
+    bad "fetch-before-resolve: promote.sh --dry-run origin/main exits 0 when local main is stale" \
+        "rc=$ff_rc output=$ff_err"
+fi
+
+# The dry-run output must name the target commit B, proving it fetched and resolved origin/main.
+if [[ "$ff_err" == *"$COMMIT_B"* ]]; then
+    ok "fetch-before-resolve: output names origin/main commit (B), not stale local HEAD (A)"
+else
+    bad "fetch-before-resolve: output names origin/main commit (B), not stale local HEAD (A)" \
+        "COMMIT_B=$COMMIT_B not found in: $ff_err"
+fi
+
+# ==========================================================================
+echo
 echo "summary"
 # ==========================================================================
 printf '  %d passed, %d failed\n' "$pass" "$fail"

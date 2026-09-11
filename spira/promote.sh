@@ -2,7 +2,7 @@
 #
 # promote.sh — fast-forward the production checkout to a ref; restart only changed units.
 #
-#   promote.sh [--dry-run] <ref>
+#   promote.sh [--dry-run] [--force] <ref>
 #
 # EXPECTED MODEL: SPLIT-CHECKOUT
 # --------------------------------
@@ -36,11 +36,28 @@ set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
 SC="${SPIRA_SYSTEMCTL:-systemctl}"
-DRY_RUN=0
-if [ "${1:-}" = "--dry-run" ]; then DRY_RUN=1; shift; fi
-REF="${1:?usage: promote.sh [--dry-run] <ref>}"
+DRY_RUN=0; FORCE=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run)    DRY_RUN=1; shift ;;
+        --force)      FORCE=1;   shift ;;
+        --) shift; break ;;
+        -*) printf 'promote: unknown flag: %s\n' "$1" >&2; exit 1 ;;
+        *)  break ;;
+    esac
+done
+REF="${1:?usage: promote.sh [--dry-run] [--force] <ref>}"
 
 [ -n "${SPIRA_PROD:-}" ] || die "promote: SPIRA_PROD is not set — set it in spira.conf"
+
+# FETCH BEFORE RESOLVING. The timer typically passes 'origin/main' as the ref; the local
+# tracking branch (plain 'main') is almost always stale because the landing pass pushes to
+# the remote without fast-forwarding the local. A stale local 'main' resolves to a commit
+# already behind the production checkout, triggering a false "not a fast-forward" error on
+# every timer tick. Fetch unconditionally here so callers can name remote-tracking refs
+# ('origin/main') and be certain they are current; plain branch names work too after the
+# fetch updates their tracking refs.
+git -C "$SPIRA_REPO" fetch origin 2>/dev/null || true
 
 # SINGLE-CHECKOUT DETECTION. Resolve both paths to their canonical forms so a symlink
 # or a trailing slash does not defeat the membership test.
@@ -95,17 +112,15 @@ if [ "$OLD_HEAD" = "$RESOLVED" ]; then
 fi
 
 # FAST-FORWARD CHECK. The new ref must descend from the current production HEAD.
-# This is what makes reversal symmetric: promoting from B back to A is a fast-forward
-# of A-to-B run in the other direction, i.e. A must be an ancestor of B, and when we
-# reverse we check that OLD_HEAD (B) is an ancestor of RESOLVED (A), which fails.
-# That means strict reversal requires knowing the old SHA; --force-promote skips this.
-if [ -n "$OLD_HEAD" ]; then
+# --force skips this to allow rollback: promote to an earlier ref (reverting a bad
+# promotion), then forward again once the fix is ready. Reversal is safe because
+# promote.sh prints the current HEAD before overwriting it, so the rollback SHA is
+# always in the log. Only units whose ExecStart changed are restarted in either direction.
+if [ -n "$OLD_HEAD" ] && [ "$FORCE" = 0 ]; then
     if ! git -C "$SPIRA_REPO" merge-base --is-ancestor "$OLD_HEAD" "$RESOLVED" 2>/dev/null; then
         printf 'promote: %s is not a fast-forward from the current production HEAD (%s)\n' \
             "$RESOLVED" "$OLD_HEAD" >&2
-        printf 'promote: to reverse: promote.sh %s\n' "$OLD_HEAD" >&2
-        printf 'promote: if the production checkout is ahead of the target (e.g. reverting), '>&2
-        printf 'use --force-forward (not yet implemented) or reset production manually\n' >&2
+        printf 'promote: to reverse: promote.sh --force %s\n' "$OLD_HEAD" >&2
         exit 1
     fi
 fi

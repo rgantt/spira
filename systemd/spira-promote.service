@@ -9,7 +9,7 @@ Type=oneshot
 # set SPIRA_REPO = prod checkout root and trigger the single-checkout detection in promote.sh
 # (SPIRA_PROD is inside SPIRA_REPO when both are the prod checkout). The dev checkout gives
 # SPIRA_REPO = dev root, SPIRA_PROD = prod checkout path — promote.sh proceeds correctly.
-ExecStart=@SPIRA_HOME@/promote.sh main
+ExecStart=@SPIRA_HOME@/promote.sh origin/main
 TimeoutStartSec=120
 CPUQuota=20%
 Nice=10
