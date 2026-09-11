@@ -467,6 +467,17 @@ else:
 ' "$_pname" 2>/dev/null
     done | python3 -c '
 import sys, json, re
+# THE PARTITION MAP IS PASSED AS argv[1] so that fayth: preferences can be checked at
+# render time. A bead carrying fayth:ops on labels that match the builder partition is
+# shown by the partition query as "builder" — but builder is excluded by the preference.
+# Without the map we cannot compute which persona would actually claim it; with it we
+# either name the right persona or mark the bead "unclaimable". A bead named "builder"
+# when no builder can claim it is worse than "unclaimable": it displaces the suspicion
+# that would have prompted a look. (sp-f8vry: 7 P1 beads shown as "builder" for 15h.)
+try:
+    part_map = json.loads(sys.argv[1])
+except Exception:
+    part_map = {}
 rows = []
 seen = set()
 refused = False
@@ -492,7 +503,21 @@ rows.sort(key=lambda r: (r.get("priority") or 9))
 # decides the actual height. A collector cap tighter than the renderer is the one that cannot
 # be seen: rows never emitted look exactly like rows that do not exist.
 for n, i in enumerate(rows[:40]):
-    part = i.get("_partition", "?")
+    labels = set(i.get("labels") or [])
+    pref = {x.split(":", 1)[1] for x in labels if x.startswith("fayth:")}
+    if pref:
+        # A fayth: preference narrows who can claim this bead. Find the preferred persona
+        # whose partition labels are all present on the bead; "unclaimable" if none qualify.
+        actual = None
+        for lset_str, pname in part_map.items():
+            if pname not in pref:
+                continue
+            if all(l in labels for l in lset_str.split(",")):
+                actual = pname
+                break
+        part = actual if actual else "unclaimable"
+    else:
+        part = i.get("_partition", "?")
     title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80].replace("=", "-")
     print("SP_NEXT%d=P%s %s %s %s" % (n, i.get("priority") or "?", part, i["id"], title))
 # A refused query renders ? — "no work ready" is the reassuring answer that must never be
@@ -503,7 +528,7 @@ if refused:
 else:
     print("SP_NEXT_N=%d" % len(rows))
     print("SP_READY=%d" % len(rows))
-' 2>/dev/null
+' "$_PART_MAP" 2>/dev/null
 
     # ---- RECENT: TRANSITIONS, not just outcomes ----------------------------------------
     # The id->title map for the rows below, fetched once through the harness chokepoint and
