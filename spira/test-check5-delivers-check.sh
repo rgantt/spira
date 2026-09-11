@@ -29,7 +29,7 @@
 # defect: sp-hivwr
 # covers: spira/sentinel.sh spira/aeon.sh
 # hermetic-ok: uses a fixture database and a local git repo, no systemd or gh
-# timeout: 120
+# timeout: 60
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
@@ -93,6 +93,7 @@ sentinel() {
     SPIRA_NOTIFY="$SH/ask.sh" SPIRA_REPO_MAP="$TMP/repo-map" \
     SPIRA_LAUNCH="$TMP/launch" SPIRA_SYSTEMCTL="$TMP/systemctl" \
     SPIRA_CONF="$TMP/no-such-conf" \
+    SPIRA_SKIP_RECLAIM=1 \
         bash "$SH/sentinel.sh" 2>&1
 }
 
