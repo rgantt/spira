@@ -114,12 +114,56 @@ else
     bad "scratch: bead count stable" "first=$bead_count second=$second_count"
 fi
 
-# ---- SHELL: exits 0 and uses a distinct SPIRA_DB ------------------------------------
+# ---- POSITIVE CONTROL: prove teardown assertions can catch a failure -----------------
+# Patch testenv.sh to use a null EXIT trap, run shell, and confirm that every path it
+# printed SURVIVED (i.e. teardown did not happen). Without this, an assertion on "path
+# is gone" could pass vacuously when shell never created any paths or when the path was
+# never captured from stderr (law-absence-needs-a-positive-control).
+#
+# Two substitutions: (1) hardcode HERE so testdb.sh is found when the script runs from
+# TMP; (2) replace the EXIT trap with a no-op so teardown is deliberately skipped.
+broken_testenv="$TMP/broken-testenv.sh"
+sed \
+    -e '/^HERE=/c\HERE="'"$HERE"'"' \
+    -e '/trap.*testdb_drop.*EXIT INT TERM/c\    trap '"'"''"'"' EXIT INT TERM' \
+    "$HERE/testenv.sh" > "$broken_testenv"
 
-# Drive shell non-interactively: pipe a command to stdin. bash reads it and exits.
-# 2>/dev/null silences the "testenv: scratch shell" header lines.
-shell_db="$(printf 'printf "%%s" "$SPIRA_DB"\n' | bash "$HERE/testenv.sh" shell 2>/dev/null)"
+broken_stderr="$TMP/broken-shell-stderr"
+printf '\n' | bash "$broken_testenv" shell 2>"$broken_stderr" || true
+
+broken_db_path="$(grep 'SPIRA_DB='    "$broken_stderr" | sed 's/.*SPIRA_DB=//'    | head -1)"
+broken_run_path="$(grep 'SPIRA_RUN='  "$broken_stderr" | sed 's/.*SPIRA_RUN=//'  | head -1)"
+broken_spool_path="$(grep 'SPIRA_SPOOL=' "$broken_stderr" | sed 's/.*SPIRA_SPOOL=//' | head -1)"
+
+if [ -n "$broken_db_path" ] && [ -e "$broken_db_path" ]; then
+    ok "teardown-positive-control: broken trap leaves SPIRA_DB alive"
+else
+    bad "teardown-positive-control: broken trap leaves SPIRA_DB alive" \
+        "path gone or not captured: '${broken_db_path:-}'"
+fi
+if [ -n "$broken_run_path" ] && [ -d "$broken_run_path" ]; then
+    ok "teardown-positive-control: broken trap leaves scratch_run alive"
+else
+    bad "teardown-positive-control: broken trap leaves scratch_run alive" \
+        "path gone or not captured: '${broken_run_path:-}'"
+fi
+
+# Clean up the intentionally-leaked paths from the positive control.
+[ -n "$broken_db_path" ]    && rm -rf "$broken_db_path"
+[ -n "$broken_run_path" ]   && rm -rf "$broken_run_path"
+[ -n "$broken_spool_path" ] && rm -rf "$broken_spool_path"
+
+# ---- SHELL: exits 0, uses a distinct SPIRA_DB, and tears down cleanly ---------------
+# Drive shell non-interactively: pipe a command to stdin. Capture stderr to extract the
+# paths testenv.sh prints, then verify each is gone after exit.
+shell_stderr="$TMP/shell-stderr"
+shell_db="$(printf 'printf "%%s" "$SPIRA_DB"\n' \
+            | bash "$HERE/testenv.sh" shell 2>"$shell_stderr")"
 shell_rc=$?
+
+shell_db_path="$(grep    'SPIRA_DB='    "$shell_stderr" | sed 's/.*SPIRA_DB=//'    | head -1)"
+shell_run_path="$(grep   'SPIRA_RUN='  "$shell_stderr" | sed 's/.*SPIRA_RUN=//'  | head -1)"
+shell_spool_path="$(grep 'SPIRA_SPOOL=' "$shell_stderr" | sed 's/.*SPIRA_SPOOL=//' | head -1)"
 
 if [ $shell_rc -eq 0 ]; then
     ok "shell: exits 0"
@@ -133,8 +177,7 @@ else
     bad "shell: SPIRA_DB is set inside the subshell" "empty"
 fi
 
-# The SPIRA_DB seen inside shell must differ from the configured one. If $SPIRA_DB is not
-# set in this environment, we can only assert that the shell set SOMETHING.
+# The SPIRA_DB seen inside shell must differ from the configured one.
 if [ -n "${SPIRA_DB:-}" ]; then
     if [ "$shell_db" != "$SPIRA_DB" ]; then
         ok "shell: SPIRA_DB inside differs from configured SPIRA_DB"
@@ -142,6 +185,57 @@ if [ -n "${SPIRA_DB:-}" ]; then
         bad "shell: SPIRA_DB inside differs from configured SPIRA_DB" \
             "both are $SPIRA_DB — shell did not redirect to fixture"
     fi
+fi
+
+# Every path the shell command printed must be gone after exit.
+if [ -n "$shell_db_path" ] && [ ! -e "$shell_db_path" ]; then
+    ok "shell: teardown: SPIRA_DB removed"
+elif [ -z "$shell_db_path" ]; then
+    bad "shell: teardown: SPIRA_DB removed" "SPIRA_DB not captured from stderr"
+else
+    bad "shell: teardown: SPIRA_DB removed" "still exists: $shell_db_path"
+    rm -rf "$shell_db_path"
+fi
+
+if [ -n "$shell_run_path" ] && [ ! -d "$shell_run_path" ]; then
+    ok "shell: teardown: scratch_run removed"
+elif [ -z "$shell_run_path" ]; then
+    bad "shell: teardown: scratch_run removed" "SPIRA_RUN not captured from stderr"
+else
+    bad "shell: teardown: scratch_run removed" "still exists: $shell_run_path"
+    rm -rf "$shell_run_path"
+fi
+
+if [ -n "$shell_spool_path" ] && [ ! -d "$shell_spool_path" ]; then
+    ok "shell: teardown: scratch_spool removed"
+elif [ -z "$shell_spool_path" ]; then
+    bad "shell: teardown: scratch_spool removed" "SPIRA_SPOOL not captured from stderr"
+else
+    bad "shell: teardown: scratch_spool removed" "still exists: $shell_spool_path"
+    rm -rf "$shell_spool_path"
+fi
+
+# ---- SHELL: passes arguments to inner bash -------------------------------------------
+# testenv.sh shell -c 'cmd' must execute cmd (not silently discard it).
+shell_c_stderr="$TMP/shell-c-stderr"
+shell_c_out="$(bash "$HERE/testenv.sh" shell -c 'printf hello-from-shell-c' 2>"$shell_c_stderr")"
+shell_c_rc=$?
+if [ "$shell_c_out" = "hello-from-shell-c" ]; then
+    ok "shell: -c 'cmd' executes the command"
+else
+    bad "shell: -c 'cmd' executes the command" \
+        "rc=$shell_c_rc output='$shell_c_out'"
+fi
+
+# Teardown still happens after -c 'cmd'.
+shell_c_db="$(grep 'SPIRA_DB=' "$shell_c_stderr" | sed 's/.*SPIRA_DB=//' | head -1)"
+if [ -n "$shell_c_db" ] && [ ! -e "$shell_c_db" ]; then
+    ok "shell: -c teardown: SPIRA_DB removed"
+elif [ -z "$shell_c_db" ]; then
+    bad "shell: -c teardown: SPIRA_DB removed" "SPIRA_DB not captured from stderr"
+else
+    bad "shell: -c teardown: SPIRA_DB removed" "still exists: $shell_c_db"
+    rm -rf "$shell_c_db"
 fi
 
 # ---- SUMMARY -------------------------------------------------------------------------

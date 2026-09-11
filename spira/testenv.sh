@@ -267,21 +267,30 @@ cmd_shell() {
 
     # testdb_drop + scratch dirs on exit, regardless of how the shell exits.
     # TESTDB_SHARED is already 0, so testdb_drop will actually drop.
-    trap 'testdb_drop; rm -rf "$scratch_run" "$scratch_spool"' EXIT INT TERM
+    #
+    # Double-quoted so the paths expand NOW (printf %q for safe quoting), while
+    # scratch_run and scratch_spool are still in scope. Single-quoting defers
+    # expansion to when the trap fires — by then cmd_shell has returned and both
+    # names are out of scope; under set -u that is a fatal unbound-variable error
+    # that kills the trap before testdb_drop runs, leaking the fixture.
+    trap "testdb_drop; rm -rf $(printf '%q' "$scratch_run") $(printf '%q' "$scratch_spool")" EXIT INT TERM
 
     printf 'testenv: scratch shell — harness commands use throwaway database\n' >&2
     printf 'testenv:   SPIRA_DB=%s\n' "$SPIRA_DB" >&2
     printf 'testenv:   SPIRA_RUN=%s\n' "$scratch_run" >&2
+    printf 'testenv:   SPIRA_SPOOL=%s\n' "$scratch_spool" >&2
     printf 'testenv:   exit or Ctrl-D to tear down\n' >&2
 
-    # Use -i (interactive) when stdin is a terminal so the prompt appears and job
-    # control works. Without -i, piped stdin works fine for scripted use (test suites).
-    if [ -t 0 ]; then
+    # Use -i (interactive) when stdin is a terminal AND no arguments were given so
+    # the prompt appears and job control works. When arguments are provided (e.g.
+    # -c 'cmd'), pass them straight to bash without -i. Without -i, piped stdin
+    # works fine for scripted use (test suites).
+    if [ -t 0 ] && [ $# -eq 0 ]; then
         SPIRA_DB="$SPIRA_DB" SPIRA_RUN="$scratch_run" SPIRA_SPOOL="$scratch_spool" \
         PS1="[scratch] \$ " bash --norc --noprofile -i
     else
         SPIRA_DB="$SPIRA_DB" SPIRA_RUN="$scratch_run" SPIRA_SPOOL="$scratch_spool" \
-        bash --norc --noprofile
+        bash --norc --noprofile "$@"
     fi
     return $?
 }
