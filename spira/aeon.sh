@@ -1800,8 +1800,7 @@ if [ "$SOP_REQUIRED" = 1 ] && [ "$st" = "closed" ] && [ "$superseded" != 1 ]; th
     sop_applied=0
     "$SPIRA_HOME/sop.sh" log --bead "$BEAD_ID" --check pass --since "$SESSION_EPOCH" \
         >/dev/null 2>&1 || sop_applied=$?
-
-    log "$FAYTH: $BEAD_ID closing-rule wrote=$sop_wrote applied=$sop_applied"
+    printf '%s spira: %s: %s closing-rule wrote=%s applied=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$FAYTH" "$BEAD_ID" "$sop_wrote" "$sop_applied"
     if [ "$sop_wrote" = yes ] || [ "$sop_applied" = 0 ]; then
         :
     elif [ "$sop_wrote" = unreadable ] || [ "$sop_applied" != 1 ]; then
