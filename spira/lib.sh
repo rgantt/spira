@@ -2410,27 +2410,62 @@ other_beads_on_conflicts() {
 #
 # The prefix filter is what keeps the two books apart. Without it every builder aeon pays
 # for every runbook it will never execute, and the runbooks push the law off the end.
+#
+# TIERED RENDERING (sp-4e69e). Two tiers, one chokepoint:
+#   Core tier   — statutes named in SPIRA_STATUTE_CORE render in full (## slug + paragraph).
+#                 The char-budget applies to this tier only. A core statute that would
+#                 exceed the budget falls back to an index line rather than vanishing.
+#   Index tier  — every other statute in force renders as one slug line under a heading
+#                 that states it binds equally, with a command to read the full text.
+# Nothing is hidden: slug count == statute count. Every statute is named in every session.
 # --------------------------------------------------------------------------------------
 render_memories() {      # render_memories <prefix-csv> [char-budget]
     local prefixes="${1:-law-}" budget="${2:-120000}"
+    local core_csv="${SPIRA_STATUTE_CORE:-}" harness="${SPIRA_HOME:-<harness>}"
     bdjson memories 2>/dev/null | python3 -c '
-import sys, json
+import sys, json, os
 prefixes = [p for p in sys.argv[1].split(",") if p]
-budget = int(sys.argv[2])
+budget   = int(sys.argv[2])
+core_set = {s.strip() for s in sys.argv[3].split(",") if s.strip()}
+harness  = sys.argv[4]
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
 mem = {k: v.strip() for k, v in sorted(d.items())
        if isinstance(v, str) and any(k.startswith(p) for p in prefixes)}
-out, used, dropped = [], 0, []
+
+core_out, used, core_fallback = [], 0, []
+index_slugs = []
+
 for k, v in mem.items():
-    block = f"## {k}\n\n{v}\n"
-    if used + len(block) > budget:
-        dropped.append(k); continue
-    out.append(block); used += len(block)
-print("\n".join(out))
-if dropped:
-    print(f"\n<!-- {len(dropped)} memories omitted for budget: {", ".join(dropped)} -->")
-' "$prefixes" "$budget" 2>/dev/null
+    if k in core_set:
+        block = f"## {k}\n\n{v}\n"
+        if used + len(block) > budget:
+            core_fallback.append(k)
+        else:
+            core_out.append(block)
+            used += len(block)
+    else:
+        index_slugs.append(k)
+
+# Core fallback slugs join the index tier rather than disappearing.
+index_slugs = sorted(core_fallback + index_slugs)
+
+parts = []
+if core_out:
+    parts.append("\n".join(core_out))
+
+if index_slugs:
+    rule_cmd = f"    {harness}/rule.sh show <slug-without-law-prefix>"
+    header = (
+        "## Statutes in force — full text on request\n\n"
+        "These are law and bind you exactly as the text above does. The slug states\n"
+        "the rule; read the reasoning and the scar behind any of them with:\n\n"
+        f"{rule_cmd}\n"
+    )
+    parts.append(header + "\n".join(index_slugs))
+
+print("\n\n".join(parts))
+' "$prefixes" "$budget" "$core_csv" "$harness" 2>/dev/null
 }
 
 # THE GOAL EPIC IS ONE PILGRIMAGE, NOT "THE WORK". This answers "is the pilgrimage under

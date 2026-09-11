@@ -81,6 +81,7 @@ SPIRA_REVIEWER_MODEL SPIRA_REVIEWER_VERDICTS SPIRA_REVIEWER_TIMEOUT SPIRA_REVIEW
 SPIRA_REVIEW_LABEL
 SPIRA_SELF_WINDOW
 SPIRA_AGENT
+SPIRA_STATUTE_CORE
 "
 
 # --------------------------------------------------------------------------------------
@@ -781,6 +782,14 @@ spira_conf_defaults() {
         SPIRA_AGENT="${SPIRA_CLAUDE}"
     fi
     : "${SPIRA_AGENT:=claude}"
+
+    # WHICH STATUTES GET FULL TEXT AT SUMMON. render_memories renders these in complete
+    # paragraph form; everything else is rendered as a slug-only index line. Seeded from
+    # citation frequency in commits and bead text (measured 2026-09-11): those cited most
+    # often are the ones a violation costs most to miss. Being wrongly in core costs ~88
+    # words; being wrongly out costs an untraced violation. The default is generous.
+    # CSV of slug names, without the leading path — e.g. "law-foo,law-bar".
+    : "${SPIRA_STATUTE_CORE:=law-absence-needs-a-positive-control,law-fence-loops-on-shared-hardware,law-alerts-must-be-actionable,law-prefer-the-real-dependency,law-gates-run-in-a-clean-environment,law-closed-is-not-landed,law-a-regression-test-must-be-seen-to-fail,law-guard-binds-the-caller,law-verify-nothing-was-dropped,law-gate-earns-its-place,law-arm-before-you-retire,law-hand-land-the-unblocker,law-no-close-reason-admits-unfinished}"
 
     # THE MAP FALLS BACK TO THE EXAMPLE, and that is what makes a clean clone runnable at
     # all. The real map is one operator's inventory of checkouts and does not ship; the
