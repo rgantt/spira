@@ -84,7 +84,7 @@ for frag_path in sorted(glob.glob(os.path.join(frag_dir, "*.env"))):
         pass
     meta_lines.append("_PROBE_AT_%s=%s"     % (name, probe_at))
     meta_lines.append("_PROBE_STATUS_%s=%s" % (name, probe_status))
-    if probe_status != "never":
+    if probe_status not in ("never", "timeout", "error"):
         for k, v in val_pairs:
             if k not in value_seen:
                 value_seen.add(k)
@@ -212,6 +212,61 @@ else
     bad "cockpit.sh now: SP_AT before SP_WINDOW_HOURS (ordering invariant)" \
         "SP_AT at line ${at_pos:-?}, SP_WINDOW_HOURS at line ${wh_pos:-?}"
 fi
+
+# ============================================================
+echo
+echo "8. timeout status: merge treats it like never (no value keys), _probe_body_test writes it:"
+
+# Positive control first: a fragment with status=ok contributes its value keys.
+rm -f "$FRAG_DIR"/*.env
+write_frag "tprobe" "ok" "1000010" "SP_TVAL=42"
+run_merge
+snap="$(cat "$SNAP" 2>/dev/null)"
+want "timeout/positive control: ok contributes SP_TVAL" "SP_TVAL=" "$snap"
+
+# Now write the same fragment with status=timeout (including a value key to prove the
+# merge exclusion is active, not just that the fragment happens to have no values).
+write_frag "tprobe" "timeout" "0" "SP_TVAL=99"
+run_merge
+snap="$(cat "$SNAP" 2>/dev/null)"
+nowant "timeout: SP_TVAL absent (no values from timed-out probe)" "SP_TVAL=" "$snap"
+want "timeout: _PROBE_STATUS_tprobe=timeout" "_PROBE_STATUS_tprobe='timeout'" "$snap"
+
+# _probe_body_test: a probe that exits 124 (timeout's exit code) on its first run must
+# write _PROBE_STATUS=timeout to its fragment. POSITIVE CONTROL: a succeeding probe first.
+MOCK_COCK="$TMP/mock-cockpit.sh"
+printf '#!/usr/bin/env bash\ncase "$1" in succeed) echo SP_MOCK=1 ;; slow) exec sleep 300 ;; esac\n' \
+    > "$MOCK_COCK" && chmod +x "$MOCK_COCK"
+
+rm -f "$FRAG_DIR"/*.env
+# Positive control: succeeding probe writes _PROBE_STATUS=ok.
+printf '_PROBE_AT=0\n_PROBE_STATUS=never\n' > "$FRAG_DIR/tprobe2.env"
+BASE_PATH="$PATH"
+env -i PATH="$BASE_PATH" HOME="$TMP" LC_ALL=C.UTF-8 \
+    SPIRA_CONF="$TMP/no.conf" SPIRA_HOME="$HERE" SPIRA_REPO="$TMP" \
+    SPIRA_RUN="$TMP" SPIRA_DB="$TMP/nodb" \
+    SPIRA_REPO_MAP="$TMP/no-map" SPIRA_GOAL=sp-test SPIRA_FAYTHS=t \
+    SPIRA_COCKPIT="$TMP" \
+    FRAG_DIR="$FRAG_DIR" COCK="$MOCK_COCK" \
+    bash "$HERE/collect.sh" _probe_body_test tprobe2 10 succeed 2>/dev/null || true
+frag2="$(cat "$FRAG_DIR/tprobe2.env" 2>/dev/null)"
+want "_probe_body_test/ok: _PROBE_STATUS=ok" "_PROBE_STATUS=ok" "$frag2"
+
+# First-run timeout: probe that runs slowly and is killed after 1s writes _PROBE_STATUS=timeout.
+printf '_PROBE_AT=0\n_PROBE_STATUS=never\n' > "$FRAG_DIR/tprobe3.env"
+tout_log="$TMP/probe_timeout.log"
+env -i PATH="$BASE_PATH" HOME="$TMP" LC_ALL=C.UTF-8 \
+    SPIRA_CONF="$TMP/no.conf" SPIRA_HOME="$HERE" SPIRA_REPO="$TMP" \
+    SPIRA_RUN="$TMP" SPIRA_DB="$TMP/nodb" \
+    SPIRA_REPO_MAP="$TMP/no-map" SPIRA_GOAL=sp-test SPIRA_FAYTHS=t \
+    SPIRA_COCKPIT="$TMP" \
+    FRAG_DIR="$FRAG_DIR" COCK="$MOCK_COCK" \
+    bash "$HERE/collect.sh" _probe_body_test tprobe3 1 slow > /dev/null 2>"$tout_log" || true
+frag3="$(cat "$FRAG_DIR/tprobe3.env" 2>/dev/null)"
+want "_probe_body_test/timeout: _PROBE_STATUS=timeout in fragment" "_PROBE_STATUS=timeout" "$frag3"
+tout_msg="$(cat "$tout_log" 2>/dev/null)"
+want "_probe_body_test/timeout: journal line mentions probe name" "tprobe3" "$tout_msg"
+want "_probe_body_test/timeout: journal line mentions timeout" "timeout" "$tout_msg"
 
 # ============================================================
 echo

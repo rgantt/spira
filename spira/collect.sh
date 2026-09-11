@@ -41,10 +41,12 @@ set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-COCK="$HERE/cockpit.sh"          # probe subcommand dispatcher
+# COCK may be overridden from the environment for testing; normal operation uses cockpit.sh.
+: "${COCK:=$HERE/cockpit.sh}"
 
 SNAP="$SPIRA_RUN/cockpit.env"
-FRAG_DIR="$SPIRA_RUN/cockpit.d"
+# FRAG_DIR may be overridden from the environment for testing.
+: "${FRAG_DIR:=$SPIRA_RUN/cockpit.d}"
 TICK=5                           # seconds between supervisor ticks
 
 WINDOW_HOURS="${SPIRA_COCKPIT_WINDOW_HOURS:-24}"
@@ -57,7 +59,8 @@ PROBES=(
     "repo_labels:60:90:repo_labels"
     "strands:60:90:strands"
     "ratelim:60:90:ratelim"
-    "core:60:300:core"
+    "core:60:150:core"
+    "core_detail:600:900:core_detail"
     "sops:600:300:sops"
     "livelock:600:300:livelock"
     "dup_refs:600:300:dup_refs"
@@ -112,17 +115,28 @@ _run_probe_body() {
     else
         local rc=$?
         rm -f "$out_tmp"
+        local prev_at="0" prev_status="never"
         if [ -f "$frag" ]; then
-            local prev_at prev_status
-            prev_at="$(awk -F= '/^_PROBE_AT=/{print $2; exit}' "$frag" 2>/dev/null)"
-            prev_status="$(awk -F= '/^_PROBE_STATUS=/{print $2; exit}' "$frag" 2>/dev/null)"
-            [ "${prev_status:-never}" = "never" ] && return "$rc"
-            local stale_tmp; stale_tmp="$(mktemp "$FRAG_DIR/.${name}.XXXXXX")" || return "$rc"
-            {
-                printf '_PROBE_AT=%s\n_PROBE_STATUS=stale\n' "${prev_at:-0}"
-                grep -v '^_PROBE_AT=\|^_PROBE_STATUS=' "$frag" 2>/dev/null
-            } > "$stale_tmp" && mv "$stale_tmp" "$frag" || rm -f "$stale_tmp"
+            prev_at="$(awk -F= '/^_PROBE_AT=/{print $2; exit}' "$frag" 2>/dev/null)" || prev_at="0"
+            prev_status="$(awk -F= '/^_PROBE_STATUS=/{print $2; exit}' "$frag" 2>/dev/null)" || prev_status="never"
         fi
+        if [ "${prev_status:-never}" = "never" ]; then
+            # First-run failure: write a fault fragment so the pane can distinguish
+            # "has not run yet" (never) from "was killed before producing output"
+            # (timeout or error). _PROBE_AT stays 0 — no successful run has set it.
+            local fault_status="error"
+            [ "$rc" -eq 124 ] && fault_status="timeout"
+            printf 'collect.sh: probe %s %s after %ss\n' "$name" "$fault_status" "$timeout_s" >&2
+            local fault_tmp; fault_tmp="$(mktemp "$FRAG_DIR/.${name}.XXXXXX")" || return "$rc"
+            printf '_PROBE_AT=%s\n_PROBE_STATUS=%s\n' "${prev_at:-0}" "$fault_status" \
+                > "$fault_tmp" && mv "$fault_tmp" "$frag" || rm -f "$fault_tmp"
+            return "$rc"
+        fi
+        local stale_tmp; stale_tmp="$(mktemp "$FRAG_DIR/.${name}.XXXXXX")" || return "$rc"
+        {
+            printf '_PROBE_AT=%s\n_PROBE_STATUS=stale\n' "${prev_at:-0}"
+            grep -v '^_PROBE_AT=\|^_PROBE_STATUS=' "$frag" 2>/dev/null
+        } > "$stale_tmp" && mv "$stale_tmp" "$frag" || rm -f "$stale_tmp"
         return "$rc"
     fi
 }
@@ -173,7 +187,7 @@ for frag_path in sorted(glob.glob(os.path.join(frag_dir, "*.env"))):
         pass
     meta_lines.append("_PROBE_AT_%s=%s"     % (name, probe_at))
     meta_lines.append("_PROBE_STATUS_%s=%s" % (name, probe_status))
-    if probe_status != "never":
+    if probe_status not in ("never", "timeout", "error"):
         for k, v in val_pairs:
             if k not in value_seen:
                 value_seen.add(k)
@@ -276,6 +290,13 @@ merge)
     _merge_fragments
     printf 'collect.sh: merged %d fragments into %s\n' \
         "$(ls "$FRAG_DIR"/*.env 2>/dev/null | wc -l)" "$SNAP"
+    ;;
+_probe_body_test)
+    # Test-only: run _run_probe_body with caller-supplied args and exit with its status.
+    # FRAG_DIR and COCK must be set in the environment. Intended only for test suites;
+    # the subcommand name's leading _ keeps it out of the usage line.
+    shift
+    _run_probe_body "$@"
     ;;
 *)
     printf 'usage: collect.sh [loop|merge]\n' >&2; exit 1 ;;

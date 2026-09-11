@@ -368,6 +368,22 @@ header_line() {
             "$C_DIM" "$C_RST" "$C_BAD" "$C_B" "${SP_AURON_FIRING}" "$C_RST" \
             "$C_BAD" "$(printf '%s' "${SP_AURON_KEYS:-}" | tr ',' ' ')" "$C_RST"
     fi
+    # PROBE FAULT: a timed-out probe is a fault, not merely stale. "never" means it has not
+    # run yet; "timeout" means it ran and was killed before producing output — a different
+    # condition, and one that indicates the probe's timeout ceiling is too low.
+    # Re-reading the snap file is intentional: there is no portable way to enumerate shell
+    # variables by prefix, and the snap is small enough that a grep per frame costs nothing.
+    if [ -f "$SPIRA_SNAP" ]; then
+        local _faulted
+        _faulted="$(grep -oE '_PROBE_STATUS_[^=]+=('"'"'timeout'"'"'|'"'"'error'"'"')' \
+            "$SPIRA_SNAP" 2>/dev/null \
+            | sed "s/_PROBE_STATUS_//;s/='timeout'//;s/='error'//" \
+            | tr '\n' ' ' | sed 's/ $//')"
+        if [ -n "$_faulted" ]; then
+            printf ' %sPROBE%s  %s%stimed out%s: %s\n' \
+                "$C_DIM" "$C_RST" "$C_BAD" "$C_B" "$C_RST" "$_faulted"
+        fi
+    fi
 }
 
 # TOKENS — what the account is spending, and which half of the system is spending it.

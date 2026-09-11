@@ -407,10 +407,41 @@ for j, l in enumerate(lines[-n:]):
     fi
 }
 
-# Medium-tier keys: bounded database queries and log scans.
-# Called as `cockpit.sh core` by collect.sh; also called by probe().
-core_keys() {
-    # core_keys computes its own partition map — runs independently of now_keys.
+# Medium-tier fast counts — one bounded query each. Called as `cockpit.sh core`.
+# Runs every 60s so SP_READY and SP_WAITING stay fresh while the full SP_NEXT* listing
+# (core_detail) runs on the 600s slow tier.
+core_counts_keys() {
+    # SP_READY — total ready beads across all partitions. One bd ready call with the same
+    # READY_ARGS predicate used everywhere, so this count and the sentinel's claim view agree.
+    # Capturing the raw output first lets us distinguish a genuine empty list "[]" (→ 0) from
+    # empty output (bd refused → ?) — piping directly into json_count collapses both to 0,
+    # which is the reassuring answer a broken probe must never produce.
+    local _ready_raw
+    _ready_raw="$(bdjson "${READY_ARGS[@]}" \
+        --exclude-label "spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL" 2>/dev/null)"
+    if [ -z "$_ready_raw" ]; then
+        echo "SP_READY=?"
+    else
+        local _n; _n="$(printf '%s\n' "$_ready_raw" | json_count)"
+        echo "SP_READY=${_n:-?}"
+    fi
+
+    # SP_WAITING — open needs-operator beads (same distinguish-refusal pattern).
+    local _wait_raw
+    _wait_raw="$(bdjson list --status open --limit 0 --label "$SPIRA_ASK_LABEL" 2>/dev/null)"
+    if [ -z "$_wait_raw" ]; then
+        echo "SP_WAITING=?"
+    else
+        local _w; _w="$(printf '%s\n' "$_wait_raw" | json_count)"
+        echo "SP_WAITING=${_w:-?}"
+    fi
+
+}
+
+# Slow-tier core detail: per-partition ready listing, event feed, CI parking,
+# throughput sparklines, token meters. Called as `cockpit.sh core_detail`.
+core_detail_keys() {
+    # core_detail_keys computes its own partition map — runs independently of now_keys.
     local _PART_MAP
     _PART_MAP="$(_chamber_part_map)" || _PART_MAP=""
 
@@ -778,22 +809,11 @@ for t, i in aged[:20]:
         echo "SP_AWAITING_OLDEST=?"; echo "SP_AWAITING_AGE=?"
     fi
 
-    # ---- FLOW: what is moving between the operator and the harness ------------------------------
-    # SP_WAITING: capture bdjson output before counting so we can distinguish a genuine empty
-    # list "[]" (→ 0) from empty output (bd refused → ?). json_only strips non-JSON lines, so a
-    # schema-mismatch error printed by bd produces no output at all, while an empty result set
-    # produces "[]" which json_only passes through. Piping directly into json_count collapses
-    # both to 0, which is the reassuring answer a broken probe must never produce
-    # (law-failed-probe-renders-question).
-    local waiting unread _wait_raw
-    _wait_raw="$(bdjson list --status open --limit 0 --label "$SPIRA_ASK_LABEL" 2>/dev/null)"
-    if [ -z "$_wait_raw" ]; then
-        waiting="?"
-    else
-        waiting="$(printf '%s' "$_wait_raw" | json_count)"
-    fi
+    # ---- UNANSWERED: operator threads awaiting a reply --------------------------------------
+    # unanswered.sh makes one bd list call then one bd comments call per matching bead, so
+    # it belongs in the slow tier rather than the medium-tier counts probe.
+    local unread
     unread=$("$COCK_DIR/unanswered.sh" --count 2>/dev/null | tail -1)
-    echo "SP_WAITING=${waiting:-?}"
     echo "SP_UNANSWERED=${unread:-?}"
 
     # ---- THROUGHPUT: what closed and what opened, by kind, plus sparklines ---------------
@@ -2059,9 +2079,13 @@ dup_refs)
 now)
     now_keys
     ;;
-# Medium-tier keys only — the seam collect.sh drives on each 60s tick.
+# Medium-tier keys only — counts that need to stay fresh every 60s.
 core)
-    core_keys
+    core_counts_keys
+    ;;
+# Slow-tier core detail — SP_NEXT* listing, event feed, sparklines, token meters.
+core_detail)
+    core_detail_keys
     ;;
 # Slow-tier keys only — the seam collect.sh drives on each 600s tick.
 unsent)
@@ -2072,5 +2096,5 @@ unsent)
 statute)
     statute_keys
     ;;
-*) echo "usage: cockpit.sh [once|loop|history|now|core|unsent|strands|sops|ratelim|sphere|repo_labels|livelock|dup_refs|statute]" >&2; exit 1 ;;
+*) echo "usage: cockpit.sh [once|loop|history|now|core|core_detail|unsent|strands|sops|ratelim|sphere|repo_labels|livelock|dup_refs|statute]" >&2; exit 1 ;;
 esac
