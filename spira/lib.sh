@@ -4148,3 +4148,23 @@ fayth_fenced() {         # fayth_fenced <name> <FAYTH_LABELS> -> 0 if safe to cl
     log "FENCE $name: Add '$SPIRA_SCOPE_LABEL' to it, or set SPIRA_SCOPE_LABEL= to allow unrestricted scope."
     return 1
 }
+
+# --------------------------------------------------------------------------------------
+# LIVE-AEON CHECK. promote.sh and systemd/install.sh both reset the production checkout,
+# which rewrites aeon.sh and lib.sh in place. Running aeons are executing those files;
+# an in-place reset disrupts them (law-replace-running-scripts-atomically). Both callers
+# share this function so the check cannot drift between them.
+#
+# Returns the list of active aeon unit names for the current instance (one per line),
+# or nothing when no aeons are running.
+#
+# Uses ${SPIRA_SYSTEMCTL:-systemctl}. Tests inject a mock via SPIRA_PATH, which conf.sh
+# prepends to PATH so bare `systemctl` resolves to the mock without a variable override.
+# --------------------------------------------------------------------------------------
+spira_live_aeons() {
+    local sc="${SPIRA_SYSTEMCTL:-systemctl}"
+    "$sc" --user list-units --state=active --no-legend \
+        "spira-aeon-*-${SPIRA_INSTANCE}.service" 2>/dev/null \
+        | tr -s ' \t' '\n\n' \
+        | grep -E "^spira-aeon-[^[:space:]]+-${SPIRA_INSTANCE}\.service$" | sort -u || true
+}

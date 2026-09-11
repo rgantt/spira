@@ -18,7 +18,10 @@
 # condition correctly, prove that a version WITHOUT the fix would fail the invariant —
 # i.e., that the invariant is discriminating and not trivially satisfied.
 #
-# covers: spira/promote.sh spira/conf.sh
+# Also tested here: the live-aeon guard (sp-sb5ss). promote.sh refuses to reset the
+# production checkout while spira-aeon-* units for the current instance are active.
+#
+# covers: spira/promote.sh spira/lib.sh spira/conf.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 pass=0; fail=0
@@ -245,6 +248,158 @@ if [[ "$ff_err" == *"$COMMIT_B"* ]]; then
 else
     bad "fetch-before-resolve: output names origin/main commit (B), not stale local HEAD (A)" \
         "COMMIT_B=$COMMIT_B not found in: $ff_err"
+fi
+
+# ==========================================================================
+echo
+echo "live-aeon guard — positive control: old promote.sh (pre-guard) proceeds with live aeons:"
+# ==========================================================================
+# Before asserting that the guard refuses, prove that a version WITHOUT the guard would
+# NOT refuse — confirming the invariant is discriminating, not trivially satisfied.
+#
+# Build a stripped promote.sh by removing the live-aeon guard block (identified by its
+# unique SPIRA_PROMOTE_FORCE sentinel).
+AG_OLD="$TMP/ag-old-promote.sh"
+sed '/^if \[ -z "\${SPIRA_PROMOTE_FORCE/,/^fi$/{ /^fi$/d; d }' "$HERE/promote.sh" > "$AG_OLD"
+chmod +x "$AG_OLD"
+
+# A split-checkout fixture where prod is already up-to-date: the old promote exits 0.
+AG_DEV="$TMP/ag-dev"
+AG_ORIGIN="$TMP/ag-origin.git"
+AG_PROD="$TMP/ag-prod"
+mkdir -p "$AG_DEV/spira"
+git -C "$TMP" init -q ag-dev 2>/dev/null
+git -C "$AG_DEV" config user.email t@t
+git -C "$AG_DEV" config user.name test
+git -C "$AG_DEV" commit --allow-empty -m "ag-init" -q
+git clone --bare -q "$AG_DEV" "$AG_ORIGIN"
+git -C "$AG_DEV" remote add origin "$AG_ORIGIN"
+git -C "$AG_DEV" push -q origin main 2>/dev/null || git -C "$AG_DEV" push -q origin HEAD:main 2>/dev/null || true
+git clone -q "$AG_ORIGIN" "$AG_PROD" 2>/dev/null
+git -C "$AG_PROD" checkout --detach -q HEAD
+ln -sf "$HERE/lib.sh"  "$AG_DEV/spira/lib.sh"
+ln -sf "$HERE/conf.sh" "$AG_DEV/spira/conf.sh"
+printf '# empty\n' > "$AG_DEV/spira/repo-map.example"
+printf '# empty\n' > "$AG_DEV/spira/watchers"
+
+# Mock systemctl that reports one live aeon for the prod instance.
+AG_MOCK="$TMP/ag-mock"
+mkdir -p "$AG_MOCK"
+cat > "$AG_MOCK/systemctl" <<'AGMOCK'
+#!/usr/bin/env bash
+case "$*" in
+    *list-units*spira-aeon*) printf 'spira-aeon-builder-1234-prod.service\n' ;;
+esac
+exit 0
+AGMOCK
+chmod +x "$AG_MOCK/systemctl"
+
+ag_old_rc=0
+env -i PATH="$PATH" HOME="$TMP/home" \
+    SPIRA_HOME="$AG_DEV/spira" \
+    SPIRA_REPO="$AG_DEV" \
+    SPIRA_PROD="$AG_PROD/spira" \
+    SPIRA_RUN="$TMP/run" \
+    SPIRA_DB="$TMP/db" \
+    SPIRA_CONF=/nonexistent \
+    SPIRA_WATCHERS="$AG_DEV/spira/watchers" \
+    "SPIRA_PATH=$AG_MOCK" \
+    SPIRA_SYSTEMCTL="$AG_MOCK/systemctl" \
+    bash "$AG_OLD" origin/main 2>/dev/null || ag_old_rc=$?
+
+if [ "$ag_old_rc" -eq 0 ]; then
+    ok "positive control: pre-guard promote.sh exits 0 with live aeons (this is the bug)"
+else
+    bad "positive control: pre-guard promote.sh exits 0 with live aeons" \
+        "expected rc=0 (no guard), got rc=$ag_old_rc"
+fi
+
+# ==========================================================================
+echo
+echo "live-aeon guard — fixed promote.sh refuses when aeons are running:"
+# ==========================================================================
+ag_out="" ag_rc=0
+ag_out="$(env -i PATH="$PATH" HOME="$TMP/home" \
+    SPIRA_HOME="$AG_DEV/spira" \
+    SPIRA_REPO="$AG_DEV" \
+    SPIRA_PROD="$AG_PROD/spira" \
+    SPIRA_RUN="$TMP/run" \
+    SPIRA_DB="$TMP/db" \
+    SPIRA_CONF=/nonexistent \
+    SPIRA_WATCHERS="$AG_DEV/spira/watchers" \
+    "SPIRA_PATH=$AG_MOCK" \
+    SPIRA_SYSTEMCTL="$AG_MOCK/systemctl" \
+    bash "$HERE/promote.sh" origin/main 2>&1)" || ag_rc=$?
+
+if [ "$ag_rc" -ne 0 ]; then
+    ok "aeon guard: promote.sh exits non-zero with live aeons (rc=$ag_rc)"
+else
+    bad "aeon guard: promote.sh exits non-zero with live aeons" "exited 0 — guard did not fire"
+fi
+want "aeon guard: names the live aeon unit" "spira-aeon-builder-1234" "$ag_out"
+want "aeon guard: mentions SPIRA_PROMOTE_FORCE override" "SPIRA_PROMOTE_FORCE" "$ag_out"
+
+# ==========================================================================
+echo
+echo "live-aeon guard — SPIRA_PROMOTE_FORCE=1 bypasses the guard:"
+# ==========================================================================
+ag_force_out="" ag_force_rc=0
+ag_force_out="$(env -i PATH="$PATH" HOME="$TMP/home" \
+    SPIRA_HOME="$AG_DEV/spira" \
+    SPIRA_REPO="$AG_DEV" \
+    SPIRA_PROD="$AG_PROD/spira" \
+    SPIRA_RUN="$TMP/run" \
+    SPIRA_DB="$TMP/db" \
+    SPIRA_CONF=/nonexistent \
+    SPIRA_WATCHERS="$AG_DEV/spira/watchers" \
+    "SPIRA_PATH=$AG_MOCK" \
+    SPIRA_SYSTEMCTL="$AG_MOCK/systemctl" \
+    SPIRA_PROMOTE_FORCE=1 \
+    bash "$HERE/promote.sh" origin/main 2>&1)" || ag_force_rc=$?
+
+if [ "$ag_force_rc" -eq 0 ]; then
+    ok "aeon guard: SPIRA_PROMOTE_FORCE=1 bypasses the guard (rc=0)"
+else
+    bad "aeon guard: SPIRA_PROMOTE_FORCE=1 bypasses the guard" \
+        "still refused (rc=$ag_force_rc): $ag_force_out"
+fi
+
+# ==========================================================================
+echo
+echo "live-aeon guard — no aeons running: promote.sh proceeds normally:"
+# ==========================================================================
+# Mock systemctl that reports no aeons.
+AG_QUIET="$TMP/ag-quiet"
+mkdir -p "$AG_QUIET"
+cat > "$AG_QUIET/systemctl" <<'QUIETMOCK'
+#!/usr/bin/env bash
+exit 0
+QUIETMOCK
+chmod +x "$AG_QUIET/systemctl"
+
+ag_none_out="" ag_none_rc=0
+ag_none_out="$(env -i PATH="$PATH" HOME="$TMP/home" \
+    SPIRA_HOME="$AG_DEV/spira" \
+    SPIRA_REPO="$AG_DEV" \
+    SPIRA_PROD="$AG_PROD/spira" \
+    SPIRA_RUN="$TMP/run" \
+    SPIRA_DB="$TMP/db" \
+    SPIRA_CONF=/nonexistent \
+    SPIRA_WATCHERS="$AG_DEV/spira/watchers" \
+    "SPIRA_PATH=$AG_QUIET" \
+    SPIRA_SYSTEMCTL="$AG_QUIET/systemctl" \
+    bash "$HERE/promote.sh" origin/main 2>&1)" || ag_none_rc=$?
+
+if [ "$ag_none_rc" -eq 0 ]; then
+    ok "aeon guard: no aeons → promote proceeds (rc=0)"
+else
+    bad "aeon guard: no aeons → promote proceeds" \
+        "exited $ag_none_rc — guard fired spuriously: $ag_none_out"
+fi
+if [[ "$ag_none_out" != *"refusing"* ]]; then
+    ok "aeon guard: no 'refusing' in output when no aeons"
+else
+    bad "aeon guard: no 'refusing' in output when no aeons" "found 'refusing' in: $ag_none_out"
 fi
 
 # ==========================================================================

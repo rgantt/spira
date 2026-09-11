@@ -62,6 +62,7 @@ unset _a
 unset _install_instance
 
 . "$(cd "$SRC/../spira" && pwd -P)/conf.sh"
+. "$(cd "$SRC/../spira" && pwd -P)/lib.sh"
 DEST="$HOME/.config/systemd/user"
 
 # SOURCE THE UNIT NAMING LIBRARY. inst_name, inst_watch_name, UNITS, ENABLE, OPTIONAL,
@@ -421,20 +422,17 @@ fi
 
 # REFUSE IF THIS INSTANCE'S AEONS ARE LIVE. Scoped to the named instance so that installing
 # 'test' does not refuse because 'prod' aeons are running — isolation between instances is the
-# whole point of per-instance naming. Under per-instance naming, a prod aeon is
-# spira-aeon-*-prod.service and a test aeon is spira-aeon-*-test.service, so the pattern
-# below only matches aeons that belong to the instance being installed.
+# whole point of per-instance naming. The check is shared with promote.sh via spira_live_aeons()
+# in lib.sh so the two cannot drift.
 if [ -z "${SPIRA_INSTALL_FORCE:-}" ]; then
-    live_aeons="$(systemctl --user list-units --state=active --no-legend \
-        "spira-aeon-*-${SPIRA_INSTANCE}.service" 2>/dev/null \
-        | tr -s ' \t' '\n\n' \
-        | grep -E "^spira-aeon-[^[:space:]]+-${SPIRA_INSTANCE}\.service$" | sort -u || true)"
-    if [ -n "$live_aeons" ]; then
+    _install_live_aeons="$(spira_live_aeons)"
+    if [ -n "$_install_live_aeons" ]; then
         printf 'install: refusing — live aeons for instance %s would be disrupted:\n' "$SPIRA_INSTANCE" >&2
-        printf '%s\n' "$live_aeons" | sed 's/^/    /' >&2
+        printf '%s\n' "$_install_live_aeons" | sed 's/^/    /' >&2
         printf 'install: wait for them to finish, or set SPIRA_INSTALL_FORCE=1 to override.\n' >&2
         exit 1
     fi
+    unset _install_live_aeons
 fi
 
 declare -A _CHANGED=()  # units whose rendered content differs from what is installed

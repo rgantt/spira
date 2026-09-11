@@ -104,6 +104,28 @@ fi
 # The production checkout exists — validate and fast-forward.
 [ -d "$PROD_REPO/.git" ] || { printf 'promote: %s exists but is not a git repo\n' "$PROD_REPO" >&2; exit 2; }
 
+# LIVE-AEON GUARD. A promotion rewrites aeon.sh and lib.sh in the production checkout;
+# those are the files running aeons are executing (law-replace-running-scripts-atomically).
+# Scoped to the named instance: a test-instance promote does not refuse because prod aeons
+# are running. Set SPIRA_PROMOTE_FORCE=1 to override (e.g. after world.sh stop confirms
+# all aeons are gone but the guard fires on a stale unit state).
+if [ -z "${SPIRA_PROMOTE_FORCE:-}" ]; then
+    _promote_live="$(spira_live_aeons)"
+    if [ -n "$_promote_live" ]; then
+        if [ "$DRY_RUN" = 1 ]; then
+            log "promote: DRY RUN: live aeons for instance $SPIRA_INSTANCE — would refuse:"
+            printf '%s\n' "$_promote_live" | sed 's/^/promote:   /' >&2
+        else
+            printf 'promote: refusing — live aeons for instance %s would be disrupted:\n' \
+                "$SPIRA_INSTANCE" >&2
+            printf '%s\n' "$_promote_live" | sed 's/^/    /' >&2
+            printf 'promote: wait for them to finish, or set SPIRA_PROMOTE_FORCE=1 to override.\n' >&2
+            exit 1
+        fi
+    fi
+    unset _promote_live
+fi
+
 OLD_HEAD="$(git -C "$PROD_REPO" rev-parse HEAD 2>/dev/null || true)"
 
 if [ "$OLD_HEAD" = "$RESOLVED" ]; then
