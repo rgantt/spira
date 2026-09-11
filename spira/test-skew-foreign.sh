@@ -137,21 +137,43 @@ br plain touches-readme README.md
 is "a repository carrying no harness is not this fence's business" 0 "$?"
 
 # =======================================================================================
-# The exemption IS an exemption, not an always-pass. The same branch, run twice:
-# once with SPIRA_REPO pointing at its repository, once with it pointing elsewhere.
-# One must pass, the other be refused — that distinction is the only thing that proves
-# the exemption is conditional.
+# The exemption IS an exemption, not an always-pass. Two branches in two different
+# repositories with the same configuration: the home repo passes, the guest (vendored
+# copy) is refused — that contrast proves the fence discriminates.
 # =======================================================================================
 echo
 echo "foreign — exemption proved as conditional:"
 br home touches-own gate.sh
 "$SKEW" foreign "$WS/home" main touches-own >/dev/null 2>&1
 is "the harness's own repository is exempt"                                                  0 "$?"
-SPIRA_REPO="$WS/plain" "$SKEW" foreign "$WS/home" main touches-own >/dev/null 2>&1
-is "and it is an exemption, not an always-pass — the same branch elsewhere is refused"       1 "$?"
+"$SKEW" foreign "$WS/guest" main touches-harness >/dev/null 2>&1
+is "and it is an exemption, not an always-pass — a vendored copy is still refused"           1 "$?"
 
 SPIRA_ALLOW_FOREIGN_HARNESS=1 "$SKEW" foreign "$WS/guest" main touches-harness >/dev/null 2>&1
 is "the override the refusal names actually works" 0 "$?"
+
+# =======================================================================================
+# Split-checkout: SPIRA_REPO is the PRODUCTION copy; the home repo is the DEVELOPMENT
+# source. The gate runs from prod (SPIRA_REPO = prod checkout), but work legitimately
+# lands in the dev source (repo:home). The dev source is not a vendored copy; it is the
+# upstream of the production copy. It must be exempt.
+# =======================================================================================
+echo
+echo "foreign — split-checkout (dev source exempt when SPIRA_REPO is a different prod checkout):"
+
+# prod — a second clone of home, simulating the production checkout.
+git clone -q "$WS/home" "$WS/prod" 2>/dev/null
+sig "$WS/prod"
+
+# With SPIRA_REPO pointing at prod and repo-map pointing home at $WS/home, a branch
+# that changes the home checkout is the harness dev source landing its own work — exempt.
+SPIRA_REPO="$WS/prod" "$SKEW" foreign "$WS/home" main touches-own >/dev/null 2>&1
+is "dev source (home repo) is exempt even when SPIRA_REPO is a different prod clone" 0 "$?"
+
+# Positive control: vendored copy (guest) is still refused in split-checkout mode.
+# This proves the exemption is for the home repo only, not for every repo.
+SPIRA_REPO="$WS/prod" "$SKEW" foreign "$WS/guest" main touches-harness >/dev/null 2>&1
+is "and it is conditional — vendored copy is still refused in split-checkout mode" 1 "$?"
 
 # =======================================================================================
 # The fence reads the REF, not the checkout. A branch may be the thing that adds the
