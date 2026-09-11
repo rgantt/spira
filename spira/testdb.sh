@@ -151,7 +151,12 @@ testdb_up() {            # testdb_up <tag>
        [ -n "${TESTDB_BASELINE:-}" ]; then
         testdb_reset || {
             printf 'testdb: could not reset shared fixture %s\n' "$TESTDB_NAME" >&2
-            return 1
+            # A borrower that cannot start the shared fixture is not a failing suite.
+            # Exit with TESTDB_FAULT_EXIT so the runner (suites.sh) classifies this
+            # suite as a pass-level fixture fault and files one bead for the collapse
+            # rather than one per borrower. Running this suite individually against a
+            # healthy fixture will pass.
+            exit "${TESTDB_FAULT_EXIT:-75}"
         }
         export SPIRA_DB="$TESTDB_DIR" SPIRA_BD="$TESTDB_BD"
         # conf.sh resets PATH from SPIRA_PATH; add TESTDB_BIN to both so child processes
@@ -168,7 +173,7 @@ testdb_up() {            # testdb_up <tag>
        [ "${TESTDB_MODE:-}" = server ] && [ -d "${TESTDB_DIR:-}" ]; then
         testdb_reset || {
             printf 'testdb: could not reset shared server fixture %s\n' "$TESTDB_NAME" >&2
-            return 1
+            exit "${TESTDB_FAULT_EXIT:-75}"
         }
         export SPIRA_DB="$TESTDB_DIR" SPIRA_BD="$TESTDB_SERVER_BD"
         return 0

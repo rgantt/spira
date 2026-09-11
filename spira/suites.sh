@@ -295,6 +295,64 @@ PAYLOAD
 }
 
 # --------------------------------------------------------------------------------------
+# FILING A FIXTURE FAULT. One bead for the whole pass, naming every suite that could not
+# start because the shared fixture collapsed. These are NOT red suites — running any of
+# them individually against a healthy fixture will pass (which is the claim this bead
+# rests on). The bead is distinct from a suite-red bead: it names the fixture rather than
+# a suite, carries TESTDB_NAME as the dedupe key, and its reproduce line is about restoring
+# the fixture rather than fixing a suite.
+#
+# WHY ONE BEAD AND NOT N. A shared fixture collapse is one event. Each borrower exiting
+# 75 is a symptom of that one event. Filing N beads assigns N workers to a problem that
+# has one cause, and the worker who claims test-hold.sh will run it by hand, watch it
+# pass, and close the bead as unreproducible — which is not false, but it is not useful
+# either. The operator's view should show one finding so that one person looks for one
+# cause (law-count-things-not-log-lines).
+# --------------------------------------------------------------------------------------
+file_fixture_fault() {  # file_fixture_fault <n> <suite-list> <fixture-name>
+    local n="$1" suites="$2" fixture="${3:-unknown}"
+    if [ ! -r "$INC" ]; then
+        log "suites: no intake at $INC — fixture fault ($fixture) reaches nobody"
+        return 1
+    fi
+    local out_inc rc_inc id=""
+    out_inc="$(SPIRA_INCIDENT_TYPE=bug \
+          SPIRA_INCIDENT_PRIORITY="$PRIORITY" \
+          SPIRA_INCIDENT_ACTOR=suites \
+          SPIRA_INCIDENT_LABELS="spira,plan,repo:$SPIRA_HOME_REPO" \
+          SPIRA_INCIDENT_REF="fixture-fault:${fixture}" \
+          bash "$INC" file "shared fixture collapsed — ${n} suite(s) could not start" - <<PAYLOAD
+The shared fixture failed to reset during the timed suite run. Every suite listed below
+exited before running a single assertion. These are not red suites: running any of them
+individually against a healthy fixture will pass.
+
+  fixture name     $fixture
+  suites affected  $suites
+  count            $n
+
+The pass builds one shared fixture and resets it for each borrower (testdb_reset inside
+testdb_up). When the reset fails, the borrower exits with the fixture-fault code
+(TESTDB_FAULT_EXIT=75) so the pass can file one bead here rather than one per borrower.
+
+Investigate: why did testdb_reset fail? Likely causes: the fixture baseline directory was
+deleted mid-pass, the fixture directory was removed, or a concurrent process corrupted it.
+
+The suite names above provide the reproduce line once the fixture is healthy:
+  bash spira/<suite>
+PAYLOAD
+    )"; rc_inc=$?
+    if [ "$rc_inc" -ne 0 ]; then
+        log "suites: the intake could not file fixture fault for $fixture"
+        return 1
+    fi
+    id="$(printf '%s\n' "$out_inc" | tail -n 1 | tr -d '[:space:]')"
+    case "${id:-}" in
+        ''|*[!A-Za-z0-9-]*|-*|*-) log "suites: the intake returned no id for fixture fault"; return 1 ;;
+    esac
+    printf '%s' "$id"
+}
+
+# --------------------------------------------------------------------------------------
 # THE PASS.
 #
 # THE BUDGET IS A WALL, NOT A HOPE. This runs inside an Ops session that systemd kills at
@@ -309,7 +367,7 @@ PAYLOAD
 # pass begins with, so the set is covered by rotation over cycles however long it grows.
 # --------------------------------------------------------------------------------------
 cmd_run() {
-    local started deadline s out rc secs fp t0 left slice status id next_cursor="" _td_shared=0
+    local started deadline s out rc secs fp t0 left slice status id next_cursor="" _td_shared=0 _td_fixture_name=""
     local env_mismatch=0
     started="$(date +%s)"; deadline=$(( started + BUDGET ))
     mkdir -p "$STATE" 2>/dev/null
@@ -394,7 +452,25 @@ cmd_run() {
             else unset SPIRA_BD 2>/dev/null || true; fi
             if [ "$_td_had_spath" = 1 ]; then SPIRA_PATH="$_td_real_spath"; export SPIRA_PATH
             else unset SPIRA_PATH 2>/dev/null || true; fi
+            # TESTDB_FAULT_EXIT: the exit code testdb_up uses when a shared fixture reset
+            # fails inside a borrower suite. Exported so suites inherit it; the value is
+            # declared here (next to the shared fixture build) so both ends of the protocol
+            # are in the same diff. 75 = EX_TEMPFAIL; it is not automake-skip (77) and not
+            # a normal suite failure, so suites.sh can classify it distinctly.
+            export TESTDB_FAULT_EXIT=75
+            _td_fixture_name="${TESTDB_NAME:-unknown}"
             _td_shared=1
+        else
+            # testdb_up failed: restore any vars it may have modified before returning.
+            # Without this, a failure partway through the fresh-fixture path (after PATH
+            # was modified but before SPIRA_DB was set) leaves the production vars in a
+            # corrupt state, and incident.sh subsequently targets the wrong database.
+            SPIRA_DB="$_td_real_db"; export SPIRA_DB
+            PATH="$_td_real_path"; export PATH
+            if [ "$_td_had_bd" = 1 ]; then SPIRA_BD="$_td_real_bd"; export SPIRA_BD
+            else unset SPIRA_BD 2>/dev/null || true; fi
+            if [ "$_td_had_spath" = 1 ]; then SPIRA_PATH="$_td_real_spath"; export SPIRA_PATH
+            else unset SPIRA_PATH 2>/dev/null || true; fi
         fi
     fi
 
@@ -410,6 +486,7 @@ cmd_run() {
     unset _senv_rv
 
     local ran=0 red=0 skipped=0 unreached=""
+    local _fixture_fault_count=0 _fixture_faulted=""
     # Instrument: track which suites got results, and write unreached for any that didn't.
     local suites_with_results=""
     for s in $order; do
@@ -479,6 +556,17 @@ cmd_run() {
         secs=$(( $(date +%s) - t0 ))
         ran=$(( ran + 1 ))
         suites_with_results="$suites_with_results $s"
+        # FIXTURE FAULT. When the shared fixture collapsed and the suite exited before
+        # running a single assertion, classify as fixture-fault rather than red. Only
+        # applicable when this pass built a shared fixture (_td_shared=1): a suite that
+        # exits 75 for an unrelated reason with no shared fixture in play is still red.
+        if [ "$rc" -eq "${TESTDB_FAULT_EXIT:-75}" ] && [ "$_td_shared" = 1 ]; then
+            record_write "$s" fixture-fault "$secs" -
+            _fixture_fault_count=$(( _fixture_fault_count + 1 ))
+            _fixture_faulted="${_fixture_faulted:+$_fixture_faulted }$s"
+            printf '  %-26s FIXTURE-FAULT  shared fixture collapsed\n' "$s"
+            continue
+        fi
         case "$rc" in
             0)  status=ok
                 record_write "$s" ok "$secs" -
@@ -586,17 +674,28 @@ cmd_run() {
         printf 'budget spent after %ss — not reached this pass, and first next pass:%s\n' \
             "$(( $(date +%s) - started ))" "$unreached"
     fi
+    # FILE ONE BEAD FOR THE FIXTURE COLLAPSE. Every suite that exited with TESTDB_FAULT_EXIT
+    # is a borrower that could not start — not a red suite. One bead names them all. This
+    # runs here rather than inside the loop so there is exactly one bead per collapse rather
+    # than one per affected suite; the dedupe ref (fixture-fault:<TESTDB_NAME>) is the second
+    # guard against duplicates across passes.
+    if [ "$_fixture_fault_count" -gt 0 ]; then
+        local _ff_id
+        _ff_id="$(file_fixture_fault "$_fixture_fault_count" "$_fixture_faulted" "${_td_fixture_name:-unknown}" || true)"
+        printf 'fixture fault — %s suite(s) could not start (shared fixture collapsed): %s  %s\n' \
+            "$_fixture_fault_count" "$_fixture_faulted" "${_ff_id:-not filed}"
+    fi
     # THE ENV-MISMATCH COUNT IS EMITTED HERE. A nonzero count is the meter that tracks how bad
     # the runner-environment divergence is. When this reaches zero and stays there, a full
     # environment scrub (runner using env -i) becomes landable as a deliberate act rather than
     # a hopeful one. Print it even when zero so the line is parseable on every pass.
-    printf '%s ran, %s red (%s env-mismatch), %s skipped, %ss\n' \
-        "$ran" "$red" "$env_mismatch" "$skipped" "$(( $(date +%s) - started ))"
-    # Exit 2 when suites are red: incidents were filed, the pass completed normally. Exit 1
-    # is reserved for errors that abort before any suite runs (gate-suites unreadable). The
-    # unit carries SuccessExitStatus=2 so systemd does not mark it failed on a routine red
-    # day, while a real error — which exits 1 — still marks it failed.
-    [ "$red" -eq 0 ] || return 2
+    printf '%s ran, %s red (%s env-mismatch), %s skipped, %s fixture-fault, %ss\n' \
+        "$ran" "$red" "$env_mismatch" "$skipped" "$_fixture_fault_count" "$(( $(date +%s) - started ))"
+    # Exit 2 when suites are red or a fixture fault was filed: incidents were filed, the pass
+    # completed normally. Exit 1 is reserved for errors that abort before any suite runs
+    # (gate-suites unreadable). The unit carries SuccessExitStatus=2 so systemd does not
+    # mark it failed on a routine red day.
+    [ "$red" -eq 0 ] && [ "$_fixture_fault_count" -eq 0 ] || return 2
 }
 
 # --------------------------------------------------------------------------------------
