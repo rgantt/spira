@@ -58,16 +58,30 @@ up() {
     # ---- beads database inside STAGE_ROOT -----------------------------------
     local db="$root/db"
     mkdir -p "$db"
-    local init_out init_rc
-    init_out="$(cd "$db" && env -i PATH="$root/bin:$PATH" HOME="$HOME" TERM=dumb \
-        BD_NON_INTERACTIVE=1 \
-        bd-embedded init --non-interactive --prefix sp --skip-agents --skip-hooks \
-        -q 2>&1)"
-    init_rc=$?
-    [ "$init_rc" -eq 0 ] || {
-        printf 'stage: bd init failed (rc=%s):\n%s\n' "$init_rc" "$init_out" >&2
-        rm -rf "$root"; exit 1
-    }
+    # FAST PATH: when the test harness pre-built a shared fixture and exported
+    # TESTDB_BASELINE, copy its .beads snapshot instead of running bd init.
+    # bd init costs ~10s (schema DDL); a directory copy costs ~4ms.  The baseline
+    # is an empty-database snapshot taken by testdb.sh immediately after init, so
+    # every copy is equivalent to a fresh init — but a test session that runs
+    # stage.sh up seven times pays the cost once (when the shared fixture was
+    # built) rather than seven times.
+    if [ "${TESTDB_SHARED:-0}" = 1 ] && [ -d "${TESTDB_BASELINE:-}/.beads" ]; then
+        cp -rp "$TESTDB_BASELINE/.beads" "$db/.beads" || {
+            printf 'stage: baseline copy failed\n' >&2
+            rm -rf "$root"; exit 1
+        }
+    else
+        local init_out init_rc
+        init_out="$(cd "$db" && env -i PATH="$root/bin:$PATH" HOME="$HOME" TERM=dumb \
+            BD_NON_INTERACTIVE=1 \
+            bd-embedded init --non-interactive --prefix sp --skip-agents --skip-hooks \
+            -q 2>&1)"
+        init_rc=$?
+        [ "$init_rc" -eq 0 ] || {
+            printf 'stage: bd init failed (rc=%s):\n%s\n' "$init_rc" "$init_out" >&2
+            rm -rf "$root"; exit 1
+        }
+    fi
 
     # ---- git: bare remote + working checkout --------------------------------
     local remote="$root/remote.git" repo="$root/repo"
