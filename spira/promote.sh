@@ -196,11 +196,119 @@ if [ -n "$OLD_HEAD" ]; then
         | grep "^${HOME_SUB}/")
 fi
 
+# --- the production checkout is a DEPLOY ARTIFACT, never a working tree ---
+#
+# Nothing but this script may write $PROD_REPO. Twice on 2026-09-11 an aeon did: a commit
+# straight onto it (10f4a54) diverged it from the landref and froze nineteen promotions for
+# hours, and a second occurrence left it detached with spira/conf.sh modified. Neither was
+# reported, because the advance below used to discard the exit code of `git checkout` and
+# then log "done" unconditionally — so a promotion that moved nothing announced success.
+#
+# Three rules now hold, in this order, because each is the one the next depends on:
+#   1. DRIFT SELF-HEALS. A dirty tree is salvaged to $SPIRA_RUN/reaped and reset. Drift can
+#      exist for at most one promote interval, never for hours.
+#   2. THE WRITE IS CHECKED. fetch and checkout exit codes decide whether we continue.
+#   3. THE RESULT IS VERIFIED FROM THE TREE ITSELF, not from the fact that a command ran.
+#      HEAD must equal RESOLVED and the tree must be clean before anything logs "done".
+# law-landed-is-not-in-force.
+# THE FENCE. The production checkout refuses commits outright. promote.sh re-asserts it on
+# every pass, so a clone, a re-clone or a hand-deleted hook is repaired within one interval
+# rather than leaving a window nobody is watching. `--no-verify` still bypasses it — which is
+# why the self-heal below exists as well: refuse first, and repair whatever got through.
+prod_fence_hooks() {
+    local gitdir hook
+    gitdir="$(git -C "$PROD_REPO" rev-parse --git-dir 2>/dev/null)" || return 0
+    case "$gitdir" in /*) ;; *) gitdir="$PROD_REPO/$gitdir" ;; esac
+    mkdir -p "$gitdir/hooks" 2>/dev/null || return 0
+    hook="$gitdir/hooks/pre-commit"
+    if [ -f "$hook" ] && grep -q 'SPIRA PRODUCTION CHECKOUT' "$hook" 2>/dev/null; then
+        [ -x "$hook" ] || chmod +x "$hook" 2>/dev/null
+        return 0
+    fi
+    cat > "${hook}.tmp.$$" <<'HOOK'
+#!/usr/bin/env bash
+# SPIRA PRODUCTION CHECKOUT — installed by promote.sh. Do not edit; edit promote.sh.
+#
+# This tree is a deploy artifact. It is what systemd ExecStarts, and promote.sh replaces it
+# wholesale from the landref every two minutes. A commit here cannot reach the repository and
+# cannot survive the next promotion, but it CAN diverge this checkout from the landref, which
+# makes every subsequent promotion fail. That happened twice on 2026-09-11 and froze nineteen
+# landings for hours.
+#
+# Commit in your own worktree instead. If you are an aeon, that is $SPIRA_WORK.
+cat >&2 <<'MSG'
+REFUSED: this is the Spira production checkout, not a working tree.
+
+  Nothing may commit here. This tree is replaced from the landref on a timer, so a commit
+  is lost either way -- but it first diverges the checkout and freezes every promotion
+  after it.
+
+  Commit in your own worktree. An aeon's is $SPIRA_WORK.
+  Deliberate override (you will lose it at the next promote): git commit --no-verify
+MSG
+exit 1
+HOOK
+    chmod +x "${hook}.tmp.$$" 2>/dev/null
+    mv "${hook}.tmp.$$" "$hook" 2>/dev/null \
+        && log "promote: installed the production commit fence at $hook"
+}
+[ "$DRY_RUN" = 0 ] && prod_fence_hooks
+
+prod_salvage_and_reset() {   # prod_salvage_and_reset <reason>
+    local reason="$1" stamp patch
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    patch="${SPIRA_RUN:-/tmp}/reaped/prod-drift-${stamp}.patch"
+    mkdir -p "$(dirname "$patch")" 2>/dev/null
+    if git -C "$PROD_REPO" diff HEAD > "$patch" 2>/dev/null && [ -s "$patch" ]; then
+        log "promote: DRIFT ($reason) — salvaged the production diff to $patch"
+    else
+        rm -f "$patch" 2>/dev/null
+        log "promote: DRIFT ($reason) — nothing to salvage"
+    fi
+    git -C "$PROD_REPO" reset --hard >/dev/null 2>&1
+    git -C "$PROD_REPO" clean -fd >/dev/null 2>&1
+}
+
+# Is the production tree dirty, or carrying commits the landref does not have?
+PROD_DIRTY=""
+[ -n "$(git -C "$PROD_REPO" status --porcelain --untracked-files=no 2>/dev/null)" ] \
+    && PROD_DIRTY="a tracked file was modified in the production checkout"
+if [ -z "$PROD_DIRTY" ] && [ -n "$OLD_HEAD" ] \
+   && ! git -C "$SPIRA_REPO" cat-file -e "${OLD_HEAD}^{commit}" 2>/dev/null; then
+    PROD_DIRTY="production HEAD ($OLD_HEAD) is a commit the development checkout has never seen"
+fi
+
+if [ -n "$PROD_DIRTY" ]; then
+    if [ "$DRY_RUN" = 1 ]; then
+        log "promote: DRY RUN: would reset the production checkout — $PROD_DIRTY"
+    else
+        prod_salvage_and_reset "$PROD_DIRTY"
+        OLD_HEAD="$(git -C "$PROD_REPO" rev-parse HEAD 2>/dev/null)"
+    fi
+fi
+
 # --- advance production ---
 log "promote: $OLD_HEAD -> $RESOLVED"
 if [ "$DRY_RUN" = 0 ]; then
-    git -C "$PROD_REPO" fetch "$SPIRA_REPO" "$RESOLVED" >/dev/null 2>&1 || true
-    git -C "$PROD_REPO" checkout --detach "$RESOLVED" >/dev/null 2>&1
+    if ! git -C "$PROD_REPO" fetch "$SPIRA_REPO" "$RESOLVED" >/dev/null 2>&1; then
+        log "promote: REFUSED — could not fetch $RESOLVED into the production checkout"
+        exit 1
+    fi
+    if ! git -C "$PROD_REPO" checkout --detach "$RESOLVED" >/dev/null 2>&1; then
+        log "promote: REFUSED — git checkout --detach $RESOLVED failed in $PROD_REPO"
+        log "promote: production is STILL at $(git -C "$PROD_REPO" rev-parse HEAD 2>/dev/null)"
+        exit 1
+    fi
+    # VERIFY FROM THE TREE. A command that ran is not evidence the tree moved.
+    _prod_head="$(git -C "$PROD_REPO" rev-parse HEAD 2>/dev/null)"
+    if [ "$_prod_head" != "$RESOLVED" ]; then
+        log "promote: REFUSED — asked for $RESOLVED but production HEAD reads $_prod_head"
+        exit 1
+    fi
+    if [ -n "$(git -C "$PROD_REPO" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        log "promote: REFUSED — production tree is dirty immediately after checkout"
+        exit 1
+    fi
 fi
 
 if [ "${#changed_scripts[@]}" -gt 0 ]; then
