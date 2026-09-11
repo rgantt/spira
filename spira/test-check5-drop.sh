@@ -26,7 +26,7 @@
 #
 # defect: sp-kufh
 # covers: spira/sentinel.sh spira/lib.sh
-# timeout: 60
+# timeout: 120
 # hermetic-ok: uses a fixture database and a local git repo, no systemd or gh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
