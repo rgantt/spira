@@ -44,10 +44,20 @@ spira   | spira/actors.example          | commit author to harness, for authors 
 spira   | spira/auron.sh                | the watchdog over the loop — reads timestamps and counters, raises or clears an alert bead. Its only power is speech: it repairs nothing, restarts nothing and summons nothing
 spira   | spira/skew.sh                 | is the harness in force the harness that landed — the hourly check that the executing copy is current, clean and the only one, and the landing gate's fence against work landing in a copy nothing executes
 spira   | spira/doctor.sh               | read-only preflight — every missing program, unreadable database, unmapped repository and unbuilt panel, named in one pass
+spira   | spira/incident.sh             | turns a production event into a bead Ops can claim — systemd OnFailure, arbitrary payload, or a spool drain; deduplicates by external_ref
 spira   | spira/statutes/               | the SEED statute book, one file per statute. Statutes live in the beads KV store, which is per-installation, so a clone gets the mechanism and none of the law unless it ships as text
 spira   | spira/seed.sh                 | writes those statutes into a fresh database, and never over one already in force
 spira   | cockpit/                      | the decisions panel (Rust) and the ops pane — how a human sees what the harness is doing and answers what it asks. Generic; it reads whatever database it is pointed at
+spira   | loom/                         | Loom — a Rust read endpoint over the live beads graph with a per-request budget; refuses to start without a database so it cannot silently serve another harness's graph
 spira   | systemd/                      | unit TEMPLATES plus install.sh. The units in force on a machine are generated from these, never edited in place
+spira   | install.sh                    | the one entry point: nine sequential phases — preflight, conflict checks, config, build, database, units, hooks, cockpit, verify — ending with ready.sh
+spira   | spira/uninstall.sh            | inverse of install.sh; walks owned.sh so the two cannot drift; instance-aware and refuses to guess when multiple instances are installed
+spira   | spira/owned.sh                | single declaration of what one installation owns outside the checkout — the load-bearing contract walked by both installer and uninstaller
+spira   | spira/ready.sh                | postflight: seven readiness checks after install; exit 3 when installed-but-not-ready
+spira   | spira/build.sh                | builds Loom and the cockpit panel; a clone that skips this gets a service that exits 2 and an empty panel
+spira   | spira/configure.sh            | bootstraps ~/.config/spira/ on first install; never overwrites an existing file
+spira   | spira/testenv.sh              | rootless podman container with user systemd for the install-rehearsal suite tier
+spira   | docs/                         | spike investigations and evidence files from the harness's own development
 spira   | concierge.sh                  | one named Remote Control session, so a phone can reach the harness
 spira   | rule.sh                       | enacting a statute writes the beads KV store, which is the harness's substrate
 spira   | spira/archive.sh              | keeps every session transcript and indexes it by time range and by the lineage id that survives a clear. The mechanism ships; the transcripts and the store they land in are the operator's own and stay out of every repository
@@ -78,6 +88,6 @@ brain   | its skills                    | whatever lands its output in the wiki
 neither | the beads database            | served by Dolt, addressed as a path. It accumulates internal working notes and agent memories, so it is never public and never in a shared repo
 neither | the statutes in force         | rows in that database's KV store, per-installation. A wiki may render a read-only copy; the harness ships SEED statute text an installer writes into a fresh database
 neither | spira.conf, repo-map          | the operator's real paths, repositories and personas. The examples ship; these do not. Both are gitignored, and spira.conf is looked for outside the checkout first for that reason
-neither | the systemd units in force    | rendered from systemd/ templates by install.sh, filled from spira.conf. Never edited in place — `install.sh --diff` is how you find out somebody did
+neither | the systemd units in force    | rendered from systemd/ templates by install.sh, filled from spira.conf. Never edited in place — `systemd/install.sh --diff` is how you find out somebody did
 neither | the transcript archive        | compressed session logs plus their index, written by archive.sh. They carry paths, credentials read aloud and everything anyone ever said, so they live outside every checkout and no shared repository holds them. Nothing deletes them: retention is the operator's decision
 neither | .runtime/                     | logs, worktrees, leases, cockpit state. Regenerated, machine-local, gitignored

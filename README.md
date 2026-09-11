@@ -326,6 +326,19 @@ sessions that need it most.
 landed? A second copy of the harness inside a repository is how work aimed at the harness can
 land in it, pass its gate, and never run.
 
+**Alert intake and incidents.** `spira/incident.sh` turns a production event into a bead Ops
+can claim. Three entry points: `incident.sh systemd <unit>` (for a failed systemd unit),
+`incident.sh file <title>` (arbitrary payload from stdin), and `incident.sh drain` (flush the
+spool). `spira/install-intake.sh` wires `systemd OnFailure=` drop-ins over `SPIRA_ALERT_GLOB`
+so a failed unit files itself — `SPIRA_ALERT_GLOB` is the glob of units that get a drop-in;
+set it in `spira.conf` before running install phase 5. The spool is write-ahead: the flock
+around the drain ensures writers never block each other. Deduplication keys on `external_ref`
+(the unit name); because `bd list --json` omits `external_ref`, the dedup step fetches it per
+candidate via `bd show`, so a recurrence that would re-file an open incident is labelled
+`sp-recur-N` instead. `spira/watchtower.sh` is the scheduled counterpart: it reads the
+pipeline's vital signs on a timer and hands anomalies to Ops, which cuts beads for them; run
+`spira/watchtower.sh --show` to see the current reading without filing anything.
+
 ---
 
 ## The statute book and the shelf
@@ -384,14 +397,23 @@ git clone <this repo> spira-harness && cd spira-harness
 ./install.sh
 ```
 
-`install.sh` is the one entry point. It runs eight sequential phases — preflight, conflict
-checks, config, build, database, units, hooks, cockpit — and ends by running `ready.sh`, which
-asserts all five readiness conditions. On a fresh box with prerequisites installed, those two
-commands are enough.
+`install.sh` is the one entry point. It runs nine sequential phases — 0 preflight, 0.5 conflict
+checks, 1 config, 2 build, 3 database, 4 units, 5 hooks, 6 cockpit, 7 verify — where phase 7
+runs `ready.sh` and exits 3 when installed-but-not-ready (see Exit codes). On a fresh box with
+prerequisites installed, those two commands are enough.
 
-`--dry-run` shows each phase's intended action without changing anything. `--ephemeral` creates
-an isolated instance for CI or test: its own database and runtime directory, statutes seeded,
-agent pointed at a stub, no session hook or alert drop-ins.
+```
+install.sh [<instance>] [--dry-run] [--ephemeral] [--laptop] [--skip-build] [--no-session-hook]
+```
+
+- **`<instance>`** — the name of this Spira installation (default: `prod`). Pass a different
+  name to install a second instance alongside an existing one.
+- **`--dry-run`** — print each phase's intended action without changing anything.
+- **`--ephemeral`** — isolated instance for CI or test: its own database and runtime directory,
+  statutes seeded, agent pointed at a stub, no session hook or alert drop-ins.
+- **`--laptop`** — tuning passed through to `systemd/install.sh` for a battery-powered box.
+- **`--skip-build`** — skip `build.sh` when binaries are pre-built.
+- **`--no-session-hook`** — skip the session-hook registration (phase 5).
 
 ### Exit codes
 
@@ -406,29 +428,43 @@ agent pointed at a stub, no session hook or alert drop-ins.
 Every conflict guard names its own override. Bypass the whole conflict phase with
 `SPIRA_INSTALL_CONFLICT_CONSIDERED=1` only when you have verified the conflict does not apply.
 
+The unit renderer (`systemd/install.sh`) carries two additional refusals, each reachable from a
+normal re-install, both overridden by `SPIRA_INSTALL_FORCE=1`: it refuses when the checkout is
+not on its declared base ref or is behind it, and it refuses while `spira-aeon-*` service
+instances are active for this installation.
+
 ### What readiness means
 
-"Running and can receive work" is five conditions, asserted by `ready.sh` at the end of every
-install:
+`ready.sh` asserts seven rows at the end of every install. A row that renders FAIL or `?`
+(unknown) causes a non-zero exit; a row that renders WARN does not:
 
-1. **sentinel** — the sentinel timer is active
-2. **world** — the world is not halted
-3. **database** — the database is readable and shipped statutes are in force
-4. **ready work** — `sentinel.sh --report` names an open bead under `SPIRA_GOAL`
-5. **loom** — Loom answers 200 at `/api/beads` inside its budget
+1. **sentinel** — the sentinel timer is active [fails exit code]
+2. **world** — the world is not halted [fails exit code]
+3. **database** — the database is readable and shipped statutes are in force [fails exit code]
+4. **ready work** — `sentinel.sh --report` names an open bead under `SPIRA_GOAL` [WARN if none]
+5. **loom** — Loom answers 200 at `/api/beads` inside its budget [fails exit code]
+6. **agent** — the configured agent binary is present [WARN only by design]
+7. **cockpit** — the two tagged tmux panes are present [WARN only by design]
 
-The install rehearsal (`spira/test-install-rehearsal.sh`, in the timed suite set) proves
-conditions 1–3 and most of 5 against **real systemd** inside a container. Two conditions run
-against stubs: the `bd` binary is a stub (the container has no database), so condition 4 (filed
-bead visible to sentinel) is not proven there; the Loom HTTP probe is intercepted by
-`SPIRA_LOOM_PROBE` rather than a live Loom binary. The agent binary check is a warning by
-design — an ephemeral install is valid without a credentialled agent.
+The agent row is a warning by design — an ephemeral install is valid without a credentialled
+agent. The cockpit row is also a warning — the loop runs without a terminal surface. Only rows
+1–3 and 5 can fail the exit code unconditionally; row 4 is a warning when the goal has no open
+work, and rows 6–7 are always warnings.
+
+The install rehearsal (`spira/test-install-rehearsal.sh`, run by `spira/testenv.sh` inside a
+container with real systemd) proves rows 1–3 and most of 5. Two rows run against stubs: the
+`bd` binary is a stub (the container has no database), so row 4 is not proven there; the Loom
+HTTP probe is intercepted by `SPIRA_LOOM_PROBE` rather than a live binary.
 
 ### Uninstall
 
 ```sh
-./uninstall.sh
+spira/uninstall.sh [<instance>] [--yes] [--dry-run] [--purge] [--purge-database]
 ```
+
+With an instance argument, removes only that instance's units. With no argument and exactly one
+instance installed, removes that instance. With no argument and multiple instances installed,
+refuses to guess — pass the instance name explicitly.
 
 Three retention tiers:
 
@@ -457,8 +493,14 @@ repository in one pass, distinguishing *fatal* (the loop cannot run) from *warn*
 is off). Run it at any time without changing state.
 
 The units in `systemd/` are **templates**, not units — every path is a placeholder filled from
-your configuration. Never edit an installed unit; edit the template and re-run `./install.sh`.
+your configuration. Never edit an installed unit; edit the template and re-run `install.sh`.
 `systemd/install.sh --diff` tells you when somebody did.
+
+`spira/owned.sh` is the single declaration of what one installation owns outside the checkout.
+Both `install.sh` and `spira/uninstall.sh` walk it, so what is installed and what is removed
+cannot drift from each other. `spira/build.sh` builds Loom and the cockpit panel; a clone that
+never runs it gets a service that exits 2 and an empty panel. `spira/configure.sh` bootstraps
+`~/.config/spira/spira.conf` on first install and never overwrites an existing file.
 
 ### Running it
 
@@ -480,6 +522,13 @@ spira/release.sh <bead-id>
 `world.sh` deliberately does not touch the databases — stopping the loop must never risk the
 data, and a stopped database makes every diagnostic you are about to run fail — nor the panes
 the operator is reading, because halting the loop must not also blind the person halting it.
+
+The harness ships several other operator-facing scripts this document does not enumerate: run
+any of them with `--help` to see their interface. Highlights: `spira/promote.sh` fast-forwards
+the production checkout and restarts only changed units; `spira/stage.sh` stands up an isolated
+Spira for testing; `spira/canary.sh` runs an end-to-end pipeline canary; `spira/escape.sh`
+summons an aeon directly, bypassing pool and lane checks; `spira/fleet.sh` sets the aeon pool
+ceiling in the operator's own words.
 
 ---
 
@@ -562,10 +611,20 @@ Generic mechanism. A colleague clones this and it carries none of the operator's
 | `spira/auron.sh` | the watchdog over the loop — reads timestamps and counters, raises or clears an alert bead. Its only power is speech: it repairs nothing, restarts nothing and summons nothing |
 | `spira/skew.sh` | is the harness in force the harness that landed — the hourly check that the executing copy is current, clean and the only one, and the landing gate's fence against work landing in a copy nothing executes |
 | `spira/doctor.sh` | read-only preflight — every missing program, unreadable database, unmapped repository and unbuilt panel, named in one pass |
+| `spira/incident.sh` | turns a production event into a bead Ops can claim — systemd OnFailure, arbitrary payload, or a spool drain; deduplicates by external_ref |
 | `spira/statutes/` | the SEED statute book, one file per statute. Statutes live in the beads KV store, which is per-installation, so a clone gets the mechanism and none of the law unless it ships as text |
 | `spira/seed.sh` | writes those statutes into a fresh database, and never over one already in force |
 | `cockpit/` | the decisions panel (Rust) and the ops pane — how a human sees what the harness is doing and answers what it asks. Generic; it reads whatever database it is pointed at |
+| `loom/` | Loom — a Rust read endpoint over the live beads graph with a per-request budget; refuses to start without a database so it cannot silently serve another harness's graph |
 | `systemd/` | unit TEMPLATES plus install.sh. The units in force on a machine are generated from these, never edited in place |
+| `install.sh` | the one entry point: nine sequential phases — preflight, conflict checks, config, build, database, units, hooks, cockpit, verify — ending with ready.sh |
+| `spira/uninstall.sh` | inverse of install.sh; walks owned.sh so the two cannot drift; instance-aware and refuses to guess when multiple instances are installed |
+| `spira/owned.sh` | single declaration of what one installation owns outside the checkout — the load-bearing contract walked by both installer and uninstaller |
+| `spira/ready.sh` | postflight: seven readiness checks after install; exit 3 when installed-but-not-ready |
+| `spira/build.sh` | builds Loom and the cockpit panel; a clone that skips this gets a service that exits 2 and an empty panel |
+| `spira/configure.sh` | bootstraps ~/.config/spira/ on first install; never overwrites an existing file |
+| `spira/testenv.sh` | rootless podman container with user systemd for the install-rehearsal suite tier |
+| `docs/` | spike investigations and evidence files from the harness's own development |
 | `concierge.sh` | one named Remote Control session, so a phone can reach the harness |
 | `rule.sh` | enacting a statute writes the beads KV store, which is the harness's substrate |
 | `spira/archive.sh` | keeps every session transcript and indexes it by time range and by the lineage id that survives a clear. The mechanism ships; the transcripts and the store they land in are the operator's own and stay out of every repository |
@@ -603,7 +662,7 @@ It belongs to whoever runs the harness. No shared repository holds it, and no be
 | the beads database | served by Dolt, addressed as a path. It accumulates internal working notes and agent memories, so it is never public and never in a shared repo |
 | the statutes in force | rows in that database's KV store, per-installation. A wiki may render a read-only copy; the harness ships SEED statute text an installer writes into a fresh database |
 | `spira.conf`, `repo-map` | the operator's real paths, repositories and personas. The examples ship; these do not. Both are gitignored, and spira.conf is looked for outside the checkout first for that reason |
-| the systemd units in force | rendered from systemd/ templates by install.sh, filled from spira.conf. Never edited in place — `install.sh --diff` is how you find out somebody did |
+| the systemd units in force | rendered from systemd/ templates by install.sh, filled from spira.conf. Never edited in place — `systemd/install.sh --diff` is how you find out somebody did |
 | the transcript archive | compressed session logs plus their index, written by archive.sh. They carry paths, credentials read aloud and everything anyone ever said, so they live outside every checkout and no shared repository holds them. Nothing deletes them: retention is the operator's decision |
 | `.runtime/` | logs, worktrees, leases, cockpit state. Regenerated, machine-local, gitignored |
 
@@ -629,9 +688,11 @@ have and a new one should too:
 
 - **A check that finds nothing must first prove it could have found something.** Plant an
   offender, require the matcher to say so, and only then believe it when it is silent.
-- **Test against the real dependency** on a throwaway instance (`spira/testdb.sh`), never a
-  hand-written model of it. A stub reproduces the surface you remember, so its gaps surface as
-  failures in correct code.
+- **Test against the real dependency** on a throwaway instance (`spira/testdb.sh` for a beads
+  database, `spira/testenv.sh` for a container with real user systemd), never a hand-written
+  model of it. A stub reproduces the surface you remember, so its gaps surface as failures in
+  correct code. `spira/testenv.sh` is the third tier: `test-install-rehearsal.sh`,
+  `test-testenv.sh` and `test-testenv-systemctl.sh` run there and nowhere else.
 - **Run in an explicit, minimal environment.** `hermetic.sh` refuses a suite that reaches the
   real box: ambient configuration silently decides verdicts, and a suite that inherits a real
   config is asserting about one machine.
