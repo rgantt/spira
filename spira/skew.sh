@@ -388,13 +388,26 @@ ${_legacy_note}    Re-run $installer to bring the installed units into line with
 escalate() {
     local condition_key="$1" findings="$2"
 
+    # Check whether this condition has already been escalated in this run. The condition
+    # key is versioned and stable, so a repeated call with the same key in the same
+    # SPIRA_RUN should not fire SPIRA_NOTIFY again — ask.sh will bump a recurrence count
+    # if the condition persists across runs, but within one run we escalate once.
+    local escalate_stamp="$SPIRA_RUN/skew.escalated-$(printf '%s' "$condition_key" | cksum | cut -d' ' -f1)"
+    if [ -f "$escalate_stamp" ]; then
+        # Already reported this condition in this run. The finding text may have changed
+        # (commit count, file list), but the condition itself — which TYPES of findings —
+        # has not, so do not re-call ask.sh.
+        echo "skew: condition already reported — $(cat "$escalate_stamp" 2>/dev/null || echo "$condition_key")"
+        return 0
+    fi
+
     # Stdout goes to skew.log under the service unit. Stderr does too (both streams are
     # captured), but everything below writes to stdout so the delivery path is explicit and
     # does not depend on StandardError being redirected — which has changed once already.
     if [ ! -x "${SPIRA_NOTIFY:-}" ]; then
         echo "skew: no escalation path at ${SPIRA_NOTIFY:-(unset)} — the finding above reaches nobody"
         return 1
-    fi
+fi
 
     # The installer sits beside the harness directory, not inside it, so it is derived
     # rather than written — the two layouts put it in different places and a hardcoded one
@@ -422,6 +435,9 @@ escalate() {
         echo "skew: escalation failed (rc=$notify_rc): $notify_out"
         return "$notify_rc"
     fi
+    # Write the stamp so subsequent calls in this run do not re-escalate the same condition.
+    mkdir -p "$SPIRA_RUN" 2>/dev/null || true
+    printf '%s' "$notify_out" > "$escalate_stamp" 2>/dev/null || true
     echo "skew: escalated — $notify_out"
 }
 
