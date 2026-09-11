@@ -30,6 +30,7 @@
 #
 # defect: sp-3cb0
 # covers: systemd/spira-suites.service spira/suites.sh spira/incident.sh
+# timeout: 60
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 UNIT_DIR="$HERE/../systemd"
