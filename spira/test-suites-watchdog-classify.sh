@@ -20,6 +20,7 @@
 #
 # defect: sp-prhs2
 # covers: spira/suites.sh
+# timeout: 60
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 pass=0; fail=0
