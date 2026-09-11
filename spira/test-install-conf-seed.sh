@@ -87,12 +87,12 @@ chmod +x "$MOCK_BIN/loginctl"
 # FAKE PROD DIR: a directory that stands in for the prod checkout's spira/ subdir.
 # Every script referenced in ExecStart=@SPIRA_PROD@/... must exist and be executable.
 # These are stubs only — the test is about the conf file that is written beside them.
+# Derived from the unit templates so a new template cannot silently break this test.
 # ---------------------------------------------------------------------------
 FAKE_PROD="$TMP/prod-checkout/spira"
 mkdir -p "$FAKE_PROD"
-for _s in sentinel.sh archive.sh archivist.sh auron.sh cockpit.sh loom.sh \
-           aeon.sh skew.sh suites.sh watch-refresh.sh watchd.sh watchtower.sh \
-           collect.sh install-session-hook.sh; do
+for _s in $(grep -h "ExecStart=\|ExecStartPre=" "$REAL_REPO/systemd/"*.service 2>/dev/null \
+            | grep "@SPIRA_PROD@" | sed 's|.*@SPIRA_PROD@/||' | sed 's/ .*//' | sort -u); do
     printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_PROD/$_s"
     chmod +x "$FAKE_PROD/$_s"
 done
@@ -135,6 +135,7 @@ inst() {
         SPIRA_CONF=/nonexistent \
         "SPIRA_PATH=$MOCK_BIN" \
         "SPIRA_WATCHERS=$FIXTURE/spira/watchers" \
+        "SPIRA_REPO_MAP=$FIXTURE/spira/repo-map.example" \
         SPIRA_DOLT_DATA= SPIRA_TESTDB_DATA= \
         "SPIRA_RUN=$SPIRA_RUN_DIR" \
         "SPIRA_HOME=$HERE" \
