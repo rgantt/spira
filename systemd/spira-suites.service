@@ -9,6 +9,7 @@ Type=oneshot
 # unreadable). SuccessExitStatus=2 keeps the unit out of the failed state on a routine
 # red day while a real error — which exits 1 — still marks it failed.
 SuccessExitStatus=2
+WorkingDirectory=@SPIRA_PROD@
 ExecStart=@SPIRA_PROD@/suites.sh run
 # CPU-fenced like every other loop on this box (law-fence-loops-on-shared-hardware).
 CPUQuota=40%
@@ -20,6 +21,7 @@ TimeoutStartSec=2100
 Environment=SPIRA_SUITES_MAXSEC=2100
 Environment=SPIRA_HOME=@SPIRA_PROD@
 Environment=SPIRA_RUN=@SPIRA_RUN@
+Environment=SPIRA_DB=/workspaces/spira
 StandardOutput=append:@SPIRA_RUN@/suites.log
 StandardError=append:@SPIRA_RUN@/suites.log
 
