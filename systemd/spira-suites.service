@@ -21,7 +21,6 @@ TimeoutStartSec=2100
 Environment=SPIRA_SUITES_MAXSEC=2100
 Environment=SPIRA_HOME=@SPIRA_PROD@
 Environment=SPIRA_RUN=@SPIRA_RUN@
-Environment=SPIRA_DB=/workspaces/spira
 StandardOutput=append:@SPIRA_RUN@/suites.log
 StandardError=append:@SPIRA_RUN@/suites.log
 
