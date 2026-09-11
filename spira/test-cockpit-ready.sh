@@ -30,12 +30,19 @@ run_probe() {   # run_probe <SPIRA_BD=path> -> stdout of probe()
     env -i PATH="$BASE_PATH" HOME="$TMP" LC_ALL=C.UTF-8 \
         SPIRA_CONF="$TMP/no.conf" SPIRA_HOME="$HERE" SPIRA_REPO="$TMP" \
         SPIRA_RUN="$RUN" SPIRA_DB="$TMP/nodb" \
-        SPIRA_REPO_MAP="$TMP/no-map" SPIRA_GOAL=sp-test SPIRA_FAYTHS=t \
+        SPIRA_REPO_MAP="$TMP/no-map" SPIRA_GOAL=sp-test SPIRA_FAYTHS=builder \
         SPIRA_ASK_LABEL=needs-ryan SPIRA_CI_LABEL=awaiting-ci \
         SPIRA_BD="$bd_path" \
         bash "$HERE/cockpit.sh" once 2>/dev/null
 }
 
+# SPIRA_FAYTHS NAMES A PERSONA THAT EXISTS. It used to say `t`, for which there is no
+# chamber/t.fayth — harmless only because the partition map globbed chamber/*.fayth and
+# ignored SPIRA_FAYTHS altogether. Resolving partitions through fayth_get honours it, so an
+# unresolvable persona now yields no partitions, which is a REFUSAL: the probe renders ?
+# rather than 0. That is correct behaviour and it would have made this suite assert the
+# opposite of what it means, so the fixture names a real persona instead.
+#
 # ======================================================================================
 # POSITIVE CONTROL FIRST. A check that only tests absence is indistinguishable from one
 # pointed at the wrong thing; proving it fires on a known input proves the machinery
@@ -51,6 +58,36 @@ printf '[]'
 exit 0
 EOF
 chmod +x "$BD_EMPTY"
+
+# ======================================================================================
+# THE DEFECT THIS SUITE NOW GUARDS. The partition map used to be derived by reading each
+# .fayth as text and hand-substituting one variable, so every other expansion reached bd
+# verbatim: a predicate carrying a scope label became a query for a label literally named
+# ${SPIRA_SCOPE_LABEL:+...},plan. bd answered [] truthfully, the refusal guard saw output
+# rather than silence, and the pane reported "0 ready" against 32 ready beads.
+#
+# Two assertions, because the failure had two halves: the map must RESOLVE (no unexpanded
+# shell survives into a label), and an UNRESOLVABLE chamber must refuse rather than read as
+# an empty queue.
+
+echo "partition map: every label resolves, no shell survives"
+_map="$(HERE="$HERE" bash -c '. "'"$HERE"'/lib.sh" 2>/dev/null
+        . <(sed -n "/^_chamber_part_map()/,/^}/p" "'"$HERE"'/cockpit.sh")
+        _chamber_part_map' 2>/dev/null)"
+want   "map is non-empty"                 "spira"   "$_map"
+nowant "no unexpanded \$ survives"        "\$"      "$_map"
+nowant "no unexpanded \${ survives"       "\${"     "$_map"
+
+echo "partition map: an unresolvable persona is a REFUSAL, not an empty queue"
+_unres_out="$(env -i PATH="$BASE_PATH" HOME="$TMP" LC_ALL=C.UTF-8 \
+    SPIRA_CONF="$TMP/no.conf" SPIRA_HOME="$HERE" SPIRA_REPO="$TMP" \
+    SPIRA_RUN="$RUN" SPIRA_DB="$TMP/nodb" \
+    SPIRA_REPO_MAP="$TMP/no-map" SPIRA_GOAL=sp-test SPIRA_FAYTHS=no-such-persona \
+    SPIRA_ASK_LABEL=needs-ryan SPIRA_CI_LABEL=awaiting-ci \
+    SPIRA_BD="$BD_EMPTY" \
+    bash "$HERE/cockpit.sh" once 2>/dev/null)"
+want   "SP_READY is ? when no persona resolves"   "SP_READY=?"  "$_unres_out"
+nowant "SP_READY is NOT 0 when no persona resolves" "SP_READY=0" "$_unres_out"
 
 echo "ready probe: bd returns empty list []:"
 zero_out="$(run_probe "$BD_EMPTY")"

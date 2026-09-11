@@ -67,23 +67,43 @@ cockpit_may_write() {
 # added to the chamber appears here with no edit — the same reason the repository comes from
 # the bead. Returns a JSON object: {"spira,plan": "builder", "spira,incident": "ops", ...}
 _chamber_part_map() {
-    python3 - "$HERE/chamber" "${SPIRA_SPIKE_LABEL:-spike}" <<'PY' 2>/dev/null || echo '{}'
-import sys, glob, json, os
-chamber, spike = sys.argv[1], sys.argv[2]
+    # RESOLVED THROUGH fayth_get, NEVER BY PARSING THE FILE. This used to read each .fayth as
+    # text and hand-substitute the one variable it knew about ($SPIRA_SPIKE_LABEL). Every
+    # other expansion survived into the query verbatim: when the predicates gained a scope
+    # label the collector began asking bd for a label literally named
+    # ${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan, which no bead carries. That is a
+    # WELL-FORMED query for something that cannot exist, so bd answered [] truthfully, the
+    # refusal guard below saw output rather than silence, and the pane printed a confident
+    # "0 ready" while 32 beads were ready. $SPIRA_GROOMER_LABEL had never been substituted
+    # at all, so the groomer partition had been wrong for longer and nothing noticed.
+    #
+    # fayth_get sources the fayth in a subshell, so every expansion resolves the way the
+    # summoner resolves it, by construction. A second implementation of one fact drifts every
+    # time the format changes (law-prefer-the-real-dependency).
+    #
+    # AN UNREADABLE CHAMBER RETURNS NOTHING, NOT {}. An empty map makes every partition query
+    # silently disappear, which reaches the pane as a zero rather than as a fault. Callers
+    # treat empty output as "could not read" and render ? (law-failed-probe-renders-question).
+    local f name labels rows=""
+    for f in $(spira_fayths 2>/dev/null); do
+        name="$(fayth_get "$f" FAYTH_NAME "$f" 2>/dev/null)"
+        labels="$(fayth_get "$f" FAYTH_LABELS 2>/dev/null)"
+        [ -n "$name" ] && [ -n "$labels" ] || continue
+        rows="${rows}${labels}\t${name}\n"
+    done
+    [ -n "$rows" ] || return 1
+    printf '%b' "$rows" | python3 -c '
+import sys, json
 result = {}
-for f in sorted(glob.glob(os.path.join(chamber, "*.fayth"))):
-    name = labels = ""
-    for line in open(f, errors="replace"):
-        s = line.strip()
-        if s.startswith("FAYTH_NAME="):
-            name = s[len("FAYTH_NAME="):].strip('"').strip("'")
-        elif s.startswith("FAYTH_LABELS="):
-            labels = s[len("FAYTH_LABELS="):].strip('"').strip("'")
-            labels = labels.replace("$SPIRA_SPIKE_LABEL", spike)
-    if name and labels:
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if "\t" not in line:
+        continue
+    labels, _, name = line.partition("\t")
+    if labels and name:
         result[labels] = name
 print(json.dumps(result))
-PY
+' 2>/dev/null || return 1
 }
 
 # count <bd-args...> -> number of rows, or `?` if the query or the parse failed.
@@ -125,7 +145,10 @@ probe() {
     echo "SP_WINDOW_HOURS=$WINDOW_HOURS"
 
     # Partition map — derived from the chamber once per pass, used by NOW, NEXT and RECENT.
-    _PART_MAP="$(_chamber_part_map)"
+    # EMPTY MEANS THE CHAMBER COULD NOT BE READ, and every consumer below must render ? for
+    # what it would have counted. Defaulting to {} here is what turned an unreadable chamber
+    # into "0 ready" (law-failed-probe-renders-question).
+    _PART_MAP="$(_chamber_part_map)" || _PART_MAP=""
 
     # ---- NOW: what each aeon is doing, by name -----------------------------------------
     # The pane repaints every two seconds and must never shell out, so the live picture is
@@ -241,12 +264,21 @@ for j, l in enumerate(lines[-n:]):
     # that NEXT shows. Counting it again at the old site would be a second query for a number
     # already in hand; the old PLAN_READY_ARGS site is removed along with the hardcoded label.
     {
+        # AN UNREADABLE CHAMBER IS A REFUSAL, NOT AN EMPTY QUEUE. With no partitions the loop
+        # below never runs, rows stays empty, and the aggregator prints SP_READY=0 — the
+        # reassuring answer a broken probe must never produce. Emit the sentinel instead.
+        if [ -z "$_PART_MAP" ]; then
+            printf '%s\n' '{"_refused": true}'
+        else
         python3 -c '
 import sys, json
 for labels, name in json.loads(sys.argv[1]).items():
     print(name + "\t" + labels)
 ' "$_PART_MAP" 2>/dev/null
+        fi
     } | while IFS=$(printf '\t') read -r _pname _plabels; do
+        # The sentinel line has no tab, so _plabels is empty — pass it straight through.
+        if [ -z "$_plabels" ]; then printf '%s\n' "$_pname"; continue; fi
         bdjson "${READY_ARGS[@]}" \
             --label "$_plabels" \
             --exclude-label "spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL" \
