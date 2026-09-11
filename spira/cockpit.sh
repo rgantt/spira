@@ -149,6 +149,7 @@ probe() {
     livelock_keys
     sop_keys
     ratelim_keys
+    statute_keys
     # SP_PASS_SECS: captures the total pass duration including all tier functions.
     echo "SP_PASS_SECS=$(( $(date +%s) - _probe_start ))"
 }
@@ -1866,6 +1867,69 @@ else:
     }
 }
 
+# The statute projection integrity check. Compares how many law- statutes are in the live
+# database against how many ### headings the last-committed wiki/notes/common-law.md carries.
+#
+# WHY THIS EXISTS. On 2026-09-11 law-synth.sh was called against a near-empty store and
+# overwrote 112 statutes with 3 on disk. It was never committed, but law-cron.sh detected the
+# failure in a log file nobody reads. A log line that reaches nowhere is the same as no check
+# (law-alerts-must-be-actionable). This key puts the skew where the cockpit panel sees it so
+# the operator does not have to look for the log (sp-p0xyt).
+#
+# THREE KEYS:
+#   SP_STATUTE_DB_N   — law- count in the live database (? if db unreadable)
+#   SP_STATUTE_PAGE_N — ### heading count in HEAD:wiki/notes/common-law.md (? if git unreadable)
+#   SP_STATUTE_SKEW   — OK if counts are reasonably aligned; MISMATCH:DB=N,PAGE=M if the
+#                       database looks far below what the committed page carries (possible wrong
+#                       store); ? if either side could not be read.
+#
+# A FAILED PROBE RENDERS `?`, NEVER 0 (law-absence-needs-a-positive-control).
+statute_keys() {
+    local _wiki="${SPIRA_WIKI:-}"
+    if [ -z "$_wiki" ]; then
+        echo "SP_STATUTE_DB_N=?"
+        echo "SP_STATUTE_PAGE_N=?"
+        echo "SP_STATUTE_SKEW=?"
+        return
+    fi
+
+    local _db_n _page_n
+    _db_n="$(bdjson memories 2>/dev/null | python3 -c '
+import json, sys
+raw = sys.stdin.read().strip()
+if not raw:
+    print("?"); raise SystemExit(1)
+try:
+    book = json.loads(raw)
+    n = sum(1 for k, v in book.items() if isinstance(v, str) and k.startswith("law-"))
+    print(n)
+except Exception:
+    print("?"); raise SystemExit(1)
+' 2>/dev/null)" || _db_n="?"
+
+    _page_n="$(git -C "$_wiki" show "HEAD:wiki/notes/common-law.md" 2>/dev/null \
+        | grep -c '^### ')" || _page_n="?"
+
+    echo "SP_STATUTE_DB_N=${_db_n}"
+    echo "SP_STATUTE_PAGE_N=${_page_n}"
+
+    # Skew: if either side unreadable → ?. If db_count < page_count/2 → MISMATCH.
+    # db_count >= page_count/2 is OK — the page may be a few commits behind, that's normal.
+    if [ "$_db_n" = "?" ] || [ "$_page_n" = "?" ]; then
+        echo "SP_STATUTE_SKEW=?"
+    else
+        python3 -c "
+db, page = int('$_db_n'), int('$_page_n')
+if db == 0:
+    print('SP_STATUTE_SKEW=MISMATCH:DB=0,PAGE=%d' % page)
+elif page > 0 and db * 2 < page:
+    print('SP_STATUTE_SKEW=MISMATCH:DB=%d,PAGE=%d' % (db, page))
+else:
+    print('SP_STATUTE_SKEW=OK')
+" 2>/dev/null || echo "SP_STATUTE_SKEW=?"
+    fi
+}
+
 # The snapshot is written to a temp and renamed, so a reader can never see a half-file.
 # The temp is a SCRIPT-LEVEL variable with its trap installed once, not a local re-armed on
 # every pass: in loop mode write_snapshot runs forever, and the pass that gets killed is
@@ -2003,5 +2067,10 @@ core)
 unsent)
     unsent_keys
     ;;
-*) echo "usage: cockpit.sh [once|loop|history|now|core|unsent|strands|sops|ratelim|sphere|repo_labels|livelock|dup_refs]" >&2; exit 1 ;;
+# The statute projection keys alone, taking no other reading. This is the seam the suite drives:
+# it is the same function probe calls, so what is tested is what runs.
+statute)
+    statute_keys
+    ;;
+*) echo "usage: cockpit.sh [once|loop|history|now|core|unsent|strands|sops|ratelim|sphere|repo_labels|livelock|dup_refs|statute]" >&2; exit 1 ;;
 esac

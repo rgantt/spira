@@ -40,14 +40,23 @@ DB="$SPIRA_DB"
 
 usage() { sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
-# THE SECOND STEP IS OPTIONAL, AND THAT IS RULE 2 OF THE BOUNDARY. Rendering the statute book
-# into a wiki page is an effect on a repository the harness must not require: a clean clone
-# with no wiki anywhere on the machine has to work. So it is a CONFIGURED hook, called when
-# present and skipped in silence when not. An optional call is not a dependency; a hard path
-# is. The hook is given no arguments and is expected to regenerate whatever it renders.
+# SYNTHESIS IS REQUIRED, NOT OPTIONAL. A missing or non-executable hook is an error: if you
+# are running `rule.sh enact`, you expect the wiki page to be regenerated. Silently succeeding
+# when it cannot is how the operator is told "Statute is live" while the page sits stale —
+# observed verbatim when law-synth.sh failed with "Argument list too long" and rule.sh still
+# printed the success banner (sp-p0xyt). The hook is CONFIGURED in spira.conf as SPIRA_WIKI_HOOK;
+# an operator without a wiki checkout should not be running rule.sh enact in that environment.
 synth() {
     local hook="$SPIRA_WIKI_HOOK"
-    [ -x "$hook" ] || return 0
+    if [ -z "${hook:-}" ]; then
+        echo "rule: SPIRA_WIKI_HOOK is not set — statute NOT regenerated in wiki." >&2
+        echo "      Set SPIRA_WIKI_HOOK in spira.conf to the path of .claude/law-synth.sh." >&2
+        return 1
+    fi
+    if [ ! -x "$hook" ]; then
+        echo "rule: SPIRA_WIKI_HOOK='$hook' is not executable — statute NOT regenerated in wiki." >&2
+        return 1
+    fi
     "$hook"
 }
 slugify() { printf 'law-%s' "${1#law-}"; }
@@ -72,10 +81,16 @@ enact)
     bd -C "$DB" remember --key "$key" "$text" >/dev/null || {
         echo "rule: failed to write $key to the statute book at $DB" >&2; exit 1; }
     echo "enacted $key (${words} words)"
-    synth
-    echo
-    echo "Statute is live in every agent session at its next summon."
-    echo "Commit wiki/notes/common-law.md to replicate it off this box."
+    if synth; then
+        echo
+        echo "Statute is live in every agent session at its next summon."
+        echo "Commit wiki/notes/common-law.md to replicate it off this box."
+    else
+        echo >&2
+        echo "Statute IS in the book — the database write succeeded." >&2
+        echo "The wiki page was NOT regenerated. Fix the hook and re-run rule.sh enact." >&2
+        exit 1
+    fi
     ;;
 
 retire)
@@ -85,10 +100,16 @@ retire)
       | python3 -c 'import json,sys;d=json.load(sys.stdin);sys.exit(0 if sys.argv[1] in d else 1)' "$key" || {
         echo "rule: no statute '$key' in the statute book at $DB" >&2; exit 1; }
     bd -C "$DB" forget "$key" >/dev/null 2>&1 && echo "forgot $key"
-    synth
-    echo
-    echo "Retired. Do not leave a retired statute standing with a correction attached —"
-    echo "that is the same defect as a correction banner on a stale page."
+    if synth; then
+        echo
+        echo "Retired. Do not leave a retired statute standing with a correction attached —"
+        echo "that is the same defect as a correction banner on a stale page."
+    else
+        echo >&2
+        echo "Statute IS removed from the book — the database write succeeded." >&2
+        echo "The wiki page was NOT regenerated. Fix the hook and re-run rule.sh retire." >&2
+        exit 1
+    fi
     ;;
 
 list)
