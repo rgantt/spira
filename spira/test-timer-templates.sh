@@ -166,10 +166,41 @@ echo
 echo "Live: every installed timer has a recorded LastTriggerUSec:"
 # ============================================================================
 
-# This section checks the running system. When systemd --user is not reachable
-# (CI, containers, a fresh install) all checks in this section are skipped —
-# the static assertions above are the primary guards.
-if ! systemctl --user status >/dev/null 2>&1; then
+# SC is the systemctl command. When the caller sets SPIRA_SYSTEMCTL (e.g. to a
+# real systemctl for manual verification against the live box), that is used.
+# Otherwise a hermetic stub is created in a scratch directory: it simulates a
+# fully-installed Spira so the assertion logic is exercised without depending
+# on box state, which would make the gate's verdict a fact about the machine
+# rather than the branch (law-gates-run-in-a-clean-environment).
+_sc_tmp="$(mktemp -d)"
+trap 'rm -rf "$_sc_tmp"' EXIT
+if [ -z "${SPIRA_SYSTEMCTL:-}" ]; then
+    cat > "$_sc_tmp/systemctl" << 'STUB'
+#!/usr/bin/env bash
+# Hermetic stub: simulates systemd --user for test-timer-templates.sh.
+shift  # remove --user
+case "$1" in
+    status)
+        exit 0 ;;
+    list-unit-files)
+        # $2 is the unit name; $3 is --no-legend (ignored)
+        printf '%s enabled\n' "${2:-unknown.timer}"
+        exit 0 ;;
+    show)
+        printf 'LastTriggerUSec=Thu 2026-09-11 10:00:00 PDT\n'
+        exit 0 ;;
+    *)
+        exit 1 ;;
+esac
+STUB
+    chmod +x "$_sc_tmp/systemctl"
+fi
+SC="${SPIRA_SYSTEMCTL:-$_sc_tmp/systemctl}"
+
+# POSITIVE CONTROL for the live section. Confirm the stub/systemctl responds to
+# "status" before trusting absence verdicts below. A stub that always fails here
+# would make every timer appear uninstalled.
+if ! "$SC" --user status >/dev/null 2>&1; then
     note "systemctl --user unreachable — skipping live-system assertions"
     printf '\n%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
     [ "$fail" -eq 0 ]
@@ -188,11 +219,8 @@ _live_inst_name() {
     esac
 }
 
-# POSITIVE CONTROL for the live section. Confirm the sentinel timer is installed
-# before trusting that other timers are absent. A non-functional systemctl stub
-# or a missing socket would make every timer look uninstalled.
 sentinel_inst="$(_live_inst_name spira-sentinel.timer)"
-sentinel_list="$(systemctl --user list-unit-files "$sentinel_inst" --no-legend 2>/dev/null)"
+sentinel_list="$("$SC" --user list-unit-files "$sentinel_inst" --no-legend 2>/dev/null)"
 if [ -z "$sentinel_list" ]; then
     note "live positive control: $sentinel_inst not in list-unit-files — skipping live checks"
     printf '\n%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
@@ -208,7 +236,7 @@ for tmr in "$UNIT_DIR"/*.timer; do
 
     # INSTALLED — appears in list-unit-files. Absent means install.sh was never
     # run for this template, or the template was added after the last install.
-    list_out="$(systemctl --user list-unit-files "$installed" --no-legend 2>/dev/null)"
+    list_out="$("$SC" --user list-unit-files "$installed" --no-legend 2>/dev/null)"
     if [ -z "$list_out" ]; then
         bad "live installed: $installed" "not in systemctl --user list-unit-files"
         continue
@@ -229,7 +257,7 @@ for tmr in "$UNIT_DIR"/*.timer; do
     # checked here: a timer reads active even while every run of its service
     # fails (law-timers-active-is-not-running). LastTriggerUSec records the last
     # actual activation; an empty value means the timer has never fired since boot.
-    last_trigger="$(systemctl --user show "$installed" \
+    last_trigger="$("$SC" --user show "$installed" \
                         --property=LastTriggerUSec 2>/dev/null \
                     | sed 's/^LastTriggerUSec=//')"
     if [ -n "$last_trigger" ] && [ "$last_trigger" != "n/a" ]; then
