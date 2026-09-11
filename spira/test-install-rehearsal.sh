@@ -125,6 +125,13 @@ cat > '${STUBS_CTR}/loom-probe' << 'LPEOF'
 printf '200 5ms\n'
 LPEOF
 chmod +x '${STUBS_CTR}/loom-probe'
+
+# Create a fake prod checkout OUTSIDE /workspace so doctor.sh sees split-checkout mode.
+# doctor.sh FAILs when SPIRA_PROD (CONFIGURE_PROD) is inside SPIRA_REPO (/workspace).
+# Must be a real copy, not a symlink: doctor.sh uses pwd -P which resolves symlinks back
+# into /workspace. install.sh also checks that ExecStart targets are executable, so the
+# scripts must be present.
+mkdir -p /tmp/spira-prod && cp -a /workspace/spira /tmp/spira-prod/
 " >&2
 iszero "stubs created inside container" "$?"
 
@@ -132,12 +139,14 @@ iszero "stubs created inside container" "$?"
 echo
 echo "configure — non-interactive spira.conf bootstrap:"
 # ===========================================================================
-# SPIRA_PROD=/workspace/spira tells install.sh where the harness scripts live.
-# The ExecStart targets in rendered units resolve to /workspace/spira/*.sh,
-# which are executable via the bind-mount. CONFIGURE_DOLT_DATA="" suppresses
-# the dolt-beads.service unit (no Dolt in this fixture).
+# CONFIGURE_PROD=/tmp/spira-prod/spira is a fake prod path OUTSIDE SPIRA_REPO
+# (/workspace). doctor.sh FAILs when SPIRA_PROD is inside SPIRA_REPO (single-
+# checkout mode); using a separate /tmp path satisfies the split-checkout check.
+# The directory was created in the stubs block above so doctor.sh sees it as
+# an existing directory and reports OK rather than WARN.
+# CONFIGURE_DOLT_DATA="" suppresses the dolt-beads.service unit (no Dolt here).
 "${CEXEC[@]}" \
-    -e "CONFIGURE_PROD=/workspace/spira" \
+    -e "CONFIGURE_PROD=/tmp/spira-prod/spira" \
     -e "CONFIGURE_MAX_AEONS=1" \
     -e "CONFIGURE_MAX_LIVE_AEONS=1" \
     -e "CONFIGURE_LOOM_ADDR=127.0.0.1:7300" \
