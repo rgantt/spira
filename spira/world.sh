@@ -36,20 +36,60 @@ SC="${SPIRA_SYSTEMCTL:-systemctl}"
 # neither is-enabled nor is-active confirms it exists, the plain name is used as a fallback.
 # This makes world.sh correct before a migration and after. c0e2f8c applied the same shape
 # to cockpit.sh and health.sh when the rename broke them identically (sp-4biz, 2026-09-08).
-TIMER_BASES=(spira-sentinel spira-ops spira-watchtower spira-archivist spira-archive spira-skew)
+# TIMERS ARE ENUMERATED FROM SYSTEMD, NOT WRITTEN DOWN. This was a hand-written list of six
+# bases, and on 2026-09-11 a stop left spira-groom, spira-maechen, spira-auron, spira-promote,
+# spira-moot-sweep, spira-verify-asks, spira-suites and both spira-watch-* timers running —
+# every persona added after the list was written. work_services() one function below already
+# enumerates for exactly this reason ("a new work unit cannot silently escape a halt"); the
+# timers simply never got the same treatment. A list is a thing that goes stale silently.
+#
+# ORDER IS STILL LOAD-BEARING: summons first so nothing new is born, then the legs that act on
+# what already exists, then everything else systemd reports. Anything not named in the priority
+# list still gets stopped — it just stops after the ones whose order matters.
+TIMER_PRIORITY=(spira-sentinel spira-ops spira-watchtower spira-archivist spira-archive spira-skew)
+_inst_sfx="${SPIRA_INSTANCE:+-$SPIRA_INSTANCE}"
 TIMERS=()
-for _b in "${TIMER_BASES[@]}"; do
-    _inst="${_b}${SPIRA_INSTANCE:+-$SPIRA_INSTANCE}.timer"
-    if "$SC" --user is-enabled "$_inst" >/dev/null 2>&1 ||
-       "$SC" --user is-active  "$_inst" >/dev/null 2>&1; then
-        TIMERS+=("$_inst")
+_timer_seen=" "
+_timer_add() {   # _timer_add <unit>
+    case "$_timer_seen" in *" $1 "*) return 0 ;; esac
+    _timer_seen="$_timer_seen$1 "
+    TIMERS+=("$1")
+}
+for _b in "${TIMER_PRIORITY[@]}"; do
+    _i="${_b}${_inst_sfx}.timer"
+    if "$SC" --user is-enabled "$_i" >/dev/null 2>&1 ||
+       "$SC" --user is-active  "$_i" >/dev/null 2>&1; then
+        _timer_add "$_i"
     else
-        TIMERS+=("${_b}.timer")
+        _timer_add "${_b}.timer"
     fi
 done
-unset _b _inst
+# Everything else systemd knows about, loaded or not — --all so a stopped-but-enabled timer
+# is still named, and so `start` has the same population to work from.
+while IFS= read -r _u; do
+    [ -n "$_u" ] || continue
+    _timer_add "$_u"
+done < <("$SC" --user list-unit-files 'spira-*.timer' --no-legend 2>/dev/null | awk '{print $1}'
+         "$SC" --user list-units      'spira-*.timer' --all --no-legend 2>/dev/null | awk '{print $1}')
+unset _b _i _u _inst_sfx
 STAMP="$SPIRA_RUN/world.halted"
 DRAIN_STAMP="$SPIRA_RUN/world.draining"
+
+# argv_has <pid-dir> <path>... -> 0 when one of the paths is an EXACT argv element.
+#
+# Substring-matching the whole command line nominates any shell whose -c text merely MENTIONS
+# the path — the /proc form of law-pgrep-nominates. An operator session discussing
+# $SPIRA_PROD/aeon.sh made `world.sh status` report three live aeons when one was running.
+# argv elements are NUL-separated, so an exact element test costs nothing and cannot be
+# fooled by a script that quotes the path.
+argv_has() {
+    local d="$1"; shift
+    local tok want
+    while IFS= read -r -d '' tok; do
+        for want in "$@"; do [ "$tok" = "$want" ] && return 0; done
+    done < "$d/cmdline" 2>/dev/null
+    return 1
+}
 
 # live_aeons -> "<pid> <unit>" per running aeon, resolved from /proc argv.
 # NEVER pgrep -f: the pattern is a substring of this script's own command line.
@@ -60,7 +100,11 @@ live_aeons() {
         # redirection failure before `tr`'s own 2>/dev/null can suppress it.
         [ -r "$p/cmdline" ] || continue
         c="$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)" || continue
-        case "$c" in *"$SPIRA_HOME/aeon.sh"*) ;; *) continue ;; esac
+        # MATCH THE EXECUTING COPY, NOT THE ONE THIS SCRIPT LIVES IN. In split-checkout mode
+        # every aeon runs $SPIRA_PROD/aeon.sh while SPIRA_HOME is the development checkout, so
+        # matching SPIRA_HOME alone made this blind to every real aeon: on 2026-09-11 `stop`
+        # printed "no live aeons" with four running. law-verify-through-the-executing-copy.
+        argv_has "$p" "$SPIRA_HOME/aeon.sh" "${SPIRA_PROD:-$SPIRA_HOME}/aeon.sh" || continue
         pid="${p#/proc/}"
         printf '%s %s\n' "$pid" "$("$SC" --user status "$pid" 2>/dev/null | head -1 | awk '{print $2}')"
     done
@@ -94,10 +138,10 @@ live_workers() {
     for p in /proc/[0-9]*; do
         [ -r "$p/cmdline" ] || continue
         c="$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)" || continue
-        case "$c" in
-            *"$SPIRA_HOME/gate.sh"*|*"$SPIRA_HOME/landing.sh"*)
-                printf '%s\n' "${p#/proc/}" ;;
-        esac
+        # Both homes, for the same reason live_aeons matches both.
+        if argv_has "$p" "$SPIRA_HOME/gate.sh" "$SPIRA_HOME/landing.sh" \
+                        "${SPIRA_PROD:-$SPIRA_HOME}/gate.sh" "${SPIRA_PROD:-$SPIRA_HOME}/landing.sh"
+        then printf '%s\n' "${p#/proc/}"; fi
     done
 }
 
