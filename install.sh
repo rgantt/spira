@@ -185,13 +185,16 @@ if [ -z "${SPIRA_INSTALL_CONFLICT_CONSIDERED:-}" ]; then
     # Resolve from /proc argv — never pgrep -f, which matches the caller's own
     # command line (law-a-pattern-match-is-not-an-identity-check).
     # -------------------------------------------------------------------------
+    # grep -alFf reads all cmdlines in one pass; pattern via /dev/stdin so grep's own cmdline
+    # does not contain it — the self-match 'grep -alF PATTERN' would cause
+    # (law-a-pattern-match-is-not-an-identity-check). 30k+ threads: fork-per-PID ~2s, this ~0.02s.
     _live_aeon_pid=""
-    for _p in /proc/[0-9]*; do
-        [ -r "$_p/cmdline" ] || continue
-        _cmd="$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null)" || continue
-        case "$_cmd" in *"$SPIRA_HOME/aeon.sh"*) _live_aeon_pid="${_p#/proc/}"; break ;; esac
-    done
-    unset _p _cmd
+    _aeon_match="$(printf '%s\n' "$SPIRA_HOME/aeon.sh" \
+        | grep -alFf /dev/stdin /proc/[0-9]*/cmdline 2>/dev/null | head -1)"
+    if [ -n "$_aeon_match" ]; then
+        _live_aeon_pid="${_aeon_match%/cmdline}"; _live_aeon_pid="${_live_aeon_pid##*/}"
+    fi
+    unset _aeon_match
     if [ -n "$_live_aeon_pid" ]; then
         _conflict 5 \
             "live aeon running under this installation (pid $_live_aeon_pid)" \
@@ -277,8 +280,12 @@ if [ -z "${SPIRA_INSTALL_CONFLICT_CONSIDERED:-}" ]; then
         # TCP probe — using /dev/tcp to avoid depending on netstat/ss.
         if (echo -n "" >/dev/tcp/127.0.0.1/"$_dolt_port") 2>/dev/null; then
             # Port is listening. Find the process and its data directory from /proc cmdline.
+            # Pattern via /dev/stdin so grep's cmdline lacks it, avoiding self-match
+            # (law-a-pattern-match-is-not-an-identity-check); tr is only called for matches.
             _found_other_dolt=0
-            for _p in /proc/[0-9]*; do
+            for _p in $(printf 'sql-server\n' \
+                        | grep -alFf /dev/stdin /proc/[0-9]*/cmdline 2>/dev/null \
+                        | sed 's|/cmdline$||'); do
                 [ -r "$_p/cmdline" ] || continue
                 _cmd="$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null)" || continue
                 case "$_cmd" in *"sql-server"*) ;; *) continue ;; esac
