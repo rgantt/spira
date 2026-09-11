@@ -61,11 +61,18 @@ PRIORITY="${SPIRA_SUITES_PRIORITY:-2}"
 GATE_LIST="${SPIRA_GATE_SUITES:-$HERE/gate-suites}"
 INC="${SPIRA_INCIDENT:-$HERE/incident.sh}"
 CURSOR="$STATE/cursor"
-# RUNNER_VARS: variables the systemd unit's Environment= lines inject into every suite via
-# setsid bash. An aeon's environment does not carry them. A suite that fails because one of
-# these is set will produce a red the aeon cannot reproduce — it runs the same reproduce line
-# in a clean environment and finds the suite green. Configurable for tests.
-RUNNER_VARS="${SPIRA_SUITES_RUNNER_VARS:-SPIRA_HOME SPIRA_SUITES_MAXSEC}"
+# RUNNER_VARS: variables the systemd unit's Environment= lines inject, plus variables that
+# conf.sh derives from the runner's installation and exports to child processes.  An aeon's
+# environment does not carry them.  A suite that fails because one of these is set will
+# produce a red the aeon cannot reproduce — it runs the same reproduce line in a clean
+# environment and finds the suite green.  Configurable for tests.
+#
+# SPIRA_DB IS INCLUDED. conf.sh exports the production SPIRA_DB, which may point at a
+# server-backed database.  When a suite sources testdb.sh, conf.sh runs and checks
+# SPIRA_DB/.beads — if the server is down the check exits 1 before testdb_up ever runs.
+# Stripping SPIRA_DB causes conf.sh to derive a default path that has no .beads on any
+# stock install, skipping the check entirely; testdb_up then sets SPIRA_DB to the fixture.
+RUNNER_VARS="${SPIRA_SUITES_RUNNER_VARS:-SPIRA_HOME SPIRA_SUITES_MAXSEC SPIRA_DB}"
 
 # --------------------------------------------------------------------------------------
 # THE POPULATION, AND THE PARTITION OF IT.

@@ -18,6 +18,13 @@
 # covers: spira/cockpit.sh cockpit/health.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# RUNNER-EXPORTED VARIABLES. conf.sh exports SPIRA_DB pointing at the runner's production
+# database (which may need a running Dolt server). When this suite sources testdb.sh,
+# conf.sh checks SPIRA_DB/.beads and runs bd migrate schema — failing before testdb_up
+# can replace SPIRA_DB with the fixture. Unset it so conf.sh derives a default with no
+# .beads and skips the check. suites.sh also strips it via RUNNER_VARS, but suites run
+# directly in a runner context (e.g. for debugging) need this too.
+unset SPIRA_DB
 . "$HERE/testdb.sh"
 testdb_require cockpit-landed
 testdb_up cockpit-landed || exit 1

@@ -21,10 +21,12 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 
 # RUNNER-INJECTED VARIABLES. The systemd unit injects SPIRA_HOME, SPIRA_SUITES_MAXSEC,
-# and SPIRA_RUN into this suite's environment. conf.sh uses SPIRA_HOME to resolve
-# SPIRA_REPO — pointing it at the production checkout — and SPIRA_RUN to point at the
-# production run directory, both of which shadow what testdb_up sets and break the test.
-# The confirming run strips these; unset them here to match that environment.
+# and SPIRA_RUN; conf.sh also exports SPIRA_DB pointing at the runner's production
+# database. conf.sh uses SPIRA_HOME to resolve SPIRA_REPO and SPIRA_RUN to point at the
+# production run directory; both shadow what testdb_up sets. SPIRA_DB may point at a
+# server-backed (Dolt) database: conf.sh checks SPIRA_DB/.beads and runs bd migrate
+# schema — if the server is down it exits 1 before testdb_up can replace SPIRA_DB.
+# Unset all four so this suite is not sensitive to the runner's environment.
 #
 # SHARED TESTDB VARIABLES. The outer suites.sh builds a shared testdb for its own run and
 # exports TESTDB_SHARED=1 plus the TESTDB_* variables into every suite it launches. When
@@ -33,7 +35,7 @@ HERE="$(cd "$(dirname "$0")" && pwd -P)"
 # is shared with all other concurrently running suites; lock contention on that shared db
 # causes bd operations inside the fixture suites.sh to hang until the watchdog fires TIMEOUT.
 # Unset all of them so testdb_up always builds a fresh database for this test.
-unset SPIRA_HOME SPIRA_SUITES_MAXSEC SPIRA_RUN
+unset SPIRA_HOME SPIRA_SUITES_MAXSEC SPIRA_RUN SPIRA_DB
 unset TESTDB_SHARED TESTDB_NAME TESTDB_DIR TESTDB_BASELINE TESTDB_BIN TESTDB_MODE TESTDB_BD TESTDB_STARTED_SERVICE TESTDB_FAULT_EXIT
 
 pass=0; fail=0
@@ -201,6 +203,50 @@ is "no bead is filed for an unconfirmed red" "0" "$(count "$budget_suite_ids")"
 # The result file IS written, as red-unconfirmed, so the next pass tries again.
 red_status="$(awk '{print $1}' "$STATE/test-cx-budget-red.sh.result" 2>/dev/null || echo -)"
 is "the result file records red-unconfirmed" "red-unconfirmed" "$red_status"
+
+# ======================================================================================
+echo
+echo "SPIRA_DB is stripped so a production-database-sensitive suite passes cleanly:"
+# ======================================================================================
+# THE MECHANISM. conf.sh exports SPIRA_DB pointing at the runner's production database,
+# which may be server-backed (Dolt). When a suite sources testdb.sh, conf.sh checks
+# SPIRA_DB/.beads and runs bd migrate schema — if the server is down the check exits 1
+# before testdb_up runs. Adding SPIRA_DB to RUNNER_VARS strips it; conf.sh derives a
+# default path with no .beads and skips the check entirely.
+#
+# The planted suite exits 1 if SPIRA_DB is set to any value at all. sut() already passes
+# the testdb-fixture SPIRA_DB to suites.sh for its own bead operations; what this section
+# tests is that suites.sh strips SPIRA_DB before handing the environment to the suite.
+rm -f "$SH/test-cx-budget-red.sh"
+
+plant test-cx-spiradb-sensitive.sh <<'S'
+#!/usr/bin/env bash
+# covers: spira/nothing.sh
+[ -n "${SPIRA_DB:-}" ] && { printf '  FAIL  SPIRA_DB is set: %s\n' "$SPIRA_DB"; exit 1; }
+exit 0
+S
+
+# POSITIVE CONTROL. The suite must fail when SPIRA_DB is set to a non-empty value;
+# otherwise a suite that always exits 0 would give the same passing appearance — the
+# strip would appear to work while doing nothing (law-absence-needs-a-positive-control).
+_pc_db_rc=0
+SPIRA_DB="$SPIRA_DB" bash "$SH/test-cx-spiradb-sensitive.sh" >/dev/null 2>&1 || _pc_db_rc=$?
+is "positive control: suite fails when SPIRA_DB is set" "1" "$_pc_db_rc"
+
+# Run suites.sh with RUNNER_VAR covering both SPIRA_HOME and SPIRA_DB. suites.sh carries
+# the testdb SPIRA_DB for its own bead operations, but strips SPIRA_DB from the suite's
+# primary launch env. The suite sees an unset SPIRA_DB and exits 0.
+RUNNER_VAR="SPIRA_HOME SPIRA_DB"
+out4="$(sut run)"
+RUNNER_VAR="SPIRA_HOME"   # restore
+
+want "SPIRA_DB-sensitive suite is labelled ok (SPIRA_DB stripped)" \
+    "test-cx-spiradb-sensitive.sh ok" "$out4"
+nowant "its output line does not say RED" " RED " "$out4"
+nowant "its output line does not say ENV-MISMATCH" "ENV-MISMATCH" "$out4"
+
+db_env_ids="$(beads_with 'passes in an aeon')"
+is "no environment-finding bead is filed (suite passed, no mismatch)" "0" "$(count "$db_env_ids")"
 
 # ======================================================================================
 echo
