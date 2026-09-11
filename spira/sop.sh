@@ -392,7 +392,7 @@ sys.exit(0 if os.environ["SOP_KEY"] in d else 1)' <<< "$raw"; then
     # record that admits which half is missing is worth more than one that does not.
     # THE IDENTITY KEY IS EITHER "bead" OR "pass" — never both, never absent. Downstream
     # readers (sop.sh log --bead, sop.sh log --pass) filter on whichever key is present.
-    mkdir -p "$(dirname "$LEDGER")" 2>/dev/null
+    mkdir -p "$(dirname "$LEDGER")" || { echo "sop: cannot create ledger directory" >&2; exit 1; }
     line="$(SOP_TS="$ts" SOP_EPOCH="$epoch" SOP_SOP="$key" SOP_BEAD="$bead" SOP_PASS="$passid" \
             SOP_CHECK="$check" SOP_HELD="$held" SOP_WHY="$why" SOP_CAP="$WHY_CAP" \
             SOP_ACTOR="$actor" SOP_SHELF="$shelf_state" SOP_NOTE="$note_state" \
