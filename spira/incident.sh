@@ -102,11 +102,12 @@ ilog() { printf '%s incident: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee 
 # silently excluded when --closed-after is present, making the combined query always return
 # empty for the common recurrence case.
 #
-# CLIENT-SIDE FILTER ON external_ref (not --external-ref). bd list --external-ref is a
-# server-side filter that only the dev build supports; bd-embedded silently ignores it,
-# making every call look like "no open incident" and creating one fresh bead per filing
-# instead of bumping recurrences. The JSON payload carries external_ref on every version,
-# so filtering in Python works everywhere. The label filter keeps the candidate set small.
+# SERVER-SIDE --external-ref FILTER. bd list --external-ref is supported by both the
+# standard binary and bd-embedded; bd list --json includes external_ref in every row.
+# Earlier attempts used plain-text 'bd list' output as an id list and called 'bd show'
+# per candidate — but 'bd list' without --json outputs a formatted table, not ids, so
+# every show call received a garbage argument and the dedup loop always returned empty.
+# Using --external-ref + --json avoids the per-bead show call entirely (scar: sp-ga28j).
 #
 # DEDUPE LABELS EXCLUDE repo: — a repo: label identifies the filer, not the event.
 # Two callers declaring different repos must still find each other's open incident;
@@ -128,26 +129,20 @@ _dedup_incident() {      # _dedup_incident <ref> -> "open <id> <n>" | "closed <i
 
     # PASS 1 — open / in_progress. No --closed-after: open beads have no closed_at and would
     # be silently excluded by that filter, making every recurrence look like a new filing.
-    # NOTE: bd list --json does NOT include external_ref field, so we get the id list and
-    # fetch external_ref via bd show --json on each candidate.
-    _result="$(bdq list --status open,in_progress --limit 0 --label "$_dedupe_labels" 2>/dev/null \
+    # --json includes external_ref and labels; --external-ref filters server-side.
+    _result="$(bdq list --status open,in_progress --limit 0 \
+        --label "$_dedupe_labels" --external-ref "$ref" --json 2>/dev/null \
       | python3 -c "
-import sys, json, re, subprocess
+import sys, json, re
 target = sys.argv[1]
-for line in sys.stdin:
-    bid = line.strip()
-    if not bid: continue
-    try:
-        r = subprocess.run(['$SPIRA_BD', '-C', '$SPIRA_DB', 'show', bid, '--json'],
-                          capture_output=True, text=True, timeout=5)
-        if r.returncode != 0: continue
-        d = json.loads(r.stdout)
-        row = d[0] if isinstance(d, list) else d
-        if row.get('external_ref') == target and row.get('status') in ('open', 'in_progress'):
-            ns = [int(m.group(1)) for lbl in (row.get('labels') or [])
-                  for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
-            print('open', row['id'], max(ns) if ns else 0); sys.exit(0)
-    except: pass
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+rows = d if isinstance(d, list) else [d]
+for row in rows:
+    if row.get('external_ref') == target and row.get('status') in ('open', 'in_progress'):
+        ns = [int(m.group(1)) for lbl in (row.get('labels') or [])
+              for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
+        print('open', row['id'], max(ns) if ns else 0); sys.exit(0)
 " "$ref" 2>/dev/null)"
     if [ -n "$_result" ]; then
         printf '%s' "$_result"
@@ -159,24 +154,19 @@ for line in sys.stdin:
            || date -u -v "-${DEDUP_LOOKBACK_DAYS}d" '+%Y-%m-%d' 2>/dev/null || true)"
     [ -z "$_since" ] && return
 
-    bdq list --status closed --closed-after "$_since" --limit 0 --label "$_dedupe_labels" 2>/dev/null \
+    bdq list --status closed --closed-after "$_since" --limit 0 \
+        --label "$_dedupe_labels" --external-ref "$ref" --json 2>/dev/null \
       | python3 -c "
-import sys, json, re, subprocess
+import sys, json, re
 target = sys.argv[1]
-for line in sys.stdin:
-    bid = line.strip()
-    if not bid: continue
-    try:
-        r = subprocess.run(['$SPIRA_BD', '-C', '$SPIRA_DB', 'show', bid, '--json'],
-                          capture_output=True, text=True, timeout=5)
-        if r.returncode != 0: continue
-        d = json.loads(r.stdout)
-        row = d[0] if isinstance(d, list) else d
-        if row.get('external_ref') == target and row.get('status') == 'closed':
-            ns = [int(m.group(1)) for lbl in (row.get('labels') or [])
-                  for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
-            print('closed', row['id'], max(ns) if ns else 0); sys.exit(0)
-    except: pass
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+rows = d if isinstance(d, list) else [d]
+for row in rows:
+    if row.get('external_ref') == target and row.get('status') == 'closed':
+        ns = [int(m.group(1)) for lbl in (row.get('labels') or [])
+              for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
+        print('closed', row['id'], max(ns) if ns else 0); sys.exit(0)
 " "$ref" 2>/dev/null
 }
 
