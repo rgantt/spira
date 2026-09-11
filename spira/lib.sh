@@ -1043,6 +1043,38 @@ summon_fayth() {         # summon_fayth <fayth> [pool-remaining]
             log "CHECK7 $f: $live_all/$SPIRA_MAX_LIVE_AEONS aeon(s) live across the whole fleet — not summoning"
             return 1
         fi
+        # ELASTIC LAST-SLOT RESERVATION. An elastic persona may not consume the last fleet
+        # slot while any non-elastic task persona has ready work. The ordering rule in CHECK 7
+        # handles the common case — lanes are evaluated before the pool, and fixed personas
+        # before elastic ones in the pool — but ordering only prevents the elastic persona
+        # from racing with work that is already ready. This rule holds regardless of when
+        # work becomes ready: an elastic persona evaluated first takes the slot and the
+        # non-elastic persona then waits for a builder exit rather than being refused entry.
+        #
+        # SCOPE. Binds only the last slot (slots_free == 1). With two or more free slots the
+        # elastic persona is unaffected. Non-elastic personas are never refused by this rule.
+        # SPIRA_MAX_LIVE_AEONS unset means no ceiling and today's behaviour exactly.
+        #
+        # COST. One fayth_ready per non-elastic task persona, but only when slots_free == 1
+        # and the persona being evaluated is elastic. The common case — fleet well below its
+        # ceiling — pays a subtraction and a comparison and nothing else. The query count does
+        # not grow per summon attempt overall; it grows per non-elastic persona only at the
+        # moment the last slot is being contested.
+        if [ "$(fayth_get "$f" FAYTH_ELASTIC 0)" = 1 ]; then
+            local slots_free
+            slots_free=$(( SPIRA_MAX_LIVE_AEONS - ${live_all:-0} ))
+            if [ "${slots_free:-0}" -eq 1 ] 2>/dev/null; then
+                local nef nef_r
+                for nef in $(spira_task_fayths); do
+                    [ "$(fayth_get "$nef" FAYTH_ELASTIC 0)" = 1 ] && continue
+                    nef_r="$(fayth_ready "$nef" 2>/dev/null)" || continue
+                    if [ "${nef_r:-0}" -gt 0 ] 2>/dev/null; then
+                        log "CHECK7 $f: 1 fleet slot remaining, held back — $nef has $nef_r ready bead(s)"
+                        return 1
+                    fi
+                done
+            fi
+        fi
     fi
     r="$(fayth_ready "$f")" || { log "CHECK7 $f: no fayth in the chamber — skipped"; return 1; }
     if [ "${r:-0}" -eq 0 ]; then log "CHECK7 $f: nothing ready in its partition"; return 1; fi
