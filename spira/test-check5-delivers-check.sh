@@ -29,6 +29,7 @@
 # defect: sp-hivwr
 # covers: spira/sentinel.sh spira/aeon.sh
 # hermetic-ok: uses a fixture database and a local git repo, no systemd or gh
+# timeout: 120
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
