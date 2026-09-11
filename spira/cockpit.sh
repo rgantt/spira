@@ -583,7 +583,7 @@ for t, i in aged[:20]:
     # The landing.log path is passed as argv[1] so the Python block can read it without
     # re-invoking bd. FD 3 carries the script so stdin stays free for the bdjson pipe
     # (law-commit-messages-via-stdin — same shape, different file descriptor).
-    bdjson list --all --limit 0 --label spira,plan 2>/dev/null | \
+    bdjson list --all --limit 0 --label "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" 2>/dev/null | \
     python3 /dev/fd/3 "$SPIRA_RUN/landing.log" 3<<'PY' 2>/dev/null
 import sys, json, datetime, re, os
 
@@ -841,7 +841,7 @@ except Exception: print("")' 2>/dev/null)"
     # TAB-SEPARATED: id, repo, priority, closed_at, title. The extra fields feed the PEND
     # section below without a second walk of the database. The first two fields serve the
     # existing landing check; the rest serve the unlanded-queue detail rows.
-    closed_pairs="$(bdjson list --status closed --limit 0 --label spira,plan 2>/dev/null | python3 -c '
+    closed_pairs="$(bdjson list --status closed --limit 0 --label "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" 2>/dev/null | python3 -c '
 import sys, json, os, re, datetime
 run, home = sys.argv[1], sys.argv[2]
 try: d = json.load(sys.stdin)
@@ -1193,7 +1193,7 @@ print("SP_POISON=%d" % sum(1 for i in d if i.get("status") != "closed"))' 2>/dev
             || echo "SP_POISON=?"
     fi
 
-    bdjson list --limit 0 --label spira,plan 2>/dev/null | python3 -c '
+    bdjson list --limit 0 --label "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" 2>/dev/null | python3 -c '
 import os, sys, json
 # The escalation label is one configured key, read from the environment rather than written
 # in: five literals in five files is how the panel, the gate and the predicates come to

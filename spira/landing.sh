@@ -306,7 +306,7 @@ base_incident() {        # base_incident <repo> <suite> <reason> <branch> <base>
     id="$(SPIRA_INCIDENT_TYPE=bug \
           SPIRA_INCIDENT_PRIORITY=1 \
           SPIRA_INCIDENT_ACTOR=landing \
-          SPIRA_INCIDENT_LABELS="spira,plan,repo:$name" \
+          SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,repo:$name" \
           SPIRA_INCIDENT_REF="basefail:$name:$suite" \
           bash "$INC" file "$name's own gate fails against $base — nothing can land" - <<PAYLOAD
 $name's landing gate was run against $base itself and failed there, so every branch of

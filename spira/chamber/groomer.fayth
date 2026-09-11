@@ -12,7 +12,7 @@ FAYTH_DESC="Groomer — the reconciler: splits unsplittable beads, merges duplic
 # the groomer can be woken by an external trigger (watchtower, a timer, or an operator)
 # rather than on every sentinel pass. The label key is SPIRA_GROOMER_LABEL so an operator
 # can rename it without touching the fayth file.
-FAYTH_LABELS="spira,$SPIRA_GROOMER_LABEL"
+FAYTH_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}$SPIRA_GROOMER_LABEL"
 FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"
 
 # Statutes only. The groomer executes no runbook.

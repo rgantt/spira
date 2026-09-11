@@ -207,7 +207,7 @@ file_red() {             # file_red <basename> <status> <rc> <seconds> <fp> <out
     out_inc="$(SPIRA_INCIDENT_TYPE=bug \
           SPIRA_INCIDENT_PRIORITY="$(priority_of "$s")" \
           SPIRA_INCIDENT_ACTOR=suites \
-          SPIRA_INCIDENT_LABELS="spira,plan,repo:$SPIRA_HOME_REPO" \
+          SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,repo:$SPIRA_HOME_REPO" \
           SPIRA_INCIDENT_REF="suite:$s:$fp" \
           bash "$INC" file "$s is $status in the timed suite run" - <<PAYLOAD
 The timed full run — every \`spira/test-*.sh\` the landing gate does not run — found this
@@ -261,7 +261,7 @@ file_env_red() {    # file_env_red <basename> <rc> <seconds> <fp> <output> <diff
     out_inc="$(SPIRA_INCIDENT_TYPE=bug \
           SPIRA_INCIDENT_PRIORITY="$(priority_of "$s")" \
           SPIRA_INCIDENT_ACTOR=suites \
-          SPIRA_INCIDENT_LABELS="spira,plan,repo:$SPIRA_HOME_REPO" \
+          SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,repo:$SPIRA_HOME_REPO" \
           SPIRA_INCIDENT_REF="runner-env:$s" \
           bash "$INC" file "$s is red under the timed runner but passes in an aeon's environment" - <<PAYLOAD
 The timed runner found this suite red, but a confirming run without the runner's injected
@@ -319,7 +319,7 @@ file_fixture_fault() {  # file_fixture_fault <n> <suite-list> <fixture-name>
     out_inc="$(SPIRA_INCIDENT_TYPE=bug \
           SPIRA_INCIDENT_PRIORITY="$PRIORITY" \
           SPIRA_INCIDENT_ACTOR=suites \
-          SPIRA_INCIDENT_LABELS="spira,plan,repo:$SPIRA_HOME_REPO" \
+          SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,repo:$SPIRA_HOME_REPO" \
           SPIRA_INCIDENT_REF="fixture-fault:${fixture}" \
           bash "$INC" file "shared fixture collapsed — ${n} suite(s) could not start" - <<PAYLOAD
 The shared fixture failed to reset during the timed suite run. Every suite listed below

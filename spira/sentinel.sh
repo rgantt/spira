@@ -106,8 +106,8 @@ if [ "${SPIRA_SKIP_RECLAIM:-0}" != 1 ]; then
     # predicate is the right one for them and the WRONG one for anything else. Reading an
     # unqualified `ready` as "is there work" is what made CHECK 7 gate every persona on
     # the builder's partition. Whether a persona has work is fayth_ready, in CHECK 7.
-    plan_ready="$(ready_count spira,plan "spira-poison,$SPIRA_ASK_LABEL")"
-    plan_inprog="$(bdjson list --status in_progress --limit 0 --label spira,plan | json_count)"
+    plan_ready="$(ready_count "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" "spira-poison,$SPIRA_ASK_LABEL")"
+    plan_inprog="$(bdjson list --status in_progress --limit 0 --label "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" | json_count)"
 else
     open_children=""; n_open=0; plan_ready=0; plan_inprog=0
 fi
@@ -240,14 +240,14 @@ n_escal="$(grep -cE '^STRANDED' <<< "$stranded" || true)"
 # Skipped when SPIRA_SKIP_RECLAIM=1 — see CHECK 2 above.
 # ======================================================================================
 if [ "${SPIRA_SKIP_RECLAIM:-0}" != 1 ]; then
-released="$(release_orphan_claims "spira,plan")"
+released="$(release_orphan_claims "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan")"
 [ -n "$released" ] && printf '%s\n' "$released"
 n_rel="$(grep -c '^RELEASED' <<< "$released" || true)"
 if [ "${n_rel:-0}" -gt 0 ]; then
     progress "released $n_rel orphaned claim(s)"
     # Every bead the sweep freed is claimable NOW, so the count CHECK 3 and CHECK 8 reason
     # about is stale by exactly this much. Re-queried only when something actually moved.
-    plan_ready="$(ready_count spira,plan "spira-poison,$SPIRA_ASK_LABEL")"
+    plan_ready="$(ready_count "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" "spira-poison,$SPIRA_ASK_LABEL")"
 fi
 fi
 
@@ -263,7 +263,7 @@ if [ "${SPIRA_SKIP_RECLAIM:-0}" != 1 ] \
     && [ "$plan_ready" -eq 0 ] && [ "$plan_inprog" -eq 0 ] && [ "$n_open" -gt 0 ]; then
     bdq recompute-blocked >/dev/null 2>&1
     was="$plan_ready"
-    plan_ready="$(ready_count spira,plan "spira-poison,$SPIRA_ASK_LABEL")"
+    plan_ready="$(ready_count "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" "spira-poison,$SPIRA_ASK_LABEL")"
     # LOG it always, COUNT it only when it changed something. recompute-blocked exits 0
     # either way, so trusting its exit status made this check fire on exactly the state
     # CHECK 8 exists to detect, and mute it — every pass, for 76 passes.

@@ -60,7 +60,7 @@ SPIRA_CI_LABEL SPIRA_CI_PARK_MAX SPIRA_WORLD_STOP_LABEL
 SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE SPIRA_VERDICT_TTL SPIRA_REBASE_ESCALATE_AT SPIRA_VERDICT_WINDOW
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S SPIRA_LOOM_BIN
 SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS
-SPIRA_GROOMER_LABEL
+SPIRA_GROOMER_LABEL SPIRA_SCOPE_LABEL
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD COCKPIT_SESSIONS COCKPIT_HOST
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
 SPIRA_VIEW SPIRA_VIEW_SESSION
@@ -490,6 +490,17 @@ spira_conf_defaults() {
     # and by any scanner that queries for groom trigger beads. One definition keeps the label
     # name consistent across fayth, scanner and anything else that files trigger beads.
     : "${SPIRA_GROOMER_LABEL:=groom}"
+    # THE SCOPE LABEL prepended to every persona's partition. Every fayth predicate reads
+    # this key rather than the literal "spira", so the fleet's work scope is a runtime choice.
+    # Two values matter: "spira" (today — the default, unchanged behaviour) and "" (empty —
+    # no scope restriction; the partition is the persona label alone, e.g. "plan" for builder).
+    # An empty value must never produce a leading comma in a fayth's AND-labels, which would
+    # match nothing and look exactly like "no work ready".
+    #
+    # NO COLON in the := form: ${var=default} assigns only when the variable is UNSET, not
+    # when it is empty. Empty is a valid and meaningful value here (no scope restriction), and
+    # the colon form would silently promote it back to "spira", defeating the feature.
+    : "${SPIRA_SCOPE_LABEL=spira}"
     # The name the operator's OWN comments are recorded under, so the attention panel can tell
     # a reply of theirs from a reply of the agent's. Both write into the same thread, and a
     # panel that cannot separate them announces the agent's own comment back to it as an answer.
@@ -947,7 +958,7 @@ export SPIRA_INSTANCE \
        SPIRA_TESTDB_BD SPIRA_TESTDB_DATA SPIRA_TESTDB_PORT \
        SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE \
        SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S SPIRA_LOOM_BIN SPIRA_RUN SPIRA_SYSTEMCTL \
-       SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS \
+       SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS SPIRA_SCOPE_LABEL \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \
        SPIRA_GATE_NOVERDICT SPIRA_GATE_BASEFAIL \

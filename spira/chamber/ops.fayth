@@ -12,7 +12,7 @@ FAYTH_DESC="Ops — the healer: claims incidents and sweeps, matches an SOP, exe
 # hand and never by the plan, so this can only ever see production events. The escalation
 # label is excluded for the same reason it is everywhere: an escalation must never be dispatched as
 # if it were work.
-FAYTH_LABELS="spira,incident"
+FAYTH_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}incident"
 FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"
 
 # BOTH BOOKS. Statutes are how to behave; SOPs are how to fix — and Ops is the only

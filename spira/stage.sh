@@ -99,11 +99,11 @@ up() {
     done
 
     # ---- chamber: one canary fayth ------------------------------------------
-    # FAYTH_LABELS must include "spira" to pass fayth_fenced's prefix check.
+    # FAYTH_LABELS must include SPIRA_SCOPE_LABEL (when non-empty) to pass fayth_fenced.
     # FAYTH_MAX_CONCURRENT=1 lets sentinel summon exactly one worker.
     cat > "$sh/chamber/canary.fayth" <<'FAYTH'
 FAYTH_NAME=canary
-FAYTH_LABELS="spira,plan"
+FAYTH_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan"
 FAYTH_MAX_CONCURRENT=1
 FAYTH
 
@@ -159,7 +159,7 @@ _cw_log() { printf '%s canary-worker: %s\n' "$(date -u +%H:%M:%SZ)" "$*" >&2; }
 
 # Claim the first ready bead in the canary partition.
 _cw_claimed="$(bdq ready --limit 0 --exclude-type epic,event -u \
-    --claim --label "spira,plan" --json 2>/dev/null)"
+    --claim --label "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" --json 2>/dev/null)"
 _cw_id="$(printf '%s' "$_cw_claimed" | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)

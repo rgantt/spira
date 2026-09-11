@@ -8,12 +8,12 @@
 FAYTH_NAME=qa
 FAYTH_DESC="QA — sweeps the scar record and proposes test beads for unguarded defects"
 
-# The fence. The fence check in aeon.sh requires FAYTH_LABELS to contain 'spira' before
-# both sweep and claim modes; it runs before the sweep branch and cannot be skipped. QA
-# runs in beadless sweep mode (aeon.sh --sweep) on every timer tick — it does not claim
-# qa-sweep beads. The 'qa-sweep' suffix is kept so that a manually-filed sweep bead is
-# still claimable if one is ever created by hand.
-FAYTH_LABELS="spira,qa-sweep"
+# The fence. The fence check in aeon.sh requires FAYTH_LABELS to contain SPIRA_SCOPE_LABEL
+# (when non-empty) before both sweep and claim modes; it runs before the sweep branch and
+# cannot be skipped. QA runs in beadless sweep mode (aeon.sh --sweep) on every timer tick —
+# it does not claim qa-sweep beads. The 'qa-sweep' suffix is kept so that a manually-filed
+# sweep bead is still claimable if one is ever created by hand.
+FAYTH_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}qa-sweep"
 FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"
 
 # Statutes only. QA is recognition and enumeration: it proposes, it does not build, and a

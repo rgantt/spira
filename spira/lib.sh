@@ -792,7 +792,7 @@ release_own_claim() {
 # deliberately NOT here: a live claim is `bd reclaim`'s to time out and strand.sh's to
 # witness, and a third opinion about liveness is how work gets robbed mid-flight.
 orphan_claims() {
-    bdjson list --status open --limit 0 --label "${1:-spira,plan}" 2>/dev/null | python3 -c '
+    bdjson list --status open --limit 0 --label "${1:-${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan}" 2>/dev/null | python3 -c '
 import sys, json, datetime
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
@@ -816,7 +816,7 @@ release_orphan_claims() {   # release_orphan_claims [labels] -> a RELEASED line 
         # returns non-zero and changes nothing, and counting it would be a check reporting
         # an action it did not take.
         release_claim "$id" && printf 'RELEASED\t%s\t%s\n' "$id" "$who"
-    done < <(orphan_claims "${1:-spira,plan}")
+    done < <(orphan_claims "${1:-${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan}")
     return 0
 }
 
@@ -2524,6 +2524,8 @@ for line in os.environ["PARTS"].splitlines():
     parts[name] = (set(filter(None, inc_str.split(","))),
                    set(filter(None, exc_str.split(","))))
 
+# sp-vvkpn will also need to read SPIRA_SCOPE_LABEL once it lands — the "spira" not in L
+# filter below is the blindness that bead exists to fix; this variable is the coupling.
 scope_label = os.environ.get("SPIRA_SCOPE_LABEL", "spira")
 partition_labels = sorted({lab for inc, _ in parts.values() for lab in inc if lab != scope_label})
 ci_label = os.environ.get("SPIRA_CI_LABEL", "awaiting-ci")
@@ -4048,15 +4050,20 @@ rebase_branch() {
 # The herestring is not a pipe: `grep -q` closing it early cannot SIGPIPE a writer, which
 # is the trap law-no-grep-q-under-pipefail names.
 # --------------------------------------------------------------------------------------
-fayth_fenced() {         # fayth_fenced <name> <FAYTH_LABELS> -> 0 if it cannot see the replica
+fayth_fenced() {         # fayth_fenced <name> <FAYTH_LABELS> -> 0 if safe to claim
     local name="$1" labels="${2:-}"
     if [ -z "$labels" ]; then
-        log "FENCE $name: FAYTH_LABELS is empty — that predicate selects the whole database,"
-        log "FENCE $name: including every bead imported from a system still working them."
+        log "FENCE $name: FAYTH_LABELS is empty — that predicate selects the whole database."
         return 1
     fi
-    grep -qx 'spira' <<< "${labels//,/$'\n'}" && return 0
-    log "FENCE $name: FAYTH_LABELS='$labels' does not require 'spira', so this predicate can"
-    log "FENCE $name: select work another system still owns. Add 'spira' to it."
+    # When SPIRA_SCOPE_LABEL is empty the operator has explicitly disabled scope restriction;
+    # any non-empty predicate is intentional. When it is non-empty it must appear in the
+    # predicate, so a misconfigured fayth cannot see beads this fleet does not own.
+    if [ -z "${SPIRA_SCOPE_LABEL:-}" ]; then
+        return 0
+    fi
+    grep -qx "$SPIRA_SCOPE_LABEL" <<< "${labels//,/$'\n'}" && return 0
+    log "FENCE $name: FAYTH_LABELS='$labels' does not require '$SPIRA_SCOPE_LABEL' (SPIRA_SCOPE_LABEL)."
+    log "FENCE $name: Add '$SPIRA_SCOPE_LABEL' to it, or set SPIRA_SCOPE_LABEL= to allow unrestricted scope."
     return 1
 }

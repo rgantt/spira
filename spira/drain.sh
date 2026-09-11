@@ -127,7 +127,7 @@ printf '\nSPIRA — what is taking over\n'
 sp_open="$(open_in "$SPIRA")"
 # READY_ARGS (lib.sh), not a copy: a readout of "what Spira can take" that counts beads no
 # aeon can claim is the number that made the queue look healthy while it starved.
-sp_plan=$(timeout 180 bd -C "$SPIRA" "${READY_ARGS[@]}" --label spira,plan \
+sp_plan=$(timeout 180 bd -C "$SPIRA" "${READY_ARGS[@]}" --label "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" \
             --exclude-label "spira-poison,$SPIRA_ASK_LABEL" --json 2>/dev/null | sed -n '/^[[{]/,$p' \
           | python3 -c 'import sys,json
 try: d=json.load(sys.stdin)

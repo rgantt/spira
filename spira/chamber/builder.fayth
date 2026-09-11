@@ -7,10 +7,12 @@
 FAYTH_NAME=builder
 FAYTH_DESC="Guardian — the DPS: claims ready Spira plan beads and implements them, scaling to fill the party"
 
-# The partition. AND-labels, so this can only ever see beads deliberately marked as Spira
-# plan work — never beads imported from a predecessor alongside them, which are a replica
-# that the predecessor is still actively working.
-FAYTH_LABELS="spira,plan"
+# The partition. AND-labels: the scope label (SPIRA_SCOPE_LABEL) plus the partition label.
+# An empty scope label means no scope restriction; the predicate is the partition label alone.
+# The ${var:+val} form ensures a non-empty scope label is prepended with a comma separator,
+# and an empty one produces no leading comma — a leading comma is an empty label that would
+# match nothing and look exactly like "no work ready".
+FAYTH_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan"
 FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"
 
 # Statutes only. SOPs are runbooks for production incidents; a builder will never execute

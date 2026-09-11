@@ -115,7 +115,7 @@ _log "goal: $_goal_id"
 export SPIRA_GOAL="$_goal_id"
 
 _bead_id="$(bd -C "$SPIRA_DB" create "canary: synthetic pipeline test" \
-    --type task --parent "$_goal_id" --labels "spira,plan" --silent 2>/dev/null \
+    --type task --parent "$_goal_id" --labels "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" --silent 2>/dev/null \
     | tr -d '[:space:]')"
 [ -n "$_bead_id" ] || _die "could not create plan bead"
 _log "bead: $_bead_id"
