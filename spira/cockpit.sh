@@ -1583,14 +1583,17 @@ PY
 # sop_keys are functions and not inlined.
 #
 # SP_LIVELOCKED: count of open beads no mechanism will ever resolve — structural, not timing.
-# SP_INVALID_CLOSED: count of closed beads whose close reason admits the work is unfinished.
-# Both render ? when the underlying query fails; ? and 0 must not look the same
-# (law-absence-needs-a-positive-control: "no livelocked beads" and "the check is broken"
-# must not be the same pixels, because the whole value here is the suspicion).
+# SP_INVALID_CLOSED: count of closed beads whose close reason admits the work is unfinished
+#   (statute phrases: "PERMANENT FIX NEEDED", "temporary", "mitigated-only", "TODO").
+# SP_UNFILED_FOLLOW: count of closed beads whose close reason implies follow-on work but
+#   names no bead id — the follow-on was observed and not filed.
+# All three render ? when the underlying query fails; ? and 0 must not look the same
+# (law-absence-needs-a-positive-control).
 #
 # INDIVIDUAL ROWS are emitted alongside the counts so the panel can show which beads are
-# affected and why. SP_LIVELOCK_N and SP_INVCLSD_N carry the row counts; individual rows
-# are SP_LIVELOCK0..N-1 and SP_INVCLSD0..N-1. Both cap at 20 rows to stay pane-friendly.
+# affected and why. SP_LIVELOCK_N, SP_INVCLSD_N and SP_UNFLFLW_N carry the row counts;
+# individual rows are SP_LIVELOCK0..N-1, SP_INVCLSD0..N-1 and SP_UNFLFLW0..N-1.
+# All cap at 20 rows to stay pane-friendly.
 livelock_keys() {
     local _ll_out _ic_out _n
     _ll_out="$(detect_livelocked 2>/dev/null)"
@@ -1619,25 +1622,37 @@ livelock_keys() {
         echo "SP_LIVELOCK_N=$_n"
     fi
 
-    # INVALID-CLOSED count and rows
+    # INVALID-CLOSED and UNFILED-FOLLOW counts and rows (both come from detect_invalid_closed).
     if [ -z "$_ic_out" ] && ! bdjson list --status closed --limit 1 >/dev/null 2>&1; then
         echo "SP_INVALID_CLOSED=?"
         echo "SP_INVCLSD_N=?"
+        echo "SP_UNFILED_FOLLOW=?"
+        echo "SP_UNFLFLW_N=?"
     else
-        _n=0
+        local _ic_n=0 _uf_n=0
         if [ -n "$_ic_out" ]; then
             while IFS= read -r _line; do
                 [ -n "$_line" ] || continue
-                case "$_line" in INVALID-CLOSED\ *)
+                case "$_line" in
+                INVALID-CLOSED\ *)
                     _line="$(printf '%s' "$_line" | tr -c 'A-Za-z0-9 ._/:,()#+-' ' ' | tr -s ' ')"
-                    printf 'SP_INVCLSD%d=%s\n' "$_n" "${_line:0:120}"
-                    _n=$((_n+1))
-                    [ "$_n" -ge 20 ] && break
-                ;; esac
+                    printf 'SP_INVCLSD%d=%s\n' "$_ic_n" "${_line:0:120}"
+                    _ic_n=$((_ic_n+1))
+                    [ "$_ic_n" -ge 20 ] && true
+                    ;;
+                UNFILED-FOLLOW\ *)
+                    _line="$(printf '%s' "$_line" | tr -c 'A-Za-z0-9 ._/:,()#+-' ' ' | tr -s ' ')"
+                    printf 'SP_UNFLFLW%d=%s\n' "$_uf_n" "${_line:0:120}"
+                    _uf_n=$((_uf_n+1))
+                    [ "$_uf_n" -ge 20 ] && true
+                    ;;
+                esac
             done <<< "$_ic_out"
         fi
-        echo "SP_INVALID_CLOSED=$_n"
-        echo "SP_INVCLSD_N=$_n"
+        echo "SP_INVALID_CLOSED=$_ic_n"
+        echo "SP_INVCLSD_N=$_ic_n"
+        echo "SP_UNFILED_FOLLOW=$_uf_n"
+        echo "SP_UNFLFLW_N=$_uf_n"
     fi
 }
 

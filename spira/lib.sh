@@ -2689,20 +2689,22 @@ for i in (d if isinstance(d, list) else [d]):
     fi
 }
 
-# detect_invalid_closed -> one INVALID-CLOSED line per closed bead whose close reason
-# admits the work is unfinished.
+# detect_invalid_closed -> INVALID-CLOSED and UNFILED-FOLLOW lines for closed beads whose
+# close reasons admit unfinished work or imply follow-on work that was never filed.
 #
-# THE PROBLEM. law-no-close-reason-admits-unfinished says a bead must not be closed with
-# a reason that says the work is partial: "PERMANENT FIX NEEDED", "temporary",
-# "mitigated-only", a "TODO". The statute is prospective; nothing detects the ones already
-# in the store, and a grep of close reasons finds them cheaply.
+# TWO FAMILIES, kept separate because they need different remedies:
 #
-# A SECOND FAMILY alongside LIVELOCK in the sweeper's output. Both are surfaced on the
-# dashboard so the count reaches Ryan's screen; both are categorised so the fix is obvious.
-# The families are kept separate because LIVELOCK is open beads and INVALID-CLOSED is closed
-# ones — the lifecycle is different, and mixing them produces a count that means two things.
+# INVALID-CLOSED: the close reason contains a statute phrase that says the work itself is
+# partial (law-no-close-reason-admits-unfinished: "PERMANENT FIX NEEDED", "temporary",
+# "mitigated-only", "TODO"). The statute is prospective; this finds the ones already closed.
 #
-# OUTPUT: "INVALID-CLOSED <id> — <reason>"
+# UNFILED-FOLLOW: the close reason implies follow-on work exists (contains a phrase like
+# "builders should", "the real fix", "follow-up") but names no bead id (sp-XXXX). A reason
+# that references a bead id has handed off correctly; one that does not has left work unfiled.
+# The word "workaround" is NOT a proxy for either — a workaround can be complete, verified
+# and landed. Measure the property (remainder exists and has no tracking), not the word.
+#
+# OUTPUT: "INVALID-CLOSED <id> — <reason>" or "UNFILED-FOLLOW <id> — <reason>"
 detect_invalid_closed() {
     local _closed_raw
     _closed_raw="$(bdjson list --status closed --label spira --limit 0 2>/dev/null)"
@@ -2710,28 +2712,43 @@ detect_invalid_closed() {
     printf '%s\n' "$_closed_raw" | python3 -c '
 import sys, json, re
 
+# Phrases the statute names explicitly. Case-insensitive substring match.
 RED_FLAGS = [
     "PERMANENT FIX NEEDED",
-    "permanent fix needed",
     "mitigated-only",
     "mitigated only",
     "TODO",
-    "temporary fix",
-    "workaround",
+    "temporary",
 ]
+
+# Phrases that imply a follow-on obligation. Only a violation when no bead id is cited.
+FOLLOW_ON = [
+    "builders should",
+    "at scale",
+    "the real fix",
+    "follow-up",
+    "upstream",
+]
+
+BEAD_ID_RE = re.compile(r"\bsp-[a-z0-9]+\b", re.IGNORECASE)
 
 try: d = json.load(sys.stdin)
 except Exception: raise SystemExit
 for i in (d if isinstance(d, list) else [d]):
     reason = i.get("close_reason") or ""
-    hit = next((f for f in RED_FLAGS if f.lower() in reason.lower()), None)
-    if not hit:
-        continue
     title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:60]
-    # Truncate the reason so it fits in the pane line.
     reason_short = re.sub(r"\s+", " ", reason.strip())[:120]
-    print("INVALID-CLOSED %s — close reason contains %r: %s. title: %s" % (
-        i["id"], hit, reason_short, title))
+
+    hit = next((f for f in RED_FLAGS if f.lower() in reason.lower()), None)
+    if hit:
+        print("INVALID-CLOSED %s — close reason contains %r: %s. title: %s" % (
+            i["id"], hit, reason_short, title))
+        continue
+
+    follow_hit = next((f for f in FOLLOW_ON if f.lower() in reason.lower()), None)
+    if follow_hit and not BEAD_ID_RE.search(reason):
+        print("UNFILED-FOLLOW %s — follow-on phrase %r without a bead id: %s. title: %s" % (
+            i["id"], follow_hit, reason_short, title))
 ' 2>/dev/null
 }
 

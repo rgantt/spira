@@ -1223,11 +1223,11 @@ standing_lines() {
         "$( [ "${SP_POISON:-0}" = 0 ] && printf '%s' "$C_DIM" || printf '%s' "$C_WARN")" "$FIT" "$C_RST"
 
     # LIVELOCK — open beads that cannot make progress, and closed beads with bad records.
-    # The count alone is the line; individual bead rows live in SP_LIVELOCK0..N-1 and
-    # SP_INVCLSD0..N-1 (rendered only when non-zero to avoid a permanent noise floor).
+    # The count alone is the line; individual bead rows live in SP_LIVELOCK0..N-1,
+    # SP_INVCLSD0..N-1 and SP_UNFLFLW0..N-1 (rendered only when non-zero).
     # SP_LIVELOCKED=? means the probe failed; that is not all-clear.
-    local _ll="${SP_LIVELOCKED:-?}" _ic="${SP_INVALID_CLOSED:-?}"
-    local _ll_col _ic_col
+    local _ll="${SP_LIVELOCKED:-?}" _ic="${SP_INVALID_CLOSED:-?}" _uf="${SP_UNFILED_FOLLOW:-?}"
+    local _ll_col _ic_col _uf_col
     case "$_ll" in
         0)   _ll_col="$C_DIM" ;;
         '?') _ll_col="$C_BAD$C_B" ;;
@@ -1238,12 +1238,18 @@ standing_lines() {
         '?') _ic_col="$C_BAD$C_B" ;;
         *)   _ic_col="$C_WARN$C_B" ;;
     esac
-    if [ "$_ll" != 0 ] || [ "$_ic" != 0 ]; then
-        printf ' %sLOCK%s   %slivelocked%s %s%s%s · %sinvalid-closed%s %s%s%s\n' \
+    case "$_uf" in
+        0)   _uf_col="$C_DIM" ;;
+        '?') _uf_col="$C_BAD$C_B" ;;
+        *)   _uf_col="$C_WARN$C_B" ;;
+    esac
+    if [ "$_ll" != 0 ] || [ "$_ic" != 0 ] || [ "$_uf" != 0 ]; then
+        printf ' %sLOCK%s   %slivelocked%s %s%s%s · %sinvalid-closed%s %s%s%s · %sunfiled-follow%s %s%s%s\n' \
             "$C_DIM" "$C_RST" \
             "$C_DIM" "$C_RST" "$_ll_col" "$_ll" "$C_RST" \
-            "$C_DIM" "$C_RST" "$_ic_col" "$_ic" "$C_RST"
-        local _ll_i=0 _ic_i=0
+            "$C_DIM" "$C_RST" "$_ic_col" "$_ic" "$C_RST" \
+            "$C_DIM" "$C_RST" "$_uf_col" "$_uf" "$C_RST"
+        local _ll_i=0 _ic_i=0 _uf_i=0
         while [ "$_ll_i" -lt "${SP_LIVELOCK_N:-0}" ] 2>/dev/null && [ "$_ll_i" -lt 5 ]; do
             eval "local _ll_row=\${SP_LIVELOCK${_ll_i}:-}"
             if [ -n "$_ll_row" ]; then
@@ -1259,6 +1265,14 @@ standing_lines() {
                 printf '        %s  %s%s%s\n' "$C_DIM" "$C_WARN" "$FIT" "$C_RST"
             fi
             _ic_i=$(( _ic_i + 1 ))
+        done
+        while [ "$_uf_i" -lt "${SP_UNFLFLW_N:-0}" ] 2>/dev/null && [ "$_uf_i" -lt 5 ]; do
+            eval "local _uf_row=\${SP_UNFLFLW${_uf_i}:-}"
+            if [ -n "$_uf_row" ]; then
+                fit "$_uf_row" $(( COLS - 12 ))
+                printf '        %s  %s%s%s\n' "$C_DIM" "$C_WARN" "$FIT" "$C_RST"
+            fi
+            _uf_i=$(( _uf_i + 1 ))
         done
     fi
 

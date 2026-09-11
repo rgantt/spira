@@ -22,9 +22,18 @@
 #
 #   ci-stuck             awaiting-ci on a push-mode repo; no run will ever report.
 #
-#   INVALID-CLOSED       closed bead whose close reason contains "PERMANENT FIX NEEDED";
+#   INVALID-CLOSED       closed bead whose close reason contains a statute phrase
+#                        ("PERMANENT FIX NEEDED", "temporary", "mitigated-only", "TODO");
 #                        law-no-close-reason-admits-unfinished forbids this prospectively,
 #                        nothing detected the ones already in the store.
+#
+#   UNFILED-FOLLOW       closed bead whose close reason implies follow-on work exists
+#                        (contains a phrase like "builders should", "the real fix",
+#                        "follow-up", "upstream", "at scale") but names no bead id.
+#                        A reason that cites a bead id has handed off correctly; one that
+#                        does not has left work unfiled. "workaround" is NOT a flag — a
+#                        workaround can be complete and landed; the word does not
+#                        discriminate whether the work is done.
 #
 # EVERY CASE IS A PAIR (law-absence-needs-a-positive-control). The negative half proves
 # the check can read a true zero; the positive half proves it reads the real fault.
@@ -80,6 +89,8 @@ is "empty db: SP_LIVELOCKED=0" "0" \
    "$(printf '%s\n' "$out" | sed -n 's/^SP_LIVELOCKED=//p' | head -1)"
 is "empty db: SP_INVALID_CLOSED=0" "0" \
    "$(printf '%s\n' "$out" | sed -n 's/^SP_INVALID_CLOSED=//p' | head -1)"
+is "empty db: SP_UNFILED_FOLLOW=0" "0" \
+   "$(printf '%s\n' "$out" | sed -n 's/^SP_UNFILED_FOLLOW=//p' | head -1)"
 
 # ==========================================================================================
 echo
@@ -206,6 +217,61 @@ out="$(run_ll)"
 is "clean close reason: SP_INVALID_CLOSED=0" "0" \
    "$(printf '%s\n' "$out" | sed -n 's/^SP_INVALID_CLOSED=//p' | head -1)"
 nowant "clean close: no INVALID-CLOSED row" "INVALID-CLOSED" "$out"
+
+# ==========================================================================================
+echo
+echo "NEGATIVE CONTROL — workaround in close reason is NOT flagged:"
+# ==========================================================================================
+# "workaround" is not in the statute and does not discriminate — a workaround can be
+# complete, verified and landed. Positive control (the bead that prompted this fix) had
+# close reason ending "Ready for rebase and merge." and was incorrectly flagged.
+testdb_reset
+testdb_seed <<'JSONL'
+{"id":"sp-ll-wa","title":"workaround landed","status":"closed","issue_type":"task","labels":["spira","plan","repo:pushrepo"],"close_reason":"Workaround implemented by aeon-yojimbo, verified, landed on origin/main. Ready for merge."}
+JSONL
+out="$(run_ll)"
+nowant "workaround: no INVALID-CLOSED row"  "INVALID-CLOSED"  "$out"
+nowant "workaround: no UNFILED-FOLLOW row"  "UNFILED-FOLLOW"  "$out"
+is "workaround: SP_INVALID_CLOSED=0" "0" \
+   "$(printf '%s\n' "$out" | sed -n 's/^SP_INVALID_CLOSED=//p' | head -1)"
+is "workaround: SP_UNFILED_FOLLOW=0" "0" \
+   "$(printf '%s\n' "$out" | sed -n 's/^SP_UNFILED_FOLLOW=//p' | head -1)"
+
+# ==========================================================================================
+echo
+echo "POSITIVE CONTROL — UNFILED-FOLLOW: follow-on phrase with no bead id:"
+# ==========================================================================================
+# A close reason that says "builders should add X" without citing a bead id means follow-on
+# work was observed but not filed. The check flags this as UNFILED-FOLLOW (separate from
+# INVALID-CLOSED so the two family counts mean different things on the dashboard).
+testdb_reset
+testdb_seed <<'JSONL'
+{"id":"sp-ll-uf","title":"unfiled follow-on","status":"closed","issue_type":"task","labels":["spira","plan","repo:pushrepo"],"close_reason":"Upstream Escalation: Builders should add external_ref to bd list --json output."}
+JSONL
+out="$(run_ll)"
+want  "unfiled-follow: UNFILED-FOLLOW row"  "UNFILED-FOLLOW"  "$out"
+want  "unfiled-follow: bead id in row"      "sp-ll-uf"        "$out"
+nowant "unfiled-follow: no INVALID-CLOSED"  "INVALID-CLOSED"  "$out"
+is "unfiled-follow: SP_UNFILED_FOLLOW=1" "1" \
+   "$(printf '%s\n' "$out" | sed -n 's/^SP_UNFILED_FOLLOW=//p' | head -1)"
+is "unfiled-follow: SP_INVALID_CLOSED=0" "0" \
+   "$(printf '%s\n' "$out" | sed -n 's/^SP_INVALID_CLOSED=//p' | head -1)"
+
+# ==========================================================================================
+echo
+echo "NEGATIVE CONTROL — UNFILED-FOLLOW: follow-on phrase WITH a bead id is not flagged:"
+# ==========================================================================================
+# A close reason that says "builders should add X, tracked as sp-foo" has handed off
+# correctly — the work is filed. The bead id exempts it from UNFILED-FOLLOW.
+testdb_reset
+testdb_seed <<'JSONL'
+{"id":"sp-ll-uf2","title":"follow-on filed","status":"closed","issue_type":"task","labels":["spira","plan","repo:pushrepo"],"close_reason":"Upstream Escalation: Builders should add external_ref to bd list --json. Tracked as sp-80br6."}
+JSONL
+out="$(run_ll)"
+nowant "unfiled-follow filed: no UNFILED-FOLLOW row" "UNFILED-FOLLOW" "$out"
+nowant "unfiled-follow filed: no INVALID-CLOSED row" "INVALID-CLOSED" "$out"
+is "unfiled-follow filed: SP_UNFILED_FOLLOW=0" "0" \
+   "$(printf '%s\n' "$out" | sed -n 's/^SP_UNFILED_FOLLOW=//p' | head -1)"
 
 # ==========================================================================================
 echo
