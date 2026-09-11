@@ -2524,20 +2524,26 @@ for line in os.environ["PARTS"].splitlines():
     parts[name] = (set(filter(None, inc_str.split(","))),
                    set(filter(None, exc_str.split(","))))
 
-partition_labels = sorted({lab for inc, _ in parts.values() for lab in inc if lab != "spira"})
+scope_label = os.environ.get("SPIRA_SCOPE_LABEL", "spira")
+partition_labels = sorted({lab for inc, _ in parts.values() for lab in inc if lab != scope_label})
 ci_label = os.environ.get("SPIRA_CI_LABEL", "awaiting-ci")
 
 for bead in beads:
     L = set(bead.get("labels") or [])
     bid = bead.get("id", "?")
-    # Only our own beads; skip ones already handled by dedicated checks
-    if "spira" not in L:
-        continue
     if L & {"needs-ryan", "spira-poison"}:
         continue
     # CI-parked beads are intentionally excluded from every persona predicate;
     # the exclusion is not a misconfiguration, so they must not appear here.
     if ci_label and ci_label in L:
+        continue
+
+    # A bead missing the scope label cannot be claimed by any persona; every predicate
+    # requires it. This is one of the two routes to unclaimable-ready, not an excluded class.
+    if scope_label not in L:
+        print("UNCLAIMABLE %s — missing scope label (%s); "
+              "no persona can claim a bead without this label; "
+              "add %s or remove from the ready queue" % (bid, scope_label, scope_label))
         continue
 
     pref = {x.split(":", 1)[1] for x in L if x.startswith("fayth:")}

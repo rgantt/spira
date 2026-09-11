@@ -128,7 +128,24 @@ has   "mixed queue: unclaimable bead is flagged"    "UNCLAIMABLE sp-unc5b" "$out
 
 # ==========================================================================================
 echo
-echo "case 6 — spira-poison and needs-ryan beads are excluded (have their own check)"
+echo "case 6 — missing scope label is UNCLAIMABLE (the sp-vvkpn route)"
+# ==========================================================================================
+# A bead from another repo (pokedumpster, deckdumpster, pokebot) carries no spira label.
+# Every persona predicate requires the scope label, so no persona can ever claim it.
+# The prior code silently skipped such beads with a comment calling them "already handled" —
+# they are not handled by any other check. The fix: report them as UNCLAIMABLE.
+testdb_reset
+testdb_seed <<'JSONL'
+{"id":"pd-unc6a","title":"unclaimable no scope label","status":"open","issue_type":"task","labels":["plan","repo:pokedumpster"]}
+JSONL
+
+out="$(detect_unclaimable_ready 2>/dev/null)"
+has  "no scope label: UNCLAIMABLE line emitted"        "UNCLAIMABLE pd-unc6a" "$out"
+has  "no scope label: names the missing label"         "spira"                "$out"
+
+# ==========================================================================================
+echo
+echo "case 7 — spira-poison and needs-ryan beads are excluded (have their own check)"
 # ==========================================================================================
 # detect_unclaimable_ready must not flag beads already handled by CHECK 4 (poison) or the
 # ask taxonomy (needs-ryan). Both would otherwise produce noise on every pass.
