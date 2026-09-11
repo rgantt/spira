@@ -38,6 +38,7 @@
 #
 # defect: sp-q9i sp-9194o
 # covers: spira/landing.sh spira/lib.sh spira/incident.sh spira/skew.sh
+# timeout: 180
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
@@ -72,7 +73,7 @@ mkdir -p "$RUN/worktree" "$SH"
 # it (law-prefer-the-real-dependency). What landing.sh owns is the KEY it hands over; what
 # the intake owns is finding the open bead under it, and both have to hold for the count to
 # stay at one.
-cp "$HERE/landing.sh" "$HERE/lib.sh" "$HERE/conf.sh" "$HERE/incident.sh" "$HERE/skew.sh" "$SH/"
+cp "$HERE"/*.sh "$SH/"
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SH/$1"; chmod +x "$SH/$1"; }
 stub confine.sh 'exit 0'
 # THE OUTCOME STREAM IS RECORDED, NOT MERELY SWALLOWED, and it is stubbed EXPLICITLY. Left to
