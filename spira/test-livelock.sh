@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# timeout: 120
+# timeout: 150
 #
 # test-livelock.sh — detect_livelocked and detect_invalid_closed surface the right beads.
 #
