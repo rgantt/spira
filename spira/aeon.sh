@@ -1640,9 +1640,21 @@ print(len([x for x in (d if isinstance(d,list) else [d]) if x.get("id")]))' 2>/d
                         fi
                     fi
                     ;;
+                check)
+                    # Command must follow the colon. Run it in the aeon's environment;
+                    # exit 0 confirms the machine state is in place. No time window — machine
+                    # state is either present or not, independent of when this session started.
+                    if [ "$_dval" = "$_dtype" ]; then
+                        _delivers_ok=0
+                        _delivers_fail="delivers:check has no command — use delivers:check:<command>"
+                    elif ! eval "$_dval" >/dev/null 2>&1; then
+                        _delivers_ok=0
+                        _delivers_fail="delivers:check: command exited non-zero: $_dval"
+                    fi
+                    ;;
                 *)
                     _delivers_ok=0
-                    _delivers_fail="delivers:$_dtype is not a recognised type (beads, note, report)"
+                    _delivers_fail="delivers:$_dtype is not a recognised type (beads, note, report, check)"
                     ;;
             esac
             [ "$_delivers_ok" = 1 ] || break

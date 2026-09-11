@@ -624,9 +624,17 @@ while IFS=$'\x1f' read -r id r_name superseded dropped sentcontent delivers star
     # and this check confirms it is there.
     #
     # RECOGNISED TYPES:
-    #   delivers:beads           — at least one child bead names $id as its parent
-    #   delivers:note:/abs/path  — the file at that path exists and was written in the bead's
-    #   delivers:report:/abs/path  window (mtime after started_at)
+    #   delivers:beads             — at least one child bead names $id as its parent
+    #   delivers:note:/abs/path    — the file at that path exists and was written in the bead's
+    #   delivers:report:/abs/path    window (mtime after started_at)
+    #   delivers:check:<command>   — the command exits 0; proves machine state the bead
+    #                                established. No time constraint — state is present or not.
+    #                                The command runs in the sentinel's environment (SPIRA_HOME,
+    #                                SPIRA_PROD and conf.sh exports are set). Shell variables in
+    #                                the command expand at check time via eval. Written at filing,
+    #                                not at close — so the aeon cannot pick a check it already
+    #                                satisfied (law-a-regression-test-must-be-seen-to-fail shape:
+    #                                the filer chose the criterion before knowing the outcome).
     #
     # Unknown types are treated as unverifiable and cause a reopen. A label that cannot be
     # checked is not evidence; treating unknown types as passing would recreate the no-payload
@@ -676,9 +684,23 @@ print(len([x for x in (d if isinstance(d,list) else [d]) if x.get("id")]))' 2>/d
                         fi
                     fi
                     ;;
+                check)
+                    # Command must follow the colon. Run it in the sentinel's environment;
+                    # exit 0 confirms the machine state is in place, non-zero means not yet.
+                    # No time window — machine state is either present or not, regardless of
+                    # when it was established. Shell variables in the command (e.g. $SPIRA_HOME)
+                    # expand at check time from the sentinel's environment.
+                    if [ "$_dval" = "$_dtype" ]; then
+                        _delivers_ok=0
+                        _delivers_fail="delivers:check has no command — use delivers:check:<command>"
+                    elif ! eval "$_dval" >/dev/null 2>&1; then
+                        _delivers_ok=0
+                        _delivers_fail="delivers:check: command exited non-zero: $_dval"
+                    fi
+                    ;;
                 *)
                     _delivers_ok=0
-                    _delivers_fail="delivers:$_dtype is not a recognised type (beads, note, report)"
+                    _delivers_fail="delivers:$_dtype is not a recognised type (beads, note, report, check)"
                     ;;
             esac
             [ "$_delivers_ok" = 1 ] || break
