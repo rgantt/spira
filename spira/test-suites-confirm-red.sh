@@ -20,13 +20,21 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 
-# RUNNER-INJECTED VARIABLES. The systemd unit injects SPIRA_HOME and SPIRA_SUITES_MAXSEC
-# into this suite's environment. testdb.sh (sourced below) always sources conf.sh, and
-# conf.sh uses SPIRA_HOME to resolve SPIRA_REPO — pointing it at the production checkout.
-# That exports SPIRA_BD and SPIRA_RUN pointing at production rather than the fixture,
-# which can shadow what testdb_up sets and break the test. The confirming run strips both;
-# unset them here to match that environment.
-unset SPIRA_HOME SPIRA_SUITES_MAXSEC
+# RUNNER-INJECTED VARIABLES. The systemd unit injects SPIRA_HOME, SPIRA_SUITES_MAXSEC,
+# and SPIRA_RUN into this suite's environment. conf.sh uses SPIRA_HOME to resolve
+# SPIRA_REPO — pointing it at the production checkout — and SPIRA_RUN to point at the
+# production run directory, both of which shadow what testdb_up sets and break the test.
+# The confirming run strips these; unset them here to match that environment.
+#
+# SHARED TESTDB VARIABLES. The outer suites.sh builds a shared testdb for its own run and
+# exports TESTDB_SHARED=1 plus the TESTDB_* variables into every suite it launches. When
+# testdb_up sees TESTDB_SHARED=1 and TESTDB_BASELINE set, it reuses the outer database
+# instead of building a fresh fixture one. That points SPIRA_DB at the outer testdb, which
+# is shared with all other concurrently running suites; lock contention on that shared db
+# causes bd operations inside the fixture suites.sh to hang until the watchdog fires TIMEOUT.
+# Unset all of them so testdb_up always builds a fresh database for this test.
+unset SPIRA_HOME SPIRA_SUITES_MAXSEC SPIRA_RUN
+unset TESTDB_SHARED TESTDB_NAME TESTDB_DIR TESTDB_BASELINE TESTDB_BIN TESTDB_MODE TESTDB_BD TESTDB_STARTED_SERVICE TESTDB_FAULT_EXIT
 
 pass=0; fail=0
 ok()     { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
