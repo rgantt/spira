@@ -54,23 +54,36 @@ count_before="$("$PROD_BD" -C "$PROD_DB" list --limit 0 --json 2>/dev/null \
 
 # ---- testdb_up fail-safe: SPIRA_DB must be unset after failure ----
 #
-# Save and restore the stand-in path so SPIRA_DB starts as production.
+# testdb_up's shared-fixture failure path calls exit(TESTDB_FAULT_EXIT) rather than
+# returning, so the `if` cannot catch it — it terminates the current shell. Run it
+# in a subshell so that exit is caught as a non-zero return code from the subshell.
+# Capture SPIRA_DB's value via an EXIT trap, which fires after testdb_up's unset
+# but before the subshell closes.
 export SPIRA_DB="$PROD_DB" SPIRA_BD="$PROD_BD"
 # Set up the forced-failure environment: shared fixture with an invalid baseline.
 export TESTDB_SHARED=1 TESTDB_NAME=forced_fail TESTDB_MODE=embedded \
        TESTDB_DIR="$INVALID_BASELINE" TESTDB_BASELINE="$INVALID_BASELINE"
 
-if testdb_up forced_fail; then
-    bad "testdb_up should return non-zero with forced-failure baseline" "returned 0"
+_spira_db_file="$(mktemp)"
+(
+    trap 'printf "%s" "${SPIRA_DB:-}" > '"$_spira_db_file" EXIT
+    testdb_up forced_fail 2>/dev/null  # hermetic-ok: deliberate failure test — return captured via subshell exit code
+) 2>/dev/null
+up_rc=$?
+if [ "$up_rc" -ne 0 ]; then
+    ok "testdb_up returns non-zero with forced-failure baseline (rc=$up_rc)"
 else
-    ok "testdb_up returns non-zero with forced-failure baseline"
+    bad "testdb_up should return non-zero with forced-failure baseline" "returned 0"
 fi
 
 # THE KEY ASSERTION: SPIRA_DB must be unset (not pointing at the production stand-in).
-if [ -z "${SPIRA_DB:-}" ]; then
+# The EXIT trap captured SPIRA_DB's value after testdb_up's unset ran.
+_spira_db_after="$(cat "$_spira_db_file" 2>/dev/null)"
+rm -f "$_spira_db_file"
+if [ -z "$_spira_db_after" ]; then
     ok "SPIRA_DB is unset after testdb_up failure"
 else
-    bad "SPIRA_DB must be unset after testdb_up failure" "still set to: $SPIRA_DB"
+    bad "SPIRA_DB must be unset after testdb_up failure" "still set to: $_spira_db_after"
 fi
 
 # ---- four suites must exit non-zero and must not write to the stand-in ----
