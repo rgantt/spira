@@ -286,7 +286,7 @@ echo "it parses what the tracker actually emits"
 if ! testdb_available; then
     echo "  SKIP  no fixture database reachable — the real-dependency arm did not run" >&2
 else
-    testdb_up loom >/dev/null 2>&1
+    testdb_up loom >/dev/null || { printf 'FATAL: testdb_up loom failed\n' >&2; exit 1; }
     trap 'testdb_drop >/dev/null 2>&1; rm -rf "$TMP"' EXIT INT TERM
     bdq() { bd -C "$SPIRA_DB" "$@"; }
     bdq create "a bead that blocks another" -t task -p 1 -l repo:alpha >/dev/null 2>&1

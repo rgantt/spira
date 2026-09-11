@@ -183,6 +183,20 @@ scan() {                 # scan <file> -> `<line>:<command>:<text>` per hit; exi
                     if (sawwrap && t ~ /^(-|[0-9]|["\047$])/) continue  # that wrapper.s own arguments
                     if (U[t]) printf "%d:%s:%s\n", i, t, line
                     else if (D[t] && !local_ok) printf "%d:%s:%s\n", i, t, line
+                    # UNCHECKED testdb_up. The scanner marks SPIRA_DB as scratch when it
+                    # sees testdb_up, but only if the call SUCCEEDS. A return that goes
+                    # unchecked leaves SPIRA_DB pointing at whatever the caller had —
+                    # production — when testdb_up cannot build a fixture. Here `t` is the
+                    # first non-wrapper token in a segment — the actual command word — so
+                    # there is no word-boundary problem and no need for a separate scan.
+                    # A call is checked if `||` appears on the same line (meaning a
+                    # failure alternative exists), or if the call is in a conditional
+                    # position: `if/while/until testdb_up …` at the start of the line.
+                    else if (t == "testdb_up") {
+                        s = line; sub(/^[ \t]*/, "", s)
+                        checked = (s ~ /^(if |while |until )/) || (line ~ /testdb_up[^|]*\|\|/)
+                        if (!checked) printf "%d:testdb_up:%s\n", i, L[i]
+                    }
                     break                                               # the command word settles the segment
                 }
             }
@@ -219,7 +233,11 @@ for f in "${suites[@]}"; do
     bad=1
     rel="${f#"$ROOT"/}"
     while IFS=: read -r ln cmd text; do
-        printf '%s:%s: %s reaches the box\n' "$rel" "$ln" "$cmd"
+        if [ "$cmd" = testdb_up ]; then
+            printf '%s:%s: %s exit status unchecked\n' "$rel" "$ln" "$cmd"
+        else
+            printf '%s:%s: %s reaches the box\n' "$rel" "$ln" "$cmd"
+        fi
         printf '    %s\n' "$(printf '%s' "$text" | sed 's/^[[:space:]]*//')"
     done <<< "$hits"
 done
@@ -230,13 +248,19 @@ if [ "$bad" = 0 ]; then
 fi
 cat >&2 <<'WHY'
 
-REFUSED by hermetic.sh — the lines above let a suite's verdict depend on this machine.
+REFUSED by hermetic.sh — the lines above have one of two problems:
 
-A suite that reads the real box is green until the box changes, and then it refuses work
-that is correct with nothing in the output pointing anywhere but at the branch. Route the
-call through the seam the program already has — SPIRA_SYSTEMCTL, SPIRA_LAUNCH, SPIRA_GH,
-SPIRA_BD — and point it at a shim in the suite's own scratch directory, or give the command
-a path under that directory.
+  reaches the box — a command whose verdict depends on this machine. A suite that reads the
+  real box is green until the box changes, and then it refuses work that is correct with
+  nothing in the output pointing anywhere but at the branch. Route the call through the seam
+  the program already has — SPIRA_SYSTEMCTL, SPIRA_LAUNCH, SPIRA_GH, SPIRA_BD — and point
+  it at a shim in the suite's own scratch directory, or give the command a path under that
+  directory.
+
+  exit status unchecked — a testdb_up call whose return is not inspected. testdb_up unsets
+  SPIRA_DB on failure, so a suite that ignores the return dies loudly rather than writing to
+  production, but the failure message is cleaner and earlier when the suite checks itself.
+  Add `|| exit 1` (or a conditional) so the failure names the suite.
 
 If the suite genuinely must reach the box, say so where the call is:
 

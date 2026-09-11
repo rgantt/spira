@@ -21,7 +21,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/testdb.sh"
 testdb_require cockpit-unsent
-testdb_up cockpit-unsent
+testdb_up cockpit-unsent || exit 1
 
 pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }

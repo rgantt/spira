@@ -146,6 +146,15 @@ testdb_server_ensure() {
 testdb_up() {            # testdb_up <tag>
     local tag="$1"
 
+    # FAIL SAFE. Unset SPIRA_DB before any work so that a failure on any path below
+    # leaves it unusable rather than pointing at whatever the caller had — which is
+    # production. A suite that ignores our return then dies on its first bd call with
+    # a named error (unbound variable under set -u, or "no such database") instead of
+    # writing to the real store. SPIRA_BD is paired because it names the binary for that
+    # database; leaving one set and the other unset would let a call slip through to the
+    # wrong engine.
+    unset SPIRA_DB SPIRA_BD
+
     # ---- SHARED FIXTURE: EMBEDDED (has TESTDB_BASELINE) ----
     if [ "${TESTDB_SHARED:-0}" = 1 ] && [ -n "${TESTDB_NAME:-}" ] && \
        [ -n "${TESTDB_BASELINE:-}" ]; then

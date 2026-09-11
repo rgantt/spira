@@ -151,9 +151,22 @@ is     "and a bare path under it"               "" "$(probe 'bd -C "$TMP/db" rea
 # THE DISCRIMINATING PAIR for SPIRA_DB. The variable is scratch only in a suite that calls
 # `testdb_up`; the same line without it is reading whatever database the operator configured,
 # which is the violation wearing the safe line's clothes.
-is   "bd -C \$SPIRA_DB is fine under a fixture" "" "$(probe 'testdb_up probe
+is   "bd -C \$SPIRA_DB is fine under a checked fixture" "" "$(probe 'testdb_up probe || exit 1
 bd -C "$SPIRA_DB" ready')"
 want "and refused without one"             "bd"  "$(probe 'bd -C "$SPIRA_DB" ready')"
+
+# UNCHECKED testdb_up. testdb_up unsets SPIRA_DB on failure, so an unchecked call leaves
+# the suite to die loudly rather than writing to production — but hermetic.sh can see the
+# exit status was discarded and says so directly, which is a static property it can enforce.
+# The discriminating pair: the same call with `||` must be clean.
+want "unchecked testdb_up is refused"     "testdb_up" "$(probe 'testdb_up probe')"
+want "unchecked testdb_up with redirect is refused" "testdb_up" \
+     "$(probe 'testdb_up probe >/dev/null')"
+is   "testdb_up checked with || is fine"  "" "$(probe 'testdb_up probe || exit 1
+bd -C "$SPIRA_DB" ready')"
+is   "testdb_up in if condition is fine"  "" "$(probe 'if testdb_up probe; then
+bd -C "$SPIRA_DB" ready
+fi')"
 
 # `$HERE` is the real checkout, not scratch, and a suite that reads it reads the box.
 want "the checkout the suite lives in is not scratch" "git" "$(probe 'git -C "$HERE" log --oneline -1')"
