@@ -7,10 +7,12 @@ After=default.target
 
 [Service]
 Type=simple
-# loom.sh sources conf.sh before exec'ing the binary, so every variable the server reads
-# — SPIRA_DB, SPIRA_LOOM_ADDR, SPIRA_PATH — comes from the configuration file rather than
-# from a literal baked into this unit.
-ExecStart=@SPIRA_PROD@/loom.sh
+# @SPIRA_HOME@ (dev checkout), not @SPIRA_PROD@. The loom binary is a compiled Rust artifact
+# at $SPIRA_REPO/loom/target/release/loom — gitignored and not cloned into the prod checkout.
+# loom.sh is an 8-line wrapper exec'd in one shot, not read incrementally, so it does not have
+# the partial-execution hazard that makes aeon.sh and sentinel.sh run from the prod checkout.
+# Running from @SPIRA_HOME@ sets SPIRA_REPO = dev checkout root, where the binary is built.
+ExecStart=@SPIRA_HOME@/loom.sh
 Restart=always
 # The MINIMUM time between restarts. A crash loop is visible in the log; a 5-second floor
 # keeps it from chewing CPU while remaining fast to recover from a transient.
