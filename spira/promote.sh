@@ -225,6 +225,12 @@ prod_fence_hooks() {
         [ -x "$hook" ] || chmod +x "$hook" 2>/dev/null
         return 0
     fi
+    if ! : > "${hook}.tmp.$$" 2>/dev/null; then
+        # An unwritable hooks directory is not this script's problem to solve, and it must
+        # not spray a raw shell error into the journal on every pass.
+        log "promote: WARN: cannot write the commit fence at $hook (hooks dir not writable)"
+        return 0
+    fi
     cat > "${hook}.tmp.$$" <<'HOOK'
 #!/usr/bin/env bash
 # SPIRA PRODUCTION CHECKOUT — installed by promote.sh. Do not edit; edit promote.sh.
