@@ -93,7 +93,14 @@ foreign() {
 
     # The harness's own repository is exempt, and that is the whole point of the rule rather
     # than an exception to it: this fence exists to send harness work THERE.
+    # IN SPLIT-CHECKOUT MODE, SPIRA_REPO is the production checkout (derived from where
+    # conf.sh sits) while the repo-map's home entry is the development checkout where
+    # branches actually land. Both are the harness's own; check both so that a branch in the
+    # dev checkout is not rejected as a foreign copy when the gate runs from prod.
     if spira_same_repo "$repo" "$SPIRA_REPO"; then return 0; fi
+    local _skew_home_root
+    _skew_home_root="$(repo_root "$(spira_home_repo)" 2>/dev/null)" || true
+    if [ -n "$_skew_home_root" ] && spira_same_repo "$repo" "$_skew_home_root"; then return 0; fi
 
     dirs="$(harness_in_ref "$repo" "$ref")"
     [ -n "$dirs" ] || return 0          # no copy in that ref; nothing this fence judges
