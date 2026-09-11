@@ -89,6 +89,12 @@ chmod +x "$TOOLPATH/bd"
 # TIMEOUTs under load. Declaring no runner vars here prevents the wrapping; fixture
 # suites run as plain `setsid bash`, which is the stable form the prior suite tests
 # verified and which the confirming-run path (no RUNNER_VARS to strip) also uses.
+#
+# SPIRA_SUITES_SKIP_TESTDB=1 prevents suites.sh from building a shared embedded
+# fixture on each call. The embedded availability check runs bd init in a temp dir
+# (~6s) and testdb_up runs a second bd init (~6s) — ~12s per sut call. With ~18
+# sut calls in this suite that cost adds ~216s, pushing the 180s budget past its
+# limit. Fixture suites planted here do not use testdb, so no suite borrows it.
 sut() {
     local cmd="$1"; shift
     env -i PATH="$PATH" HOME="$TMP/home" \
@@ -100,6 +106,7 @@ sut() {
         SPIRA_SUITES_STALE="$STALE" SPIRA_SUITES_PRIORITY="$PRIO" \
         SPIRA_NOTIFY="$SH/ask.sh" FX_GATED_RAN="$TMP/gated.ran" \
         SPIRA_PATH="$TOOLPATH" SPIRA_SUITES_RUNNER_VARS="" SPIRA_INCIDENT_LOCK_WAIT="60" \
+        SPIRA_SUITES_SKIP_TESTDB=1 \
         "$@" bash "$SH/suites.sh" "$cmd" 2>&1
 }
 # plant <name> — the suite's body on stdin. No list is edited anywhere; existing is the whole

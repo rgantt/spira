@@ -460,8 +460,16 @@ cmd_run() {
     # TESTDB_SHARED=1 — only this shell drops at the end of cmd_run.
     # testdb_reset inside testdb_up clears the fixture to a clean baseline at the top
     # of every suite's testdb_up call, so each suite starts with an empty store.
+    #
+    # SPIRA_SUITES_SKIP_TESTDB=1 bypasses this block entirely. The embedded check runs
+    # bd init in a temp dir to probe availability (~6s per call), and testdb_up runs a
+    # second bd init for the fixture itself (~6s). A test harness that calls suites.sh
+    # repeatedly with fixture suites that do not use testdb would pay ~12s per call for
+    # a fixture nobody borrows. Set this flag in that context to skip the build; fixture
+    # suites that need testdb must build their own.
     # --------------------------------------------------------------------------------------
-    if . "$HERE/testdb.sh" 2>/dev/null && testdb_available 2>/dev/null; then
+    if [ -z "${SPIRA_SUITES_SKIP_TESTDB:-}" ] && \
+       . "$HERE/testdb.sh" 2>/dev/null && testdb_available 2>/dev/null; then
         local _td_real_db="$SPIRA_DB"
         local _td_real_bd="${SPIRA_BD:-}"
         local _td_had_bd; [ -n "${SPIRA_BD+x}" ] && _td_had_bd=1 || _td_had_bd=0
