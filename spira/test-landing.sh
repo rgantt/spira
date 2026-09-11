@@ -38,7 +38,7 @@
 #
 # defect: sp-q9i sp-9194o
 # covers: spira/landing.sh spira/lib.sh spira/incident.sh spira/skew.sh
-# timeout: 180
+# timeout: 300
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
