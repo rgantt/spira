@@ -187,7 +187,7 @@ try:
     for b in (d if isinstance(d, list) else [d]):
         if b.get("external_ref") != target: continue
         ns = [int(m.group(1)) for l in (b.get("labels") or [])
-              for m in [re.match(r"^sp-recur-(\d+)$", l)] if m]
+              for m in [re.match(r"^sp-recur-(\d+)(?:-|$)", l)] if m]
         print(max(ns) if ns else 0)
 except: print(0)
 ' "$DEDUP_REF")"

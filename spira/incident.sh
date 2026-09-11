@@ -7,6 +7,7 @@
 #   incident.sh drain                    file everything the spool is holding
 #   incident.sh list                     open incidents
 #   incident.sh backfill-ref-labels      add ref:<hash> to older beads (one-time migration)
+#   incident.sh backfill-recur-causes    convert bare sp-recur-N to sp-recur-N-unrecorded
 #
 # THE INTAKE ALREADY EXISTED IN SHAPE
 # -----------------------------------
@@ -87,6 +88,16 @@ DEDUP_LOOKBACK_DAYS="${SPIRA_INCIDENT_DEDUP_LOOKBACK:-7}"
 # recurrences and a page, and closing the bead re-arms the cycle. $18/day of aeon cost to
 # re-derive "the pipeline is fine" (measured sp-kufh).
 SIN_EXEMPT="${SPIRA_SIN_EXEMPT:-0}"
+# THE CAUSE CARRIED BY EACH RECURRENCE RUNG. Callers that know the kind of event they are
+# filing set SPIRA_INCIDENT_CAUSE to a short slug (suite-red, systemd-fail, etc.). When not
+# set, the rung records unrecorded rather than omitting the cause field — a recurrence must
+# always say something about why, even if only "we did not capture it" (control: a
+# recurrence whose cause genuinely cannot be determined still records, as unrecorded, rather
+# than failing to record at all). Sanitised identically to bump_counter in lib.sh: a space
+# in a label splits it into two labels, desynchronising the counter ladder.
+INCIDENT_CAUSE="${SPIRA_INCIDENT_CAUSE:-unrecorded}"
+INCIDENT_CAUSE="$(printf '%s' "$INCIDENT_CAUSE" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-\{2,\}/-/g;s/^-//;s/-$//')"
+[ -n "$INCIDENT_CAUSE" ] || INCIDENT_CAUSE="unrecorded"
 ASK="${SPIRA_ASK:-$SPIRA_NOTIFY}"
 mkdir -p "$SPOOL" "$(dirname "$ILOG")"
 
@@ -186,7 +197,7 @@ try:
     for bead in json.load(sys.stdin):
         if bead.get('"'"'external_ref'"'"') == target and bead.get('"'"'status'"'"') in ('"'"'open'"'"', '"'"'in_progress'"'"'):
             ns = [int(m.group(1)) for lbl in (bead.get('"'"'labels'"'"') or [])
-                  for m in [re.match(r'"'"'^sp-recur-(\d+)$'"'"', lbl)] if m]
+                  for m in [re.match(r'"'"'^sp-recur-(\d+)(?:-|$)'"'"', lbl)] if m]
             print('"'"'open'"'"', bead['"'"'id'"'"'], max(ns) if ns else 0); sys.exit(0)
 except: pass
 ' "$ref" 2>/dev/null)"
@@ -205,7 +216,7 @@ try:
         if any(l.startswith('"'"'ref:'"'"') for l in (bead.get('"'"'labels'"'"') or [])): continue
         if bead.get('"'"'external_ref'"'"') == target and bead.get('"'"'status'"'"') in ('"'"'open'"'"', '"'"'in_progress'"'"'):
             ns = [int(m.group(1)) for lbl in (bead.get('"'"'labels'"'"') or [])
-                  for m in [re.match(r'"'"'^sp-recur-(\d+)$'"'"', lbl)] if m]
+                  for m in [re.match(r'"'"'^sp-recur-(\d+)(?:-|$)'"'"', lbl)] if m]
             print('"'"'open'"'"', bead['"'"'id'"'"'], max(ns) if ns else 0); sys.exit(0)
 except: pass
 ' "$ref" 2>/dev/null)"
@@ -225,7 +236,7 @@ try:
     for bead in json.load(sys.stdin):
         if bead.get('"'"'external_ref'"'"') == target and bead.get('"'"'status'"'"') == '"'"'closed'"'"':
             ns = [int(m.group(1)) for lbl in (bead.get('"'"'labels'"'"') or [])
-                  for m in [re.match(r'"'"'^sp-recur-(\d+)$'"'"', lbl)] if m]
+                  for m in [re.match(r'"'"'^sp-recur-(\d+)(?:-|$)'"'"', lbl)] if m]
             print('"'"'closed'"'"', bead['"'"'id'"'"'], max(ns) if ns else 0); sys.exit(0)
 except: pass
 ' "$ref" 2>/dev/null)"
@@ -241,7 +252,7 @@ try:
         if any(l.startswith('"'"'ref:'"'"') for l in (bead.get('"'"'labels'"'"') or [])): continue
         if bead.get('"'"'external_ref'"'"') == target and bead.get('"'"'status'"'"') == '"'"'closed'"'"':
             ns = [int(m.group(1)) for lbl in (bead.get('"'"'labels'"'"') or [])
-                  for m in [re.match(r'"'"'^sp-recur-(\d+)$'"'"', lbl)] if m]
+                  for m in [re.match(r'"'"'^sp-recur-(\d+)(?:-|$)'"'"', lbl)] if m]
             print('"'"'closed'"'"', bead['"'"'id'"'"'], max(ns) if ns else 0); sys.exit(0)
 except: pass
 ' "$ref" 2>/dev/null
@@ -275,7 +286,7 @@ file_one() {
         if [ "$_was_closed" = 1 ]; then
             bead_reopen "$id" "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ) — same failure fingerprint, dedup within ${DEDUP_LOOKBACK_DAYS}-day window"
         fi
-        bdq label add "$id" "sp-recur-$n" >/dev/null 2>&1
+        bdq label add "$id" "sp-recur-${n}-${INCIDENT_CAUSE}" >/dev/null 2>&1
         # PROMOTE FALLBACK-FOUND BEADS. A bead found via the O(N) fallback path has no
         # ref: label; adding it here ensures the next query takes the fast label-keyed path.
         # bdq label add is idempotent, so this is safe to call even if the label already exists.
@@ -363,7 +374,7 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
     # late. At SIN_AT=5 (10-minute sweep) that is 60 min rather than the 50 min the comment
     # promises. The label makes the initial bead indistinguishable from a recurrence in the
     # counter, so N filings reliably produce sp-recur-N and the SIN fires on the Nth.
-    bdq label add "$id" "sp-recur-1" >/dev/null 2>&1
+    bdq label add "$id" "sp-recur-1-${INCIDENT_CAUSE}" >/dev/null 2>&1
     # LABEL THE REF HASH so future dedup queries take the O(1) label-keyed path instead of
     # scanning all open incident beads. Added at creation so every new bead carries it from
     # the start; the backfill-ref-labels subcommand labels beads filed before this was added.
@@ -437,15 +448,15 @@ spool_write() {
     local ref="$1" title="$2" safe stamp path _sw_unit _sw_path
     # printf, not a herestring: `<<<` appends a newline, tr turns it into another
     # separator character, and the dedupe key quietly grows a trailing underscore.
-    # PROVENANCE captured at spool time so drain retries use the original values.
+    # PROVENANCE and CAUSE captured at spool time so drain retries use the original values.
     # hostname is not stored — it is always readable on the same machine at drain time.
     _sw_unit="${SPIRA_INCIDENT_UNIT:-$(_unit_from_cgroup)}"
     _sw_path="${SPIRA_INCIDENT_PATH:-?}"
     safe="$(printf '%s' "$ref" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-80)"
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
     path="$SPOOL/$stamp-$safe-$$"
-    { printf 'REF: %s\nTITLE: %s\nUNIT: %s\nINCIDENT_PATH: %s\n--\n' \
-        "$ref" "$title" "$_sw_unit" "$_sw_path"; cat; } > "$path"
+    { printf 'REF: %s\nTITLE: %s\nUNIT: %s\nINCIDENT_PATH: %s\nCAUSE: %s\n--\n' \
+        "$ref" "$title" "$_sw_unit" "$_sw_path" "$INCIDENT_CAUSE"; cat; } > "$path"
     printf '%s' "$path"
 }
 
@@ -453,14 +464,20 @@ spool_field() { sed -n "s/^$1: //p" "$2" | head -1; }
 spool_body()  { sed -n '/^--$/,$p' "$1" | tail -n +2; }
 
 drain_one() {            # drain_one <spool-path>
-    # PROVENANCE VARS are shadowed locally so each spool entry's values are isolated.
-    # Both default to ? when the spool entry predates this field (backward-compatible).
-    local SPIRA_INCIDENT_UNIT SPIRA_INCIDENT_PATH
-    local sp="$1" ref title body id _d_unit _d_path
+    # PROVENANCE and CAUSE VARS are shadowed locally so each spool entry's values are
+    # isolated. All default gracefully when the spool entry predates the field (backward-
+    # compatible): provenance to ?, cause to unrecorded.
+    local SPIRA_INCIDENT_UNIT SPIRA_INCIDENT_PATH INCIDENT_CAUSE
+    local sp="$1" ref title body id _d_unit _d_path _d_cause
     ref="$(spool_field REF "$sp")"; title="$(spool_field TITLE "$sp")"
     [ -n "$ref" ] || { ilog "spool entry with no REF: $sp — moved aside"; mv "$sp" "$sp.bad"; return 0; }
     _d_unit="$(spool_field UNIT "$sp")"; SPIRA_INCIDENT_UNIT="${_d_unit:-?}"
     _d_path="$(spool_field INCIDENT_PATH "$sp")"; SPIRA_INCIDENT_PATH="${_d_path:-?}"
+    _d_cause="$(spool_field CAUSE "$sp")"
+    # BACKWARD COMPAT: entries written by older code carry no CAUSE line — treat as unrecorded.
+    INCIDENT_CAUSE="${_d_cause:-unrecorded}"
+    INCIDENT_CAUSE="$(printf '%s' "$INCIDENT_CAUSE" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-\{2,\}/-/g;s/^-//;s/-$//')"
+    [ -n "$INCIDENT_CAUSE" ] || INCIDENT_CAUSE="unrecorded"
     body="$(mktemp)"; spool_body "$sp" > "$body"
     # An empty payload is a broken probe, not an incident with no detail — and `bd create`
     # refuses an empty --body-file outright, so filing would fail and the event would sit in
@@ -596,6 +613,66 @@ except: pass
 ')
     printf 'backfilled %d, skipped (already labelled) — rerun %s list to confirm\n' "$n" "$0"
     [ "$e" -eq 0 ] || printf 'errors on %d beads — check %s\n' "$e" "$ILOG"
+    ;;
+
+backfill-recur-causes)
+    # MIGRATION PASS — converts bare sp-recur-N labels to sp-recur-N-unrecorded.
+    # Every recurrence rung must carry a cause; older code wrote sp-recur-N without one.
+    # The cause cannot be recovered from the label alone, so each bare rung is promoted to
+    # sp-recur-N-unrecorded: explicitly unrecoverable rather than silently left blank.
+    # Safe to re-run: beads whose every sp-recur-N rung already carries a suffix are
+    # reported as skipped. Only open and recently-closed beads are processed — older
+    # closed beads carry bare labels that counter_causes already maps to "unrecorded",
+    # so the census query groups them correctly without backfill.
+    #
+    # EXCLUDE repo: FROM THE QUERY LABEL — a bead filed without a repo: label (or with a
+    # different one) would be missed if LABELS included repo:. The dedupe key is the
+    # non-repo labels; the same strip is applied in _dedup_incident for the same reason.
+    _bf_lq="$(printf '%s' "$LABELS" | tr ',' '\n' | grep -v '^repo:' | paste -sd, -)"
+    _since="$(date -u -d "-${DEDUP_LOOKBACK_DAYS} days" '+%Y-%m-%d' 2>/dev/null \
+           || date -u -v "-${DEDUP_LOOKBACK_DAYS}d" '+%Y-%m-%d' 2>/dev/null || true)"
+    n=0 e=0 s=0
+    _process_backfill() {
+        local bid="$1" rungs_csv="$2"
+        local ok=0 err=0
+        IFS=',' read -ra rungs <<< "$rungs_csv"
+        for rung in "${rungs[@]}"; do
+            [ -n "$rung" ] || continue
+            # Add the typed label first; only remove the bare one when it succeeded.
+            if bdq label add "$bid" "${rung}-unrecorded" >/dev/null 2>&1; then
+                bdq label remove "$bid" "$rung" >/dev/null 2>&1 || true
+                ok=$((ok+1))
+            else
+                err=$((err+1))
+            fi
+        done
+        if [ "$err" -gt 0 ]; then e=$((e+1))
+        elif [ "$ok" -gt 0 ]; then n=$((n+1))
+        else s=$((s+1)); fi
+    }
+    _bare_recur_beads() {
+        python3 -c '
+import sys, json, re
+try:
+    for b in json.load(sys.stdin):
+        bare = [l for l in (b.get("labels") or []) if re.match(r"^sp-recur-\d+$", l)]
+        if bare:
+            print(b["id"], ",".join(bare), sep="\t")
+except: pass
+'
+    }
+    while IFS=$'\t' read -r bid rungs_csv; do
+        [ -n "$bid" ] || continue
+        _process_backfill "$bid" "$rungs_csv"
+    done < <(
+        bdq list --status open,in_progress --limit 0 --label "$_bf_lq" --json 2>/dev/null \
+            | _bare_recur_beads
+        [ -n "$_since" ] && \
+        bdq list --status closed --closed-after "$_since" --limit 0 --label "$_bf_lq" --json 2>/dev/null \
+            | _bare_recur_beads || true
+    )
+    printf 'backfilled %d bead(s), errors %d, skipped %d (already typed)\n' "$n" "$e" "$s"
+    [ "$e" -eq 0 ]
     ;;
 
 *) sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;

@@ -1422,6 +1422,9 @@ bump_reclaim()   { bump_counter "$1" sp-reclaim "${2:-}"; }
 requeues_of()    { counter_of "$1" sp-requeue; }
 bump_requeue()   { bump_counter "$1" sp-requeue "${2:-}"; }
 requeue_causes() { counter_causes "$1" sp-requeue; }
+recurs_of()      { counter_of "$1" sp-recur; }
+bump_recur()     { bump_counter "$1" sp-recur "${2:-}"; }
+recur_causes()   { counter_causes "$1" sp-recur; }
 timeouts_of()    { counter_of "$1" sp-timeout; }
 bump_timeout()   { bump_counter "$1" sp-timeout "${2:-timeout-kill}"; }
 
