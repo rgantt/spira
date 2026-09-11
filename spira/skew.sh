@@ -242,6 +242,41 @@ $drop_files"
         fi
     fi
 
+    # ---------------------------------------------------------------- BEHIND + DIRTY
+    # When the checkout is both behind AND dirty, the automatic repair has been declining
+    # silently every pass — `skew.sh refresh` refuses a dirty tree (correctly), but the
+    # refusal appeared only in skew.log, not in the escalation. Name the blocker at the
+    # front of the evidence so the operator reads WHY the repair stalled before reading WHAT
+    # is wrong, and so the escalation's default remedy actually works.
+    if [ "$cond_behind" = 1 ] && [ "$cond_dirty" = 1 ]; then
+        local dp_name all_same=1 dirty_names dp_inline decline_detail
+        dirty_names="$(git -C "$SPIRA_REPO" diff --name-only HEAD 2>/dev/null)"
+        # Check whether each dirty path is byte-for-byte identical to the base ref.
+        # A file that differs from HEAD but matches origin/main was hand-applied rather
+        # than pulled — the tree looks dirty but carries no new information, and
+        # `git checkout -- <path>` is the one-command remedy rather than a judgement call.
+        while IFS= read -r dp_name; do
+            [ -n "$dp_name" ] || continue
+            git -C "$SPIRA_REPO" diff --quiet "${base:-HEAD}" -- "$dp_name" 2>/dev/null \
+                || { all_same=0; break; }
+        done <<< "$dirty_names"
+        if [ "$all_same" = 1 ] && [ -n "$dirty_names" ]; then
+            dp_inline="$(printf '%s\n' "$dirty_names" | tr '\n' ' ' | sed 's/ $//')"
+            decline_detail="    Every modified path is byte-for-byte identical to ${base:-the base ref}.
+    The tree carries no new information.
+    Remedy: git -C $SPIRA_REPO checkout -- $dp_inline
+"
+        else
+            decline_detail="    Review or discard the tracked modifications, then pull.
+"
+        fi
+        # Prepend so the declined-refresh reason leads the evidence block rather than
+        # appearing as a peer of the symptoms it caused.
+        findings="REFRESH-DECLINED automatic refresh stopped by dirty tree; repair has declined
+    on every pass since the modification appeared; BEHIND accumulated silently.
+${decline_detail}$findings"
+    fi
+
     # ---------------------------------------------------------------- COPY
     while read -r c_name c_path c_dir c_kind; do
         [ "${c_kind:-}" = second ] || continue
@@ -348,10 +383,19 @@ escalate() {
     # would be wrong in whichever the reader is standing in.
     local installer; installer="$(cd "$SPIRA_HOME/../systemd" 2>/dev/null && pwd -P)/install.sh"
 
+    # The default action depends on which conditions are blocking. When DIRTY accompanies
+    # BEHIND, the automatic repair has been declining every pass; name what to clear first
+    # so the operator is told what to DO rather than just what is wrong.
+    local default_action
+    if [[ "$condition_key" == *"BEHIND=1"* ]] && [[ "$condition_key" == *"DIRTY=1"* ]]; then
+        default_action="clear the dirty tracked files first — paths byte-identical to the base ref can be restored with 'git -C $SPIRA_REPO checkout -- <path>'; genuine changes must be committed or stashed — then pull; install.sh also refuses while spira-aeon-*.service units are active, pass SPIRA_INSTALL_FORCE=1 to override; if a second harness is named below, delete that copy"
+    else
+        default_action="pull $SPIRA_REPO onto its base ref; install.sh now also refuses when the checkout is behind — wait for any live aeons to finish (install.sh refuses while spira-aeon-*.service units are active too), then re-run $installer; pass SPIRA_INSTALL_FORCE=1 to override both refusals; if a second harness is named below, delete that copy so the repository it sits in carries none"
+    fi
     local notify_out notify_rc
     notify_out="$("$SPIRA_NOTIFY" add \
         "The Spira copy in force is not the code that landed" \
-        --default "pull $SPIRA_REPO onto its base ref; install.sh now also refuses when the checkout is behind — wait for any live aeons to finish (install.sh refuses while spira-aeon-*.service units are active too), then re-run $installer; pass SPIRA_INSTALL_FORCE=1 to override both refusals; if a second harness is named below, delete that copy so the repository it sits in carries none" \
+        --default "$default_action" \
         --why "beads can be closed, gated and merged while the behaviour they changed never takes effect — the tree that was edited is self-consistent, so nothing downstream reports a fault" \
         --evidence "$findings" 2>&1)"; notify_rc=$?
 
@@ -393,6 +437,11 @@ refresh() {
 
     dirty="$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null)"
     if [ -n "$dirty" ]; then
+        # Write a stamp so the decline is countable without reading the log — watchtower
+        # and check() can read it without tailing skew.log (law-detection-outranks-rejection).
+        mkdir -p "$SPIRA_RUN" 2>/dev/null || true
+        { printf 'tracked files are modified\n'; printf '%s\n' "$dirty"; } \
+            > "$SPIRA_RUN/skew.refresh-declined" 2>/dev/null || true
         echo "skew: refresh declined — tracked files are modified"; return 1; fi
 
     current="$(git -C "$repo" branch --show-current 2>/dev/null)"
@@ -402,6 +451,8 @@ refresh() {
     if ! git -C "$repo" merge --ff-only -q "$base" 2>/dev/null; then
         echo "skew: refresh declined — cannot fast-forward to $base"; return 1; fi
 
+    # Clear the dirty-decline stamp on a successful refresh so watchers see the recovery.
+    rm -f "$SPIRA_RUN/skew.refresh-declined" 2>/dev/null || true
     echo "skew: refreshed to $base ($behind commit(s))"
     return 0
 }
