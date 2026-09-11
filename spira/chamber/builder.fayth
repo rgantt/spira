@@ -13,7 +13,7 @@ FAYTH_DESC="Guardian — the DPS: claims ready Spira plan beads and implements t
 # and an empty one produces no leading comma — a leading comma is an empty label that would
 # match nothing and look exactly like "no work ready".
 FAYTH_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan"
-FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"
+FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL,qa-proposed"
 
 # Statutes only. SOPs are runbooks for production incidents; a builder will never execute
 # one, and a shelf of them would push the law it does have to obey off the end of the
