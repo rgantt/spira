@@ -179,17 +179,17 @@ _dedup_incident() {      # _dedup_incident <ref> -> "open <id> <n>" | "closed <i
     # auto-discovered one (law-address-the-store-with-spira-bd, and the same lesson applies
     # here: bare $SPIRA_BD without -C silently addresses the caller's default store).
     _r="$(bdq list --status open,in_progress --limit 0 --label "$_lq" --json 2>/dev/null \
-      | python3 -c "
+      | python3 -c '
 import sys, json, re
 target = sys.argv[1]
 try:
     for bead in json.load(sys.stdin):
-        if bead.get('external_ref') == target and bead.get('status') in ('open', 'in_progress'):
-            ns = [int(m.group(1)) for lbl in (bead.get('labels') or [])
-                  for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
-            print('open', bead['id'], max(ns) if ns else 0); sys.exit(0)
+        if bead.get('"'"'external_ref'"'"') == target and bead.get('"'"'status'"'"') in ('"'"'open'"'"', '"'"'in_progress'"'"'):
+            ns = [int(m.group(1)) for lbl in (bead.get('"'"'labels'"'"') or [])
+                  for m in [re.match(r'"'"'^sp-recur-(\d+)$'"'"', lbl)] if m]
+            print('"'"'open'"'"', bead['"'"'id'"'"'], max(ns) if ns else 0); sys.exit(0)
 except: pass
-" "$ref" 2>/dev/null)"
+' "$ref" 2>/dev/null)"
     if [ -n "$_r" ]; then printf '%s' "$_r"; return; fi
 
     # Sub-path B: fallback for beads without the ref: label (filed by older code).
@@ -197,18 +197,18 @@ except: pass
     # and are not this ref. Once found here, file_one adds the label so this path is not
     # needed again for the same bead.
     _r="$(bdq list --status open,in_progress --limit 0 --label "$_dedupe_labels" --json 2>/dev/null \
-      | python3 -c "
+      | python3 -c '
 import sys, json, re
 target = sys.argv[1]
 try:
     for bead in json.load(sys.stdin):
-        if any(l.startswith('ref:') for l in (bead.get('labels') or [])): continue
-        if bead.get('external_ref') == target and bead.get('status') in ('open', 'in_progress'):
-            ns = [int(m.group(1)) for lbl in (bead.get('labels') or [])
-                  for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
-            print('open', bead['id'], max(ns) if ns else 0); sys.exit(0)
+        if any(l.startswith('"'"'ref:'"'"') for l in (bead.get('"'"'labels'"'"') or [])): continue
+        if bead.get('"'"'external_ref'"'"') == target and bead.get('"'"'status'"'"') in ('"'"'open'"'"', '"'"'in_progress'"'"'):
+            ns = [int(m.group(1)) for lbl in (bead.get('"'"'labels'"'"') or [])
+                  for m in [re.match(r'"'"'^sp-recur-(\d+)$'"'"', lbl)] if m]
+            print('"'"'open'"'"', bead['"'"'id'"'"'], max(ns) if ns else 0); sys.exit(0)
 except: pass
-" "$ref" 2>/dev/null)"
+' "$ref" 2>/dev/null)"
     if [ -n "$_r" ]; then printf '%s' "$_r"; return; fi
 
     # PASS 2 — recently-closed. Only reached when no open bead matched.
@@ -218,33 +218,33 @@ except: pass
 
     # Sub-path A for closed beads: label-keyed.
     _r="$(bdq list --status closed --closed-after "$_since" --limit 0 --label "$_lq" --json 2>/dev/null \
-      | python3 -c "
+      | python3 -c '
 import sys, json, re
 target = sys.argv[1]
 try:
     for bead in json.load(sys.stdin):
-        if bead.get('external_ref') == target and bead.get('status') == 'closed':
-            ns = [int(m.group(1)) for lbl in (bead.get('labels') or [])
-                  for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
-            print('closed', bead['id'], max(ns) if ns else 0); sys.exit(0)
+        if bead.get('"'"'external_ref'"'"') == target and bead.get('"'"'status'"'"') == '"'"'closed'"'"':
+            ns = [int(m.group(1)) for lbl in (bead.get('"'"'labels'"'"') or [])
+                  for m in [re.match(r'"'"'^sp-recur-(\d+)$'"'"', lbl)] if m]
+            print('"'"'closed'"'"', bead['"'"'id'"'"'], max(ns) if ns else 0); sys.exit(0)
 except: pass
-" "$ref" 2>/dev/null)"
+' "$ref" 2>/dev/null)"
     if [ -n "$_r" ]; then printf '%s' "$_r"; return; fi
 
     # Sub-path B for closed beads: fallback for unlabeled beads.
     bdq list --status closed --closed-after "$_since" --limit 0 --label "$_dedupe_labels" --json 2>/dev/null \
-      | python3 -c "
+      | python3 -c '
 import sys, json, re
 target = sys.argv[1]
 try:
     for bead in json.load(sys.stdin):
-        if any(l.startswith('ref:') for l in (bead.get('labels') or [])): continue
-        if bead.get('external_ref') == target and bead.get('status') == 'closed':
-            ns = [int(m.group(1)) for lbl in (bead.get('labels') or [])
-                  for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
-            print('closed', bead['id'], max(ns) if ns else 0); sys.exit(0)
+        if any(l.startswith('"'"'ref:'"'"') for l in (bead.get('"'"'labels'"'"') or [])): continue
+        if bead.get('"'"'external_ref'"'"') == target and bead.get('"'"'status'"'"') == '"'"'closed'"'"':
+            ns = [int(m.group(1)) for lbl in (bead.get('"'"'labels'"'"') or [])
+                  for m in [re.match(r'"'"'^sp-recur-(\d+)$'"'"', lbl)] if m]
+            print('"'"'closed'"'"', bead['"'"'id'"'"'], max(ns) if ns else 0); sys.exit(0)
 except: pass
-" "$ref" 2>/dev/null
+' "$ref" 2>/dev/null
 }
 
 # --------------------------------------------------------------------------------------
@@ -583,17 +583,17 @@ backfill-ref-labels)
             e=$((e+1))
         fi
     done < <(bdq list --status open,in_progress --limit 0 --label "$LABELS" --json 2>/dev/null \
-      | python3 -c "
+      | python3 -c '
 import sys, json
 try:
     for b in json.load(sys.stdin):
-        ls = b.get('labels') or []
-        if any(l.startswith('ref:') for l in ls): continue
-        ref = b.get('external_ref') or ''
+        ls = b.get('"'"'labels'"'"') or []
+        if any(l.startswith('"'"'ref:'"'"') for l in ls): continue
+        ref = b.get('"'"'external_ref'"'"') or '"'"''"'"'
         if ref:
-            print(b.get('id',''), ref, sep='\t')
+            print(b.get('"'"'id'"'"','"'"''"'"'), ref, sep='"'"'\t'"'"')
 except: pass
-")
+')
     printf 'backfilled %d, skipped (already labelled) — rerun %s list to confirm\n' "$n" "$0"
     [ "$e" -eq 0 ] || printf 'errors on %d beads — check %s\n' "$e" "$ILOG"
     ;;
