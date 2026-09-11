@@ -1186,23 +1186,30 @@ if [ -n "$pool" ]; then
     pool=$(( pool > task_live ? pool - task_live : 0 ))
     log "CHECK7 pool: ${SPIRA_MAX_AEONS} slot(s), $task_live live, $pool free — order: $TASK_FAYTHS"
 fi
-for f in $TASK_FAYTHS; do
-    if summon_fayth "$f" "$pool"; then
-        act "summoned a $f aeon"
-        [ -n "$pool" ] && pool=$(( pool > 0 ? pool - 1 : 0 ))
-    fi
-done
-
-# LANE FAYTHS are handled AFTER the pool and draw from their own declared capacity, never
-# from SPIRA_MAX_AEONS. No pool argument is passed — that is the mechanism: fayth_free
-# without a pool arg uses FAYTH_MAX_CONCURRENT alone, so a fully-occupied builder pool
-# cannot prevent an ops aeon from starting. This is what the ops lane was always designed
-# to guarantee; generalising it into this loop is what makes it configurable.
+# LANE FAYTHS DRAW FIRST. A lane is a partition with work no builder will ever take, and
+# builders always have a queue — so whichever loop runs first takes every free slot, and
+# the one that runs second is told the fleet is full. Running lanes first is what makes a
+# starved ops or qa queue resolve on the next freed slot instead of waiting for the plan
+# queue to empty, which never happens.
+#
+# THE FLEET CEILING STILL BINDS THEM. Lanes pass no pool argument, so SPIRA_MAX_AEONS does
+# not apply — but SPIRA_MAX_LIVE_AEONS does, deliberately: every aeon draws on one shared
+# five-hour account window whoever scheduled it, and that window is shared with the
+# operator's own sessions. A lane takes the NEXT slot; it does not add one.
 LANE_FAYTHS="$(spira_lane_fayths)"
 [ -n "$LANE_FAYTHS" ] && log "CHECK7 lanes (${SPIRA_LANES:-none} declared): $LANE_FAYTHS"
 for f in $LANE_FAYTHS; do
     if summon_fayth "$f"; then
         act "summoned a $f lane aeon"
+    fi
+done
+
+# THE POOL DRAWS ON WHAT IS LEFT. Recomputed after the lanes, because a lane summoned above
+# consumes a slot the fleet ceiling counts, and a pool figure read before that is stale.
+for f in $TASK_FAYTHS; do
+    if summon_fayth "$f" "$pool"; then
+        act "summoned a $f aeon"
+        [ -n "$pool" ] && pool=$(( pool > 0 ? pool - 1 : 0 ))
     fi
 done
 
