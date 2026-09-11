@@ -2,10 +2,11 @@
 #
 # incident.sh — turn a production event into a bead Ops can claim.
 #
-#   incident.sh systemd <unit>     file an incident for a failed systemd user unit
-#   incident.sh file <title> [-|<file>]   file one from an arbitrary payload
-#   incident.sh drain              file everything the spool is holding
-#   incident.sh list               open incidents
+#   incident.sh systemd <unit>           file an incident for a failed systemd user unit
+#   incident.sh file <title> [-|<file>]  file one from an arbitrary payload
+#   incident.sh drain                    file everything the spool is holding
+#   incident.sh list                     open incidents
+#   incident.sh backfill-ref-labels      add ref:<hash> to older beads (one-time migration)
 #
 # THE INTAKE ALREADY EXISTED IN SHAPE
 # -----------------------------------
@@ -91,6 +92,15 @@ mkdir -p "$SPOOL" "$(dirname "$ILOG")"
 
 ilog() { printf '%s incident: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$ILOG"; }
 
+# Deterministic 8-char hex label token for an external_ref string. sha256sum is standard
+# on Linux; cut -c1-8 gives 32 bits — collision probability across a typical incident queue
+# (hundreds of open beads, not millions) is negligible, and a collision is not a silent
+# failure: the dedup path checks external_ref from bd list output, so a collision only
+# adds one extra list iteration.
+_ref_hash() {   # _ref_hash <ref> -> 8-char hex
+    printf '%s' "$1" | sha256sum | cut -c1-8
+}
+
 # PROVENANCE: the three facts an operator needs to decide whether an escalated ask is real.
 #
 # _unit_from_cgroup derives the calling systemd unit from /proc/self/cgroup, whose last
@@ -120,7 +130,7 @@ _provenance() {
 # --------------------------------------------------------------------------------------
 # Dedupe key for an incident ref. Prints "open <id> <n>", "closed <id> <n>", or nothing.
 # <n> is the current highest sp-recur-N count, extracted from the bead's labels so the
-# caller can skip a separate bdq label list call.
+# caller can skip a separate bd call.
 # --------------------------------------------------------------------------------------
 # TWO PASSES, NOT ONE. Pass 1 queries open/in_progress; pass 2 (only when pass 1 finds
 # nothing) queries recently-closed. They cannot be merged into one call because
@@ -128,25 +138,26 @@ _provenance() {
 # silently excluded when --closed-after is present, making the combined query always return
 # empty for the common recurrence case.
 #
-# CLIENT-SIDE FILTER ON external_ref (not --external-ref). bd list --external-ref is a
-# server-side filter that only the dev build supports; bd-embedded silently ignores it,
-# making every call look like "no open incident" and creating one fresh bead per filing
-# instead of bumping recurrences. The JSON payload carries external_ref on every version,
-# so filtering in Python works everywhere. The label filter keeps the candidate set small.
+# LABEL-KEYED, NOT bd-show-per-candidate. Each bead carries ref:<hash-of-external-ref>
+# at filing time. Querying --label ref:<hash> returns at most 1 candidate regardless of
+# queue depth; external_ref is present in bd list --json output so no bd show is needed
+# to confirm the match. A hash collision (two distinct refs share the 8-char hash) adds
+# one extra list iteration, not a bd show per candidate.
+#
+# FALLBACK FOR UNLABELED BEADS. A bead filed by older code carries no ref: label.
+# After the label-keyed path finds nothing, a second query walks all open incident beads
+# and filters client-side on external_ref, skipping beads that do carry a ref: label
+# (those were already checked by the label-keyed path and did not match). Once touched
+# on the recurrence path, an unlabeled bead receives the label so subsequent queries
+# take the fast path.
 #
 # ALL SHELL-LEVEL BD CALLS USE bdq, NOT $SPIRA_BD DIRECTLY. bdq is defined in lib.sh
 # (sourced above) and adds -C "$SPIRA_DB" so bd finds the right database. Calling $SPIRA_BD
 # directly omits -C and makes bd search from the working directory, which finds nothing.
-# The Python subprocess cannot call shell functions — it receives $SPIRA_BD and $SPIRA_DB
-# as arguments and adds -C explicitly.
 #
 # DEDUPE LABELS EXCLUDE repo: — a repo: label identifies the filer, not the event.
 # Two callers declaring different repos must still find each other's open incident;
 # including repo: in the filter silently partitions dedup so they cannot (sp-jvlrs).
-#
-# RECURRENCE COUNT FROM LABELS. bd list --json includes the full labels array; extracting
-# sp-recur-N here avoids a separate bdq label list call on every recurrence (one fewer
-# bd process spawn per filing on the common recurrence path).
 #
 # DATE ARITHMETIC IS GNU date(1). The -v flag is a BSD/macOS fallback. An empty since
 # skips the closed-bead search rather than scanning with an unbounded window.
@@ -155,75 +166,85 @@ _provenance() {
 # see the pattern; a chain of six single-occurrence beads does not (sp-srgr6).
 # --------------------------------------------------------------------------------------
 _dedup_incident() {      # _dedup_incident <ref> -> "open <id> <n>" | "closed <id> <n>" | nothing
-    local ref="$1" _dedupe_labels _since _result
+    local ref="$1" _dedupe_labels _ref_label _lq _since _r
     _dedupe_labels="$(printf '%s' "$LABELS" | tr ',' '\n' | grep -v '^repo:' | paste -sd, -)"
+    _ref_label="ref:$(_ref_hash "$ref")"
+    # AND query: must carry all of _dedupe_labels labels plus the hash label.
+    _lq="${_dedupe_labels:+${_dedupe_labels},}${_ref_label}"
 
-    # PASS 1 — open / in_progress. No --closed-after: open beads have no closed_at and would
-    # be silently excluded by that filter, making every recurrence look like a new filing.
-    # NOTE: bd list --json does not include external_ref, so fetch it via bd show for each candidate.
-    # bdq adds -C "$SPIRA_DB" so bd finds the right database. The Python subprocess receives
-    # both the bd binary path and the database directory so it can pass -C explicitly — it
-    # cannot call the bdq shell function, only the binary.
-    _result="$(bdq list --status open,in_progress --limit 0 --label "$_dedupe_labels" --json 2>/dev/null \
+    # PASS 1 — open / in_progress.
+    # Sub-path A: label-keyed. --label ref:<hash> returns at most 1 candidate; external_ref
+    # and labels are both present in bdq list --json, so no bd show per candidate.
+    # bdq adds -C "$SPIRA_DB" so the query reaches the configured database, not the
+    # auto-discovered one (law-address-the-store-with-spira-bd, and the same lesson applies
+    # here: bare $SPIRA_BD without -C silently addresses the caller's default store).
+    _r="$(bdq list --status open,in_progress --limit 0 --label "$_lq" --json 2>/dev/null \
       | python3 -c "
-import sys, json, re, subprocess
+import sys, json, re
 target = sys.argv[1]
-bd_bin = sys.argv[2]
-db_dir = sys.argv[3]
 try:
     for bead in json.load(sys.stdin):
-        bid = bead.get('id')
-        if not bid: continue
-        # Fetch external_ref via bd show since bd list --json doesn't include it
-        try:
-            show_out = subprocess.run([bd_bin, '-C', db_dir, 'show', bid, '--json'],
-                                     capture_output=True, text=True, timeout=5)
-            if show_out.returncode == 0:
-                show_data = json.loads(show_out.stdout)
-                if isinstance(show_data, list):
-                    show_data = show_data[0]
-                if show_data.get('external_ref') == target and show_data.get('status') in ('open', 'in_progress'):
-                    ns = [int(m.group(1)) for lbl in (show_data.get('labels') or [])
-                          for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
-                    print('open', bid, max(ns) if ns else 0); sys.exit(0)
-        except: pass
+        if bead.get('external_ref') == target and bead.get('status') in ('open', 'in_progress'):
+            ns = [int(m.group(1)) for lbl in (bead.get('labels') or [])
+                  for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
+            print('open', bead['id'], max(ns) if ns else 0); sys.exit(0)
 except: pass
-" "$ref" "$SPIRA_BD" "$SPIRA_DB" 2>/dev/null)"
-    if [ -n "$_result" ]; then
-        printf '%s' "$_result"
-        return
-    fi
+" "$ref" 2>/dev/null)"
+    if [ -n "$_r" ]; then printf '%s' "$_r"; return; fi
+
+    # Sub-path B: fallback for beads without the ref: label (filed by older code).
+    # Skips beads that carry any ref: label — those were already not found in sub-path A
+    # and are not this ref. Once found here, file_one adds the label so this path is not
+    # needed again for the same bead.
+    _r="$(bdq list --status open,in_progress --limit 0 --label "$_dedupe_labels" --json 2>/dev/null \
+      | python3 -c "
+import sys, json, re
+target = sys.argv[1]
+try:
+    for bead in json.load(sys.stdin):
+        if any(l.startswith('ref:') for l in (bead.get('labels') or [])): continue
+        if bead.get('external_ref') == target and bead.get('status') in ('open', 'in_progress'):
+            ns = [int(m.group(1)) for lbl in (bead.get('labels') or [])
+                  for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
+            print('open', bead['id'], max(ns) if ns else 0); sys.exit(0)
+except: pass
+" "$ref" 2>/dev/null)"
+    if [ -n "$_r" ]; then printf '%s' "$_r"; return; fi
 
     # PASS 2 — recently-closed. Only reached when no open bead matched.
     _since="$(date -u -d "-${DEDUP_LOOKBACK_DAYS} days" '+%Y-%m-%d' 2>/dev/null \
            || date -u -v "-${DEDUP_LOOKBACK_DAYS}d" '+%Y-%m-%d' 2>/dev/null || true)"
     [ -z "$_since" ] && return
 
-    bdq list --status closed --closed-after "$_since" --limit 0 --label "$_dedupe_labels" --json 2>/dev/null \
+    # Sub-path A for closed beads: label-keyed.
+    _r="$(bdq list --status closed --closed-after "$_since" --limit 0 --label "$_lq" --json 2>/dev/null \
       | python3 -c "
-import sys, json, re, subprocess
+import sys, json, re
 target = sys.argv[1]
-bd_bin = sys.argv[2]
-db_dir = sys.argv[3]
 try:
     for bead in json.load(sys.stdin):
-        bid = bead.get('id')
-        if not bid: continue
-        # Fetch external_ref via bd show since bd list --json doesn't include it
-        try:
-            show_out = subprocess.run([bd_bin, '-C', db_dir, 'show', bid, '--json'],
-                                     capture_output=True, text=True, timeout=5)
-            if show_out.returncode == 0:
-                show_data = json.loads(show_out.stdout)
-                if isinstance(show_data, list):
-                    show_data = show_data[0]
-                if show_data.get('external_ref') == target and show_data.get('status') == 'closed':
-                    ns = [int(m.group(1)) for lbl in (show_data.get('labels') or [])
-                          for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
-                    print('closed', bid, max(ns) if ns else 0); sys.exit(0)
-        except: pass
+        if bead.get('external_ref') == target and bead.get('status') == 'closed':
+            ns = [int(m.group(1)) for lbl in (bead.get('labels') or [])
+                  for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
+            print('closed', bead['id'], max(ns) if ns else 0); sys.exit(0)
 except: pass
-" "$ref" "$SPIRA_BD" "$SPIRA_DB" 2>/dev/null
+" "$ref" 2>/dev/null)"
+    if [ -n "$_r" ]; then printf '%s' "$_r"; return; fi
+
+    # Sub-path B for closed beads: fallback for unlabeled beads.
+    bdq list --status closed --closed-after "$_since" --limit 0 --label "$_dedupe_labels" --json 2>/dev/null \
+      | python3 -c "
+import sys, json, re
+target = sys.argv[1]
+try:
+    for bead in json.load(sys.stdin):
+        if any(l.startswith('ref:') for l in (bead.get('labels') or [])): continue
+        if bead.get('external_ref') == target and bead.get('status') == 'closed':
+            ns = [int(m.group(1)) for lbl in (bead.get('labels') or [])
+                  for m in [re.match(r'^sp-recur-(\d+)$', lbl)] if m]
+            print('closed', bead['id'], max(ns) if ns else 0); sys.exit(0)
+except: pass
+" "$ref" 2>/dev/null
 }
 
 # --------------------------------------------------------------------------------------
@@ -255,6 +276,10 @@ file_one() {
             bead_reopen "$id" "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ) — same failure fingerprint, dedup within ${DEDUP_LOOKBACK_DAYS}-day window"
         fi
         bdq label add "$id" "sp-recur-$n" >/dev/null 2>&1
+        # PROMOTE FALLBACK-FOUND BEADS. A bead found via the O(N) fallback path has no
+        # ref: label; adding it here ensures the next query takes the fast label-keyed path.
+        # bdq label add is idempotent, so this is safe to call even if the label already exists.
+        bdq label add "$id" "ref:$(_ref_hash "$ref")" >/dev/null 2>&1
         _reopen_note="" _log_suffix=""
         if [ "$_was_closed" = 1 ]; then
             _reopen_note="
@@ -339,6 +364,10 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
     # promises. The label makes the initial bead indistinguishable from a recurrence in the
     # counter, so N filings reliably produce sp-recur-N and the SIN fires on the Nth.
     bdq label add "$id" "sp-recur-1" >/dev/null 2>&1
+    # LABEL THE REF HASH so future dedup queries take the O(1) label-keyed path instead of
+    # scanning all open incident beads. Added at creation so every new bead carries it from
+    # the start; the backfill-ref-labels subcommand labels beads filed before this was added.
+    bdq label add "$id" "ref:$(_ref_hash "$ref")" >/dev/null 2>&1
     # AN UNDECLARED REPO STAYS VISIBLE. Filed but labelled needs-repo-triage so an aeon
     # that would claim it in the home-repo fallback is stopped by its own confusion rather
     # than silently working in the wrong checkout. Escalated once so the operator can
@@ -536,6 +565,37 @@ list)
     b="$(find "$SPOOL" -maxdepth 1 -type f -name '*.bad' 2>/dev/null | wc -l)"
     [ "$b" -gt 0 ] && printf '%s malformed spool entr(ies) in %s\n' "$b" "$SPOOL"
     exit 0
+    ;;
+
+backfill-ref-labels)
+    # MIGRATION PASS — adds ref:<hash> labels to open incident beads that lack them.
+    # A bead filed before this feature was added carries no ref: label and is found only
+    # by the O(N) fallback path. Running this once labels every open bead so all future
+    # dedup queries take the fast O(1) label-keyed path. Safe to re-run: bd label add
+    # is idempotent, and beads already carrying a ref: label are skipped.
+    n=0 s=0 e=0
+    while IFS=$'\t' read -r bid eref; do
+        [ -n "$bid" ] && [ -n "$eref" ] || continue
+        _rl="ref:$(_ref_hash "$eref")"
+        if bdq label add "$bid" "$_rl" >/dev/null 2>&1; then
+            n=$((n+1))
+        else
+            e=$((e+1))
+        fi
+    done < <(bdq list --status open,in_progress --limit 0 --label "$LABELS" --json 2>/dev/null \
+      | python3 -c "
+import sys, json
+try:
+    for b in json.load(sys.stdin):
+        ls = b.get('labels') or []
+        if any(l.startswith('ref:') for l in ls): continue
+        ref = b.get('external_ref') or ''
+        if ref:
+            print(b.get('id',''), ref, sep='\t')
+except: pass
+")
+    printf 'backfilled %d, skipped (already labelled) — rerun %s list to confirm\n' "$n" "$0"
+    [ "$e" -eq 0 ] || printf 'errors on %d beads — check %s\n' "$e" "$ILOG"
     ;;
 
 *) sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;

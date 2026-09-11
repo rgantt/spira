@@ -539,6 +539,131 @@ esac
 
 testdb_reset; mkdir -p "$RUN"; > "$ILOG"
 
+# ======================================================================================
+echo
+echo "dedup efficiency — O(1) bd show calls regardless of open-incident queue depth (sp-80br6):"
+# ======================================================================================
+# THE PROBLEM. The dedup path formerly called bd show once per candidate returned by
+# bd list --label <labels>. N open incidents meant N sequential subprocess calls inside
+# the intake flock, measured at ~202ms each: 10 open incidents added ~2s per new filing,
+# exactly when the queue is deepest.
+#
+# THE FIX. Each bead now carries ref:<hash-of-external-ref> at filing time. _dedup_incident
+# queries bd list --label ref:<hash>, returning at most 1 candidate, and reads external_ref
+# directly from bd list --json output — no bd show per candidate.
+#
+# POSITIVE CONTROL (law-absence-needs-a-positive-control). The naive O(N) approach must
+# visibly show N bd show calls for N candidates, proving the counter wrapper is working.
+# A counter that always returns 0 would make any code look efficient; the positive control
+# distinguishes "nothing calls bd show" from "the counter is broken."
+#
+# THE COUNTER WRAPS $SPIRA_BD. incident.sh uses bdq (which wraps $SPIRA_BD) for all bd
+# calls; replacing SPIRA_BD with a counting wrapper captures every bd show invocation.
+# The wrapper writes to SHOW_COUNT_FILE atomically enough for this single-process test.
+
+SHOW_COUNT_FILE="$TMP/show-count"
+BD_REAL="${SPIRA_BD:-bd}"
+
+BD_COUNTER="$TMP/bd-counter"
+# The wrapper must use the original bd binary ($BD_REAL), not itself recursively.
+# Scan all args for 'show': bdq prepends -C $SPIRA_DB, so 'show' is not always at $1.
+cat > "$BD_COUNTER" <<WRAPPER
+#!/usr/bin/env bash
+for _a in "\$@"; do
+    if [ "\$_a" = "show" ]; then
+        _c=\$(cat "$SHOW_COUNT_FILE" 2>/dev/null || echo 0)
+        printf '%d\n' \$((_c+1)) > "$SHOW_COUNT_FILE"
+        break
+    fi
+done
+exec "$BD_REAL" "\$@"
+WRAPPER
+chmod +x "$BD_COUNTER"
+
+# POSITIVE CONTROL: a naive O(N) function that calls bd show for each candidate in the
+# open incident list — the shape of the OLD dedup path. Proves the counter captures shows.
+_naive_dedup_show_count() {
+    local search_labels
+    search_labels="$(printf '%s' "${LABELS:-spira,incident}" | tr ',' '\n' | grep -v '^repo:' | paste -sd, -)"
+    printf '0\n' > "$SHOW_COUNT_FILE"
+    "$BD_COUNTER" -C "$SPIRA_DB" list --status open,in_progress --limit 0 \
+        --label "$search_labels" --json 2>/dev/null \
+      | python3 -c "
+import sys, json, subprocess
+bd_bin = sys.argv[1]
+spira_db = sys.argv[2]
+try:
+    for bead in json.load(sys.stdin):
+        bid = bead.get('id')
+        if not bid: continue
+        subprocess.run([bd_bin, '-C', spira_db, 'show', bid, '--json'], capture_output=True)
+except: pass
+" "$BD_COUNTER" "$SPIRA_DB" 2>/dev/null
+    cat "$SHOW_COUNT_FILE" 2>/dev/null || echo 0
+}
+
+# Plant N beads with different refs so the naive loop has N candidates to bd-show.
+N_BENCH=5
+for _i in $(seq 1 $N_BENCH); do
+    "$BD_REAL" -C "$SPIRA_DB" create "bench-incident-$_i" \
+        --type bug --priority 2 --labels spira,incident \
+        --external-ref "incident:bench-ref-$_i" --silent >/dev/null 2>&1
+done
+
+naive_shows="$(_naive_dedup_show_count)"
+is "positive control: naive O(N) approach calls bd show $N_BENCH times for $N_BENCH candidates" \
+   "$N_BENCH" "$naive_shows"
+
+testdb_reset; mkdir -p "$RUN"; > "$ILOG"
+
+# NEW CODE: file via incident.sh (which uses the label-keyed path) alongside N-1 noise
+# beads that lack the ref: label. The dedup path on the second filing should issue
+# exactly 0 bd show calls — the label query returns 1 candidate and external_ref is
+# read directly from bd list --json output.
+for _i in $(seq 2 $N_BENCH); do
+    "$BD_REAL" -C "$SPIRA_DB" create "bench-noise-$_i" \
+        --type bug --priority 2 --labels spira,incident \
+        --external-ref "incident:noise-ref-$_i" --silent >/dev/null 2>&1
+done
+
+# File the target ref via incident.sh; it creates the bead and adds ref:<hash> label.
+printf 'seed\n' | inc SPIRA_INCIDENT_REF="incident:bench-target" >/dev/null 2>&1 || true
+
+# Second filing on same ref (the dedup recurrence path). Count bd show calls.
+printf '0\n' > "$SHOW_COUNT_FILE"
+printf 'recur\n' | SPIRA_BD="$BD_COUNTER" inc SPIRA_INCIDENT_REF="incident:bench-target" >/dev/null 2>&1 || true
+new_shows="$(cat "$SHOW_COUNT_FILE" 2>/dev/null || echo 0)"
+is "label-keyed dedup issues 0 bd show calls with $N_BENCH open candidates" "0" "$new_shows"
+
+testdb_reset; mkdir -p "$RUN"; > "$ILOG"
+
+# FALLBACK TEST: a bead filed without the ref: label (older code) still dedupes.
+# The fallback path (sub-path B) handles this case correctly.
+# Plant a bead manually (no ref: label, with the right external_ref).
+_fb_ref="incident:fallback-test-ref"
+_fb_id="$("$BD_REAL" -C "$SPIRA_DB" create "fallback test incident" \
+    --type bug --priority 2 --labels spira,incident \
+    --external-ref "$_fb_ref" --silent 2>/dev/null | tr -d '[:space:]')"
+[ -n "$_fb_id" ] && \
+    "$BD_REAL" -C "$SPIRA_DB" label add "$_fb_id" "sp-recur-1" >/dev/null 2>&1 || true
+
+# File the same ref via incident.sh — must find the existing bead (recurrence, not new).
+printf 'fallback recur\n' | inc SPIRA_INCIDENT_REF="$_fb_ref" >/dev/null 2>&1 || true
+n_fb="$(bd -C "$SPIRA_DB" list --status open,in_progress --limit 0 --json 2>/dev/null \
+  | python3 -c "
+import sys, json
+target = sys.argv[1]
+count = 0
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for i in (d if isinstance(d, list) else [d]):
+    if i.get('external_ref') == target: count += 1
+print(count)
+" "$_fb_ref")"
+is "a bead filed without ref: label is still found via the fallback path" "1" "$n_fb"
+recur_fb="$(grep -c 'recurred' "$ILOG" 2>/dev/null || true)"
+is "fallback-found bead was treated as recurrence, not new filing" "1" "$recur_fb"
+
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
 [ "$fail" -eq 0 ]
