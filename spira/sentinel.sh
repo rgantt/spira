@@ -554,13 +554,18 @@ for i in (d if isinstance(d, list) else [d]):
 # CHECK 5 — closed but not landed. A bead closed with no commit naming it unblocks its
 # dependents on a lie, and everything downstream then builds on work that is not there.
 #
-# Skipped when SPIRA_SKIP_RECLAIM=1: a fixture that explicitly seeds all beads has no
+# Skipped when SPIRA_SKIP_CLOSED_CHECK=1: a fixture that explicitly seeds all beads has no
 # $SPIRA_RUN/<id>.log files, so the while loop's first guard (`[ -f $SPIRA_RUN/$id.log ]`)
 # would skip every row anyway — but the two `bdjson list --status closed` queries per
 # partition still each cost ~500ms with nothing to show. Skipping the whole block saves ~1s
 # per sentinel pass in suites that do not test the closed-not-landed path.
+#
+# DELIBERATELY NOT tied to SPIRA_SKIP_RECLAIM. test-check5-drop.sh sets SPIRA_SKIP_RECLAIM=1
+# to skip the expensive overhead (DB check, STATE queries, CHECK 2, CHECK 3) while still
+# exercising this check. Suites that want to skip CHECK 5 must set SPIRA_SKIP_CLOSED_CHECK=1
+# explicitly (test-poison.sh and test-requeue-cap.sh do this to keep their per-pass budget).
 # ======================================================================================
-if [ "${SPIRA_SKIP_RECLAIM:-0}" != 1 ]; then
+if [ "${SPIRA_SKIP_CLOSED_CHECK:-0}" != 1 ]; then
 # The repository comes out of the SAME query as the id. `landed` reads the commit graph, and
 # reading the wrong repository's graph gives the wrong answer confidently in both directions:
 # a bead for repository A reads as never landed in repository B, so this check would reopen finished
@@ -815,7 +820,7 @@ for i in (d if isinstance(d, list) else [d]):
     sort -u -t$'\x1f' -k2,2 -k1,1
 )
 [ -n "$PARTITIONS" ] || log "CHECK5 no persona in the chamber declares a partition — no closed bead is being checked for landing"
-fi  # SPIRA_SKIP_RECLAIM
+fi  # SPIRA_SKIP_CLOSED_CHECK
 
 # ======================================================================================
 # CHECK 6 — land finished branches. THE WORK IS NOT DONE HERE; it is dispatched to

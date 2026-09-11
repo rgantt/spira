@@ -89,6 +89,7 @@ sentinel() {
     SPIRA_LAUNCH="$TMP/launch" SPIRA_SYSTEMCTL="$TMP/systemctl" \
     SPIRA_SUMMON="$TMP/launch" \
     SPIRA_SKIP_RECLAIM=1 \
+    SPIRA_SKIP_CLOSED_CHECK=1 \
     SPIRA_REQUEUE_AT="${SPIRA_REQUEUE_AT:-3}" \
     SPIRA_RECLAIM_AT="${SPIRA_RECLAIM_AT:-3}" \
         bash "$SH/sentinel.sh" 2>&1
