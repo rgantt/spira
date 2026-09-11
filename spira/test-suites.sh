@@ -35,6 +35,7 @@
 #
 # defect: sp-ewnb
 # covers: spira/suites.sh spira/gate-suites spira/gate-spira.sh spira/incident.sh
+# timeout: 180
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 pass=0; fail=0
