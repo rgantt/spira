@@ -1665,6 +1665,73 @@ elif [ "$st" = "closed" ] && [ "$committed" = "no" ] && [ "$superseded" = 1 ]; t
     log "$FAYTH: $BEAD_ID closed with nothing committed and NOT reopened — superseded, so its work landed under another id"
 fi
 
+# ---- production-checkout dirty guard -----------------------------------------------
+# The shared harness checkout (SPIRA_REPO) is production. Every aeon, timer and sentinel
+# reads scripts from that path as they sit on disk. A bead closed while SPIRA_REPO carries
+# uncommitted tracked modifications means unreviewed code is already in force — invisible to
+# the commit graph. skew.sh refresh also refuses a dirty tree, so the modification blocks
+# the hourly automatic repair: the checkout falls further behind with every pass.
+#
+# Checked after a bead is closed with a commit. An aeon that closes a bead while the shared
+# checkout is dirty must not walk away with the dirt behind it.
+#
+# When a modified path is byte-for-byte identical to the landing ref (content hand-applied
+# rather than pulled), git checkout -- <path> is the one-command remedy. That is the shape
+# of the violation this guard was added for: byte-identical content with a side-effect of
+# disabling the automatic repair.
+#
+# DOES NOT FIRE ON A BEAD THAT WAS REOPENED ABOVE. st="open" from the no-commit check or
+# the delivers check means the guard below is skipped: the bead is already open, and
+# stacking a second reopen on top of the first would leave contradicting notes on the same
+# re-opening event.
+#
+# SPIRA_ALLOW_PROD_DIRTY=1 overrides — the fence is polite, not a wall.
+if [ "$st" = "closed" ] && [ "$committed" = "yes" ] && [ -z "${SPIRA_ALLOW_PROD_DIRTY:-}" ]; then
+    _spd_dirty="$(git -C "$SPIRA_REPO" status --porcelain --untracked-files=no 2>/dev/null)"
+    if [ -n "$_spd_dirty" ]; then
+        # Walk the dirty-vs-HEAD names and compare each against the landing ref rather than
+        # HEAD. A checkout that is BEHIND and DIRTY understates the delta if measured against
+        # HEAD alone: origin/main is the authoritative version in force on the remote.
+        _spd_base="$(spira_landref "$SPIRA_REPO" 2>/dev/null \
+            || git -C "$SPIRA_REPO" rev-parse --abbrev-ref HEAD 2>/dev/null \
+            || printf 'HEAD')"
+        _spd_identical="" _spd_path=""
+        while IFS= read -r _spd_path; do
+            [ -n "$_spd_path" ] || continue
+            # diff --quiet exits 0 when the path is identical — no differences found.
+            if git -C "$SPIRA_REPO" diff --quiet "$_spd_base" -- "$_spd_path" 2>/dev/null; then
+                _spd_identical="${_spd_identical:+$_spd_identical }$_spd_path"
+            fi
+        done < <(git -C "$SPIRA_REPO" diff --name-only HEAD 2>/dev/null)
+
+        _spd_note="Reopened by aeon.sh: bead closed while $SPIRA_REPO carried uncommitted tracked modifications. Unreviewed code running from the production checkout is invisible to the commit graph, and a dirty tree blocks skew.sh refresh — so the dirt prevents the hourly automatic repair.
+
+Modified paths:
+$(printf '%s\n' "$_spd_dirty" | sed 's/^/  /')"
+        if [ -n "$_spd_identical" ]; then
+            _spd_note="$_spd_note
+
+Paths byte-for-byte identical to $_spd_base (hand-applied, not genuinely new):
+  $_spd_identical
+Remedy: git -C $SPIRA_REPO checkout -- $_spd_identical"
+        fi
+        _spd_note="$_spd_note
+
+Override (only when the modification is intentional and will be committed separately on the shared checkout): SPIRA_ALLOW_PROD_DIRTY=1"
+
+        bead_reopen "$BEAD_ID" "$_spd_note"
+        # PREVENT DOUBLE-FIRING. The SOP check and rebase check below both test [ st=closed ].
+        # Setting st here skips them: the bead is already reopened, and re-running those checks
+        # against a bead this process just put back would produce contradicting notes.
+        st="open"
+        log "$FAYTH: $BEAD_ID REOPENED — shared checkout dirty: $(git -C "$SPIRA_REPO" diff --name-only HEAD 2>/dev/null | head -5 | tr '\n' ' ')"
+        REQUEUE_CAUSE="prod-dirty"
+        REQUEUE_WHY="Bead closed while $SPIRA_REPO carried uncommitted tracked modifications; skew.sh declines to refresh a dirty tree. Clear the dirty files, then resume this bead."
+        unset _spd_dirty _spd_base _spd_identical _spd_path _spd_note
+    fi
+    unset _spd_dirty
+fi
+
 # ---- the closing rule: an incident resolved without a runbook is not resolved ----------
 # An incident that leaves no runbook behind is a POISONABLE condition, not a number on a
 # pane. The Ops brief has called this rule "not optional" since it was written, and it was
