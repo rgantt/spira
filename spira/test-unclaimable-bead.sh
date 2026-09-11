@@ -164,6 +164,57 @@ out="$(detect_unclaimable_ready 2>/dev/null)"
 lacks "poisoned bead not flagged by unclaimable check"   "sp-unc6a" "$out"
 lacks "needs-ryan bead not flagged by unclaimable check" "sp-unc6b" "$out"
 
+# ==========================================================================================
+echo
+echo "case 8 — file_unclaimable_incidents: a P1 incident is filed for the unclaimable bead"
+# ==========================================================================================
+# The sentinel surfaces the finding in the log, but the log is only as visible as the log.
+# file_unclaimable_incidents must file an incident bead that Ops can claim and fix. A mock
+# incident.sh captures the calls; the real one is not invoked.
+testdb_reset
+testdb_seed <<'JSONL'
+{"id":"sp-unc8a","title":"unclaimable: fayth:ops on plan labels","status":"open","issue_type":"task","labels":["fayth:ops","plan","repo:spira","spira"]}
+JSONL
+
+# The mock writes its args to a file whose path is embedded at write time (unquoted heredoc).
+INC_LOG8="$TMP/inc8.log"
+: > "$INC_LOG8"
+cat > "$TMP/mock-incident8.sh" <<MOCK
+#!/usr/bin/env bash
+printf 'file %s\n' "\$*" >> "$INC_LOG8"
+MOCK
+chmod +x "$TMP/mock-incident8.sh"
+
+unc="$(detect_unclaimable_ready 2>/dev/null)"
+SPIRA_INCIDENT_SH="$TMP/mock-incident8.sh" file_unclaimable_incidents "$unc"
+inc_out="$(cat "$INC_LOG8")"
+has  "incident filed for unclaimable bead"         "sp-unc8a"    "$inc_out"
+has  "incident title contains UNCLAIMABLE prefix"  "UNCLAIMABLE:" "$inc_out"
+
+# ==========================================================================================
+echo
+echo "case 9 — file_unclaimable_incidents: no incident for a claimable bead (negative control)"
+# ==========================================================================================
+# A claimable bead must never produce an incident call. Without this, a detect-everything
+# implementation files noise on every pass.
+testdb_reset
+testdb_seed <<'JSONL'
+{"id":"sp-unc9a","title":"claimable: spira,plan","status":"open","issue_type":"task","labels":["plan","repo:spira","spira"]}
+JSONL
+
+INC_LOG9="$TMP/inc9.log"
+: > "$INC_LOG9"
+cat > "$TMP/mock-incident9.sh" <<MOCK
+#!/usr/bin/env bash
+printf 'file %s\n' "\$*" >> "$INC_LOG9"
+MOCK
+chmod +x "$TMP/mock-incident9.sh"
+
+unc="$(detect_unclaimable_ready 2>/dev/null)"
+SPIRA_INCIDENT_SH="$TMP/mock-incident9.sh" file_unclaimable_incidents "$unc"
+inc9_out="$(cat "$INC_LOG9")"
+is "no incident for claimable bead" "" "$inc9_out"
+
 echo
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

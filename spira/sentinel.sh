@@ -1243,6 +1243,11 @@ if [ -n "$unclaimable_out" ]; then
     n_unc="$(grep -c '^UNCLAIMABLE' <<< "$unclaimable_out" || true)"
     log "CHECK7c: $n_unc ready bead(s) no persona can claim — fix each by adding or removing the label named above"
     act "surfaced $n_unc unclaimable ready bead(s)"
+    # FILE ONE INCIDENT PER UNCLAIMABLE BEAD. The sentinel surfacing the finding in the log
+    # is only as visible as the log; an incident bead is work Ops can claim and fix. incident.sh
+    # dedupes on unclaimable:<id>, so a bead still stuck on the next pass gets a recurrence
+    # count, not a duplicate bead (law-dedup-must-be-measured).
+    file_unclaimable_incidents "$unclaimable_out"
 fi
 fi  # SPIRA_SKIP_RECLAIM
 

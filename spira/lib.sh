@@ -2635,6 +2635,39 @@ for bead in beads:
 ' 2>/dev/null
 }
 
+# file_unclaimable_incidents — for each UNCLAIMABLE line in detect_unclaimable_ready output,
+# file a P1 incident so Ops can claim and fix the label.
+#
+# THE CALL IS IDEMPOTENT. incident.sh dedupes on SPIRA_INCIDENT_REF=unclaimable:<id>, so a
+# bead that is still unclaimable on the next sentinel pass bumps the recurrence counter
+# rather than filing a duplicate. An operator who fixes the label and the pass goes quiet is
+# the passing case; one who does not is a recurrence, not a new incident.
+#
+# THE TITLE NAMES THE BEAD AND THE FIX. "UNCLAIMABLE: <id>" is enough for Ops to identify
+# the bead, and "fix the fayth: or partition label" names the category of fix without
+# requiring the Ops aeon to read the full reason before acting. The full reason is in the body.
+#
+# SPIRA_INCIDENT_SH overrides the path to incident.sh. Test suites inject a mock here;
+# production uses the default.
+file_unclaimable_incidents() {   # file_unclaimable_incidents <detect_unclaimable_ready output>
+    local line bid reason inc
+    inc="${SPIRA_INCIDENT_SH:-$(dirname "$0")/incident.sh}"
+    [ -x "$inc" ] || return 0
+    while IFS= read -r line; do
+        case "$line" in UNCLAIMABLE\ *) ;; *) continue ;; esac
+        bid="${line#UNCLAIMABLE }"; bid="${bid%% —*}"
+        reason="${line#*— }"
+        SPIRA_DB="$SPIRA_DB" \
+        SPIRA_INCIDENT_TYPE=task \
+        SPIRA_INCIDENT_PRIORITY=1 \
+        SPIRA_INCIDENT_ACTOR=sentinel \
+        SPIRA_INCIDENT_REPO="${SPIRA_SCOPE_LABEL:-spira}" \
+        SPIRA_INCIDENT_REF="unclaimable:$bid" \
+        bash "$inc" file "UNCLAIMABLE: $bid — fix the fayth: or partition label" \
+            - <<< "$reason" >/dev/null 2>&1 || true
+    done <<< "$1"
+}
+
 # detect_livelocked -> one LIVELOCK line per open bead that cannot make progress.
 #
 # THE PROBLEM. A bead is livelocked when it is open but will never advance unless a human
