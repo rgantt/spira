@@ -90,7 +90,7 @@ sut() {
         SPIRA_SUITES_BUDGET="$BUDGET" SPIRA_SUITE_TIMEOUT="$PERSUITE" \
         SPIRA_SUITES_STALE="$STALE" SPIRA_SUITES_PRIORITY="$PRIO" \
         SPIRA_NOTIFY="$SH/ask.sh" FX_GATED_RAN="$TMP/gated.ran" \
-        SPIRA_PATH="$TOOLPATH" \
+        SPIRA_PATH="$TOOLPATH" SPIRA_INCIDENT_LOCK_WAIT="60" \
         "$@" bash "$SH/suites.sh" "$cmd" 2>&1
 }
 # plant <name> — the suite's body on stdin. No list is edited anywhere; existing is the whole
