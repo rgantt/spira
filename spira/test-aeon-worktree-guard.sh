@@ -5,16 +5,14 @@
 #
 #   ./test-aeon-worktree-guard.sh
 #
-# THE DEFECT THIS GUARDS. aeon-yojimbo committed directly into the production checkout
-# (/workspaces/spira-prod) rather than its assigned worktree. The commit:
-#   - existed only in the production checkout, unlanded and invisible to the gate
-#   - left the checkout DIVERGED from origin/main
-#   - froze every promote pass that followed
+# THE DEFECT THIS GUARDS. An aeon committed directly into the production checkout rather
+# than its assigned worktree. The commit existed only in the production checkout, unlanded
+# and invisible to the gate; it left the checkout DIVERGED from origin/main and froze
+# every promote pass that followed. One stranded commit froze the whole promote path.
 #
-# One stranded commit froze the whole promote path. The guard makes an out-of-worktree
-# commit structurally impossible: aeon.sh exports SPIRA_WORK (the assigned path) before
-# launching the session; branch-guard.sh staged reads it and refuses if the committing
-# tree does not match.
+# The guard makes an out-of-worktree commit structurally impossible: aeon.sh exports
+# SPIRA_WORK (the assigned path) before launching the session; branch-guard.sh staged reads
+# it and refuses if the committing tree does not match.
 #
 # FOUR CASES (law-absence-needs-a-positive-control):
 #   1. Aeon commits in SPIRA_WORK (the assigned worktree) → allowed.
