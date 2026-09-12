@@ -333,6 +333,73 @@ is     "empty scope exits 0"                0 "$rc"
 nowant "no leading comma in --label"        ",maechen-sweep" "$(grep 'create' "$BD_LOG" || true)"
 want   "maechen label present without scope" "maechen-sweep" "$(cat "$BD_LOG")"
 
+# ==========================================================================================
+echo
+echo "REGRESSION sp-b4t: log() stdout capture — no-origin repo followed by counted repo"
+# ==========================================================================================
+# When _count_landings is called inside $(...) for a repo with no origin remote, the
+# skip-path calls log() then prints '0'. With log() writing to stdout (the bug), both the
+# log line and '0' are captured into _n.  Bash arithmetic $(( landing_count + _n )) then
+# sees the timestamp token "2026-09" and fails with "value too great for base (error token
+# is '09')". Fix: log() must redirect to stderr so only the numeric result is captured.
+#
+# POSITIVE CONTROL: no-origin repo appears before a repo that has landings.
+# Before fix: "value too great for base" appears in the combined output.
+# After fix:  no error; COUNTED_REPO's landings are cleanly tallied.
+
+NOREMOTE_B4T="$T/noremote-b4t"
+git init -q "$NOREMOTE_B4T"
+git -C "$NOREMOTE_B4T" config user.email "test@example.com"
+git -C "$NOREMOTE_B4T" config user.name "Test"
+git -C "$NOREMOTE_B4T" commit --allow-empty -q -m "initial"
+# No origin remote — _count_landings logs "cannot resolve base ref" and returns 0.
+
+COUNTED_B4T="$T/counted-b4t"
+git init -q "$COUNTED_B4T"
+git -C "$COUNTED_B4T" config user.email "test@example.com"
+git -C "$COUNTED_B4T" config user.name "Test"
+git -C "$COUNTED_B4T" commit --allow-empty -q -m "initial"
+git -C "$COUNTED_B4T" commit --allow-empty -q -m "sp-r1a1: first landing"
+git -C "$COUNTED_B4T" commit --allow-empty -q -m "sp-r2b2: second landing"
+mkdir -p "$COUNTED_B4T/.git/refs/remotes/origin"
+git -C "$COUNTED_B4T" rev-parse HEAD > "$COUNTED_B4T/.git/refs/remotes/origin/main"
+
+HOME_B4T="$T/home-b4t"
+git init -q "$HOME_B4T"
+git -C "$HOME_B4T" config user.email "test@example.com"
+git -C "$HOME_B4T" config user.name "Test"
+git -C "$HOME_B4T" commit --allow-empty -q -m "initial"
+mkdir -p "$HOME_B4T/.git/refs/remotes/origin"
+git -C "$HOME_B4T" rev-parse HEAD > "$HOME_B4T/.git/refs/remotes/origin/main"
+
+REPOMAP_B4T="$T/repomap-b4t"
+# no-origin repo listed before the counted repo — the problematic ordering.
+printf 'noremote|%s|\ncounted|%s|\n' "$NOREMOTE_B4T" "$COUNTED_B4T" > "$REPOMAP_B4T"
+
+printf '0\n' > "$WATERMARK_FILE"
+: > "$BD_LOG"
+out_b4t="$(env -i HOME="$T" PATH="$HERE:/usr/bin:/bin" \
+    SPIRA_CONF="$NONE" \
+    SPIRA_BD="$STUB_BD" \
+    BD_LOG_PATH="$BD_LOG" \
+    BD_LIST_OUTPUT="[]" \
+    SPIRA_DB="$T/fixture.db" \
+    SPIRA_RUN="$RUNDIR" \
+    SPIRA_REPO="$HOME_B4T" \
+    SPIRA_REPO_MAP="$REPOMAP_B4T" \
+    SPIRA_MAECHEN_LABEL="maechen-sweep" \
+    SPIRA_SCOPE_LABEL="spira" \
+    SPIRA_MAECHEN_MAX_GAP_SECONDS=9999999999 \
+    SPIRA_MAECHEN_LANDING_INTERVAL=2 \
+    bash "$TRIGSH" 2>&1)"; rc_b4t=$?
+# (a) The arithmetic-error message must not appear — log() must not pollute $(...) capture.
+nowant "no 'value too great for base' from log stdout capture" \
+    "value too great for base" "$out_b4t"
+# (b) The trigger fires — COUNTED_REPO's 2 landings correctly reach the threshold of 2.
+is   "trigger exits 0 after no-origin repo in map" 0 "$rc_b4t"
+want "bd create called — counted repo after no-origin repo was tallied" \
+    "create" "$(cat "$BD_LOG")"
+
 echo
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

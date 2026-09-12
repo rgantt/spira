@@ -46,7 +46,7 @@ BD="${SPIRA_BD:-bd}"
 DB="${SPIRA_DB:-.}"
 WATERMARK_FILE="${SPIRA_RUN}/maechen.watermark"
 
-log() { printf '%s maechen-trigger: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+log() { printf '%s maechen-trigger: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
 # PARTITION LABELS. The trigger bead carries SPIRA_SCOPE_LABEL (if non-empty) and
 # SPIRA_MAECHEN_LABEL so maechen.fayth's FAYTH_LABELS predicate selects it. The same
@@ -118,10 +118,19 @@ _count_landings() {   # _count_landings <repo_path> <since_ts>
     printf '%d' "$n"
 }
 
+# _add_landings <n> — guard against a non-numeric _n before touching landing_count.
+# A future log() stdout leak would otherwise abort the enclosing loop; with this guard it
+# degrades to an undercount rather than a loop exit.
+_add_landings() {
+    local _n="$1"
+    case "$_n" in *[!0-9]*) log "WARNING: non-numeric landing count [${_n}] — skipping"; return 0 ;; esac
+    landing_count=$(( landing_count + _n ))
+}
+
 # Home repo — always present.
 if [ -d "${SPIRA_REPO:-}" ]; then
     _n="$(_count_landings "$SPIRA_REPO" "$watermark_ts")"
-    landing_count=$(( landing_count + _n ))
+    _add_landings "$_n"
 fi
 
 # Additional repos from the repo-map, skipping the home repo to avoid double-counting.
@@ -135,7 +144,7 @@ if [ -f "${SPIRA_REPO_MAP:-}" ]; then
         [ "$_rp" = "${SPIRA_REPO:-}" ] && continue   # already counted
         [ -d "$_rp" ] || continue
         _n="$(_count_landings "$_rp" "$watermark_ts")"
-        landing_count=$(( landing_count + _n ))
+        _add_landings "$_n"
     done < "$SPIRA_REPO_MAP"
 fi
 
