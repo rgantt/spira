@@ -1,6 +1,6 @@
 /* model.js — the whole view model, derived in the page from a raw bead array.
  *
- *   const model = LoomModel.derive(beads, {now: Date.now(), askLabel: 'needs-operator'});  /* literal-ok: usage example, server overrides via meta */
+ *   const model = LoomModel.derive(beads, {now: Date.now(), askLabel: 'needs-operator'});  // literal-ok: usage example, server overrides via meta
  *
  * THE SERVER RETURNS BEADS AND NOTHING ELSE. No coordinates, no connected components, no
  * layers, no histograms, no headline counts. Those all live here, because a surface whose
