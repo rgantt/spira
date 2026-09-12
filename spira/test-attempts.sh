@@ -214,7 +214,15 @@ insert into events values
  ('b1','status_changed','{\"status\":\"in_progress\"}'),
  ('b1','status_changed','{\"status\":\"closed\"}'),
  ('b1','label_added','mentions in_progress in a comment'),
- ('b2','created',null);" >/dev/null 2>&1
+ ('b2','created',null),
+ -- b3: THREE claims, THREE successful closes. A harness requeue is not a failed attempt:
+ -- sp-7tj completed three groom passes and was poisoned for it because raw claims were
+ -- counted. Expect 0.
+ ('b3','claimed',null),('b3','closed',null),
+ ('b3','claimed',null),('b3','closed',null),
+ ('b3','claimed',null),('b3','closed',null),
+ -- b4: three claims, never closed. A genuinely failing bead. Expect 3.
+ ('b4','claimed',null),('b4','claimed',null),('b4','claimed',null);" >/dev/null 2>&1
 # THE FIXTURE MUST RUN THE SHIPPED QUERY, NOT A COPY OF IT. The first version of this block
 # built its own `mk()` with the correct SQL inlined, so reverting lib.sh to the broken
 # predicate left it passing — a fixture that tests a string the test itself wrote proves
@@ -225,6 +233,10 @@ got_b1="$(dolt --data-dir "$FX" sql -q "use fx; $(mk b1)" 2>/dev/null | sed -n '
 got_b2="$(dolt --data-dir "$FX" sql -q "use fx; $(mk b2)" 2>/dev/null | sed -n '4p' | tr -d '| ')"
 is "fixture: two claims + one hand transition = 3 attempts" "3" "$got_b1"
 is "fixture control: a bead with only a created event = 0" "0" "$got_b2"
+got_b3="$(dolt --data-dir "$FX" sql -q "use fx; $(mk b3)" 2>/dev/null | sed -n '4p' | tr -d '| ')"
+got_b4="$(dolt --data-dir "$FX" sql -q "use fx; $(mk b4)" 2>/dev/null | sed -n '4p' | tr -d '| ')"
+is "three claims each closed successfully = 0 attempts (a requeue is not an attempt)" "0" "$got_b3"
+is "CONTROL: three claims and never closed = 3 attempts" "3" "$got_b4"
 body_attempts="$(sed -n '/^attempts_of()/,/^}/p' "$HERE/lib.sh" 2>/dev/null)"
 is "attempts_of delegates to the SQL builder" "1" \
    "$(grep -c '_attempts_sql_query' <<<"$body_attempts" || true)"

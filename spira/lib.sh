@@ -1416,7 +1416,22 @@ capacity_withdrawn_mark() {
 #      attempt, never a bare LIKE over every row.
 # --------------------------------------------------------------------------------------
 _attempts_sql_query() {   # _attempts_sql_query <id> -> the SQL that counts attempts
-    printf "select count(*) from events where issue_id='%s' and (event_type='claimed' or (event_type='status_changed' and new_value like '%%in_progress%%'))" "$1"
+    # AN ATTEMPT IS A CLAIM THAT DID NOT SUCCEED — claims minus successful closes.
+    #
+    # Counting raw claims makes a HARNESS REQUEUE indistinguishable from an aeon failure,
+    # and the poison threshold then fires on work that succeeded. sp-7tj was claimed three
+    # times and CLOSED SUCCESSFULLY three times: CHECK 5 reopened it on each pass because its
+    # work reached the base by content before the Sending applied `content-landed`, and the
+    # bead was poisoned for it. Three completed groom passes, one poisoned bead, nothing
+    # wrong with the work.
+    #
+    # The old label counters carried a cause and exempted requeues; sp-lzt deleted them and
+    # the exemption went with them unnoticed, because attempts_of was returning 0 for
+    # everything at the time and nothing could be poisoned at all.
+    #
+    # GREATEST(...,0) because a bead can carry more closes than claims — an operator closing
+    # a bead by hand adds one with no claim behind it.
+    printf "select greatest(sum(case when event_type='claimed' or (event_type='status_changed' and new_value like '%%in_progress%%') then 1 else 0 end) - sum(case when event_type='closed' then 1 else 0 end), 0) from events where issue_id='%s'" "$1"
 }
 
 attempts_of() {          # attempts_of <id> -> count of in_progress status-change events
