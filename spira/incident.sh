@@ -45,11 +45,16 @@ set -uo pipefail
 # external ref, the recurrence bump, the Sin escalation — is the same either way, and is the
 # reason a second implementation of "file a bead, but only once" does not exist.
 #
-# THE OPEN-BEAD LOOKUP MUST EXCLUDE FILER-SPECIFIC LABELS. The authoritative dedupe key is
-# external_ref, compared client-side; the --label filter is only a cheap prefilter to keep
-# the result set small. A label that varies between filers of the same event (e.g. repo:)
-# must be excluded from that filter: including it silently partitions the candidate set so
-# two callers declaring different repos never find each other's open incident (sp-jvlrs).
+# THE OPEN-BEAD LOOKUP KEYS ON ref:<hash> ALONE. The authoritative dedupe key is
+# external_ref, compared client-side; the --label filter is only a cheap prefilter to
+# reduce the candidate set before that comparison. Any label the caller chooses —
+# including the partition labels in SPIRA_INCIDENT_LABELS — must not appear in that
+# prefilter: two filers of the same event that declare different labels would query
+# non-overlapping partitions and never find each other's open bead, filing duplicates.
+# ref:<hash> is derived from external_ref and cannot vary between filers of one event,
+# so it is the only safe prefilter. The unlabeled fallback (sub-path B in _dedup_incident)
+# uses no label filter at all, because those beads were filed before the ref: label existed
+# and carry no invariant label.
 LABELS="${SPIRA_INCIDENT_LABELS:-spira,incident}"
 
 # THE REPOSITORY THIS INCIDENT BELONGS TO. Without a repo dimension a bead is worked in
@@ -150,19 +155,17 @@ _provenance() {
 # one extra list iteration, not a bd show per candidate.
 #
 # FALLBACK FOR UNLABELED BEADS. A bead filed by older code carries no ref: label.
-# After the label-keyed path finds nothing, a second query walks all open incident beads
-# and filters client-side on external_ref, skipping beads that do carry a ref: label
-# (those were already checked by the label-keyed path and did not match). Once touched
-# on the recurrence path, an unlabeled bead receives the label so subsequent queries
-# take the fast path.
+# After the label-keyed path finds nothing, a second query walks all open beads and
+# filters client-side on external_ref, skipping beads that carry any ref: label (those
+# were already checked and did not match). No label filter is applied: any filer-chosen
+# label in the filter would partition the candidate set so cross-label duplicates are
+# missed — the same class of defect as the one in sub-path A, on the slower path.
+# Once found on this path, an unlabeled bead receives the ref: label so subsequent
+# queries take the fast label-keyed path.
 #
 # ALL SHELL-LEVEL BD CALLS USE bdq, NOT $SPIRA_BD DIRECTLY. bdq is defined in lib.sh
 # (sourced above) and adds -C "$SPIRA_DB" so bd finds the right database. Calling $SPIRA_BD
 # directly omits -C and makes bd search from the working directory, which finds nothing.
-#
-# DEDUPE LABELS EXCLUDE repo: — a repo: label identifies the filer, not the event.
-# Two callers declaring different repos must still find each other's open incident;
-# including repo: in the filter silently partitions dedup so they cannot (sp-jvlrs).
 #
 # DATE ARITHMETIC IS GNU date(1). The -v flag is a BSD/macOS fallback. An empty since
 # skips the closed-bead search rather than scanning with an unbounded window.
@@ -171,19 +174,17 @@ _provenance() {
 # see the pattern; a chain of six single-occurrence beads does not (sp-srgr6).
 # --------------------------------------------------------------------------------------
 _dedup_incident() {      # _dedup_incident <ref> -> "open <id> <n>" | "closed <id> <n>" | nothing
-    local ref="$1" _dedupe_labels _ref_label _lq _since _r
-    _dedupe_labels="$(printf '%s' "$LABELS" | tr ',' '\n' | grep -v '^repo:' | paste -sd, -)"
+    local ref="$1" _ref_label _since _r
     _ref_label="ref:$(_ref_hash "$ref")"
-    # AND query: must carry all of _dedupe_labels labels plus the hash label.
-    _lq="${_dedupe_labels:+${_dedupe_labels},}${_ref_label}"
 
     # PASS 1 — open / in_progress.
-    # Sub-path A: label-keyed. --label ref:<hash> returns at most 1 candidate; external_ref
-    # and labels are both present in bdq list --json, so no bd show per candidate.
-    # bdq adds -C "$SPIRA_DB" so the query reaches the configured database, not the
-    # auto-discovered one (law-address-the-store-with-spira-bd, and the same lesson applies
-    # here: bare $SPIRA_BD without -C silently addresses the caller's default store).
-    _r="$(bdq list --status open,in_progress --limit 0 --label "$_lq" --json 2>/dev/null \
+    # Sub-path A: label-keyed on ref:<hash> ALONE. No caller-chosen label appears here:
+    # two filers with different SPIRA_INCIDENT_LABELS would query non-overlapping label
+    # partitions and never find each other's bead. ref:<hash> is derived from external_ref
+    # and is invariant across all filers of one event. At most 1 candidate is returned;
+    # external_ref is confirmed client-side. bdq adds -C "$SPIRA_DB" so the query reaches
+    # the configured database, not the auto-discovered one (law-address-the-store-with-spira-bd).
+    _r="$(bdq list --status open,in_progress --limit 0 --label "$_ref_label" --json 2>/dev/null \
       | python3 -c '
 import sys, json, re
 target = sys.argv[1]
@@ -198,10 +199,11 @@ except: pass
     if [ -n "$_r" ]; then printf '%s' "$_r"; return; fi
 
     # Sub-path B: fallback for beads without the ref: label (filed by older code).
-    # Skips beads that carry any ref: label — those were already not found in sub-path A
-    # and are not this ref. Once found here, file_one adds the label so this path is not
-    # needed again for the same bead.
-    _r="$(bdq list --status open,in_progress --limit 0 --label "$_dedupe_labels" --json 2>/dev/null \
+    # No label filter: these beads predate the ref: label and carry no invariant label,
+    # so any label filter would partition by filer and miss cross-label duplicates.
+    # Skips beads that carry any ref: label — those were already checked in sub-path A.
+    # Once found here, file_one adds the label so this path is not needed again.
+    _r="$(bdq list --status open,in_progress --limit 0 --json 2>/dev/null \
       | python3 -c '
 import sys, json, re
 target = sys.argv[1]
@@ -221,8 +223,8 @@ except: pass
            || date -u -v "-${DEDUP_LOOKBACK_DAYS}d" '+%Y-%m-%d' 2>/dev/null || true)"
     [ -z "$_since" ] && return
 
-    # Sub-path A for closed beads: label-keyed.
-    _r="$(bdq list --status closed --closed-after "$_since" --limit 0 --label "$_lq" --json 2>/dev/null \
+    # Sub-path A for closed beads: label-keyed on ref:<hash> alone.
+    _r="$(bdq list --status closed --closed-after "$_since" --limit 0 --label "$_ref_label" --json 2>/dev/null \
       | python3 -c '
 import sys, json, re
 target = sys.argv[1]
@@ -236,8 +238,9 @@ except: pass
 ' "$ref" 2>/dev/null)"
     if [ -n "$_r" ]; then printf '%s' "$_r"; return; fi
 
-    # Sub-path B for closed beads: fallback for unlabeled beads.
-    bdq list --status closed --closed-after "$_since" --limit 0 --label "$_dedupe_labels" --json 2>/dev/null \
+    # Sub-path B for closed beads: fallback for unlabeled beads. No label filter,
+    # same reason as the open-bead fallback above.
+    bdq list --status closed --closed-after "$_since" --limit 0 --json 2>/dev/null \
       | python3 -c '
 import sys, json, re
 target = sys.argv[1]

@@ -248,6 +248,62 @@ except: print(0)
 ')"
 is "total open incident count is 1 after $N filings — no surplus beads (sp-vq796)" "1" "$n_total"
 
+testdb_reset; mkdir -p "$RUN"; > "$ILOG"
+
+# ======================================================================================
+echo
+echo "cross-label dedup — two filers with different SPIRA_INCIDENT_LABELS dedupe to one bead:"
+# ======================================================================================
+# THE DEFECT THIS GUARDS. _dedup_incident built its prefilter as an AND over the
+# non-repo labels from LABELS (_dedupe_labels) plus ref:<hash>. Two filers of the same
+# event that declare different SPIRA_INCIDENT_LABELS therefore queried non-overlapping
+# partitions and never found each other's open bead. Result: one event, two beads, two
+# Ops sessions working identical snapshots.
+#
+# THE INVARIANT. The prefilter must key on ref:<hash> ALONE. ref:<hash> is derived from
+# external_ref and cannot vary between filers of one event. No label the caller chooses
+# may appear in that filter.
+#
+# REGRESSION SHAPE. Filing with LABELS=spira,plan creates a bead labelled plan,spira.
+# Filing again with LABELS=spira,incident builds _dedupe_labels=spira,incident; if that
+# AND filter is applied, the query cannot return the plan-labelled bead and a second bead
+# is created. The fix (ref:<hash> only) finds the first bead regardless of its labels.
+CROSS_REF="incident:cross-label-dedup-test"
+
+# count_by_ref_any queries ALL open/in_progress beads without a label filter, then
+# filters client-side on external_ref. Required here because the two filers leave beads
+# with different labels, so count_by_ref (which filters on spira,incident) would miss the
+# first bead.
+count_by_ref_any() {
+    bd -C "$SPIRA_DB" list --status open,in_progress --limit 0 --json 2>/dev/null \
+      | python3 -c '
+import sys, json
+target = sys.argv[1]; count = 0
+try: d = json.load(sys.stdin)
+except Exception: print(0); raise SystemExit(0)
+for i in (d if isinstance(d, list) else [d]):
+    if i.get("external_ref") == target:
+        count += 1
+print(count)
+' "$1"
+}
+
+# Filer 1 uses the builder partition (plan); filer 2 uses the ops partition (incident).
+# Both declare the same SPIRA_INCIDENT_REF so external_ref is identical.
+printf 'first filer\n' | inc SPIRA_INCIDENT_LABELS="spira,plan" SPIRA_INCIDENT_REF="$CROSS_REF" >/dev/null
+printf 'second filer\n' | inc SPIRA_INCIDENT_LABELS="spira,incident" SPIRA_INCIDENT_REF="$CROSS_REF" >/dev/null
+
+n_cross="$(count_by_ref_any "$CROSS_REF")"
+is "cross-label: two filers with different LABELS produce exactly one bead" "1" "$n_cross"
+
+# RECURRENCE MUST HAVE BEEN LOGGED. Recurrence is recorded via ilog "... recurred ..."
+# in the incident log rather than via sp-recur-N labels (which are no longer written).
+# If filer 2 found the existing bead it records "recurred"; if it created a fresh bead
+# the log contains two "filed" entries and no "recurred" — the log check distinguishes
+# dedupe-and-bump from two separate filings that happened to produce one bead.
+_cross_recur_logged="$(grep -c ' recurred ' "$ILOG" 2>/dev/null || true)"
+is "cross-label: second filer records recurrence in incident log" "1" "$_cross_recur_logged"
+
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
 [ "$fail" -eq 0 ]
