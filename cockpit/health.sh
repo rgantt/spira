@@ -205,39 +205,46 @@ age_str() {
 # output to match — there is no point emitting rows nothing can show.
 MAX_SECTION_ROWS=20
 
-# NEXT AND RECENT ARE ELASTIC, AND THE ALLOCATOR — NOT A CONSTANT — DECIDES HOW TALL THEY ARE.
-# They were held to five each, which spent the pane's slack rather than the pane: on the
-# 52-row column this runs in, an idle harness rendered about eighteen rows and left thirty
-# blank, because once every section had reached its `want` the round-robin had nowhere left
-# to put the budget. The operator, watching that: "i still see a lot of unused vertical rows
-# ... if there are no aeons running? more next, more recent. if there are aeons? scale those
-# down."
+# NEXT AND RECENT ARE FIVE ROWS, AND INFLOW IS THE ELASTIC ONE.
 #
-# So these are no longer the size of the section. They are a CEILING on how much the section
-# may ever ask for, set high enough that on any real pane the height is decided by `share`
-# and by how much data actually exists. `share` already scales correctly in both directions
-# — it is round-robin, one row at a time, so a NOW that grows by four rows per live aeon
-# takes its rows out of these two and hands them back when the aeons finish.
+# All three numbers below exist because the column has slack to place and only one sensible
+# place to put it. The slack itself was the earlier finding: held at five each, NEXT and
+# RECENT spent the pane's slack rather than the pane — on the 52-row column this runs in an
+# idle harness rendered about eighteen rows and left thirty blank, because once every section
+# had reached its `want` the round-robin had nowhere left to put the budget. Raising both to
+# forty fixed the blank rows and answered the question with the sixth, seventh and eighth
+# entries of two ordered lists, which is the least any of those rows could have said: nobody
+# reads the eighth-most-recent landing.
 #
-# THEY STAY TWO KEYS RATHER THAN ONE. They answer different questions and will not stay the
+# So NEXT and RECENT are a HEIGHT again, and the slack goes to INFLOW — the newest beads in
+# the store, which is the one section whose extra rows are worth having. A growing store reads
+# as a busy harness whichever way it grew, and the two cases are opposite: beads arriving
+# because a design was decomposed is progress, and beads arriving because one broken thing
+# keeps reporting itself is a defect wearing throughput's clothes. The operator, reading an
+# hour of it: "11 of the 12 beads right now are from the timed test run." (per Ryan,
+# 2026-09-12)
+#
+# THEY STAY THREE KEYS RATHER THAN ONE. They answer different questions and will not stay the
 # same number — a shared constant is how two sections come to be resized together by someone
 # who meant to resize one.
 #
 # THE COLLECTOR MUST AGREE. A ceiling here that the collector does not emit rows for is a
-# section that silently stays five tall; `spira/cockpit.sh` caps SP_NEXT and SP_EVENT to the
-# same figure, and the two are commented at each other on purpose.
+# section that silently renders short; `spira/cockpit.sh` caps SP_NEXT, SP_EVENT and
+# SP_INFLOW to these same figures, and the pairs are commented at each other on purpose.
 #
 # The generic cap above still governs CI, which is a list of work parked since yesterday and
 # has no fixed useful length.
-MAX_NEXT_ROWS=40
-MAX_RECENT_ROWS=40
+MAX_NEXT_ROWS=5
+MAX_RECENT_ROWS=5
+MAX_INFLOW_ROWS=40
 
-# THE FIVE THAT WERE THE WHOLE SECTION ARE NOW ITS FLOOR. Elastic does not mean unguaranteed:
-# these are what NEXT and RECENT are given before any section is taken past its base, so a
-# short or busy pane still shows the same five queued beads and five events it always did.
-# The ceilings above are only what they may grow INTO once every other section is satisfied.
+# WHAT EACH SECTION IS GUARANTEED BEFORE ANY OF THEM IS TAKEN PAST IT. For NEXT and RECENT
+# the base is also the ceiling, so a short or busy pane shows the same five queued beads and
+# five events a tall idle one does. INFLOW's base is the five it must never drop below; the
+# ceiling above is only what it may grow INTO once every other section is satisfied.
 NEXT_BASE_ROWS=5
 RECENT_BASE_ROWS=5
+INFLOW_BASE_ROWS=5
 
 # Read both snapshots into the shell. Called once per frame; every section reads what it
 # left behind.
@@ -753,20 +760,31 @@ now_section() {
         # ones are dim context answering "what led here". When the snapshot holds no ACT{j}
         # keys — N=0, or an older collector — the single ACT line and the SAID line render
         # as before.
-        local tl="${SPIRA_COCKPIT_TRACE_LINES:-3}" trail_n=0
+        # TWO, AND conf.sh AGREES. The fallback is here for a pane running without a
+        # sourced conf, so a disagreement between the two would show up as a section that
+        # is a row taller on one box than on another.
+        local tl="${SPIRA_COCKPIT_TRACE_LINES:-2}" trail_n=0 trail_have=0
         if [ "$tl" -gt 0 ] 2>/dev/null; then
-            local j=0
-            while [ "$j" -lt "$tl" ]; do
-                eval "[ -n \"\${SP_AEON${i}_ACT${j}:-}\" ]" || break
-                trail_n=$((trail_n+1))
-                j=$((j+1))
+            # COUNT WHAT THE SNAPSHOT HOLDS FIRST, THEN KEEP THE NEWEST OF IT. Reading the
+            # first `tl` keys is the obvious loop and it drops the wrong end: the collector
+            # writes ACT0..ACTn-1 oldest-first, so a snapshot holding three moments and a
+            # pane rendering two showed the FIRST two — the last thing the session did was
+            # the row thrown away, and the `quiet` timer, which belongs to that moment, was
+            # printed against the one before it. The two numbers agree in steady state and
+            # disagree for exactly as long as a stale snapshot outlives a changed setting,
+            # which is when a reader is most likely to be looking.
+            while :; do
+                eval "[ -n \"\${SP_AEON${i}_ACT${trail_have}:-}\" ]" || break
+                trail_have=$((trail_have+1))
             done
+            trail_n="$trail_have"
+            [ "$trail_n" -gt "$tl" ] && trail_n="$tl"
         fi
         if [ "$trail_n" -gt 0 ]; then
-            local j=0
-            while [ "$j" -lt "$trail_n" ]; do
+            local j=$(( trail_have - trail_n ))
+            while [ "$j" -lt "$trail_have" ]; do
                 eval "local trail_line=\${SP_AEON${i}_ACT${j}:-}"
-                if [ "$j" -eq $((trail_n - 1)) ]; then
+                if [ "$j" -eq $((trail_have - 1)) ]; then
                     local aw=$(( COLS - 12 - ${#qs} )); [ "$aw" -lt 2 ] && aw=2
                     fit "${trail_line:--}" "$aw"
                     local pad=$(( COLS - 10 - ${#FIT} - ${#qs} )); [ "$pad" -lt 1 ] && pad=1
@@ -840,6 +858,19 @@ part_colour() {
     case "$1" in
         ops) printf '%s' "$C_WARN" ;;
         *)   printf '%s' "$C_DIM"  ;;
+    esac
+}
+
+# A KIND IS COLOURED BY WHAT ITS ARRIVAL MEANS, which is the only reason INFLOW shows the
+# kind at all. A bug or an incident flowing in is the system reporting on itself, and a run
+# of them is the shape a defect makes when it reproduces once per suite file. A decision is a
+# question that will sit in the store until Ryan answers it. A task or an epic is ordinary
+# planned work and wears the same dim as everything else on the column.
+kind_colour() {
+    case "$1" in
+        bug|incident) printf '%s' "$C_BAD" ;;
+        decision)     printf '%s' "$C_WARN" ;;
+        *)            printf '%s' "$C_DIM" ;;
     esac
 }
 
@@ -1021,6 +1052,69 @@ recent_section() {
         eval "ev=\${SP_EVENT$i:-}"
         [ -n "$ev" ] || break
         printf '        %s\n' "$(recent_row "$ev" 8)"
+        i=$((i+1))
+    done
+}
+
+# INFLOW rows arrive as `<age> <kind> P<n> <bead> <title...>` and print in that order — the
+# same left-to-right reading RECENT has (time, state, bead, description), so the two sections
+# can be scanned down as one column rather than parsed separately.
+#
+# A ROW THAT CANNOT BE SPLIT IS PRINTED AS IT CAME, and still cut to the pane: autowrap is
+# off, so an over-wide row is cut by the terminal instead, and the terminal's cut is silent.
+inflow_row() {          # inflow_row "<age> <kind> P<n> <bead> <title>"
+    local raw="$1" age kind pri id rest aw kw
+    if [[ "$raw" =~ ^([0-9]+[smhd])[[:space:]]+([^[:space:]]+)[[:space:]]+(P[^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]*(.*)$ ]]; then
+        age="${BASH_REMATCH[1]}"; kind="${BASH_REMATCH[2]}"
+        pri="${BASH_REMATCH[3]}"; id="${BASH_REMATCH[4]}"; rest="${BASH_REMATCH[5]}"
+    else
+        fit "$raw" $(( COLS - 8 ))
+        printf '        %s%s%s\n' "$C_DIM" "$FIT" "$C_RST"; return
+    fi
+    # EIGHT COLUMNS OF KIND covers task, bug, epic, decision and incident — every type the
+    # binary validates. A longer one widens its own row rather than being cut, as RECENT's
+    # verb does: a type nothing here knows about is a fact worth seeing whole.
+    aw=${#age};  [ "$aw" -lt 4 ] && aw=4
+    kw=${#kind}; [ "$kw" -lt 8 ] && kw=8
+    # fit width: 8 + aw+1 + kw+1 + |pri|+1 + max(14,id)+1 + fit = COLS
+    fit "$rest" $(( COLS - 12 - aw - kw - ${#pri} - (${#id} > 14 ? ${#id} : 14) ))
+    printf '        %s%-*s%s %s%-*s%s %s%s%s %s%-14s%s %s%s%s\n' \
+        "$C_DIM" "$aw" "$age" "$C_RST" \
+        "$(kind_colour "$kind")" "$kw" "$kind" "$C_RST" \
+        "$(pri_colour "$pri")" "$pri" "$C_RST" \
+        "$C_ACC" "$id" "$C_RST" "$C_DIM" "$FIT" "$C_RST"
+}
+
+# INFLOW — what is being CUT, newest first, and the rate it is arriving at.
+#
+# THE ONE SECTION THAT READS THE QUEUE FROM THE OTHER END. NOW says what is held, NEXT what
+# is ready, UNLND what is landing and RECENT what moved; none of them answers where any of it
+# came from. See the comment on MAX_INFLOW_ROWS for why that question is worth a section.
+#
+# THE HEADER IS A RATE AND THE ROWS ARE THE NEWEST, over two different windows on purpose. On
+# a quiet hour the rate is 0 and the rows still say what last arrived and how long ago, so the
+# section neither goes blank nor implies a burst that is not happening.
+#
+# THE KINDS CARRY THE COLOUR, NOT THE COUNT. Twelve new beads in an hour is a decomposed
+# design or a loop, and the count alone cannot tell those apart — "bug 12" can
+# (law-alerts-must-be-actionable: the figure that colours is the one a reader can act on).
+inflow_section() {
+    if [ -z "${SP_INFLOW_N:-}" ] || [ "${SP_INFLOW_N:-}" = "?" ]; then
+        unread_row INFLOW "cannot read what is being cut"
+        return
+    fi
+    local kcol="$C_DIM"
+    case "${SP_INFLOW_DEFECT:-0}" in 0) ;; *) kcol="$C_WARN" ;; esac
+    printf ' %sINFLOW%s %s%s%s %snew/%sm%s  %s%s%s\n' \
+        "$C_DIM" "$C_RST" \
+        "$C_B" "${SP_INFLOW_N}" "$C_RST" \
+        "$C_DIM" "${SP_INFLOW_WIN:-?}" "$C_RST" \
+        "$kcol" "${SP_INFLOW_KINDS:--}" "$C_RST"
+    local i=0 raw
+    while [ "$i" -lt "$MAX_INFLOW_ROWS" ]; do
+        eval "raw=\${SP_INFLOW$i:-}"
+        [ -n "$raw" ] || break
+        inflow_row "$raw"
         i=$((i+1))
     done
 }
@@ -1430,31 +1524,40 @@ standing_lines() {
         "$C_DIM" "$C_RST" "$(age_str "${SP_SWEEP_AGE:-?}" 1800)"
 }
 
-# share <rows> <fixed> <base:max...> -> one allocation per section, on its own line
+# share <rows> <fixed> <base:max:first...> -> one allocation per section, on its own line
 #
 # ROUND-ROBIN, ONE ROW AT A TIME. Filling each section to its cap in turn is the obvious
-# implementation and the wrong one: NOW spends four rows per working aeon, so on a busy
+# implementation and the wrong one: NOW spends three rows per working aeon, so on a busy
 # day it would take the whole column and CI — the section that reports a run parked since
 # yesterday, and the only place that fact appears — would be the one to vanish.
 #
 # THREE TIERS, BECAUSE TWO ROUND-ROBINS CANNOT SAY ALL THREE THINGS. Every section names a
-# BASE it needs and a MAX it could use. Non-elastic sections (base == max) — NOW, UNLANDED,
-# CI — are served in tier 0 before any round-robin starts: this is the guarantee that NOW
-# fills before NEXT and RECENT compete for budget. Without tier 0, a fair round-robin over
-# all sections handed NOW only 9 of its 12 rows on a 45-row pane while NEXT and RECENT each
-# held five — the section describing work in flight trimmed to feed the two that fill space.
-# Tier one then fills every section to its base; tier two is the slack, where only the
-# elastic sections (NEXT, RECENT) bid.
+# BASE it needs, a MAX it could use, and whether it is served FIRST. The first-served
+# sections — NOW, UNLANDED, CI — fill to their max before any other section reaches its
+# base: this is the guarantee that NOW fills before the three list sections compete for
+# budget. Without tier 0, a fair round-robin over all sections handed NOW only 9 of its 12
+# rows on a 45-row pane while NEXT and RECENT each held five — the section describing work
+# in flight trimmed to feed the ones that fill space. Tier one then fills every remaining
+# section to its base; tier two is the slack, where only a section with room above its base
+# bids (INFLOW).
+#
+# FIRST-SERVED IS DECLARED, NOT INFERRED FROM base == max. It was inferred, and the day NEXT
+# and RECENT stopped being elastic they silently joined tier 0 and drank the budget ahead of
+# INFLOW's floor — a section that had just been given a five-row guarantee rendered one row
+# on a three-aeon pane. Nothing in the spec had said those two were first-served; the
+# equality that made them so was a side effect of capping them. A section's PLACE IN THE
+# QUEUE and its SIZE are two facts, and a shape that derives one from the other cannot be
+# changed without changing both.
 #
 # EVERY SECTION KEEPS ITS FIRST ROW even when there is no budget for it. The overflow then
 # falls off the BOTTOM of the frame in `render`, which marks the count on the header; a
 # section quietly allocated zero rows would leave no such mark.
 share() {
     local rows="$1" fixed="$2"; shift 2
-    local -a spec=("$@") base=() max=() give=()
+    local -a spec=("$@") base=() max=() first=() give=()
     local n=${#spec[@]} i budget moved tier lim
     for (( i = 0; i < n; i++ )); do
-        base[i]="${spec[i]%%:*}"; max[i]="${spec[i]##*:}"
+        IFS=: read -r base[i] max[i] first[i] <<< "${spec[i]}"
         # A MAX BELOW ITS BASE IS THE BASE. The two are computed independently at the call
         # site — one from a constant, one from how many rows the section actually rendered —
         # and a section with three rows of data must not be asked for five.
@@ -1472,9 +1575,7 @@ share() {
             for (( i = 0; i < n; i++ )); do
                 [ "$budget" -gt 0 ] || break
                 if [ "$tier" = 0 ]; then
-                    # TIER 0: non-elastic sections (base == max) fill to their max first,
-                    # so NOW cannot be out-voted by NEXT and RECENT in the same round-robin.
-                    [ "${base[i]}" != "${max[i]}" ] && continue
+                    [ "${first[i]}" = 1 ] || continue
                     lim="${max[i]}"
                 elif [ "$tier" = 1 ]; then lim="${base[i]}"
                 else lim="${max[i]}"; fi
@@ -1504,13 +1605,14 @@ frame() {
     # thread it through unchanged. Set once per frame, so a resize reflows on the next tick.
     COLS="${2:-0}"; [ "$COLS" -gt 0 ] 2>/dev/null || COLS=80
     load_snapshot
-    local -a HEAD TOKENS NOW NEXT UNLANDED RECENT CI STANDING give
+    local -a HEAD TOKENS NOW NEXT UNLANDED RECENT INFLOW CI STANDING give
     mapfile -t HEAD     < <(header_line)
     mapfile -t TOKENS   < <(tokens_section)
     mapfile -t NOW      < <(now_section)
     mapfile -t NEXT     < <(next_section)
     mapfile -t UNLANDED < <(unlanded_section)
     mapfile -t RECENT   < <(recent_section)
+    mapfile -t INFLOW   < <(inflow_section)
     mapfile -t CI       < <(ci_section)
     mapfile -t STANDING < <(standing_lines)
 
@@ -1525,38 +1627,56 @@ frame() {
     # four rows deep is the first one the allocator trims, which is exactly backwards: it is
     # the section describing work in flight.
     #
-    # NOW IS ALSO WHY THE OTHER TWO ARE ELASTIC RATHER THAN FIXED. NOW's want is the only one
-    # on this pane that swings with the state of the world, so it is the one the column has
-    # to absorb: every row it takes when three aeons wake up has to come from somewhere, and
-    # every row it gives back when they finish has to go somewhere. With NEXT and RECENT
-    # pinned at five, the giving-back had nowhere to go and the bottom of the pane simply
-    # went blank. Their ceilings are now high enough that the round-robin is what sizes them.
+    # NOW IS ALSO WHY ONE SECTION MUST STAY ELASTIC. NOW's want is the only one on this pane
+    # that swings with the state of the world, so it is the one the column has to absorb:
+    # every row it takes when three aeons wake up has to come from somewhere, and every row it
+    # gives back when they finish has to go somewhere. With every section pinned, the
+    # giving-back had nowhere to go and the bottom of the pane simply went blank. INFLOW is
+    # now the section that takes it — see MAX_INFLOW_ROWS for why it is that one and not NEXT
+    # or RECENT, whose seventh and eighth rows nobody reads.
     #
     # CI and UNLANDED keep the generic cap because they are lists rather than a glance, and
     # an unbounded one could otherwise take the whole column.
     #
-    # EACH SECTION BIDS A BASE AND A MAX. NOW, UNLANDED and CI bid the same for both: their
-    # size is set by how many aeons are awake and how much is pending/parked, so there is no
-    # slack in them to give away and nothing to gain by asking for more than they have. NEXT
-    # and RECENT bid the five they have always been guaranteed as their base, and everything
-    # they rendered as their max — they are the two sections that exist to fill the column,
-    # so they are the two that bid for the slack.
+    # EACH SECTION BIDS A BASE AND A MAX. All but INFLOW bid the same for both: their size is
+    # set by how many aeons are awake, how much is pending or parked, and two constants that
+    # are now heights rather than ceilings — so there is no slack in them to give away and
+    # nothing to gain by asking for more than they have. INFLOW bids the five it is guaranteed
+    # and everything it rendered, and is therefore the only bidder in tier two.
     #
-    # INDICES ARE POSITIONAL: NOW=0, NEXT=1, UNLANDED=2, RECENT=3, CI=4. Adding a section
-    # in the middle shifts every index after it; they must be updated together.
-    local -a want=("${#NOW[@]}" "${#NEXT[@]}" "${#UNLANDED[@]}" "${#RECENT[@]}" "${#CI[@]}")
+    # INDICES ARE POSITIONAL: NOW=0, NEXT=1, UNLANDED=2, RECENT=3, INFLOW=4, CI=5. Adding a
+    # section in the middle shifts every index after it; they must be updated together.
+    local -a want=("${#NOW[@]}" "${#NEXT[@]}" "${#UNLANDED[@]}" "${#RECENT[@]}" \
+                   "${#INFLOW[@]}" "${#CI[@]}")
     [ "${want[2]}" -gt "$MAX_SECTION_ROWS" ] && want[2]="$MAX_SECTION_ROWS"
-    [ "${want[4]}" -gt "$MAX_SECTION_ROWS" ] && want[4]="$MAX_SECTION_ROWS"
+    [ "${want[5]}" -gt "$MAX_SECTION_ROWS" ] && want[5]="$MAX_SECTION_ROWS"
     # THE BASES ARE IN LINES, NOT ITEMS, because that is what the allocator hands out. NEXT
-    # spends a line of its own on its header, so five queued beads is six lines; RECENT puts
-    # the newest event on its header line, so five events is five. Getting this wrong would
-    # quietly move one of them off the guarantee by a row.
+    # and INFLOW each spend a line of their own on a header, so five rows is six lines; RECENT
+    # puts the newest event on its header line, so five events is five. Getting this wrong
+    # would quietly move one of them off the guarantee by a row.
+    #
+    # AND A BASE IS CAPPED BY WHAT THE SECTION ACTUALLY RENDERED. A base above the want is a
+    # section handed rows it has no content for: the allocator charges them to the budget,
+    # the slice prints what exists, and the difference is blank lines at the bottom of the
+    # column — the same waste this file already fixed once, arriving by way of a quiet queue
+    # instead of a tall pane.
+    local nb=$(( NEXT_BASE_ROWS + 1 )) rb="$RECENT_BASE_ROWS" ib=$(( INFLOW_BASE_ROWS + 1 ))
+    [ "${want[1]}" -lt "$nb" ] && nb="${want[1]}"
+    [ "${want[3]}" -lt "$rb" ] && rb="${want[3]}"
+    [ "${want[4]}" -lt "$ib" ] && ib="${want[4]}"
+    #
+    # THE THIRD FIELD IS "SERVED FIRST", and only the three sections whose height is set by
+    # the state of the world carry it: NOW by how many aeons are awake, UNLND by how much is
+    # waiting to land, CI by how much is parked. NEXT, RECENT and INFLOW are lists of a fixed
+    # shape, and they degrade TOGETHER in tier one rather than in the order they happen to be
+    # written here — which is the whole reason INFLOW keeps a floor on a three-aeon pane.
     local -a spec=(
-        "${want[0]}:${want[0]}"
-        "$(( NEXT_BASE_ROWS + 1 )):${want[1]}"
-        "${want[2]}:${want[2]}"
-        "$RECENT_BASE_ROWS:${want[3]}"
-        "${want[4]}:${want[4]}"
+        "${want[0]}:${want[0]}:1"
+        "$nb:${want[1]}:0"
+        "${want[2]}:${want[2]}:1"
+        "$rb:${want[3]}:0"
+        "$ib:${want[4]}:0"
+        "${want[5]}:${want[5]}:1"
     )
     # TOKENS counts as FIXED, alongside the header and the standing figures: every one of its
     # rows is a number that is always worth its row, and the constraint that stops all other
@@ -1570,7 +1690,8 @@ frame() {
     [ "${give[1]}" -gt 0 ] && printf '%s\n' "${NEXT[@]:0:${give[1]}}"
     [ "${give[2]}" -gt 0 ] && printf '%s\n' "${UNLANDED[@]:0:${give[2]}}"
     [ "${give[3]}" -gt 0 ] && printf '%s\n' "${RECENT[@]:0:${give[3]}}"
-    [ "${give[4]}" -gt 0 ] && printf '%s\n' "${CI[@]:0:${give[4]}}"
+    [ "${give[4]}" -gt 0 ] && printf '%s\n' "${INFLOW[@]:0:${give[4]}}"
+    [ "${give[5]}" -gt 0 ] && printf '%s\n' "${CI[@]:0:${give[5]}}"
     printf '%s\n' "${STANDING[@]}"
     return 0
 }

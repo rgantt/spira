@@ -291,7 +291,13 @@ spira_conf_defaults() {
     : "${SPIRA_COCKPIT:=$(dirname "$SPIRA_HOME")/cockpit}"
     # HOW MANY TRAILING MOMENTS THE COLLECTOR RECORDS PER AEON. Each one becomes a key
     # in the snapshot and a row on the pane. 0 restores the single-line behaviour.
-    : "${SPIRA_COCKPIT_TRACE_LINES:=3}"
+    #
+    # TWO, NOT THREE. Every live aeon spends this many rows, so it is the figure that decides
+    # how much of the column is left for everything else when three aeons are awake — and the
+    # third moment was the one paying least: "what led here" is answered by the moment before
+    # the current one, and the one before that is history the trace file already holds. The
+    # row it gave back is what INFLOW is built on (per Ryan, 2026-09-12).
+    : "${SPIRA_COCKPIT_TRACE_LINES:=2}"
     : "${SPIRA_NOTIFY:=$SPIRA_COCKPIT/ask.sh}"
     # HOW LONG AN ACTIONABLE EVENT MAY WAIT WITH NO READER before it is escalated through a
     # channel that needs no session, in seconds. `watchd.sh notify` is what enforces it.

@@ -192,7 +192,9 @@ print("%s\t%s" % (i.get("priority"),
         # SOURCES, so a newline injects extra lines and an "=" makes a bogus key. trace_tail
         # has no such clamp — it is multi-line by design and emits $ and -> prefixes —
         # so every line goes through the allowlist before it becomes a value.
-        local tl="${SPIRA_COCKPIT_TRACE_LINES:-3}"
+        # TWO, AND conf.sh AND THE RENDERER AGREE. A collector emitting fewer keys than
+        # the pane reads is a section that silently renders short.
+        local tl="${SPIRA_COCKPIT_TRACE_LINES:-2}"
         if [ "$tl" -gt 0 ] 2>/dev/null; then
             trace_tail "$SPIRA_RUN/$bead.log" "$tl" 2>/dev/null | python3 -c '
 import sys, re
@@ -482,10 +484,11 @@ for line in sys.stdin:
         pass
 # P0 across all partitions, then P1, then P2 — harness order preserved within each priority.
 rows.sort(key=lambda r: (r.get("priority") or 9))
-# FORTY, AND THE RENDERER AGREES. Matches health.sh MAX_NEXT_ROWS; the pane allocator
-# decides the actual height. A collector cap tighter than the renderer is the one that cannot
-# be seen: rows never emitted look exactly like rows that do not exist.
-for n, i in enumerate(rows[:40]):
+# FIVE, AND THE RENDERER AGREES. Matches health.sh MAX_NEXT_ROWS, which is now a HEIGHT
+# rather than a ceiling: NEXT is a glance at the head of the queue and `bd ready` is the
+# list. A collector cap TIGHTER than the renderer is the one that cannot be seen -- rows
+# never emitted look exactly like rows that do not exist -- so the two move together.
+for n, i in enumerate(rows[:5]):
     labels = set(i.get("labels") or [])
     pref = {x.split(":", 1)[1] for x in labels if x.startswith("fayth:")}
     if pref:
@@ -518,8 +521,19 @@ else:
     # passed as a file. An unreadable map leaves the rows bare rather than failing the pass:
     # "what happened" is the load-bearing half and must survive a database that will not
     # answer (law-absence-needs-a-positive-control applies to the TITLE, not to the event).
+    #
+    # AND WHETHER IT WAS READ AT ALL IS A SEPARATE FACT FROM WHAT IS IN IT. `bdjson` is a
+    # pipeline ending in `sed`, so its exit status is sed's and a refusing bd still returns
+    # zero; what a refusal actually leaves is an EMPTY file, where an empty store leaves the
+    # two bytes `[]`. RECENT can treat the two alike — it loses titles either way and the
+    # event is the load-bearing half — but INFLOW cannot: an empty array renders "0 new in
+    # the last hour", which is the reassuring reading a broken probe must never produce
+    # (law-failed-probe-renders-question). So the distinction is captured here, once, and
+    # each reader below decides what to do with it.
     TITLEMAP="$(mktemp)"; trap 'rm -f "$TITLEMAP"' RETURN
-    bdjson list --all --limit 0 > "$TITLEMAP" 2>/dev/null || echo '[]' > "$TITLEMAP"
+    local _store_read=1
+    bdjson list --all --limit 0 > "$TITLEMAP" 2>/dev/null || _store_read=0
+    [ -s "$TITLEMAP" ] || { _store_read=0; echo '[]' > "$TITLEMAP"; }
     # This listed sentinel ACTs alone — landed, reopened, poisoned, reaped — which are all
     # ENDINGS. A bead being CLAIMED was invisible, and so was a bead being DROPPED: an aeon
     # exited mid-CI believing something would resume it, the lease expired, and the pane
@@ -619,11 +633,10 @@ for line in sys.stdin:
 # FORTY ROWS, AND THE CAP IS APPLIED HERE RATHER THAN ON THE PIPE ABOVE. The head above is
 # the MERGE WINDOW and has to stay wider than the cap, because the dedup that follows it
 # removes rows: trimming to forty before it would emit thirty-one events and call that the cap.
-# Forty matches MAX_RECENT_ROWS in health.sh -- a CEILING, not a height. How many of these the
-# pane actually shows is decided per repaint by `share`, which hands RECENT whatever NOW is
-# not using. The renderer holds the same ceiling, so a snapshot from a collector with a wider
-# one still renders at most forty.
-for n, (ts_str, actor, body, verb, bead) in enumerate(rows[:40]):
+# Five matches MAX_RECENT_ROWS in health.sh, which is now a HEIGHT rather than a ceiling.
+# The tails above stay wide on purpose: they are the MERGE WINDOW the dedup runs over, and
+# trimming them to five would emit three events and call that the cap.
+for n, (ts_str, actor, body, verb, bead) in enumerate(rows[:5]):
     try:
         t = datetime.datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
         secs = int((now - t).total_seconds())
@@ -672,6 +685,108 @@ for n, (ts_str, actor, body, verb, bead) in enumerate(rows[:40]):
     # description — because the state is what a reader scans this section for.
     print("SP_EVENT%d=%-4s %-8s %s" % (n, rel, actor_disp[:8], body_display))
 ' "$TITLEMAP"
+
+    # ---- INFLOW: what is being CUT, and the rate it is arriving at ----------------------
+    # EVERY OTHER SECTION ON THIS PANE READS THE QUEUE FROM THE CLAIMING END. NOW says what
+    # is held, NEXT what is ready, RECENT what moved -- and none of them answers where the
+    # work came from. A growing store reads as a busy harness either way, and the two cases
+    # are opposite: beads arriving because a design was decomposed is progress, and beads
+    # arriving because one broken thing keeps reporting itself is a defect wearing throughput's
+    # clothes. The operator, reading an hour of it: "11 of the 12 beads right now are from the
+    # timed test run." (per Ryan, 2026-09-12)
+    #
+    # THE SAME FILE AS THE TITLE MAP, DELIBERATELY. $TITLEMAP is already `bd list --all
+    # --limit 0` -- the whole store, unfiltered, closed rows included. A second query here
+    # would be a second round trip to Dolt for rows already in hand, and one more way for two
+    # readings of the same store to disagree about what is in it.
+    #
+    # UNFILTERED BY LABEL, WHICH IS THE WHOLE POINT. The throughput probe above reads the
+    # `plan` scope; an Ops incident and an operator ask carry no `plan` label and are exactly
+    # the inflow worth seeing. `event` beads ARE excluded -- they are bd's own state-change
+    # records, 194 of 249 rows on this store, and nobody cut them.
+    #
+    # THE RATE AND THE ROWS ARE TWO DIFFERENT WINDOWS, on purpose. The count is what arrived
+    # inside the window; the rows are the newest beads whenever they arrived. On a quiet hour
+    # the rate is 0 and the rows still say what last landed in the store and how long ago, so
+    # the section neither goes blank nor implies a burst that is not happening.
+    if [ "$_store_read" != 1 ] || ! python3 /dev/fd/3 "$TITLEMAP" "${SPIRA_INFLOW_WINDOW_MIN:-60}" 3<<'PY' 2>/dev/null
+import sys, json, re, datetime
+
+try:
+    rows = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(1)
+if not isinstance(rows, list):
+    raise SystemExit(1)
+try:
+    win = int(sys.argv[2])
+except Exception:
+    win = 60
+if win <= 0:
+    win = 60
+
+now = datetime.datetime.now(datetime.timezone.utc)
+
+def when(v):
+    try: return datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except Exception: return None
+
+def rel(secs):
+    if secs < 90: return "%ds" % secs
+    if secs < 5400: return "%dm" % (secs // 60)
+    if secs < 172800: return "%dh" % (secs // 3600)
+    return "%dd" % (secs // 86400)
+
+# A ROW WITH NO READABLE created_at IS DROPPED, not dated to now. Sorting it to the top would
+# put an unreadable timestamp at the head of a section whose entire claim is "these are the
+# newest" (law-absence-needs-a-positive-control).
+aged = []
+for i in rows:
+    kind = (i.get("issue_type") or "task")
+    if kind == "event":
+        continue
+    t = when(i.get("created_at"))
+    if t is None:
+        continue
+    aged.append((t, kind, i))
+aged.sort(key=lambda r: r[0], reverse=True)
+
+cut = now - datetime.timedelta(minutes=win)
+fresh = [r for r in aged if r[0] >= cut]
+
+# THE KINDS ARE THE HALF THAT DISCRIMINATES. Twelve new beads in an hour is a decomposed
+# design or a loop and the count alone cannot tell those apart; "bug 11" can. DEFECT counts
+# the same population a second way so the renderer can colour without re-parsing the string.
+kinds, defect = {}, 0
+for t, kind, i in fresh:
+    kinds[kind] = kinds.get(kind, 0) + 1
+    if kind == "bug" or "incident" in (i.get("labels") or []):
+        defect += 1
+
+print("SP_INFLOW_WIN=%d" % win)
+print("SP_INFLOW_N=%d" % len(fresh))
+print("SP_INFLOW_DEFECT=%d" % defect)
+print("SP_INFLOW_KINDS=%s" % (", ".join("%s %d" % (k, v)
+      for k, v in sorted(kinds.items(), key=lambda x: -x[1])[:4]) or "-"))
+
+# FORTY, AND THE RENDERER AGREES -- MAX_INFLOW_ROWS in health.sh. This is the one section
+# left on the column that is a CEILING rather than a height: it is where the slack goes when
+# no aeon is awake, and how much of it renders is decided per repaint by `share`.
+for n, (t, kind, i) in enumerate(aged[:40]):
+    title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80].replace("=", "-")
+    k = re.sub(r"[^a-z]", "", kind.lower())[:8] or "task"
+    pri = i.get("priority")
+    print("SP_INFLOW%d=%-4s %-8s P%s %s %s" % (
+        n, rel(int((now - t).total_seconds())), k,
+        pri if pri is not None else "?", i["id"], title))
+PY
+    then
+        # A FAILED PROBE RENDERS `?`, NEVER 0. "nothing was cut in the last hour" is the
+        # reassuring reading, and it is exactly what an unreadable store would otherwise
+        # produce (law-failed-probe-renders-question).
+        echo "SP_INFLOW_WIN=?"; echo "SP_INFLOW_N=?"
+        echo "SP_INFLOW_DEFECT=?"; echo "SP_INFLOW_KINDS=?"
+    fi
 
     # ---- AWAITING CI: open gh:run gates waiting on a CI run ---------------------------
     # A gated bead is not ready — bd gate blocks it at the query level, so no reader has to

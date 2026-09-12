@@ -158,6 +158,16 @@ pane() {                 # pane <rows> [cols] -> the frame, ANSI stripped
         SPIRA_SYSTEMCTL="$PD/bin/mock-systemctl" \
         bash "$PANE" once "$1" "${2:-0}" 2>/dev/null | sed 's/\x1b\[[?0-9;]*[a-zA-Z]//g'
 }
+# pane_tl <trace-lines> <rows> [cols] — the same frame with SPIRA_COCKPIT_TRACE_LINES pinned.
+# Separate from `pane` on purpose: `pane` runs with the variable UNSET, which is the shipped
+# default and the thing most assertions here should be measuring.
+pane_tl() {
+    local tl="$1"; shift
+    env -i PATH="$PATH" HOME="$PD/home" TERM=dumb LC_ALL=C.UTF-8 \
+        SPIRA_CONF="$PD/no.conf" SPIRA_REPO="$PD/repo" SPIRA_RUN="$PD/repo/.runtime/spira" \
+        SPIRA_SYSTEMCTL="$PD/bin/mock-systemctl" SPIRA_COCKPIT_TRACE_LINES="$tl" \
+        bash "$PANE" once "$1" "${2:-0}" 2>/dev/null | sed 's/\x1b\[[?0-9;]*[a-zA-Z]//g'
+}
 rows_of() { printf '%s\n' "$1" | awk -v l=" $2" 'index($0,l)==1{n=1;next} n && /^ [A-Z]/{exit} n{n++} END{print n+0}'; }
 
 echo
@@ -237,8 +247,9 @@ is_n "and it is four rows for one aeon" 4 "$(rows_of "$row" NOW)"
 echo
 echo "trailing moments — the last N actions rendered under each aeon"
 
-# THREE TRAILING MOMENTS FROM THE SNAPSHOT. These are the sanitised lines the collector
-# would emit from trace_tail; the pane reads them as ACT{j} keys.
+# TRAILING MOMENTS FROM THE SNAPSHOT. These are the sanitised lines the collector would
+# emit from trace_tail; the pane reads them as ACT{j} keys. Three are in the fixture and the
+# reader is driven at both settings — the mechanism at three, the shipped default at two.
 { printf 'SP_AEON_N=1\nSP_AEON0_NAME=valefor\nSP_AEON0_FAYTH=builder\nSP_AEON0_BEAD=sp-7xn\n'
   printf 'SP_AEON0_MIN=11\nSP_AEON0_TURNS=37\nSP_AEON0_CTX=123400\nSP_AEON0_FILES=4\n'
   printf 'SP_AEON0_QUIET=12\nSP_AEON0_ACT=Bash test-sentinel.sh\n'
@@ -246,7 +257,10 @@ echo "trailing moments — the last N actions rendered under each aeon"
   printf 'SP_AEON0_ACT1=Grep trace_tail\n'
   printf 'SP_AEON0_ACT2=Bash test-sentinel.sh\n'
   printf 'SP_AEON0_TITLE=a bead\nSP_AEON0_PRI=1\nSP_NEXT_N=0\nSP_AWAITING_N=0\n'; } | snap
-trail="$(pane 0)"
+# THE SETTING IS PINNED, NOT INHERITED, for the mechanism checks below: they are about the
+# reader, and a suite that reads the shipped default here would silently change what it is
+# asserting the next time the default moves.
+trail="$(pane_tl 3 0)"
 for want in 'Read spira/lib.sh' 'Grep trace_tail' 'Bash test-sentinel.sh'; do
     if grep -qF "$want" <<< "$trail"; then
         pass=$((pass+1)); printf '  ok    trailing moment "%s" appears\n' "$want"
@@ -259,6 +273,21 @@ if grep -qF 'quiet 12s' <<< "$trail"; then
     pass=$((pass+1)); printf '  ok    the newest moment carries quiet\n'
 else
     fail=$((fail+1)); printf '  FAIL  quiet indicator missing:\n%s\n' "$trail"
+fi
+
+# AND THE SHIPPED DEFAULT IS TWO, which is a fact about the COLUMN and not about this aeon:
+# every live aeon spends this many rows, so it is the figure that decides how much is left
+# for everything else when three of them are awake. The third moment was the row that paid
+# least — "what led here" is answered by the moment before the current one — and it is what
+# INFLOW is built out of (per Ryan, 2026-09-12). Asserted against an unset variable, which is
+# what a pane with no conf sourced actually runs with, so the renderer's own fallback and
+# conf.sh cannot drift apart unnoticed.
+trail2="$(pane 0)"
+is_n "the default is two moments, so an aeon is 2+2=4 rows" 4 "$(rows_of "$trail2" NOW)"
+if grep -qF 'Read spira/lib.sh' <<< "$trail2"; then
+    fail=$((fail+1)); printf '  FAIL  the default still shows three moments:\n%s\n' "$trail2"
+else
+    pass=$((pass+1)); printf '  ok    and the oldest of the three is the one dropped\n'
 fi
 
 # N=0 RESTORES THE OLD SINGLE-LINE BEHAVIOUR, including the SAID row, even when ACT{j}
@@ -358,6 +387,11 @@ echo "the column is filled, and NOW is served before the sections that fill it"
     printf 'SP_NEXT_N=25\n'
     for i in $(seq 0 13); do printf 'SP_NEXT%d=P1 builder sp-n%d A queued bead\n' "$i" "$i"; done
     for i in $(seq 0 13); do printf 'SP_EVENT%d=%-4s sentinel landed sp-e%d\n' "$i" "${i}m" "$i"; done
+    # INFLOW IS PART OF THE BUDGET FIXTURE, not an extra. It is the only elastic section left
+    # on the column, so a fixture without it leaves the slack with no bidder — and every
+    # height assertion below would then be measuring a pane that cannot happen.
+    printf 'SP_INFLOW_WIN=60\nSP_INFLOW_N=14\nSP_INFLOW_DEFECT=14\nSP_INFLOW_KINDS=bug 14\n'
+    for i in $(seq 0 13); do printf 'SP_INFLOW%d=%-4s bug      P1 sp-i%d A newly cut bead\n' "$i" "${i}m" "$i"; done
     printf 'SP_AWAITING_N=0\n'
 } | snap
 
@@ -370,31 +404,59 @@ echo "the column is filled, and NOW is served before the sections that fill it"
 real="$(pane 52)"
 is_n "a 52-row pane is filled to exactly 52 rows" 52 "$(printf '%s\n' "$real" | wc -l)"
 is_n "NOW is served first and takes all twelve of its rows" 12 "$(rows_of "$real" NOW)"
-# AND THE SLACK WENT TO THE TWO SECTIONS THAT EXIST TO ABSORB IT, past the five that used to
-# be their whole size. Asserted as "more than five" rather than as an exact number: the exact
-# figure is a function of how tall the fixed sections happen to render, and pinning it would
-# make this suite fail on a change to a line it is not about.
-n_next="$(printf '%s\n' "$real" | grep -c 'sp-n[0-9]')"
-n_rec="$(printf '%s\n' "$real" | grep -c 'sp-e[0-9]')"
-if [ "$n_next" -gt 5 ] && [ "$n_rec" -gt 5 ]; then
-    pass=$((pass+1)); printf '  ok    NEXT grew to %s and RECENT to %s, past the five that were their whole size\n' "$n_next" "$n_rec"
+# AND WITH THREE AEONS AWAKE THERE IS NO SLACK AT ALL ON THIS PANE — twelve rows of NOW, a
+# header, the token meters and twenty standing figures leave the three list sections short of
+# their floors. So the property here is not growth, it is that they go short TOGETHER.
+#
+# THIS IS THE ASSERTION THE TIER BUG WOULD HAVE FAILED. The share used to work out which
+# sections were served first by testing base == max, and the day NEXT and RECENT were capped
+# they satisfied it by accident, joined NOW in the first round and drank the budget ahead of
+# INFLOW's floor: NEXT five, RECENT five, INFLOW one. Every section was inside its own
+# bounds, the pane was exactly full, and the section that had just been given a five-row
+# guarantee rendered a single row. Only the spread across the three says so.
+lines_of_lists() { printf '%s %s %s' "$(rows_of "$1" NEXT)" "$(rows_of "$1" RECENT)" "$(rows_of "$1" INFLOW)"; }
+read -r l_next l_rec l_inf <<< "$(lines_of_lists "$real")"
+spread=$(( $(printf '%s\n' "$l_next" "$l_rec" "$l_inf" | sort -n | tail -1) \
+         - $(printf '%s\n' "$l_next" "$l_rec" "$l_inf" | sort -n | head -1) ))
+if [ "$spread" -le 1 ] && [ "$l_inf" -ge 3 ]; then
+    pass=$((pass+1)); printf '  ok    NEXT/RECENT/INFLOW go short together (%s/%s/%s lines)\n' "$l_next" "$l_rec" "$l_inf"
 else
-    fail=$((fail+1)); printf '  FAIL  the slack was not taken up: NEXT %s RECENT %s, both still at or under five\n' "$n_next" "$n_rec"
+    fail=$((fail+1)); printf '  FAIL  one list section was starved: NEXT %s RECENT %s INFLOW %s lines\n' "$l_next" "$l_rec" "$l_inf"
 fi
 
+# AND WHERE THERE IS SLACK IT GOES TO INFLOW, WHICH IS THE ONLY SECTION LEFT THAT BIDS FOR
+# IT. NEXT and RECENT are five rows and stop, because their sixth and seventh entries are the
+# least any row on this column could say — nobody reads the eighth-most-recent landing —
+# while another newly cut bead is the difference between "a design was decomposed" and "one
+# broken thing is reporting itself once per suite file". Sixty-five rows rather than
+# fifty-two because that is where slack begins to exist with three aeons awake; the exact
+# figure INFLOW reaches is a function of how tall the fixed sections render, so it is
+# asserted as "past its floor" and not pinned.
+roomy="$(pane 60)"
+n_next="$(printf '%s\n' "$roomy" | grep -c 'sp-n[0-9]')"
+n_rec="$(printf '%s\n' "$roomy" | grep -c 'sp-e[0-9]')"
+n_inf="$(printf '%s\n' "$roomy" | grep -c 'sp-i[0-9]')"
+if [ "$n_inf" -gt 5 ] && [ "$n_next" -le 5 ] && [ "$n_rec" -le 5 ]; then
+    pass=$((pass+1)); printf '  ok    INFLOW grew to %s while NEXT held at %s and RECENT at %s\n' "$n_inf" "$n_next" "$n_rec"
+else
+    fail=$((fail+1)); printf '  FAIL  the slack went to the wrong section: NEXT %s RECENT %s INFLOW %s\n' "$n_next" "$n_rec" "$n_inf"
+fi
+is_n "and a 60-row pane is filled to exactly 60 rows" 60 "$(printf '%s\n' "$roomy" | wc -l)"
+
 # THE CEILING IS THE CEILING, and this is its positive control: at 200 rows nothing but
-# MAX_NEXT_ROWS, MAX_RECENT_ROWS and the amount of data can be what limits these
-# (law-absence-needs-a-positive-control). Fourteen of each is all the fixture has, so
-# fourteen is the answer — a section that invented a fifteenth would be reading something
-# that is not there.
+# MAX_NEXT_ROWS, MAX_RECENT_ROWS, MAX_INFLOW_ROWS and the amount of data can be what limits
+# these (law-absence-needs-a-positive-control). All three sections are handed fourteen rows
+# of fixture, and a pane with room for every one of them still shows five, five and fourteen
+# — which is the difference between a HEIGHT and a CEILING, asserted rather than described.
 tall="$(pane 200)"
 ids_of() { printf '%s\n' "$tall" | grep -o "$1" | tr '\n' ' ' | sed 's/ $//'; }
-is_n "all fourteen ready beads render when there is room for them" \
-     "sp-n0 sp-n1 sp-n2 sp-n3 sp-n4 sp-n5 sp-n6 sp-n7 sp-n8 sp-n9 sp-n10 sp-n11 sp-n12 sp-n13" \
-     "$(ids_of 'sp-n[0-9]*')"
-is_n "and all fourteen events" \
-     "sp-e0 sp-e1 sp-e2 sp-e3 sp-e4 sp-e5 sp-e6 sp-e7 sp-e8 sp-e9 sp-e10 sp-e11 sp-e12 sp-e13" \
-     "$(ids_of 'sp-e[0-9]*')"
+is_n "NEXT shows five of the fourteen ready beads however tall the pane is" \
+     "sp-n0 sp-n1 sp-n2 sp-n3 sp-n4" "$(ids_of 'sp-n[0-9]*')"
+is_n "and RECENT five of the fourteen events" \
+     "sp-e0 sp-e1 sp-e2 sp-e3 sp-e4" "$(ids_of 'sp-e[0-9]*')"
+is_n "while INFLOW, the one section with a ceiling, shows all fourteen" \
+     "sp-i0 sp-i1 sp-i2 sp-i3 sp-i4 sp-i5 sp-i6 sp-i7 sp-i8 sp-i9 sp-i10 sp-i11 sp-i12 sp-i13" \
+     "$(ids_of 'sp-i[0-9]*')"
 is_n "with NOW still taking all four rows of all three aeons" 12 "$(rows_of "$tall" NOW)"
 
 # NOW IS SERVED BEFORE THE SLACK, WHICH IS THE HALF THAT IS EASY TO GET WRONG. A single
