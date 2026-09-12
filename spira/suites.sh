@@ -195,6 +195,29 @@ fingerprint() {          # fingerprint <rc> <output> -> a short stable digest
 }
 
 # --------------------------------------------------------------------------------------
+# CAUSE FINGERPRINT — the first FAIL line normalised to a stable hash, for clustering.
+#
+# DISTINCT FROM fingerprint(): that function hashes ALL FAIL lines against a specific
+# suite and exit code, producing a per-suite cross-pass dedup key. This function hashes
+# only the FIRST FAIL line, stripping the same run-varying tokens, to produce a key that
+# two suites failing on the same assertion will share. Suites with no FAIL lines are
+# keyed on their exit code, which clusters them by failure code when assertions are absent.
+# --------------------------------------------------------------------------------------
+cause_fp() {           # cause_fp <rc> <output> -> stable first-FAIL-line hash
+    local rc="$1" out="$2" first_fail
+    # || true: grep exits 1 on no match; pipefail would fail the assignment.
+    first_fail="$(printf '%s\n' "$out" | grep -F 'FAIL' | head -1 || true)"
+    [ -n "$first_fail" ] || first_fail="rc=$rc"
+    printf '%s\n' "$first_fail" \
+        | sed -e 's#/tmp/[A-Za-z0-9._-]*#/tmp/X#g' \
+              -e 's#/[A-Za-z0-9._/-]*/sptest_[A-Za-z0-9_]*#/X#g' \
+              -e 's/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9][.0-9]*Z\{0,1\}/TIMESTAMP/g' \
+              -e 's/[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/TIME/g' \
+              -e 's/[0-9]\{3,\}/N/g' \
+        | cksum | tr -d ' \t'
+}
+
+# --------------------------------------------------------------------------------------
 # FILING A RED. Through incident.sh, which is the intake that already exists: it spools the
 # payload to disk BEFORE touching the database and clears the spool only once the bead
 # exists, it dedupes on the external ref, it bumps a recurrence rather than filing a second,
@@ -383,6 +406,69 @@ PAYLOAD
 }
 
 # --------------------------------------------------------------------------------------
+# FILING A SAME-CAUSE CLUSTER. Called after the suite loop when N>=2 confirmed reds share
+# the same normalised first FAIL line. Files one bead naming every member suite.
+#
+# WHY ONE BEAD AND NOT N. N beads for one cause means N workers sent to one problem. The
+# worker who claims any one suite reproduces the root; the others find it green and close
+# as unreproducible, producing N bead-closings that fix nothing. One bead, one worker,
+# one fix. (Same argument as file_fixture_fault, same law: law-count-things-not-log-lines.)
+#
+# THE REF IS cause-cluster:<cfp>. The cause fingerprint is the normalised first FAIL
+# line, stable across passes: the same shared failure next cycle bumps recurrence on this
+# bead rather than opening a new one. A change in the first FAIL line is new information.
+# --------------------------------------------------------------------------------------
+file_cluster() {  # file_cluster <n> <suite-list> <cfp> <repr-suite> <repr-rc> <repr-secs> <repr-out> <prio>
+    local n="$1" suites="$2" cfp="$3" repr_suite="$4" repr_rc="$5" repr_secs="$6"
+    local repr_out="$7" prio="$8" cov id="" s
+    cov="$(covers_of "$repr_suite")"
+    if [ ! -r "$INC" ]; then
+        log "suites: no intake at $INC — cause-cluster of $n ($suites) reaches nobody"
+        return 1
+    fi
+    local reproduce_lines=""
+    for s in $suites; do reproduce_lines="${reproduce_lines}  bash spira/${s}"$'\n'; done
+    local out_inc rc_inc
+    out_inc="$(SPIRA_INCIDENT_TYPE=bug \
+          SPIRA_INCIDENT_PRIORITY="$prio" \
+          SPIRA_INCIDENT_ACTOR=suites \
+          SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" \
+          SPIRA_INCIDENT_REPO="$SPIRA_HOME_REPO" \
+          SPIRA_INCIDENT_REF="cause-cluster:$cfp" \
+          SPIRA_INCIDENT_PATH="$HERE/$repr_suite" \
+          SPIRA_INCIDENT_CAUSE=suite-red \
+          SPIRA_DB="$SPIRA_DB" \
+          bash "$INC" file "${n} suite(s) failed on the same cause in the timed run" - <<PAYLOAD
+The timed full run found ${n} suites failing on the same normalised first FAIL line. A shared
+cause warrants one bead and one investigation, not ${n}: the worker who reproduces any of the
+suites below reaches the root, and fixing the root fixes all ${n} of them.
+
+  cause fingerprint  $cfp
+  suites affected    $n
+  covers             ${cov:-NOTHING DECLARED — representative suite has no \`# covers:\` line}
+
+Suite list and reproduce lines:
+$(printf '%s' "$reproduce_lines")
+The cause fingerprint is over the first FAIL line with scratch paths and numbers normalised
+out. An identical shared failure next cycle bumps recurrence on this bead rather than filing
+another; a change in the first FAIL line opens a new one.
+
+--- output of first suite in cluster (${repr_suite}, rc=${repr_rc}, ${repr_secs}s) ---
+$(printf '%s\n' "$repr_out" | tail -c 6000)
+PAYLOAD
+    )"; rc_inc=$?
+    if [ "$rc_inc" -ne 0 ]; then
+        log "suites: the intake could not file cause-cluster ($suites)"
+        return 1
+    fi
+    id="$(printf '%s\n' "$out_inc" | tail -n 1 | tr -d '[:space:]')"
+    case "${id:-}" in
+        ''|*[!A-Za-z0-9-]*|-*|*-) log "suites: the intake returned no id for cause-cluster"; return 1 ;;
+    esac
+    printf '%s' "$id"
+}
+
+# --------------------------------------------------------------------------------------
 # THE PASS.
 #
 # THE BUDGET IS A WALL, NOT A HOPE. This runs inside an Ops session that systemd kills at
@@ -399,6 +485,9 @@ PAYLOAD
 cmd_run() {
     local started deadline s out rc secs fp t0 left slice status id next_cursor="" _td_shared=0 _td_fixture_name=""
     local env_mismatch=0
+    # Cluster workspace: confirmed reds are deferred here; after the loop they are grouped
+    # by cause_fp and filed as one bead per group (law-count-things-not-log-lines).
+    local _cfp_dir="" _deferred_red_count=0 _cluster_suppressed=0
     started="$(date +%s)"; deadline=$(( started + BUDGET ))
     mkdir -p "$STATE" 2>/dev/null
 
@@ -409,6 +498,8 @@ cmd_run() {
         log "suites: $GATE_LIST is unreadable — refusing to guess which suites the gate runs"
         return 1
     fi
+    _cfp_dir="$(mktemp -d)" || return 1
+    mkdir -p "$_cfp_dir/suite" "$_cfp_dir/cause"
     GATED=" $(echo $GATED) "
 
     local timed="" undeclared=""
@@ -661,7 +752,7 @@ cmd_run() {
                 # fruitless reproduction. If budget is exhausted, file nothing — an unconfirmed
                 # red is the current behaviour and it is the defect (sp-ezs7o).
                 left=$(( deadline - $(date +%s) ))
-                local _rv _rv_set confirm_env confirm_differing
+                local _rv _rv_set confirm_env confirm_differing _cfp
                 confirm_env="env"; confirm_differing=""
                 for _rv in $RUNNER_VARS; do
                     _rv_set="${!_rv+x}"
@@ -671,11 +762,17 @@ cmd_run() {
                     fi
                 done
                 if [ -z "$confirm_differing" ]; then
-                    # No runner variables are set — running standalone or in a test that
-                    # does not inject them. File as a normal red; there is nothing to strip.
+                    # No runner variables are set — defer for post-loop cause clustering.
                     record_write "$s" red "$secs" "$fp"
-                    id="$(file_red "$s" red "$rc" "$secs" "$fp" "$out" || true)"
-                    printf '  %-26s RED      rc=%s after %ss  %s\n' "$s" "$rc" "$secs" "${id:-not filed}"
+                    _cfp="$(cause_fp "$rc" "$out")"
+                    printf '%s' "$rc"   > "$_cfp_dir/suite/$s.rc"
+                    printf '%s' "$secs" > "$_cfp_dir/suite/$s.secs"
+                    printf '%s' "$fp"   > "$_cfp_dir/suite/$s.fp"
+                    printf '%s' "$(priority_of "$s")" > "$_cfp_dir/suite/$s.prio"
+                    printf '%s\n' "$out" > "$_cfp_dir/suite/$s.out"
+                    printf '%s\n' "$s" >> "$_cfp_dir/cause/$_cfp"
+                    _deferred_red_count=$(( _deferred_red_count + 1 ))
+                    printf '  %-26s RED      rc=%s after %ss  (pending cluster)\n' "$s" "$rc" "$secs"
                 elif [ "$left" -le 5 ]; then
                     # Budget exhausted: cannot confirm. Record the result but do not file.
                     # An unconfirmed red that reaches a bead an aeon cannot reproduce is the
@@ -704,10 +801,17 @@ cmd_run() {
                         printf '  %-26s ENV-MISMATCH rc=%s after %ss  vars: %s  %s\n' \
                             "$s" "$rc" "$secs" "$confirm_differing" "${id:-not filed}"
                     else
-                        # Confirmed red in aeon's environment too.
+                        # Confirmed red in aeon's environment too — defer for clustering.
                         record_write "$s" red "$secs" "$fp"
-                        id="$(file_red "$s" red "$rc" "$secs" "$fp" "$out" || true)"
-                        printf '  %-26s RED      rc=%s after %ss  %s\n' "$s" "$rc" "$secs" "${id:-not filed}"
+                        _cfp="$(cause_fp "$rc" "$out")"
+                        printf '%s' "$rc"   > "$_cfp_dir/suite/$s.rc"
+                        printf '%s' "$secs" > "$_cfp_dir/suite/$s.secs"
+                        printf '%s' "$fp"   > "$_cfp_dir/suite/$s.fp"
+                        printf '%s' "$(priority_of "$s")" > "$_cfp_dir/suite/$s.prio"
+                        printf '%s\n' "$out" > "$_cfp_dir/suite/$s.out"
+                        printf '%s\n' "$s" >> "$_cfp_dir/cause/$_cfp"
+                        _deferred_red_count=$(( _deferred_red_count + 1 ))
+                        printf '  %-26s RED      rc=%s after %ss  (pending cluster)\n' "$s" "$rc" "$secs"
                     fi
                 fi ;;
         esac
@@ -748,12 +852,50 @@ cmd_run() {
         printf 'fixture fault — %s suite(s) could not start (shared fixture collapsed): %s  %s\n' \
             "$_fixture_fault_count" "$_fixture_faulted" "${_ff_id:-not filed}"
     fi
+    # CLUSTER CONFIRMED REDS AND FILE. Every confirmed red deferred above is grouped by its
+    # cause_fp (normalised first FAIL line). Any group of two or more files one bead naming
+    # all member suites; a singleton files as a normal red bead, as before. The suppression
+    # count measures how many beads the clustering saved (law-dedup-must-be-measured).
+    local _cfp_f _cfp_val _cfp_suites _cfp_n _best_prio _cs _cp
+    local _repr _repr_rc _repr_secs _repr_fp _repr_out _suite_list
+    for _cfp_f in "$_cfp_dir/cause/"*; do
+        [ -f "$_cfp_f" ] || continue
+        _cfp_val="$(basename "$_cfp_f")"
+        _cfp_suites="$(cat "$_cfp_f")"
+        _cfp_n="$(printf '%s\n' "$_cfp_suites" | grep -c . || true)"
+        # Best priority: lowest number (most severe) across all members in this cluster.
+        _best_prio="$PRIORITY"
+        for _cs in $_cfp_suites; do
+            _cp="$(priority_of "$_cs")"
+            { [ "$_cp" -lt "$_best_prio" ] 2>/dev/null && _best_prio="$_cp"; } || true
+        done
+        _repr="$(printf '%s\n' "$_cfp_suites" | head -1)"
+        _repr_rc="$(cat "$_cfp_dir/suite/$_repr.rc" 2>/dev/null || echo 1)"
+        _repr_secs="$(cat "$_cfp_dir/suite/$_repr.secs" 2>/dev/null || echo 0)"
+        _repr_fp="$(cat "$_cfp_dir/suite/$_repr.fp" 2>/dev/null || echo -)"
+        _repr_out="$(cat "$_cfp_dir/suite/$_repr.out" 2>/dev/null || true)"
+        if [ "$_cfp_n" -le 1 ]; then
+            # Singleton: file as a normal individual red bead, same as before.
+            id="$(file_red "$_repr" red "$_repr_rc" "$_repr_secs" "$_repr_fp" "$_repr_out" || true)"
+            printf '  %-26s RED      rc=%s after %ss  %s\n' \
+                "$_repr" "$_repr_rc" "$_repr_secs" "${id:-not filed}"
+        else
+            # Cluster of N>=2: one bead names every member suite.
+            _cluster_suppressed=$(( _cluster_suppressed + _cfp_n - 1 ))
+            _suite_list="$(printf '%s\n' "$_cfp_suites" | tr '\n' ' ' | sed 's/ $//')"
+            id="$(file_cluster "$_cfp_n" "$_suite_list" "$_cfp_val" \
+                "$_repr" "$_repr_rc" "$_repr_secs" "$_repr_out" "$_best_prio" || true)"
+            printf 'cause-cluster (%s suites: %s)  %s\n' \
+                "$_cfp_n" "$_suite_list" "${id:-not filed}"
+        fi
+    done
+    rm -rf "$_cfp_dir" 2>/dev/null || true
     # THE ENV-MISMATCH COUNT IS EMITTED HERE. A nonzero count is the meter that tracks how bad
     # the runner-environment divergence is. When this reaches zero and stays there, a full
     # environment scrub (runner using env -i) becomes landable as a deliberate act rather than
     # a hopeful one. Print it even when zero so the line is parseable on every pass.
-    printf '%s ran, %s red (%s env-mismatch), %s skipped, %s fixture-fault, %ss\n' \
-        "$ran" "$red" "$env_mismatch" "$skipped" "$_fixture_fault_count" "$(( $(date +%s) - started ))"
+    printf '%s ran, %s red (%s env-mismatch, %s suppressed by clustering), %s skipped, %s fixture-fault, %ss\n' \
+        "$ran" "$red" "$env_mismatch" "$_cluster_suppressed" "$skipped" "$_fixture_fault_count" "$(( $(date +%s) - started ))"
     # Exit 2 when suites are red or a fixture fault was filed: incidents were filed, the pass
     # completed normally. Exit 1 is reserved for errors that abort before any suite runs
     # (gate-suites unreadable). The unit carries SuccessExitStatus=2 so systemd does not
