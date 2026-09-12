@@ -507,10 +507,13 @@ log "$FAYTH: $BEAD_ID works repo:$REPO_NAME at $REPO (land=$REPO_LAND)"
 # resuming (same bead, same branch); a bead reopened after a failed gate; and work handed
 # to a SUCCESSOR bead, which inherits the branch by copying one label rather than starting
 # a parallel history.
-BRANCH="$(bdq label list "$BEAD_ID" 2>/dev/null | sed -n 's/^ *- branch:\(.*\)$/\1/p' | head -1)"
+BRANCH="$(bdq state "$BEAD_ID" branch 2>/dev/null)"
+# bd state prints "(no branch state set)" when the dimension has never been written; that
+# is not a branch name. Strip the sentinel so the absence test below still works.
+case "$BRANCH" in '('*) BRANCH="" ;; esac
 if [ -z "$BRANCH" ]; then
     BRANCH="spira/$BEAD_ID"
-    bdq label add "$BEAD_ID" "branch:$BRANCH" >/dev/null 2>&1
+    bdq set-state "$BEAD_ID" "branch=$BRANCH" >/dev/null 2>&1
     log "$FAYTH/$AEON: $BEAD_ID takes branch $BRANCH"
 else
     log "$FAYTH/$AEON: $BEAD_ID resumes recorded branch $BRANCH"

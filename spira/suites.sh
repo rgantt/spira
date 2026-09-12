@@ -227,7 +227,8 @@ file_red() {             # file_red <basename> <status> <rc> <seconds> <fp> <out
     out_inc="$(SPIRA_INCIDENT_TYPE=bug \
           SPIRA_INCIDENT_PRIORITY="$(priority_of "$s")" \
           SPIRA_INCIDENT_ACTOR=suites \
-          SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,repo:$SPIRA_HOME_REPO" \
+          SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" \
+          SPIRA_INCIDENT_REPO="$SPIRA_HOME_REPO" \
           SPIRA_INCIDENT_REF="suite:$s:$fp" \
           SPIRA_INCIDENT_PATH="$HERE/$s" \
           SPIRA_INCIDENT_CAUSE=suite-red \
@@ -284,7 +285,8 @@ file_env_red() {    # file_env_red <basename> <rc> <seconds> <fp> <output> <diff
     out_inc="$(SPIRA_INCIDENT_TYPE=bug \
           SPIRA_INCIDENT_PRIORITY="$(priority_of "$s")" \
           SPIRA_INCIDENT_ACTOR=suites \
-          SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,repo:$SPIRA_HOME_REPO" \
+          SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" \
+          SPIRA_INCIDENT_REPO="$SPIRA_HOME_REPO" \
           SPIRA_INCIDENT_REF="runner-env:$s" \
           SPIRA_INCIDENT_PATH="$HERE/$s" \
           SPIRA_DB="$SPIRA_DB" \
@@ -344,7 +346,8 @@ file_fixture_fault() {  # file_fixture_fault <n> <suite-list> <fixture-name>
     out_inc="$(SPIRA_INCIDENT_TYPE=bug \
           SPIRA_INCIDENT_PRIORITY="$PRIORITY" \
           SPIRA_INCIDENT_ACTOR=suites \
-          SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,repo:$SPIRA_HOME_REPO" \
+          SPIRA_INCIDENT_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan" \
+          SPIRA_INCIDENT_REPO="$SPIRA_HOME_REPO" \
           SPIRA_INCIDENT_REF="fixture-fault:${fixture}" \
           SPIRA_INCIDENT_PATH="$HERE/testdb.sh" \
           SPIRA_DB="$SPIRA_DB" \

@@ -3282,23 +3282,22 @@ repo_of_labels() {
 }
 
 bead_branch() {          # bead_branch <id> -> its recorded branch, or the derived default
-    # The recorded affinity, read back. Falls through to the derived name so a bead filed
-    # before branches were recorded still resolves (law-branch-affinity-is-recorded).
+    # The recorded affinity, read back via bd state. Falls through to the derived name so
+    # a bead filed before branches were recorded still resolves (law-branch-affinity-is-recorded).
+    # bd state prints "(no branch state set)" when the dimension has never been written;
+    # strip the sentinel before the fallback test.
     local id="$1" br
-    br="$(bdq label list "$id" 2>/dev/null | sed -n 's/^ *- branch:\(.*\)$/\1/p' | head -1)"
+    br="$(bdq state "$id" branch 2>/dev/null)"
+    case "$br" in '('*) br="" ;; esac
     printf '%s' "${br:-spira/$id}"
 }
 
 bead_repo() {            # bead_repo <id> -> its repo name, or the home repo if it names none
+    # bd state prints "(no repo state set)" when the dimension has never been written;
+    # strip the sentinel before the fallback test.
     local id="$1" name
-    name="$(bdjson show "$id" 2>/dev/null | python3 -c '
-import sys, json
-try: d = json.load(sys.stdin)
-except Exception: raise SystemExit
-d = d if isinstance(d, list) else [d]
-for l in (d[0].get("labels") or []) if d else []:
-    if l.startswith("repo:"):
-        print(l[5:]); break' 2>/dev/null)"
+    name="$(bdq state "$id" repo 2>/dev/null)"
+    case "$name" in '('*) name="" ;; esac
     printf '%s' "${name:-$(spira_home_repo)}"
 }
 

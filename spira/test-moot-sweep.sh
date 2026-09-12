@@ -295,7 +295,7 @@ if [ -n "$inc_ask_id" ]; then
     is "ask stays open before repo: label" "open" "$(bd_show_status "$inc_ask_id")"
 
     # Add repo: label to the incident bead — predicate must now clear.
-    bd -C "$SPIRA_DB" label add "$INC_ID" "repo:spira" >/dev/null 2>&1
+    bd -C "$SPIRA_DB" set-state "$INC_ID" "repo=spira" >/dev/null 2>&1
     out=$(sweep 2>&1)
     want "CLEARED after repo: label added"  "CLEARED"    "$out"
     want "and names the ask bead"           "$inc_ask_id" "$out"

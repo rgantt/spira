@@ -115,10 +115,10 @@ echo "groomer.sh correct-lane <id> --lane <lane>"
 # ==========================================================================================
 : > "$BD_LOG"
 out="$(run_groomer correct-lane sp-eee --lane ops)"; rc=$?
-is   "correct-lane exits 0"         0           "$rc"
-want "bd called with label add"     "label add" "$(cat "$BD_LOG")"
-want "bd called with lane:ops"      "lane:ops"  "$(cat "$BD_LOG")"
-want "bd called with sp-eee"        "sp-eee"    "$(cat "$BD_LOG")"
+is   "correct-lane exits 0"         0              "$rc"
+want "bd called with set-state"     "set-state"    "$(cat "$BD_LOG")"
+want "bd called with lane=ops"      "lane=ops"     "$(cat "$BD_LOG")"
+want "bd called with sp-eee"        "sp-eee"       "$(cat "$BD_LOG")"
 
 # ==========================================================================================
 echo

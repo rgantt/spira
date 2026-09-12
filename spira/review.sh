@@ -413,12 +413,15 @@ except Exception:
         "review finding: ${title}" \
         --type bug \
         --priority 2 \
-        --labels "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,repo:${name},${REVIEW_LABEL}" \
+        --labels "${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan,${REVIEW_LABEL}" \
         --external-ref "$ref" \
         --body-file "$tmpbody" \
         --silent 2>/dev/null | tr -d '[:space:]')"
     rm -f "$tmpbody"
     [ -n "${id:-}" ] || return 1
+    # THE REPO DIMENSION IS WRITTEN WITH SET-STATE — not embedded in --labels at creation.
+    # This enforces single-valuedness at the substrate level.
+    bdq set-state "$id" "repo=${name}" >/dev/null 2>&1 || true
     log "review: filed finding $id — $title"
     bdq note "$id" "review-unit: $tag" >/dev/null 2>&1 || true
     printf '%s\n' "$id"

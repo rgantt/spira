@@ -116,7 +116,7 @@ echo "PRIOR COMMITS on branch — RESUME_BRIEF must appear in the prompt:"
 # ======================================================================================
 # Plant two commits on the branch before aeon.sh runs, simulating a reopened bead.
 testdb_reset; seed sp-ar-prior
-bd -C "$SPIRA_DB" label add sp-ar-prior "branch:spira/sp-ar-prior" >/dev/null 2>&1 || true
+bd -C "$SPIRA_DB" set-state sp-ar-prior "branch=spira/sp-ar-prior" >/dev/null 2>&1 || true
 git -C "$REPO" fetch -q origin main 2>/dev/null
 git -C "$REPO" checkout -q -B spira/sp-ar-prior origin/main
 printf 'attempt1-a\n' >> "$REPO/f"; git -C "$REPO" commit -qam "sp-ar-prior — first attempt part 1"
@@ -139,7 +139,7 @@ echo
 echo "ONE PRIOR COMMIT — singular form, RESUME_BRIEF still appears:"
 # ======================================================================================
 testdb_reset; seed sp-ar-one
-bd -C "$SPIRA_DB" label add sp-ar-one "branch:spira/sp-ar-one" >/dev/null 2>&1 || true
+bd -C "$SPIRA_DB" set-state sp-ar-one "branch=spira/sp-ar-one" >/dev/null 2>&1 || true
 git -C "$REPO" fetch -q origin main 2>/dev/null
 git -C "$REPO" checkout -q -B spira/sp-ar-one origin/main
 printf 'one-attempt\n' >> "$REPO/f"; git -C "$REPO" commit -qam "sp-ar-one — previous attempt"
@@ -157,7 +157,7 @@ echo "PRIOR COMMITS PLUS BASE MOVED — RESUME_BRIEF after rebase:"
 # Push a new commit on main (base moved), then check that RESUME_BRIEF still fires
 # after the rebase aligns the branch.
 testdb_reset; seed sp-ar-rebased
-bd -C "$SPIRA_DB" label add sp-ar-rebased "branch:spira/sp-ar-rebased" >/dev/null 2>&1 || true
+bd -C "$SPIRA_DB" set-state sp-ar-rebased "branch=spira/sp-ar-rebased" >/dev/null 2>&1 || true
 git -C "$REPO" fetch -q origin main 2>/dev/null
 # Plant prior work on the branch at the current base
 git -C "$REPO" checkout -q -B spira/sp-ar-rebased origin/main

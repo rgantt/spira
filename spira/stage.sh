@@ -207,7 +207,7 @@ git -C "$_cw_repo" push -q origin "$_cw_br" 2>/dev/null \
 _cw_log "committed and pushed $_cw_br"
 
 # Record the branch affinity and close the bead.
-bdq label add "$_cw_id" "branch:$_cw_br" >/dev/null 2>&1 || true
+bdq set-state "$_cw_id" "branch=$_cw_br" >/dev/null 2>&1 || true
 bdq close "$_cw_id" --reason "canary-worker: committed on $_cw_br" >/dev/null 2>&1 \
     || { _cw_log "close failed for $_cw_id"; exit 1; }
 _cw_log "closed $_cw_id"

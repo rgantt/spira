@@ -60,7 +60,8 @@ _file_incident() {
     SPIRA_BD="$_PROD_BD" SPIRA_PATH="${_PROD_PATH}" \
     SPIRA_INCIDENT_TYPE=bug \
     SPIRA_INCIDENT_PRIORITY=1 \
-    SPIRA_INCIDENT_LABELS="spira,incident,repo:spira" \
+    SPIRA_INCIDENT_LABELS="spira,incident" \
+    SPIRA_INCIDENT_REPO="spira" \
     SPIRA_INCIDENT_REF="canary:pipeline" \
         bash "$inc" file "$title" - <<< "$body" >/dev/null 2>&1 || true
 }

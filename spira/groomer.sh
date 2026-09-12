@@ -94,10 +94,10 @@ case "$cmd" in
   correct-lane)
     # groomer.sh correct-lane <id> --lane <lane>
     #
-    # Adds the correct lane label to a bead. Lanes are labels of the form "lane:<name>".
-    # The groomer does not remove the old lane label — if one must be removed the aeon
-    # does it directly with bd label remove, because the groomer cannot know which label
-    # was wrong without having identified it first.
+    # Sets the lane dimension on a bead. bd set-state removes the previous lane: label
+    # atomically, so exactly one lane: label remains after this call regardless of what
+    # the bead carried before — single-valuedness is enforced by the substrate, not by
+    # discipline.
     id="${1:-}"; [ $# -gt 0 ] && shift
     lane=""
     while [ $# -gt 0 ]; do
@@ -110,7 +110,7 @@ case "$cmd" in
     done
     [ -z "$id" ]   && { printf 'groomer: correct-lane: bead id required\n' >&2; exit 1; }
     [ -z "$lane" ] && { printf 'groomer: correct-lane: --lane <lane> required\n' >&2; exit 1; }
-    "$BD_CMD" -C "$DB" label add "$id" "lane:$lane"
+    "$BD_CMD" -C "$DB" set-state "$id" "lane=$lane"
     ;;
 
   unwanted)

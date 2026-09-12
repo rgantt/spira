@@ -52,24 +52,18 @@ set -uo pipefail
 # two callers declaring different repos never find each other's open incident (sp-jvlrs).
 LABELS="${SPIRA_INCIDENT_LABELS:-spira,incident}"
 
-# THE REPOSITORY THIS INCIDENT BELONGS TO. Without a repo: label a bead is worked in the
-# home-repo fallback (brain), which has not contained the harness since sp-9tal. Callers
-# declare it via SPIRA_INCIDENT_REPO; a caller that already embeds repo: in
-# SPIRA_INCIDENT_LABELS is treated as having declared it. Where nothing is declared the
-# bead is marked needs-repo-triage and escalated so the wrong repo is not
-# indistinguishable from the right one (sp-io5e, law-a-split-repoints-nothing).
-case "$LABELS" in
-    *repo:*) INCIDENT_REPO_DECLARED=1 ;;
-    *)
-        _irepo="${SPIRA_INCIDENT_REPO:-}"
-        if [ -n "$_irepo" ]; then
-            LABELS="${LABELS},repo:${_irepo}"
-            INCIDENT_REPO_DECLARED=1
-        else
-            INCIDENT_REPO_DECLARED=0
-        fi
-        ;;
-esac
+# THE REPOSITORY THIS INCIDENT BELONGS TO. Without a repo dimension a bead is worked in
+# the home-repo fallback (brain), which has not contained the harness since sp-9tal.
+# Callers declare it via SPIRA_INCIDENT_REPO. The repo dimension is written with
+# bd set-state after the bead is created so that single-valuedness is enforced by the
+# substrate (a label add can stack duplicates; set-state cannot). Where nothing is declared
+# the bead is marked needs-repo-triage and escalated (sp-io5e, law-a-split-repoints-nothing).
+_irepo="${SPIRA_INCIDENT_REPO:-}"
+if [ -n "$_irepo" ]; then
+    INCIDENT_REPO_DECLARED=1
+else
+    INCIDENT_REPO_DECLARED=0
+fi
 
 SPOOL="${SPIRA_SPOOL:-$SPIRA_RUN/incident-spool}"
 ILOG="${SPIRA_INCIDENT_LOG:-$SPIRA_RUN/incident.log}"
@@ -370,6 +364,15 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
         return 1
     fi
     ilog "filed $id for $ref"
+    # THE REPOSITORY DIMENSION IS WRITTEN WITH SET-STATE, NOT AS A LABEL AT CREATION. Writing
+    # it through bd set-state rather than embedding "repo:$name" in the --labels string
+    # enforces single-valuedness at the substrate level: a second set-state call removes the
+    # first repo: label atomically, so no bead can accumulate two repo: labels (the failure
+    # bd label add allowed). Done immediately after creation so the bead never exists without
+    # its repo dimension in the open state.
+    if [ "${INCIDENT_REPO_DECLARED:-0}" = 1 ] && [ -n "${_irepo:-}" ]; then
+        bdq set-state "$id" "repo=${_irepo}" >/dev/null 2>&1
+    fi
     # THE INITIAL FILING IS OCCURRENCE 1. Without this the dedup counter starts at 0 on the
     # first recurrence, so the Nth total filing produces n=N-1 and the SIN fires one interval
     # late. At SIN_AT=5 (10-minute sweep) that is 60 min rather than the 50 min the comment
@@ -387,7 +390,7 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
     # correct the label before any aeon touches it (sp-io5e, law-a-split-repoints-nothing).
     if [ "${INCIDENT_REPO_DECLARED:-1}" = 0 ]; then
         bdq label add "$id" "needs-repo-triage" >/dev/null 2>&1
-        bdq note "$id" "Repository not declared — SPIRA_INCIDENT_REPO was not set and LABELS carried no repo: label. An aeon claiming this bead works it in the home-repo fallback, which may be the wrong checkout. Add repo:<name> before claiming." >/dev/null 2>&1
+        bdq note "$id" "Repository not declared — SPIRA_INCIDENT_REPO was not set. An aeon claiming this bead works it in the home-repo fallback, which may be the wrong checkout. Set the repo dimension with: bd set-state $id repo=<name>." >/dev/null 2>&1
         if [ "${SIN_EXEMPT:-0}" != 1 ]; then
             # DEDUPE: the ref is the stable key — not the title, which embeds the incident bead
             # id in some code paths and would produce a distinct ask per incident of the same
