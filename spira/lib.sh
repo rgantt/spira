@@ -1460,33 +1460,96 @@ attempts_of() {          # attempts_of <id> -> count of in_progress status-chang
     printf '0'
 }
 
-# BUMP FUNCTIONS ARE NO-OPS. No counter label is written; the events trail is the record.
-# The functions remain so that callers compile without change; they return 0 (no count).
-# Callers that need the current attempt count should call attempts_of after the fact.
-bump_attempt() {
-    return 0
+# BUMP FUNCTIONS. bump_attempt and bump_timeout are no-ops (attempts are counted via
+# status_changed events that bd writes natively; timeouts have no census role). The
+# remaining three — bump_reclaim, bump_requeue, bump_recur — write a typed event row so
+# that census.sh can aggregate failure classes across the whole store (sp-2lk).
+#
+# EVENT WRITE PATH: the same two-path approach as attempts_of (server mode via bd sql;
+# embedded mode via dolt --data-dir). Failure is silent — a missed counter is acceptable;
+# a crash in a caller is not. bump_attempt and bump_timeout remain no-ops so that callers
+# compile without change and test-check4-events.sh criterion 1 (no label writes) holds.
+#
+# _bump_write_event <id> <event_type> <cause> — inserts one event row.
+_bump_write_event() {
+    local id="${1:-}" etype="${2:-}" cause="${3:-unrecorded}"
+    [ -n "$id" ] && [ -n "$etype" ] || return 0
+    local uuid actor q
+    uuid="$(python3 -c 'import uuid; print(str(uuid.uuid4()))' 2>/dev/null)" || return 0
+    actor="${BEADS_ACTOR:-harness}"
+    q="INSERT INTO events (id, issue_id, event_type, actor, new_value, created_at) VALUES ('$uuid', '$id', '$etype', '$actor', '$cause', NOW())"
+    # Server mode (standard bd binary supports bd sql).
+    if "${SPIRA_BD:-bd}" -C "$SPIRA_DB" sql "$q" >/dev/null 2>&1; then return 0; fi
+    # Embedded mode (bd-embedded refuses bd sql; dolt reads the same storage directly).
+    local doltdb="${SPIRA_DB}/.beads/embeddeddolt"
+    if [ -d "$doltdb" ] && command -v dolt >/dev/null 2>&1; then
+        local dbname
+        dbname="$(ls "$doltdb" 2>/dev/null | grep -v '^\.' | grep -v '^\.lock$' | head -1)" || dbname="sp"
+        [ -n "$dbname" ] || dbname="sp"
+        dolt --data-dir "$doltdb" sql -q "use $dbname; $q;" >/dev/null 2>&1 || true
+    fi
 }
-bump_reclaim() {
-    return 0
-}
-bump_requeue() {
-    return 0
-}
-bump_timeout() {
-    return 0
-}
-bump_recur() {
-    return 0
-}
+bump_attempt() { return 0; }
+bump_reclaim() { _bump_write_event "${1:-}" reclaimed "${2:-unrecorded}"; }
+bump_requeue() { _bump_write_event "${1:-}" requeued  "${2:-unrecorded}"; }
+bump_timeout() { return 0; }
+bump_recur()   { _bump_write_event "${1:-}" recurred  "${2:-unrecorded}"; }
 
-# DIAGNOSTIC ACCESSORS RETURN 0. The counters these read (sp-reclaim-N, sp-requeue-N,
-# sp-timeout-N, sp-recur-N) are no longer written, so no historical value exists.
-# callers that used these for cap escalations will see 0 — cap escalations that relied on
-# label counts will not fire. Events-based cap detection is a future deliverable (sp-lzt).
-reclaims_of()    { printf '0'; }
-requeues_of()    { printf '0'; }
-timeouts_of()    { printf '0'; }
-recurs_of()      { printf '0'; }
+# DIAGNOSTIC ACCESSORS — requeue/reclaim/recur counters are now read from the events
+# table (sp-2lk). Two paths, matching _bump_write_event. timeouts_of returns 0 (no
+# census role; events-based timeout detection is a separate future deliverable).
+# --------------------------------------------------------------------------------------
+# _counter_events_sql <id> <event_type> — SQL that returns a single integer count.
+_counter_events_sql() {
+    printf "SELECT COUNT(*) FROM events WHERE issue_id='%s' AND event_type='%s'" "$1" "$2"
+}
+_counter_events_query() {   # _counter_events_query <id> <event_type> -> count
+    local id="$1" etype="$2" q result=""
+    q="$(_counter_events_sql "$id" "$etype")"
+    if result="$("${SPIRA_BD:-bd}" -C "$SPIRA_DB" sql "$q" 2>/dev/null | sed -n '3p' \
+                  | tr -d ' ')" && [ -n "$result" ] \
+       && printf '%d' "$result" >/dev/null 2>&1; then
+        printf '%d' "$result"; return 0
+    fi
+    local doltdb="${SPIRA_DB}/.beads/embeddeddolt"
+    if [ -d "$doltdb" ] && command -v dolt >/dev/null 2>&1; then
+        local dbname
+        dbname="$(ls "$doltdb" 2>/dev/null | grep -v '^\.' | grep -v '^\.lock$' | head -1)" || dbname="sp"
+        [ -n "$dbname" ] || dbname="sp"
+        result="$(dolt --data-dir "$doltdb" sql -q "use $dbname; $q;" 2>/dev/null \
+                  | sed -n '4p' | tr -d '| ')" || result=""
+        if [ -n "$result" ] && printf '%d' "$result" >/dev/null 2>&1; then
+            printf '%d' "$result"; return 0
+        fi
+    fi
+    printf '0'
+}
+reclaims_of() { _counter_events_query "${1:-}" reclaimed; }
+requeues_of() { _counter_events_query "${1:-}" requeued;  }
+timeouts_of() { printf '0'; }
+recurs_of()   { _counter_events_query "${1:-}" recurred;  }
+
+# CENSUS SQL — the query and two-path runner used by census.sh to aggregate failure
+# classes. Kept in lib.sh so that tests can call it directly without parsing census.sh.
+# --------------------------------------------------------------------------------------
+_census_events_sql() {
+    printf "SELECT event_type, COALESCE(new_value, ''), COUNT(*) AS n FROM events WHERE event_type IN ('requeued', 'reclaimed', 'recurred') GROUP BY event_type, new_value ORDER BY n DESC"
+}
+census_events_run_sql() {   # census_events_run_sql -> tabular output (both modes)
+    local q
+    q="$(_census_events_sql)"
+    local out
+    if out="$("${SPIRA_BD:-bd}" -C "$SPIRA_DB" sql "$q" 2>/dev/null)" && [ -n "$out" ]; then
+        printf '%s\n' "$out"; return 0
+    fi
+    local doltdb="${SPIRA_DB}/.beads/embeddeddolt"
+    if [ -d "$doltdb" ] && command -v dolt >/dev/null 2>&1; then
+        local dbname
+        dbname="$(ls "$doltdb" 2>/dev/null | grep -v '^\.' | grep -v '^\.lock$' | head -1)" || dbname="sp"
+        [ -n "$dbname" ] || dbname="sp"
+        dolt --data-dir "$doltdb" sql -q "use $dbname; $q;" 2>/dev/null || true
+    fi
+}
 
 # counter_of, counter_label, counter_causes, bump_counter, attempt_causes, requeue_causes,
 # recur_causes: retained for compatibility with attempts.sh and test-attempts.sh which

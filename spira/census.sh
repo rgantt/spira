@@ -55,31 +55,45 @@ REMEDY_LABEL="$SPIRA_MAECHEN_REMEDY_LABEL"
 _TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$_TMPDIR"' EXIT INT TERM
 
-# Python: aggregate failure labels → <count> <class> lines, ranked highest first.
+# Python: aggregate failure events → <count> <class> lines, ranked highest first.
+# Reads tabular SQL output from census_events_run_sql (server and embedded formats).
+# Maps event_type + new_value to the class name used throughout the census pipeline:
+#   requeued  + <cause>           → sp-requeue-<cause>
+#   recurred  + <cause>           → sp-recur-<cause>
+#   reclaimed + (empty/unrecorded)→ sp-reclaim
+#   reclaimed + <named-cause>     → sp-reclaim-<named-cause>
 cat > "$_TMPDIR/count.py" <<'EOF'
-import sys, json, re, collections
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-if not isinstance(data, list):
-    data = [data]
-pat = re.compile(r'^(sp-(?:recur|requeue|reclaim))-(\d+)(.*)$')
+import sys, collections
+
 c = collections.Counter()
-for b in data:
-    for lbl in (b.get("labels") or []):
-        m = pat.match(lbl)
-        if not m:
-            continue
-        prefix = m.group(1)    # sp-recur / sp-requeue / sp-reclaim
-        cause  = m.group(3)    # empty, or "-<cause-with-hyphens>"
-        if cause:
-            cls = prefix + cause          # sp-recur-suite-red
-        elif prefix in ('sp-recur', 'sp-requeue'):
-            cls = prefix + '-unrecorded'  # bare label before sp-ycvpd typed it
+for line in sys.stdin:
+    line = line.rstrip('\n').strip()
+    if not line or line.startswith('+') or line.startswith('('):
+        continue
+    parts = [p.strip() for p in line.split('|')]
+    parts = [p for p in parts if p]
+    if len(parts) != 3:
+        continue
+    event_type, new_value, n = parts[0], parts[1], parts[2]
+    if event_type == 'event_type' or 'COALESCE' in event_type:
+        continue
+    try:
+        count = int(n)
+    except ValueError:
+        continue
+    cause = new_value.strip()
+    if event_type == 'requeued':
+        cls = 'sp-requeue-' + (cause or 'unrecorded')
+    elif event_type == 'recurred':
+        cls = 'sp-recur-' + (cause or 'unrecorded')
+    elif event_type == 'reclaimed':
+        if cause and cause != 'unrecorded':
+            cls = 'sp-reclaim-' + cause
         else:
-            cls = prefix                  # sp-reclaim (no cause by design)
-        c[cls] += 1
+            cls = 'sp-reclaim'
+    else:
+        continue
+    c[cls] += count
 for cls, n in c.most_common():
     print(n, cls)
 EOF
@@ -99,9 +113,11 @@ for b in data:
             print(lbl[len("covers:"):])
 EOF
 
-# Aggregate all failure labels across the whole graph, output <count> <class> ranked.
+# Aggregate failure events across the whole store, output <count> <class> ranked.
+# census_events_run_sql is defined in lib.sh (sourced above); it queries the events
+# table in both server and embedded modes (sp-2lk).
 _census_raw() {
-    bdq list --all --json 2>/dev/null | python3 "$_TMPDIR/count.py"
+    census_events_run_sql | python3 "$_TMPDIR/count.py"
 }
 
 # Collect classes already covered by an open remedy bead.
