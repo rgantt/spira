@@ -290,26 +290,15 @@ fi
 dispatchable="$(dispatchable_open)"
 log "CHECK4 examining $(printf '%s' "$dispatchable" | grep -c . || true) dispatchable bead(s), poison=$POISON_AT requeue=$REQUEUE_AT reclaim=$RECLAIM_AT"
 for id in $dispatchable; do
-    # ONE bdq label list CALL COVERS ALL FOUR COUNTERS: attempts, reclaims, requeues, and
-    # the poison label. The original code made three separate bdq calls in series; the data
-    # lives in the label set, so one read covers everything. All three counters are extracted
-    # here — before the attempt-threshold gate — because the requeue and reclaim caps apply
-    # to every dispatchable bead, not only those that have reached the attempt threshold. A
-    # bead that cycles without ever charging an attempt passes the gate with n=0 indefinitely
-    # if the reads stay behind it.
-    #
-    # sp-attempt-N IS STILL THE ONLY COUNTER THAT FEEDS THE POISON THRESHOLD. A bead carrying
-    # six reclaims and no attempt reads as poisoned-by-reclaims from a label listing, and has
-    # been reported as a second poison door. It is not one: reclaims and requeues have their
-    # own caps and their own escalation paths, distinct from poison in both wording and effect.
+    # ATTEMPTS FROM THE EVENTS TRAIL; labels for poison, repo, and partition exclusions.
+    # Counter labels (sp-attempt-N, sp-reclaim-N, sp-requeue-N) are no longer written
+    # (sp-lzt). The attempt count comes from status_changed events in the bd events table;
+    # reclaim and requeue caps are not evaluated here because they have no event-based
+    # implementation yet — cap escalation is a future deliverable.
     _labels="$(bdq label list "$id" 2>/dev/null)" || _labels=""
-    n="$(printf '%s' "$_labels" | grep -oE 'sp-attempt-[0-9]+' | grep -oE '[0-9]+$' \
-        | sort -n | tail -1)"
-    n="${n:-0}"
-    _reclaims="$(printf '%s' "$_labels" | grep -oE 'sp-reclaim-[0-9]+' | grep -oE '[0-9]+$' \
-        | sort -n | tail -1)"; _reclaims="${_reclaims:-0}"
-    _requeues="$(printf '%s' "$_labels" | grep -oE 'sp-requeue-[0-9]+' | grep -oE '[0-9]+$' \
-        | sort -n | tail -1)"; _requeues="${_requeues:-0}"
+    n="$(attempts_of "$id")"; n="${n:-0}"
+    _reclaims=0
+    _requeues=0
 
     # REQUEUE CAP. A bead completed and requeued past the cap is stuck in a loop the harness
     # is causing: the session finished the work, closed the bead, and the harness put it back
@@ -408,12 +397,9 @@ print(d[0].get("status", "") if d else "")' 2>/dev/null)"
     # and "three attempts" is only a reason to stop if all three were the work failing. Rungs
     # predating the cause label read `unrecorded`, which is honest rather than an assumption
     # about what they were.
-    # Derived from the same _labels read above — no separate bdq call.
-    _rungs="$(printf '%s' "$_labels" | sed -n 's/^ *- //p' \
-        | grep -E '^sp-attempt-[0-9]+(-|$)')" || _rungs=""
-    charges="$(printf '%s' "$_rungs" \
-        | sed -E 's/^sp-attempt-([0-9]+)$/\1 unrecorded/;s/^sp-attempt-([0-9]+)-(.*)$/\1 \2/' \
-        | sort -n | awk '{printf "%s#%s ", $1, $2}')"
+    # Attempts are now counted from the events trail, not from labels (sp-lzt). The
+    # per-cause breakdown that labels provided is gone; the count itself is the signal.
+    charges="$n in_progress transition(s)"
 
     # Check the poison label from _labels. `... | grep -q` under `set -o pipefail` hands
     # back 141 when it MATCHES — grep exits at the first hit and the writer dies of SIGPIPE
@@ -424,8 +410,8 @@ print(d[0].get("status", "") if d else "")' 2>/dev/null)"
     case "$_labels" in
         *spira-poison*) ;;
         *)  bdq label add "$id" spira-poison >/dev/null 2>&1
-            bdq note "$id" "Poisoned after $n attempts, charged by: ${charges:-unrecorded}. Not retried until a human changes the approach. Any live holder keeps its claim and releases on its own exit path; no persona can claim it again while the label stands." >/dev/null 2>&1
-            progress "poisoned $id after $n attempts (${charges:-unrecorded})"
+            bdq note "$id" "Poisoned after $n in_progress transition(s) without landing. Not retried until a human changes the approach. Any live holder keeps its claim and releases on its own exit path; no persona can claim it again while the label stands." >/dev/null 2>&1
+            progress "poisoned $id after $n attempts"
             # Inside the label guard, so it fires on the TRANSITION into poisoned and never
             # again — the bead keeps the label, and every later pass takes the other branch.
             spira_event bead.poisoned "$id" "poisoned $id after $n attempts" \
@@ -504,19 +490,12 @@ if notes:
             branch_info="spira/$id — ${_nc} commit(s)${_ds:+; $_ds}"
         fi
     fi
-    # CHARGE REASON, NOT THE WORD "FAILED". "failed N times" sends the operator looking for
-    # an error; the reason says what happened — "closed-not-landed" differs from "gate-fault"
-    # and only one of them asks for a code change (sp-njwb).
-    charge_summary="$(echo "${charges:-}" | tr ' ' '\n' | sed 's/^[0-9]*#//' \
-        | grep -v '^$' | sort | uniq -c \
-        | awk '{printf "%s%s x%s", sep, $2, $1; sep=", "} END{printf "\n"}')" || true
-    [ -n "${charge_summary:-}" ] || charge_summary="unrecorded"
+    # Attempts are from the events trail (sp-lzt): no per-cause breakdown.
+    charge_summary="$n in_progress transition(s)"
     ev="$ev
 
 REPO      $r_name${r_path:+ ($r_path)}
-ATTEMPTS  $n (poison threshold $POISON_AT) — charged by: ${charges:-unrecorded}
-RECLAIMS  $_reclaims — times the aeon died holding it; these do NOT count toward poison
-REQUEUES  $_requeues — times the harness reopened finished work over a rebase; these do NOT count toward poison
+ATTEMPTS  $n (poison threshold $POISON_AT) — each in_progress transition from the events trail
 BRANCH    $branch_info
 
 --- last session log (tail) ---
@@ -531,9 +510,9 @@ _d=\$(bd -C "\$COCKPIT_DB" show $id --json 2>/dev/null); [ -n "\$_d" ] || { prin
 MOOTEOF
 )
     if "$SPIRA_NOTIFY" add \
-          "Spira bead $id — ${charge_summary} (${n} attempts) — change the approach or drop it?" \
+          "Spira bead $id — ${charge_summary} without landing (${n} attempts) — change the approach or drop it?" \
           --ref "escalation:poison:$id" \
-          --default "read the charges above first — an attempt is only a reason to stop if it names an outcome about the WORK. If they are genuine, rewrite the bead's description to change the approach and clear the spira-poison label; or close it if it is not worth doing" \
+          --default "if the work is correct, re-label or split the bead and clear spira-poison; if it is not worth doing, close it" \
           --why "nothing downstream of it can proceed, and no aeon will take it again while it is poisoned" \
           --evidence "$ev" \
           --moot-when "$_po_moot_pred" >/dev/null 2>&1; then
@@ -551,30 +530,24 @@ done
 #
 # Scan all poisoned non-closed beads. Any whose count is now below the threshold is
 # released: the condition that warranted the hold is gone.
-# The list response already carries labels and status; derive the attempt count and the
-# clear decision entirely inside python3 — one bd call covers all beads, no per-bead
-# bdq call needed. The python3 script also re-applies the closed/epic/event filters that
-# the original per-bead spira_bead_status and type checks enforced separately.
-while IFS=$'\t' read -r id n; do
+# EVENTS-BASED COUNT: attempt count comes from status_changed events, not labels (sp-lzt).
+# Each poisoned bead is queried individually; the per-bead cost is one SQL call.
+while read -r id; do
     [ -n "$id" ] || continue
+    n="$(attempts_of "$id")"; n="${n:-0}"
+    [ "$n" -lt "$POISON_AT" ] || continue
     bdq label remove "$id" spira-poison >/dev/null 2>&1
     progress "CHECK4 $id: stale poison cleared — $n attempt(s), below threshold $POISON_AT"
 done < <(bdjson list --limit 0 --label spira-poison 2>/dev/null \
     | python3 -c '
-import json, sys, re
-POISON_AT = int(sys.argv[1])
+import json, sys
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
 for i in (d if isinstance(d, list) else [d]):
     if i.get("status") == "closed" or i.get("issue_type") in ("epic", "event"):
         continue
-    labels = i.get("labels") or []
-    nums = [int(m.group(1)) for l in labels
-            for m in [re.search(r"sp-attempt-(\d+)", l)] if m]
-    n = max(nums) if nums else 0
-    if n < POISON_AT:
-        print(i["id"] + "\t" + str(n))
-' "$POISON_AT" 2>/dev/null || true)
+    print(i["id"])
+' 2>/dev/null || true)
 
 # ======================================================================================
 # CHECK 5 — closed but not landed. A bead closed with no commit naming it unblocks its
@@ -740,9 +713,10 @@ print(len([x for x in (d if isinstance(d,list) else [d]) if x.get("id")]))' 2>/d
             log "CHECK5 $id: delivers ($delivers) verified — not reopened"
             continue
         else
-            n="$(bump_attempt "$id" "delivers-unverified")"
-            bead_reopen "$id" "Reopened by sentinel: ${_delivers_fail}. Attempt $n charged. Set delivers:TYPE labels that match the evidence actually produced and present."
-            progress "reopened $id — delivers not verified: $_delivers_fail (attempt $n)"
+            # Counter labels (sp-attempt-N) no longer written; the events trail records
+            # this claim as an attempt when the bead transitions to in_progress (sp-lzt).
+            bead_reopen "$id" "Reopened by sentinel: ${_delivers_fail}. Set delivers:TYPE labels that match the evidence actually produced and present."
+            progress "reopened $id — delivers not verified: $_delivers_fail"
             continue
         fi
     fi
@@ -789,9 +763,10 @@ print(len([x for x in (d if isinstance(d,list) else [d]) if x.get("id")]))' 2>/d
         # as open and charges via session_outcome). This is the safety net for the case
         # where the aeon exited before reaching that check — in which case no attempt
         # has been charged yet and this is genuinely a failed attempt at the work.
-        n="$(bump_attempt "$id" "closed-not-landed")"
-        bead_reopen "$id" "Reopened by sentinel: closed, but no commit on ${subj_base:-the base} or on spira/$id names it in $r_name. Closed is not landed; attempt $n charged toward the poison threshold. If this bead was closed because another bead did the work, record it with: bd supersede $id --with <successor> — a close reason alone is not read by this check."
-        progress "reopened $id — closed without landing (attempt $n)"
+        # Counter labels (sp-attempt-N) no longer written; the events trail records
+        # this reopening as a future attempt when the bead is next claimed (sp-lzt).
+        bead_reopen "$id" "Reopened by sentinel: closed, but no commit on ${subj_base:-the base} or on spira/$id names it in $r_name. Closed is not landed; the next claim counts toward the poison threshold via the events trail. If this bead was closed because another bead did the work, record it with: bd supersede $id --with <successor> — a close reason alone is not read by this check."
+        progress "reopened $id — closed without landing"
     fi
 done < <(
     # EVERY PERSONA'S PARTITION, NOT THE BUILDER'S. This listed `--label spira,plan`, so a

@@ -161,52 +161,46 @@ is "set +e first lets it finish" "ENTERED
 LEDGER" "$(bash "$TMP/guarded.sh" 2>/dev/null)"
 
 # ======================================================================================
-# TWO DOORS ONTO THE ATTEMPT COUNTER — one for each site that has authority to say
-# "this work failed", and no more. The original bug was an unintended third door:
-# aeon.sh bumped on the way out and strand.sh bumped again reclaiming the ghost,
-# so one aeon dying cost two of the three attempts.
+# COUNTER LABELS DELETED (sp-lzt). Attempts are now computed from the events trail —
+# each status_changed event with new_value containing 'in_progress' is one attempt.
+# No harness script writes sp-attempt-*, sp-reclaim-*, sp-requeue-*, sp-timeout-*, or
+# sp-recur-* labels. The bump_* functions are no-ops.
 #
-# aeon.sh:    the session ran and the model's own verdict was "not done" — session_outcome
-#             returns unlanded, which is the one outcome that charges.
-# sentinel.sh CHECK 5: a bead closed with no commit naming it, where the aeon's own post-
-#             session check did not catch it (the aeon exited before reaching that code).
-#             The normal case is handled by aeon.sh's cleanup after bead_reopen reopens
-#             the bead; sentinel.sh is the safety net for the escape path.
-#
-# A charge site added later would be silent — nothing fails, a number is just larger —
-# so the count of sites is the assertion.
+# Two structural properties replace the original "two doors" count:
+#   1. No harness script writes a counter label (not even through bump_counter).
+#   2. The REQUEUE_CAUSE path in aeon.sh still exits before session_outcome is
+#      consulted — a reopened bead is not charged an attempt.
 # ======================================================================================
 echo
-echo "the counter has two doors:"
-sites="$(grep -l 'bump_attempt' "$HERE"/*.sh | grep -v '/lib\.sh$' | grep -v '/test-' \
-         | xargs -r -n1 basename | sort | tr '\n' ' ' | sed 's/ $//')"
-is "aeon.sh and sentinel.sh charge an attempt" "aeon.sh sentinel.sh" "$sites"
-# And it charges through the rule rather than around it: the call must sit inside the branch
-# outcome_charges decides, not beside it.
-guarded="$(sed -n '/if outcome_charges/,/^        else$/p' "$HERE/aeon.sh" | grep -c 'bump_attempt' || true)"
-is "and only inside the charging branch" 1 "$guarded"
-# THE THIRD COUNTER IS ALSO NOT A DOOR ONTO THE FIRST. A session that committed, closed the
-# bead and was reopened over a rebase leaves a trace that reads `unlanded` — the one outcome
-# that charges — so the exemption has to be decided BEFORE session_outcome is consulted, not
-# after. Both halves are structural because a later edit could move the branch below the
-# classifier and nothing would fail; the count would simply be larger.
-requeue="$(sed -n '/if \[ -n "\$REQUEUE_CAUSE" \]; then/,/^        fi$/p' "$HERE/aeon.sh")"
-is "the requeue path records a requeue"   1 "$(grep -c 'bump_requeue' <<<"$requeue")"
-is "and charges no attempt for it"        0 "$(grep -c 'bump_attempt' <<<"$requeue")"
+echo "counter labels deleted — structural properties:"
+
+BANNED='sp-attempt-|sp-reclaim-|sp-requeue-|sp-timeout-|sp-recur-'
+found="$(grep -rlE "label add.*($BANNED)" "$HERE"/*.sh 2>/dev/null \
+    | grep -v '/test-' | grep -v '/lib\.sh$' | grep -v '/attempts\.sh$' || true)"
+is "no harness script writes counter labels directly" "" "$found"
+
+for fn in bump_attempt bump_reclaim bump_requeue bump_timeout bump_recur; do
+    body="$(sed -n "/^${fn}()/,/^}/p" "$HERE/lib.sh" 2>/dev/null)"
+    has_label_add="$(grep -c 'bdq label add\|bump_counter' <<<"$body" || true)"
+    is "$fn is a no-op — does not write a label" "0" "$has_label_add"
+done
+
+# The REQUEUE_CAUSE exemption must still be decided before session_outcome is consulted.
+# A bead that was put back by the harness must not be charged an attempt.
 before="$(grep -n 'REQUEUE_CAUSE" \]; then' "$HERE/aeon.sh" | sed -n 1p | cut -d: -f1)"
 after="$(grep -n 'cause="\$(session_outcome' "$HERE/aeon.sh" | sed -n 1p | cut -d: -f1)"
-is "and it is decided before the trace is classified" yes \
+is "the requeue path exits before the trace is classified" yes \
    "$( [ -n "$before" ] && [ -n "$after" ] && [ "$before" -lt "$after" ] && echo yes || echo no)"
 
-# strand.sh's reclaim path is the door that was closed. It must record the death and must not
-# charge for it.
-ghost="$(sed -n '/^                ghost)/,/^                    ;;/p' "$HERE/strand.sh")"
-is "the reclaim path records a reclaim"   1 "$(grep -c 'bump_reclaim' <<<"$ghost")"
-is "and charges no attempt for it"        0 "$(grep -c 'bump_attempt' <<<"$ghost")"
-# capacity.sh withdraws a rung by finding it, never by rebuilding its name: a rung carries its
-# cause now, so `sp-attempt-$cur` matches no label and the removal would withdraw nothing
-# while still printing RESTORED.
-is "a withdrawal looks the rung up" 1 "$(grep -c 'counter_label "$id" sp-attempt' "$HERE/capacity.sh")"
+# attempts_of must read from the events table, not from labels. The SQL builder
+# (_attempts_sql_query) must reference 'status_changed' — that filter makes the count
+# meaningful. attempts_of() must call it rather than building its own query.
+body_sql="$(sed -n '/^_attempts_sql_query()/,/^}/p' "$HERE/lib.sh" 2>/dev/null)"
+is "the SQL query filters on status_changed events" "1" \
+   "$(grep -c 'status_changed' <<<"$body_sql" || true)"
+body_attempts="$(sed -n '/^attempts_of()/,/^}/p' "$HERE/lib.sh" 2>/dev/null)"
+is "attempts_of delegates to the SQL builder" "1" \
+   "$(grep -c '_attempts_sql_query' <<<"$body_attempts" || true)"
 
 # ======================================================================================
 # The counters and the release, against a real bd.
@@ -230,86 +224,43 @@ print(d[0].get("status","") if d else "")' 2>/dev/null; }
 num() { local v="$1"; printf '%d' "${v:-0}"; }
 
 echo
-echo "counters (real bd):"
+echo "counters (real bd) — events-based, no labels written:"
 
 seed sp-c1
-# THE POSITIVE CONTROL. A counter helper that silently read nothing would report 0 for both
-# kinds forever, and every assertion below would pass against a broken reader
-# (law-absence-needs-a-positive-control).
-is "a fresh bead has no attempts"      0 "$(num "$(attempts_of sp-c1)")"
-is "a fresh bead has no reclaims"      0 "$(num "$(reclaims_of sp-c1)")"
-is "the first attempt reads back as 1" 1 "$(num "$(bump_attempt sp-c1 unlanded)")"
-is "and is visible to the reader"      1 "$(num "$(attempts_of sp-c1)")"
+# THE POSITIVE CONTROL. A fresh bead with no status changes has zero attempts.
+is "a fresh bead has no attempts"       0 "$(num "$(attempts_of sp-c1)")"
+is "reclaims_of is a diagnostic stub"  0 "$(num "$(reclaims_of sp-c1)")"
+is "requeues_of is a diagnostic stub"  0 "$(num "$(requeues_of sp-c1)")"
 
-# THE RUNG CARRIES ITS CAUSE. "Three attempts" is only a reason to stop if all three were the
-# work failing, so a poison that cannot name what charged it is a bead removed from
-# circulation for reasons that have already scrolled away.
-is "the rung records what charged it"  "sp-attempt-1-unlanded" "$(counter_label sp-c1 sp-attempt 1)"
-is "and reads back as a cause"         "1 unlanded"            "$(attempt_causes sp-c1)"
-# The number still leads the label, so every existing reader of the count is unchanged.
-bump_attempt sp-c1 unlanded >/dev/null
-is "a second rung still counts as 2"   2 "$(num "$(attempts_of sp-c1)")"
-# A rung written before causes existed is `unrecorded`, not a guess about what it was.
-bdq label add sp-c1 sp-attempt-3 >/dev/null 2>&1
-is "a bare legacy rung still counts"   3 "$(num "$(attempts_of sp-c1)")"
-is "and is reported as unrecorded"     "1 unlanded
-2 unlanded
-3 unrecorded" "$(attempt_causes sp-c1)"
-# Withdrawing a rung must find the label that exists, not the one its name would suggest.
-is "the legacy rung is findable"       "sp-attempt-3" "$(counter_label sp-c1 sp-attempt 3)"
-# A cause carrying a space would split into two labels and desynchronise the ladder.
-seed sp-c1b
-bump_attempt sp-c1b "two words" >/dev/null
-is "a cause with a space is one label" "sp-attempt-1-two-words" "$(counter_label sp-c1b sp-attempt 1)"
-is "and the count is still readable"   1 "$(num "$(attempts_of sp-c1b)")"
+# bump_* must not write any label. After bump_attempt the bead has no sp-attempt-* labels.
+bump_attempt sp-c1 unlanded
+labels_c1="$(bdq label list sp-c1 2>/dev/null)" || labels_c1=""
+[[ "$labels_c1" != *"sp-attempt"* ]] && ok "bump_attempt writes no label" \
+    || bad "bump_attempt writes no label" "got [$labels_c1]"
 
-# THE BEAD'S OWN ACCEPTANCE: an aeon reclaimed twice in a row carries no attempts at all.
-seed sp-c2
-bump_reclaim sp-c2 refused >/dev/null; bump_reclaim sp-c2 killed >/dev/null
-is "two reclaims are two reclaims"          2 "$(num "$(reclaims_of sp-c2)")"
-is "two reclaims cost the work no attempts" 0 "$(num "$(attempts_of sp-c2)")"
-is "and each names how its worker died"     "1 refused
-2 killed" "$(counter_causes sp-c2 sp-reclaim)"
+# attempts_of reads events, not labels. One bd update to in_progress is one attempt.
+bdq update sp-c1 --status in_progress >/dev/null 2>&1
+is "one in_progress transition counts as 1" 1 "$(num "$(attempts_of sp-c1)")"
 
-# THE HARNESS PUTTING FINISHED WORK BACK IS THE THIRD KIND, and it must cost the work
-# nothing. A bead cycling eight times over a moving base was charged eight attempts and
-# poisoned with a branch that merged cleanly the whole time.
-seed sp-c2b
-bump_requeue sp-c2b rebase-conflict >/dev/null; bump_requeue sp-c2b merge-conflict >/dev/null
-is "two requeues are two requeues"          2 "$(num "$(requeues_of sp-c2b)")"
-is "two requeues cost the work no attempts" 0 "$(num "$(attempts_of sp-c2b)")"
-is "and neither is a reclaim either"        0 "$(num "$(reclaims_of sp-c2b)")"
-is "each names why the harness put it back" "1 rebase-conflict
-2 merge-conflict" "$(requeue_causes sp-c2b)"
-
-# AND THE OTHER HALF: genuine failure still poisons. This is the sentinel's own predicate,
-# `attempts_of >= POISON_AT`, run against the same labels the sentinel would read.
+# AND THE OTHER HALF: genuine failure still poisons via events. Three in_progress events
+# reach the threshold.
 poisons() { local n; n="$(num "$(attempts_of "$1")")"; [ "$n" -ge 3 ] && echo yes || echo no; }
-is "two reclaims and nothing else do not poison"  no  "$(poisons sp-c2)"
-is "and neither do requeues"                     no  "$(poisons sp-c2b)"
-seed sp-c3
-bump_attempt sp-c3 unlanded >/dev/null; bump_attempt sp-c3 unlanded >/dev/null
-is "two real failures do not poison yet"          no  "$(poisons sp-c3)"
-bump_attempt sp-c3 unlanded >/dev/null
-is "three real failures still poison"             yes "$(poisons sp-c3)"
-
-# Reclaims mixed in must not move the poison verdict either way.
-seed sp-c4
-bump_reclaim sp-c4 killed >/dev/null; bump_attempt sp-c4 unlanded >/dev/null
-bump_reclaim sp-c4 killed >/dev/null; bump_attempt sp-c4 unlanded >/dev/null
-bump_reclaim sp-c4 refused >/dev/null
-is "reclaims interleaved with attempts do not poison" no "$(poisons sp-c4)"
-is "the attempts are still counted exactly"           2 "$(num "$(attempts_of sp-c4)")"
+seed sp-c2
+bdq update sp-c2 --status in_progress >/dev/null 2>&1
+bdq update sp-c2 --status open >/dev/null 2>&1
+bdq update sp-c2 --status in_progress >/dev/null 2>&1
+bdq update sp-c2 --status open >/dev/null 2>&1
+is "two events do not poison yet" no "$(poisons sp-c2)"
+bdq update sp-c2 --status in_progress >/dev/null 2>&1
+is "three events poison" yes "$(poisons sp-c2)"
 
 # ======================================================================================
-# attempts.sh reclassify — the same rule read backwards over history.
-#
-# The tool reads the chamber for its candidate set, so the suite gives it a chamber of its
-# own rather than inheriting whichever personas the box happens to ship
-# (law-gates-run-in-a-clean-environment).
+# attempts.sh reclassify — the store starts empty (sp-lzt deleted counter labels).
+# No sp-attempt-N labels exist in a fresh store; reclassify and prune-reclaims find
+# nothing to do. The tool must still behave correctly on an empty candidate set.
 # ======================================================================================
 echo
-echo "reclassifying rungs that name no cause:"
+echo "attempts.sh reclassify — on a store with no counter labels:"
 
 export SPIRA_HOME="$TMP/home"; mkdir -p "$SPIRA_HOME/chamber"
 cp "$HERE/lib.sh" "$HERE/conf.sh" "$HERE/attempts.sh" "$SPIRA_HOME/"
@@ -317,94 +268,24 @@ printf 'FAYTH_LABELS="spira,plan"\nFAYTH_EXCLUDE_LABELS="spira-poison"\nFAYTH_MA
     > "$SPIRA_HOME/chamber/t.fayth"
 ATT="$SPIRA_HOME/attempts.sh"
 
+# The audit scans for sp-attempt-N labels (no cause suffix). With bump_* as no-ops,
+# none are ever written; the store should be clean.
 seed sp-h1
-# The state the board was actually in: rungs written before a charge had to name what it was.
-bdq label add sp-h1 sp-attempt-1 >/dev/null 2>&1
-bdq label add sp-h1 sp-attempt-2 >/dev/null 2>&1
-bdq label add sp-h1 sp-attempt-3 >/dev/null 2>&1
-is "history poisons before the sweep" yes "$(poisons sp-h1)"
-# THE AUDIT IS ITS OWN POSITIVE CONTROL: a candidate query that returned nothing would make
-# every reclassify assertion below pass against a tool that looked at no beads at all.
-want_audit="$("$ATT" audit 2>&1)"
-case "$want_audit" in *"sp-h1"*"attempts=3"*) ok "the audit finds the bead and its count" ;;
-                      *) bad "the audit finds the bead and its count" "got [$want_audit]" ;; esac
-"$ATT" reclassify >/dev/null 2>&1
-is "a dry run changes nothing"        3 "$(num "$(attempts_of sp-h1)")"
-"$ATT" reclassify --apply >/dev/null 2>&1
-is "unnamed rungs stop feeding poison" 0 "$(num "$(attempts_of sp-h1)")"
-is "and are kept, on the counter that stops nothing" 3 "$(num "$(reclaims_of sp-h1)")"
-is "recorded as what they are"         "1 unrecorded
-2 unrecorded
-3 unrecorded" "$(counter_causes sp-h1 sp-reclaim)"
+out_audit="$("$ATT" audit 2>&1)"
+[[ "$out_audit" != *"sp-h1"* ]] && ok "audit finds no beads with legacy attempt labels" \
+    || bad "audit finds no beads with legacy attempt labels" "got [$out_audit]"
 
-# THE LADDER IS ITS TOP RUNG, NOT ITS RUNG COUNT. Removing rung 1 from a bead whose top rung
-# is 2 would leave a gap that still reads as 2 — the withdrawal would be invisible in the one
-# number the threshold consults. The survivors have to come back renumbered.
-seed sp-h2
-bdq label add sp-h2 sp-attempt-1 >/dev/null 2>&1
-bump_attempt sp-h2 unlanded >/dev/null
-is "a mixed ladder starts at 2"        2 "$(num "$(attempts_of sp-h2)")"
-"$ATT" reclassify --apply >/dev/null 2>&1
-is "the surviving rung is renumbered"  1 "$(num "$(attempts_of sp-h2)")"
-is "and it keeps its cause"            "1 unlanded" "$(attempt_causes sp-h2)"
-is "the withdrawn one moved across"    1 "$(num "$(reclaims_of sp-h2)")"
+# Reclassify with nothing to do must print 'nothing to reclassify' and exit 0.
+out_rcl="$("$ATT" reclassify --apply 2>&1)"
+case "$out_rcl" in *"nothing to reclassify"*) ok "reclassify --apply on clean store exits cleanly" ;;
+                   *) bad "reclassify --apply on clean store exits cleanly" "got [$out_rcl]" ;; esac
 
-# A BEAD ALREADY POISONED KEEPS ITS LABEL. Clearing a false count is arithmetic; re-queueing a
-# bead somebody has an open decision about is not, so the tool leaves the label for a human.
-# It must still SEE the bead: a poisoned bead is excluded from dispatch and is precisely the
-# one whose count most needs repairing, so a candidate query filtered by the personas'
-# exclusions would skip every bead this exists for.
-seed sp-h3
-bdq label add sp-h3 sp-attempt-1 >/dev/null 2>&1
-bdq label add sp-h3 sp-attempt-2 >/dev/null 2>&1
-bdq label add sp-h3 sp-attempt-3 >/dev/null 2>&1
-bdq label add sp-h3 spira-poison >/dev/null 2>&1
-"$ATT" reclassify --apply >/dev/null 2>&1
-is "its false count is cleared"        0 "$(num "$(attempts_of sp-h3)")"
-poison_label() { bdq label list "$1" 2>/dev/null | sed -n 's/^ *- \(spira-poison\)$/\1/p'; }
-is "but the poison label is left alone" "spira-poison" "$(poison_label sp-h3)"
-
-# And it is idempotent: a second sweep finds nothing, because every rung now names a cause.
-out="$("$ATT" reclassify --apply 2>&1)"
-case "$out" in *"nothing to reclassify"*) ok "a second sweep finds nothing" ;;
-               *) bad "a second sweep finds nothing" "got [$out]" ;; esac
-
-echo
-echo "prune-reclaims — strip ghost-storm unrecorded reclaim labels:"
-
-# The five beads that accumulated unrecorded reclaims from the 2026-09-06 429 storm are all
-# closed; this test uses an open bead to exercise the same code path through the real bd.
+# prune-reclaims requires an explicit bead id (no sweep mode). A fresh bead has no
+# sp-reclaim-N-unrecorded labels; it should print 'nothing to prune'.
 seed sp-p1
-bump_reclaim sp-p1 unrecorded >/dev/null; bump_reclaim sp-p1 unrecorded >/dev/null
-bump_reclaim sp-p1 ghost >/dev/null       # a named-cause rung — must survive pruning
-is "pre-prune: 3 reclaims total"  3 "$(num "$(reclaims_of sp-p1)")"
-is "pre-prune: reclaims are 1 unrecorded, 2 unrecorded, 3 ghost" \
-   "1 unrecorded
-2 unrecorded
-3 ghost" "$(counter_causes sp-p1 sp-reclaim)"
-
-"$ATT" prune-reclaims sp-p1 >/dev/null 2>&1
-is "a dry run removes nothing"    3 "$(num "$(reclaims_of sp-p1)")"
-
-"$ATT" prune-reclaims sp-p1 --apply >/dev/null 2>&1
-# The named-cause rung stays; only the unrecorded ones come off. The rung does NOT get
-# renumbered — unlike the attempt counter (where position is what the poison threshold reads),
-# the reclaim counter is diagnostic only, and leaving the ghost at rung 3 is the faithful record.
-is "named-cause rung survives at its original position" "3 ghost" "$(counter_causes sp-p1 sp-reclaim)"
-# counter_of reads the maximum N; the remaining label is sp-reclaim-3-ghost, so it reads 3.
-is "counter reflects the surviving rung"                3 "$(num "$(reclaims_of sp-p1)")"
-
-# IDEMPOTENT: a second apply on a clean bead prints "nothing to prune".
-out="$("$ATT" prune-reclaims sp-p1 --apply 2>&1)"
-case "$out" in *"nothing to prune"*) ok "idempotent: a second sweep finds nothing" ;;
-               *) bad "idempotent: a second sweep finds nothing" "got [$out]" ;; esac
-
-# POSITIVE CONTROL: a bead with no unrecorded reclaims is skipped.
-seed sp-p2
-bump_reclaim sp-p2 ghost >/dev/null
-out="$("$ATT" prune-reclaims sp-p2 --apply 2>&1)"
-case "$out" in *"nothing to prune"*) ok "a bead with only named reclaims is skipped" ;;
-               *) bad "a bead with only named reclaims is skipped" "got [$out]" ;; esac
+out_prn="$("$ATT" prune-reclaims sp-p1 --apply 2>&1)"
+case "$out_prn" in *"nothing to prune"*) ok "prune-reclaims on clean bead exits cleanly" ;;
+                   *) bad "prune-reclaims on clean bead exits cleanly" "got [$out_prn]" ;; esac
 
 # NO IDs = error, not a sweep.
 if "$ATT" prune-reclaims 2>/dev/null; then r=0; else r=1; fi

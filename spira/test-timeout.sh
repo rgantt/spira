@@ -44,19 +44,17 @@ is "timeout check appears before REQUEUE_CAUSE check" yes \
 is "timeout check appears before session_outcome" yes \
    "$( [ -n "$timeout_line" ] && [ -n "$outcome_line" ] && [ "$timeout_line" -lt "$outcome_line" ] && echo yes || echo no)"
 
-# THE TIMEOUT PATH CALLS bump_timeout, NOT bump_attempt.
-# sed range: from the SESSION_RC=124 guard to the matching fi at 8-space indent.
-# `grep -c` exits 1 on no matches but still prints "0"; drop || echo 0 to avoid "0\n0".
+# THE TIMEOUT PATH CHARGES NO ATTEMPT. Counter labels (sp-timeout-N) are no longer
+# written (sp-lzt); bump_timeout is a no-op and the timeout path does not call it.
+# The invariant is: the timeout block does not call bump_attempt.
 timeout_block="$(sed -n '/SESSION_RC.*124.*!=.*yes/,/^        fi$/p' "$HERE/aeon.sh")"
-is "the timeout path calls bump_timeout" 1 \
-   "$(printf '%s' "$timeout_block" | grep -c 'bump_timeout')"
 is "the timeout path does not call bump_attempt" 0 \
    "$(printf '%s' "$timeout_block" | grep -c 'bump_attempt')"
 
-# ONLY aeon.sh CALLS bump_timeout (same guarantee as bump_attempt).
+# bump_timeout is a no-op — no harness script outside lib.sh needs to call it.
 timeout_sites="$(grep -rl 'bump_timeout' "$HERE"/*.sh 2>/dev/null | grep -v '/lib\.sh$' | grep -v '/test-' \
     | xargs -r -n1 basename | sort | tr '\n' ' ' | sed 's/ $//')"
-is "only aeon.sh calls bump_timeout" "aeon.sh" "$timeout_sites"
+is "no harness script outside lib.sh calls bump_timeout" "" "$timeout_sites"
 
 # THE POISON-AFTER-CLAIM GUARD EXISTS AND PRECEDES WORKSPACE SETUP.
 # The claim and the predicate check are not atomic; spira-poison can land in the gap.
@@ -104,33 +102,27 @@ num() { local v="$1"; printf '%d' "${v:-0}"; }
 labels_of() { bdq label list "$1" 2>/dev/null | sed -n 's/^ *- //p' | tr '\n' ' ' | sed 's/ $//'; }
 
 seed sp-t1
-# POSITIVE CONTROL: the counter functions can actually read and write.
+# Counter labels (sp-timeout-N) are no longer written (sp-lzt).
+# timeouts_of is a diagnostic stub returning 0; bump_timeout is a no-op.
 is "a fresh bead has no timeouts" 0 "$(num "$(timeouts_of sp-t1)")"
 is "a fresh bead has no attempts" 0 "$(num "$(attempts_of sp-t1)")"
-is "first bump_timeout reads back as 1" 1 "$(num "$(bump_timeout sp-t1)")"
-is "and is visible to the reader"       1 "$(num "$(timeouts_of sp-t1)")"
+# bump_timeout must not write a label.
+bump_timeout sp-t1
+labels_t1="$(labels_of sp-t1)"
+[[ "$labels_t1" != *"sp-timeout"* ]] && ok "bump_timeout writes no label" \
+    || bad "bump_timeout writes no label" "got [$labels_t1]"
+# timeouts_of returns 0 regardless (diagnostic stub).
+is "timeouts_of is a stub returning 0" 0 "$(num "$(timeouts_of sp-t1)")"
 
-# THE RUNG CARRIES ITS CAUSE.
-is "the timeout rung records its cause" "sp-timeout-1-timeout-kill" "$(counter_label sp-t1 sp-timeout 1)"
-
-# TIMEOUTS DO NOT CHARGE ATTEMPTS.
+# TIMEOUTS DO NOT CHARGE ATTEMPTS — the events trail only records status_changed.
+# A timeout does not transition the bead to in_progress, so the count stays 0.
 is "one timeout costs the work no attempts" 0 "$(num "$(attempts_of sp-t1)")"
 
-# THE PAIR: a genuine unlanded still charges.
+# THE PAIR: an in_progress transition charges an attempt via events.
 seed sp-t2
-bump_attempt sp-t2 unlanded >/dev/null
-is "an unlanded attempt does charge"    1 "$(num "$(attempts_of sp-t2)")"
-is "and leaves no timeout counter"      0 "$(num "$(timeouts_of sp-t2)")"
-
-# SPIRA_ASK_TIMEOUT_LOOP IS CALLED ONLY AT THE LIMIT, not below it.
-# The function is called from inside the `if [ "$n" -ge "$tmax" ]` block in aeon.sh;
-# assert that structurally: spira_ask_timeout_loop must not appear OUTSIDE that guard.
-tmax_block="$(sed -n '/n.*-ge.*tmax/,/^            fi$/p' "$HERE/aeon.sh")"
-is "spira_ask_timeout_loop is inside the at-limit guard" 1 \
-   "$(printf '%s' "$tmax_block" | grep -c 'spira_ask_timeout_loop' || echo 0)"
-# And the guard must appear inside the timeout block (before the exit).
-is "at-limit guard is inside the timeout block" 1 \
-   "$(printf '%s' "$timeout_block" | grep -c 'FAYTH_TIMEOUT_LIMIT' || echo 0)"
+bdq update sp-t2 --status in_progress >/dev/null 2>&1
+is "an in_progress transition charges an attempt" 1 "$(num "$(attempts_of sp-t2)")"
+is "and leaves no timeout counter"                0 "$(num "$(timeouts_of sp-t2)")"
 
 # SPIRA_ASK_TIMEOUT_LOOP DEDUPLICATES ON (id, count).
 seed sp-t3

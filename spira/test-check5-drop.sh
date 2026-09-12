@@ -127,11 +127,10 @@ is "sp-bare starts closed" closed "$(status_of sp-bare)"
 out="$(sentinel)"
 is "sp-bare is reopened" open "$(status_of sp-bare)"
 want "the pass says so" "reopened sp-bare" "$out"
-# THE ATTEMPT IS CHARGED, because a bead that closes without landing can otherwise
-# loop forever: close → reopen → close → reopen with no counter toward the threshold.
-# The aeon's own post-session check handles the case where the aeon detected the
-# missing commit; sentinel CHECK 5 is the safety net that charges when the aeon did not.
-want "and an attempt is charged" "sp-attempt-1" "$(labels_of sp-bare)"
+# NO COUNTER LABEL IS WRITTEN (sp-lzt). The attempt is counted when the NEXT aeon
+# claims the bead (in_progress transition), not when sentinel reopens it. The events
+# trail records the claim; CHECK4 reads it on demand to apply the poison threshold.
+nowant "and no sp-attempt-* counter label is written" "sp-attempt-" "$(labels_of sp-bare)"
 # THE REOPEN NOTE NAMES THE REMEDY. A superseded close is the normal end of a duplicate,
 # and the note is the only thing the next person reads — without the hint the loop is:
 # close, watch it reopen, close again, disbelieve the database (sp-da6k).

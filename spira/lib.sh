@@ -1371,61 +1371,109 @@ capacity_withdrawn_mark() {
 # audit takes a bead out of circulation for reasons that have already scrolled away. The
 # counter is still the leading `<prefix>-<n>`, so every reader of the number is unchanged.
 # --------------------------------------------------------------------------------------
+# ATTEMPTS ARE COMPUTED FROM THE EVENTS TRAIL, NOT STORED AS LABELS.
+#
+# Every time an aeon claims a bead, bd writes a status_changed event with new_value
+# containing 'in_progress'. That event is the authoritative record. Counting those events
+# gives the attempt total without any label pollution (sp-lzt).
+#
+# WHY THE EVENTS TABLE, NOT LABELS. Counter labels (sp-attempt-N, sp-reclaim-N, etc.)
+# produced 195 of 660 distinct labels in the old store — sp-reclaim alone had 96 forms
+# because it encoded a cause suffix. Nothing stored means nothing that can disagree with
+# the events trail, and a wrong value refused at write time is better than a truthful
+# empty result at read time.
+#
+# TWO QUERY PATHS: bd sql (server mode) and dolt --data-dir (embedded mode). The embedded
+# binary refuses 'bd sql'; dolt can read the same storage directly. The two paths produce
+# the same result; the distinction is operational, not semantic.
+#
+# THREE CONSTRAINTS, VERIFIED IN sp-lzt AND RECORDED HERE SO NO ONE REDISCOVERS THEM:
+#   1. bd query cannot express it — no events field. bd sql is the right tool.
+#   2. json_extract on new_value returns empty in Dolt even with a cast. LIKE works.
+#   3. Match event_type='status_changed' too, or a label_added row whose comment mentions
+#      'in_progress' would be counted.
+# --------------------------------------------------------------------------------------
+_attempts_sql_query() {   # _attempts_sql_query <id> -> the SQL that counts attempts
+    printf "select count(*) from events where issue_id='%s' and event_type='status_changed' and new_value like '%%in_progress%%'" "$1"
+}
+
+attempts_of() {          # attempts_of <id> -> count of in_progress status-change events
+    local id="$1" q result=""
+    q="$(_attempts_sql_query "$id")"
+    # Server mode: bd sql is supported and returns a table; the count is on line 3.
+    if result="$("${SPIRA_BD:-bd}" -C "$SPIRA_DB" sql "$q" 2>/dev/null | sed -n '3p' \
+                  | tr -d ' ')" && [ -n "$result" ] \
+       && printf '%d' "$result" >/dev/null 2>&1; then
+        printf '%d' "$result"; return 0
+    fi
+    # Embedded mode: dolt reads the local storage directly. The database name is the
+    # first subdirectory of the embeddeddolt directory (always the bd prefix, e.g. 'sp').
+    local doltdb="${SPIRA_DB}/.beads/embeddeddolt"
+    if [ -d "$doltdb" ] && command -v dolt >/dev/null 2>&1; then
+        local dbname
+        dbname="$(ls "$doltdb" 2>/dev/null | grep -v '^\.' | grep -v '^\.lock$' | head -1)" \
+            || dbname="sp"
+        [ -n "$dbname" ] || dbname="sp"
+        result="$(dolt --data-dir "$doltdb" sql -q "use $dbname; $q;" 2>/dev/null \
+                  | sed -n '4p' | tr -d '| ')" || result=""
+        if [ -n "$result" ] && printf '%d' "$result" >/dev/null 2>&1; then
+            printf '%d' "$result"; return 0
+        fi
+    fi
+    printf '0'
+}
+
+# BUMP FUNCTIONS ARE NO-OPS. No counter label is written; the events trail is the record.
+# The functions remain so that callers compile without change; they return 0 (no count).
+# Callers that need the current attempt count should call attempts_of after the fact.
+bump_attempt() {
+    return 0
+}
+bump_reclaim() {
+    return 0
+}
+bump_requeue() {
+    return 0
+}
+bump_timeout() {
+    return 0
+}
+bump_recur() {
+    return 0
+}
+
+# DIAGNOSTIC ACCESSORS RETURN 0. The counters these read (sp-reclaim-N, sp-requeue-N,
+# sp-timeout-N, sp-recur-N) are no longer written, so no historical value exists.
+# callers that used these for cap escalations will see 0 — cap escalations that relied on
+# label counts will not fire. Events-based cap detection is a future deliverable (sp-lzt).
+reclaims_of()    { printf '0'; }
+requeues_of()    { printf '0'; }
+timeouts_of()    { printf '0'; }
+recurs_of()      { printf '0'; }
+
+# counter_of, counter_label, counter_causes, bump_counter, attempt_causes, requeue_causes,
+# recur_causes: retained for compatibility with attempts.sh and test-attempts.sh which
+# read historical labels. These do not write anything.
 counter_of() {           # counter_of <id> <prefix> -> integer (empty when unset)
     bdq label list "$1" 2>/dev/null | grep -oE "$2-[0-9]+" | grep -oE '[0-9]+$' \
         | sort -n | tail -1 || true
 }
-
-# counter_label <id> <prefix> <n> -> the label text carrying rung <n>, cause and all.
-# Anything REMOVING a rung must go through this rather than reconstructing `<prefix>-<n>`,
-# which no longer matches once a cause is appended.
-#
-# It and counter_causes below capture before matching rather than piping into `head -1` or
-# `grep -q`: both close the pipe early and SIGPIPE the writer, which pipefail then reports as
-# failure (law-no-grep-q-under-pipefail).
 counter_label() {
     local all hit
     all="$(bdq label list "$1" 2>/dev/null | sed -n 's/^ *- //p')" || all=""
     hit="$(grep -xE "$2-$3(-.*)?" <<<"$all")" || return 1
     printf '%s' "$(sed -n 1p <<<"$hit")"
 }
-
-# counter_causes <id> <prefix> -> one `<n> <cause>` line per rung, in order. This is what
-# makes a poison auditable: it names which outcomes charged the bead.
 counter_causes() {
     local all rungs
     all="$(bdq label list "$1" 2>/dev/null | sed -n 's/^ *- //p')" || all=""
     rungs="$(grep -E "^$2-[0-9]+(-|$)" <<<"$all")" || return 0
     sed -E "s/^$2-([0-9]+)$/\1 unrecorded/;s/^$2-([0-9]+)-(.*)$/\1 \2/" <<<"$rungs" | sort -n
 }
-
-bump_counter() {         # bump_counter <id> <prefix> [cause] -> new count
-    local id="$1" pfx="$2" cause="${3:-}" n
-    n="$(counter_of "$id" "$pfx")"; n="${n:-0}"; n=$((n+1))
-    # A cause is sanitised, never interpolated raw: it reaches here from a classifier, and a
-    # label carrying a space would split into two labels and desynchronise the ladder.
-    cause="$(printf '%s' "$cause" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-\{2,\}/-/g;s/^-//;s/-$//')"
-    if [ -n "$cause" ]; then
-        bdq label add "$id" "$pfx-$n-$cause" >/dev/null 2>&1
-    else
-        bdq label add "$id" "$pfx-$n" >/dev/null 2>&1
-    fi
-    printf '%d' "$n"
-}
-
-attempts_of()    { counter_of "$1" sp-attempt; }
-bump_attempt()   { bump_counter "$1" sp-attempt "${2:-}"; }
+bump_counter()   { return 0; }  # no-op: counter labels are no longer written (sp-lzt)
 attempt_causes() { counter_causes "$1" sp-attempt; }
-reclaims_of()    { counter_of "$1" sp-reclaim; }
-bump_reclaim()   { bump_counter "$1" sp-reclaim "${2:-}"; }
-requeues_of()    { counter_of "$1" sp-requeue; }
-bump_requeue()   { bump_counter "$1" sp-requeue "${2:-}"; }
 requeue_causes() { counter_causes "$1" sp-requeue; }
-recurs_of()      { counter_of "$1" sp-recur; }
-bump_recur()     { bump_counter "$1" sp-recur "${2:-}"; }
 recur_causes()   { counter_causes "$1" sp-recur; }
-timeouts_of()    { counter_of "$1" sp-timeout; }
-bump_timeout()   { bump_counter "$1" sp-timeout "${2:-timeout-kill}"; }
 
 # --------------------------------------------------------------------------------------
 # WHAT ENDED THIS SESSION — AND THE DEFAULT IS "WE DO NOT KNOW".

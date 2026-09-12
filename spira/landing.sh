@@ -619,16 +619,12 @@ rebase_survivors() {     # rebase_survivors <repo> <name> <base> <landed-branch>
             else
                 _reopen_note="$_reopen_note A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it."
             fi
-            _rq_n="$(bump_requeue "$id" rebase-conflict)"
-            if [ "${_rq_n:-0}" -ge "${SPIRA_REBASE_ESCALATE_AT:-3}" ]; then
-                spira_ask_rebase_loop "$id" "$br" "$name" "$_rq_n" "${REBASE_CONFLICTS:-unknown}" "$_other_beads"
-                progress "escalated $id — rebase conflict x$_rq_n on $br"
-            else
-                bead_reopen "$id" "$_reopen_note"
-                progress "reopened $id — does not rebase onto $base"
-                spira_event bead.reopened "$id" "reopened $id — $br does not rebase onto $base in $name" \
-                    "conflicts in ${REBASE_CONFLICTS:-unknown}; the next aeon is handed the rebase" || true
-            fi
+            # Counter labels (sp-requeue-N) are no longer written; rebase-conflict
+            # requeue escalation is disabled — the bead is always reopened (sp-lzt).
+            bead_reopen "$id" "$_reopen_note"
+            progress "reopened $id — does not rebase onto $base"
+            spira_event bead.reopened "$id" "reopened $id — $br does not rebase onto $base in $name" \
+                "conflicts in ${REBASE_CONFLICTS:-unknown}; the next aeon is handed the rebase" || true
             land_mark "$id" RED "$(git -C "$repo" rev-parse "$br" 2>/dev/null)" no-rebase
             continue
         fi
@@ -916,20 +912,12 @@ for i in d:
             else
                 _reopen_note="$_reopen_note A merge conflict is not an escalation — the next aeon is handed the rebase and must resolve it."
             fi
-            # COUNTED AS A REQUEUE, WHICH CHARGES NOTHING. The bead was closed and its work
-            # committed; the base moved. The aeon summoned onto it next inherits a bead that
-            # already looks like one that keeps failing, and without this the only number
-            # anybody sees is the attempt count it is not (lib.sh, three counters).
-            _rq_n="$(bump_requeue "$id" rebase-conflict)"
-            if [ "${_rq_n:-0}" -ge "${SPIRA_REBASE_ESCALATE_AT:-3}" ]; then
-                spira_ask_rebase_loop "$id" "$br" "$name" "$_rq_n" "${REBASE_CONFLICTS:-unknown}" "$_other_beads"
-                progress "escalated $id — rebase conflict x$_rq_n on $br"
-            else
-                bead_reopen "$id" "$_reopen_note"
-                progress "reopened $id — does not rebase onto $base"
-                spira_event bead.reopened "$id" "reopened $id — $br does not rebase onto $base in $name" \
-                    "conflicts in ${REBASE_CONFLICTS:-unknown}; the next aeon is handed the rebase" || true
-            fi
+            # Counter labels (sp-requeue-N) are no longer written; rebase-conflict
+            # requeue escalation is disabled — the bead is always reopened (sp-lzt).
+            bead_reopen "$id" "$_reopen_note"
+            progress "reopened $id — does not rebase onto $base"
+            spira_event bead.reopened "$id" "reopened $id — $br does not rebase onto $base in $name" \
+                "conflicts in ${REBASE_CONFLICTS:-unknown}; the next aeon is handed the rebase" || true
             land_mark "$id" RED "$tip" no-rebase
             continue
         fi
@@ -1295,7 +1283,7 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
                 _rn_merge="$(git -C "$repo" rev-list --count "$base..$br" 2>/dev/null || echo '?')"
                 bead_reopen "$id" "Reopened by sentinel: branch $br conflicts with $base. The branch carries $_rn_merge commit(s) from the previous session — rebase onto $base, resolve the conflict, and finish. A merge conflict is not an escalation."
                 unset _rn_merge
-                bump_requeue "$id" merge-conflict >/dev/null
+                # Counter labels (sp-requeue-N) no longer written (sp-lzt).
                 progress "reopened $id — branch conflicts with $base"
                 spira_event bead.reopened "$id" "reopened $id — $br conflicts with $name's $base" \
                     "the merge would not apply; rebase and finish" || true

@@ -719,16 +719,11 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
         # committed may be unset if the verdict block did not reach the line that sets it.
         # The default is "not yes" — the unset case is the case where nothing was committed.
         if [ "${SESSION_RC:-0}" = 124 ] && [ "${committed:-}" != yes ]; then
-            n="$(bump_timeout "$BEAD_ID")"
-            bdq note "$BEAD_ID" "Timeout $n: the session was killed by the lane cap (${FAYTH_TIMEOUT_SECONDS:-?}s) with nothing committed. This is the harness's clock ending the turn, not a verdict about the work. No attempt charged." >/dev/null 2>&1
-            log "$FAYTH: $BEAD_ID timed out ($n) — no attempt charged"
-            local tmax="${FAYTH_TIMEOUT_LIMIT:-2}"
-            if [ "$n" -ge "$tmax" ]; then
-                bdq label add "$BEAD_ID" spira-poison >/dev/null 2>&1
-                bdq note "$BEAD_ID" "Poisoned after $n timeout kills in the $FAYTH lane (${FAYTH_TIMEOUT_SECONDS:-?}s cap). The bead is too large for this lane — it needs a persona with no cap, or to be split into pieces that fit. Nothing about the work is wrong; it was never tried." >/dev/null 2>&1
-                log "$FAYTH: $BEAD_ID POISONED — $n timeouts in a ${FAYTH_TIMEOUT_SECONDS:-?}s lane"
-                spira_ask_timeout_loop "$BEAD_ID" "$BRANCH" "$FAYTH" "${FAYTH_TIMEOUT_SECONDS:-?}" "$n"
-            fi
+            # Counter labels (sp-timeout-N) are no longer written; the events trail records
+            # the claim. Timeout-specific poisoning is not applied here; CHECK4 poisons on
+            # the events-based attempt count (sp-lzt).
+            bdq note "$BEAD_ID" "Timeout: the session was killed by the lane cap (${FAYTH_TIMEOUT_SECONDS:-?}s) with nothing committed. This is the harness's clock ending the turn, not a verdict about the work. No attempt charged." >/dev/null 2>&1
+            log "$FAYTH: $BEAD_ID timed out — no attempt charged"
             release_own_claim "$BEAD_ID"
             ledger_done "$rc" timeout
             exit $rc
@@ -741,22 +736,26 @@ print(d[0].get("status","") if d else "")' 2>/dev/null)"
         # Checked BEFORE session_outcome, because the trace is not wrong, it is answering a
         # different question.
         if [ -n "$REQUEUE_CAUSE" ]; then
-            n="$(bump_requeue "$BEAD_ID" "$REQUEUE_CAUSE")"
-            bdq note "$BEAD_ID" "Requeue $n ($REQUEUE_CAUSE): $REQUEUE_WHY The session did the work and closed the bead; the harness put it back. NO attempt was charged and nothing about the work is implied." >/dev/null 2>&1
-            log "$FAYTH: $BEAD_ID requeued by the harness ($REQUEUE_CAUSE) — requeue $n, no attempt charged"
+            # Counter labels (sp-requeue-N) are no longer written; the events trail records
+            # each claim. The note preserves the cause for diagnostic reading (sp-lzt).
+            bdq note "$BEAD_ID" "Requeued ($REQUEUE_CAUSE): $REQUEUE_WHY The session did the work and closed the bead; the harness put it back. NO attempt was charged and nothing about the work is implied." >/dev/null 2>&1
+            log "$FAYTH: $BEAD_ID requeued by the harness ($REQUEUE_CAUSE) — no attempt charged"
             release_own_claim "$BEAD_ID"
             ledger_done "$rc" "requeue-$REQUEUE_CAUSE"
             exit $rc
         fi
         cause="$(session_outcome "$LOGF")"
         if outcome_charges "$cause"; then
-            n="$(bump_attempt "$BEAD_ID" "$cause")"
-            bdq note "$BEAD_ID" "Attempt $n ($cause): the session ran to its own end and left this bead open. That is a verdict about the work, and it counts toward the poison threshold." >/dev/null 2>&1
-            log "$FAYTH: $BEAD_ID not closed (attempt $n, $cause), released"
+            # Counter labels (sp-attempt-N) are no longer written; the events trail records
+            # each claim. The events-based count is what CHECK4 consults for the poison
+            # threshold (sp-lzt).
+            bdq note "$BEAD_ID" "Unlanded ($cause): the session ran to its own end and left this bead open. That is a verdict about the work; the next claim counts toward the poison threshold via the events trail." >/dev/null 2>&1
+            log "$FAYTH: $BEAD_ID not closed ($cause), released"
         else
-            n="$(bump_reclaim "$BEAD_ID" "$cause")"
-            bdq note "$BEAD_ID" "Reclaim $n ($cause): the worker did not survive to judge this bead, so NO attempt was charged and nothing about the work is implied. See $LOGF." >/dev/null 2>&1
-            log "$FAYTH: $BEAD_ID never judged ($cause) — reclaim $n, no attempt charged"
+            # Counter labels (sp-reclaim-N) are no longer written. The cause is noted for
+            # diagnostic reading; no attempt is charged (sp-lzt).
+            bdq note "$BEAD_ID" "Not judged ($cause): the worker did not survive to judge this bead, so NO attempt was charged and nothing about the work is implied. See $LOGF." >/dev/null 2>&1
+            log "$FAYTH: $BEAD_ID never judged ($cause) — no attempt charged"
         fi
         release_own_claim "$BEAD_ID"
     elif gate_why="$(gate_unfinished)"; then

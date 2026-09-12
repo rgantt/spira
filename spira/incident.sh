@@ -286,7 +286,8 @@ file_one() {
         if [ "$_was_closed" = 1 ]; then
             bead_reopen "$id" "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ) — same failure fingerprint, dedup within ${DEDUP_LOOKBACK_DAYS}-day window"
         fi
-        bdq label add "$id" "sp-recur-${n}-${INCIDENT_CAUSE}" >/dev/null 2>&1
+        # sp-recur-N-<cause> labels are no longer written; recurrence count is derived
+        # from event history. The note below records the recurrence (sp-lzt).
         # PROMOTE FALLBACK-FOUND BEADS. A bead found via the O(N) fallback path has no
         # ref: label; adding it here ensures the next query takes the fast label-keyed path.
         # bdq label add is idempotent, so this is safe to call even if the label already exists.
@@ -374,7 +375,8 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
     # late. At SIN_AT=5 (10-minute sweep) that is 60 min rather than the 50 min the comment
     # promises. The label makes the initial bead indistinguishable from a recurrence in the
     # counter, so N filings reliably produce sp-recur-N and the SIN fires on the Nth.
-    bdq label add "$id" "sp-recur-1-${INCIDENT_CAUSE}" >/dev/null 2>&1
+    # sp-recur-1-<cause> label is no longer written; recurrence count comes from the
+    # events trail (sp-lzt). The initial filing is still occurrence 1; see note below.
     # LABEL THE REF HASH so future dedup queries take the O(1) label-keyed path instead of
     # scanning all open incident beads. Added at creation so every new bead carries it from
     # the start; the backfill-ref-labels subcommand labels beads filed before this was added.
