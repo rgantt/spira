@@ -63,49 +63,6 @@ cockpit_may_write() {
     return 1
 }
 
-# Read partition definitions from the chamber without hardcoding a label list. A .fayth file
-# added to the chamber appears here with no edit — the same reason the repository comes from
-# the bead. Returns a JSON object: {"spira,plan": "builder", "spira,incident": "ops", ...}
-_chamber_part_map() {
-    # RESOLVED THROUGH fayth_get, NEVER BY PARSING THE FILE. This used to read each .fayth as
-    # text and hand-substitute the one variable it knew about ($SPIRA_SPIKE_LABEL). Every
-    # other expansion survived into the query verbatim: when the predicates gained a scope
-    # label the collector began asking bd for a label literally named
-    # ${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan, which no bead carries. That is a
-    # WELL-FORMED query for something that cannot exist, so bd answered [] truthfully, the
-    # refusal guard below saw output rather than silence, and the pane printed a confident
-    # "0 ready" while 32 beads were ready. $SPIRA_GROOMER_LABEL had never been substituted
-    # at all, so the groomer partition had been wrong for longer and nothing noticed.
-    #
-    # fayth_get sources the fayth in a subshell, so every expansion resolves the way the
-    # summoner resolves it, by construction. A second implementation of one fact drifts every
-    # time the format changes (law-prefer-the-real-dependency).
-    #
-    # AN UNREADABLE CHAMBER RETURNS NOTHING, NOT {}. An empty map makes every partition query
-    # silently disappear, which reaches the pane as a zero rather than as a fault. Callers
-    # treat empty output as "could not read" and render ? (law-failed-probe-renders-question).
-    local f name labels rows=""
-    for f in $(spira_fayths 2>/dev/null); do
-        name="$(fayth_get "$f" FAYTH_NAME "$f" 2>/dev/null)"
-        labels="$(fayth_get "$f" FAYTH_LABELS 2>/dev/null)"
-        [ -n "$name" ] && [ -n "$labels" ] || continue
-        rows="${rows}${labels}\t${name}\n"
-    done
-    [ -n "$rows" ] || return 1
-    printf '%b' "$rows" | python3 -c '
-import sys, json
-result = {}
-for line in sys.stdin:
-    line = line.rstrip("\n")
-    if "\t" not in line:
-        continue
-    labels, _, name = line.partition("\t")
-    if labels and name:
-        result[labels] = name
-print(json.dumps(result))
-' 2>/dev/null || return 1
-}
-
 # count <bd-args...> -> number of rows, or `?` if the query or the parse failed.
 count() {
     bdq "$@" --json 2>/dev/null | json_only | python3 -c '
@@ -140,7 +97,8 @@ probe() {
     # SP_AT FIRST: now_keys emits it as its very first output line.
     local _probe_start; _probe_start=$(date +%s)
     now_keys
-    core_keys
+    core_detail_keys
+    core_counts_keys
     unsent_keys
     sphere_keys
     repo_label_keys
@@ -161,12 +119,6 @@ now_keys() {
     local _probe_start; _probe_start=$(date +%s)
     echo "SP_AT=$_probe_start"
     echo "SP_WINDOW_HOURS=$WINDOW_HOURS"
-
-    # Partition map — derived from the chamber once per pass, used by NOW, NEXT and RECENT.
-    # EMPTY MEANS THE CHAMBER COULD NOT BE READ, and every consumer below must render ? for
-    # what it would have counted. Defaulting to {} here is what turned an unreadable chamber
-    # into "0 ready" (law-failed-probe-renders-question).
-    _PART_MAP="$(_chamber_part_map)" || _PART_MAP=""
 
     # ---- NOW: what each aeon is doing, by name -----------------------------------------
     # The pane repaints every two seconds and must never shell out, so the live picture is
@@ -190,27 +142,20 @@ now_keys() {
         # the same beads at three stages of one lifecycle did not line up and could not be
         # compared down the column (the operator: "parallel structure with the NEXT and
         # RECENT ones").
-        # THE PARTITION IS DERIVED FROM BEAD LABELS, never from the holding persona, so NOW
-        # cannot disagree with NEXT and RECENT about which partition a bead belongs to.
+        # PARTITION AND TITLE FROM THE STORE, not from label parsing. bd state reads the
+        # fayth dimension written by bd set-state — the single-valued attribute the harness
+        # already maintains, so this cannot disagree with the claim view.
         local title pri partition meta
         meta="$(bdjson show "$bead" 2>/dev/null | python3 -c '
 import sys, json, re
-part_map = json.loads(sys.argv[1])
 try: d = json.load(sys.stdin); i = (d if isinstance(d, list) else [d])[0]
 except Exception: raise SystemExit
-# Partition from bead labels: which fayths label-set is a subset of the bead labels.
-labels = set(i.get("labels") or [])
-partition = "?"
-for lset, pname in part_map.items():
-    if all(l in labels for l in lset.split(",")):
-        partition = pname
-        break
-# Tab separated: priority, partition, title (title may contain anything, the rest may not).
-print("%s\t%s\t%s" % (i.get("priority"), partition,
-    re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80]))' "$_PART_MAP" 2>/dev/null)"
-        pri="${meta%%$'\t'*}"; _rest="${meta#*$'\t'}"
-        partition="${_rest%%$'\t'*}"; title="${_rest#*$'\t'}"
-        [ "$pri" = "$meta" ] && { pri=""; partition=""; title=""; }
+print("%s\t%s" % (i.get("priority"),
+    re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:80]))' 2>/dev/null)"
+        pri="${meta%%$'\t'*}"; title="${meta#*$'\t'}"
+        [ "$pri" = "$meta" ] && { pri=""; title=""; }
+        partition="$(bdq state "$bead" fayth 2>/dev/null)" || partition="?"
+        [ -n "$partition" ] || partition="?"
         echo "SP_AEON${i}_PRI=${pri:-?}"
         echo "SP_AEON${i}_PARTITION=${partition:-?}"
         echo "SP_AEON${i}_TITLE=${title:-?}"
@@ -407,25 +352,11 @@ for j, l in enumerate(lines[-n:]):
     fi
 }
 
-# Medium-tier fast counts — one bounded query each. Called as `cockpit.sh core`.
-# Runs every 60s so SP_READY and SP_WAITING stay fresh while the full SP_NEXT* listing
-# (core_detail) runs on the 600s slow tier.
+# Medium-tier fast counts — SP_WAITING. Called as `cockpit.sh core` alongside
+# core_detail_keys. SP_READY is owned by core_detail_keys (same population as NEXT);
+# emitting it here would produce a second SP_READY=0 after core_detail_keys emits SP_READY=?
+# on a failed probe, which is the reassuring answer a broken probe must never produce.
 core_counts_keys() {
-    # SP_READY — total ready beads across all partitions. One bd ready call with the same
-    # READY_ARGS predicate used everywhere, so this count and the sentinel's claim view agree.
-    # Capturing the raw output first lets us distinguish a genuine empty list "[]" (→ 0) from
-    # empty output (bd refused → ?) — piping directly into json_count collapses both to 0,
-    # which is the reassuring answer a broken probe must never produce.
-    local _ready_raw
-    _ready_raw="$(bdjson "${READY_ARGS[@]}" \
-        --exclude-label "spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL" 2>/dev/null)"
-    if [ -z "$_ready_raw" ]; then
-        echo "SP_READY=?"
-    else
-        local _n; _n="$(printf '%s\n' "$_ready_raw" | json_count)"
-        echo "SP_READY=${_n:-?}"
-    fi
-
     # SP_WAITING — open needs-operator beads (same distinguish-refusal pattern).
     local _wait_raw
     _wait_raw="$(bdjson list --status open --limit 0 --label "$SPIRA_ASK_LABEL" 2>/dev/null)"
@@ -441,9 +372,29 @@ core_counts_keys() {
 # Slow-tier core detail: per-partition ready listing, event feed, CI parking,
 # throughput sparklines, token meters. Called as `cockpit.sh core_detail`.
 core_detail_keys() {
-    # core_detail_keys computes its own partition map — runs independently of now_keys.
-    local _PART_MAP
-    _PART_MAP="$(_chamber_part_map)" || _PART_MAP=""
+    # PARTITION MAP BUILT DIRECTLY FROM THE CHAMBER — fayth_get resolves every variable the
+    # summoner would, so scope labels and other expansions cannot survive unexpanded into a
+    # query label (the defect that turned an unreadable chamber into "0 ready").
+    # AN UNREADABLE CHAMBER IS A REFUSAL, NOT AN EMPTY QUEUE. See the aggregator below.
+    local _f _fname _flabels _frows="" _PART_MAP=""
+    for _f in $(spira_fayths 2>/dev/null); do
+        _fname="$(fayth_get "$_f" FAYTH_NAME "$_f" 2>/dev/null)"
+        _flabels="$(fayth_get "$_f" FAYTH_LABELS 2>/dev/null)"
+        [ -n "$_fname" ] && [ -n "$_flabels" ] || continue
+        _frows="${_frows}${_flabels}\t${_fname}\n"
+    done
+    if [ -n "$_frows" ]; then
+        _PART_MAP="$(printf '%b' "$_frows" | python3 -c '
+import sys, json
+result = {}
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if "\t" not in line: continue
+    labels, _, name = line.partition("\t")
+    if labels and name: result[labels] = name
+print(json.dumps(result))
+' 2>/dev/null)" || _PART_MAP=""
+    fi
 
     # ---- NEXT: ready beads from EVERY declared partition, ordered by priority ------------
     # PARTITIONS COME FROM THE CHAMBER. Each .fayth defines its own label predicate; a new
@@ -1283,9 +1234,11 @@ except Exception:
     raise SystemExit
 d = d if isinstance(d, list) else [d]
 def has(i, lab): return lab in (i.get("labels") or [])
-# Epics are containers, not work; counting the pilgrimage itself as an open bead makes the
-# graph look one item further from done than it is, forever.
-work = [i for i in d if i.get("issue_type") != "epic"]
+# _is_work is the generated column from schema-apply. When present it is authoritative;
+# when absent (schema not yet applied) fall back to SCHEMA_WORK_TYPES so the count is
+# correct on both schema versions. Epics are work items, counted here.
+_WORK = {"task","bug","feature","epic","chore","spike"}
+work = [i for i in d if i.get("_is_work") == 1 or (i.get("_is_work") is None and i.get("issue_type") in _WORK)]
 print("SP_OPEN=%d"      % sum(1 for i in work if i.get("status") != "closed"))
 print("SP_INPROG=%d"    % sum(1 for i in work if i.get("status") == "in_progress"))
 print("SP_NEEDSOP=%d"  % sum(1 for i in work if i.get("status") != "closed" and has(i, ASK)))
@@ -2083,6 +2036,7 @@ now)
     ;;
 # Medium-tier keys only — counts that need to stay fresh every 60s.
 core)
+    core_detail_keys
     core_counts_keys
     ;;
 # Slow-tier core detail — SP_NEXT* listing, event feed, sparklines, token meters.

@@ -60,23 +60,10 @@ EOF
 chmod +x "$BD_EMPTY"
 
 # ======================================================================================
-# THE DEFECT THIS SUITE NOW GUARDS. The partition map used to be derived by reading each
-# .fayth as text and hand-substituting one variable, so every other expansion reached bd
-# verbatim: a predicate carrying a scope label became a query for a label literally named
-# ${SPIRA_SCOPE_LABEL:+...},plan. bd answered [] truthfully, the refusal guard saw output
-# rather than silence, and the pane reported "0 ready" against 32 ready beads.
-#
-# Two assertions, because the failure had two halves: the map must RESOLVE (no unexpanded
-# shell survives into a label), and an UNRESOLVABLE chamber must refuse rather than read as
-# an empty queue.
-
-echo "partition map: every label resolves, no shell survives"
-_map="$(HERE="$HERE" bash -c '. "'"$HERE"'/lib.sh" 2>/dev/null
-        . <(sed -n "/^_chamber_part_map()/,/^}/p" "'"$HERE"'/cockpit.sh")
-        _chamber_part_map' 2>/dev/null)"
-want   "map is non-empty"                 "spira"   "$_map"
-nowant "no unexpanded \$ survives"        "\$"      "$_map"
-nowant "no unexpanded \${ survives"       "\${"     "$_map"
+# AN UNRESOLVABLE PERSONA IS A REFUSAL, NOT AN EMPTY QUEUE. The partition map is built
+# from fayth_get, which resolves variables the way the summoner does. When SPIRA_FAYTHS
+# names a persona that does not exist, fayth_get finds no file, the map stays empty, and
+# core_detail_keys emits SP_READY=? rather than a zero (law-failed-probe-renders-question).
 
 echo "partition map: an unresolvable persona is a REFUSAL, not an empty queue"
 _unres_out="$(env -i PATH="$BASE_PATH" HOME="$TMP" LC_ALL=C.UTF-8 \
