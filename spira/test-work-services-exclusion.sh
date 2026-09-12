@@ -47,14 +47,16 @@ shift   # --user
 subcmd="${1:-}"; shift || true
 case "$subcmd" in
   list-units)
-    # Emit nothing for watcher queries; the service mix for all other queries.
+    # Emit nothing for watcher or timer queries; the service mix for service queries.
     [[ "${*}" == *watch* ]] && exit 0
+    [[ "${*}" == *timer*  ]] && exit 0
     printf '%s loaded active running -\n' \
       spira-sentinel-prod.service \
       spira-landing.service \
       spira-cockpit-prod.service \
       spira-loom-prod.service
     ;;
+  list-unit-files) exit 0 ;;
   stop) printf '%s\n' "$@" >> "$STOPPED" ;;
   is-enabled|is-active)
     case "${1:-}" in
