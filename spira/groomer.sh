@@ -2,10 +2,11 @@
 #
 # groomer.sh — graph hygiene operations for the Spira DAG.
 #
-#   groomer.sh supersede   <id> --with <successor>  mark a bead superseded by another
-#   groomer.sh close       <id> --evidence <text>   close a bead whose premise is gone
-#   groomer.sh correct-lane <id> --lane <lane>      correct a mislabelled lane label
-#   groomer.sh unwanted    ...                       REFUSED — exits 2 always
+#   groomer.sh supersede      <id> --with <successor>                        mark a bead superseded by another
+#   groomer.sh close          <id> --evidence <text>                         close a bead whose premise is gone
+#   groomer.sh correct-lane   <id> --lane <lane>                             correct a mislabelled lane label
+#   groomer.sh depends-on-fix <bug-id> --fix <id> --evidence <text>         link bug to in-flight fix, order accordingly
+#   groomer.sh unwanted       ...                                            REFUSED — exits 2 always
 #
 # WHAT IT DOES NOT DO:
 #   It does NOT close a bead as unwanted. Unwanted is a product decision about
@@ -35,7 +36,7 @@ BD_CMD="${SPIRA_BD:-bd}"
 DB="${SPIRA_DB:-.}"
 
 usage() {
-    printf 'usage: groomer.sh supersede|close|correct-lane|unwanted ...\n' >&2
+    printf 'usage: groomer.sh supersede|close|correct-lane|depends-on-fix|unwanted ...\n' >&2
     exit 1
 }
 
@@ -111,6 +112,56 @@ case "$cmd" in
     [ -z "$id" ]   && { printf 'groomer: correct-lane: bead id required\n' >&2; exit 1; }
     [ -z "$lane" ] && { printf 'groomer: correct-lane: --lane <lane> required\n' >&2; exit 1; }
     "$BD_CMD" -C "$DB" set-state "$id" "lane=$lane"
+    ;;
+
+  depends-on-fix)
+    # groomer.sh depends-on-fix <bug-id> --fix <bead-id> --evidence "<why this fix covers it>"
+    #
+    # Links a bug to its in-flight fix and creates a dependency edge. The bug leaves the
+    # ready queue until the fix lands, then returns as the check on the fix. The association
+    # is asserted by a human or agent that read both, never inferred.
+    #
+    # Validates:
+    #   - fix bead exists and is not closed
+    #   - --evidence is required (the reason is the point)
+    # After linking and depending, the bug reappears in bd ready when the fix lands.
+    bug_id="${1:-}"; [ $# -gt 0 ] && shift
+    fix_id=""
+    evidence=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --fix)
+          [ $# -lt 2 ] && { printf 'groomer: --fix requires a value\n' >&2; exit 1; }
+          fix_id="$2"; shift 2 ;;
+        --evidence)
+          [ $# -lt 2 ] && { printf 'groomer: --evidence requires a value\n' >&2; exit 1; }
+          evidence="$2"; shift 2 ;;
+        *) printf 'groomer: depends-on-fix: unknown option: %s\n' "$1" >&2; exit 1 ;;
+      esac
+    done
+    [ -z "$bug_id" ] && { printf 'groomer: depends-on-fix: bug id required\n' >&2; exit 1; }
+    [ -z "$fix_id" ] && { printf 'groomer: depends-on-fix: --fix <bead-id> required\n' >&2; exit 1; }
+    [ -z "$evidence" ] && { printf 'groomer: depends-on-fix: --evidence <text> is required\n' >&2; exit 1; }
+
+    # Validate that the fix bead is not closed. Use quiet mode to suppress normal output,
+    # capture the status field. bd show exits 1 if bead does not exist; we check for
+    # CLOSED status specifically.
+    fix_show_output="$("$BD_CMD" -C "$DB" show "$fix_id" --json 2>&1)"
+    if [ $? -ne 0 ]; then
+        printf 'groomer: depends-on-fix: fix bead %s does not exist\n' "$fix_id" >&2
+        exit 1
+    fi
+    fix_status="$(printf '%s\n' "$fix_show_output" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)"
+    if [ "$fix_status" = "CLOSED" ]; then
+        printf 'groomer: depends-on-fix: fix bead %s is already closed — cannot depend on a closed bead\n' "$fix_id" >&2
+        exit 1
+    fi
+
+    # Create the dependency: bug depends on fix.
+    "$BD_CMD" -C "$DB" dep add "$bug_id" "$fix_id" || exit 1
+
+    # Record the evidence on the bug.
+    "$BD_CMD" -C "$DB" note "$bug_id" "Parked behind fix $fix_id: $evidence"
     ;;
 
   unwanted)

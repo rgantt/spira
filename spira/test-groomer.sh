@@ -41,13 +41,37 @@ GROOMSH="$HERE/groomer.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT INT TERM
 NONE="$T/none.conf"
 
-# Build a stub bd that records its arguments and exits 0. The stub is queried by checking
-# the recorded argv file; each invocation appends a newline-delimited record.
+# Build a stub bd that records its arguments and returns appropriate responses. The stub
+# is queried by checking the recorded argv file; each invocation appends a newline-delimited
+# record. For 'show' commands, return JSON with status field. For other commands, just record.
 STUB_BD="$T/stub-bd"
 BD_LOG="$T/bd.log"
 cat > "$STUB_BD" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$BD_LOG_PATH"
+
+# Handle 'show' command with JSON output for testing.
+# The command may come in as: bd -C /path/to/db show <id> --json
+# or: bd show <id> --json
+# Skip -C and its argument if present
+shift_cnt=0
+if [ "$1" = "-C" ]; then
+    shift 2
+fi
+
+if [ "$1" = "show" ] && [ "${3:-}" = "--json" ]; then
+    # Return a mock JSON response with IN_PROGRESS status by default.
+    # If the bead id starts with "closed-", return CLOSED status instead.
+    bead_id="$2"
+    if [[ "$bead_id" == closed-* ]]; then
+        printf '{"id":"%s","status":"CLOSED"}\n' "$bead_id"
+    else
+        printf '{"id":"%s","status":"IN_PROGRESS"}\n' "$bead_id"
+    fi
+    exit 0
+fi
+
+# All other commands: just record and exit 0
 exit 0
 STUB
 chmod +x "$STUB_BD"
@@ -128,6 +152,49 @@ echo "groomer.sh supersede without --with is refused (exits 1)"
 out="$(run_groomer supersede sp-fff)"; rc=$?
 is   "supersede without --with exits 1" 1        "$rc"
 is   "bd not called for missing --with" ""       "$(cat "$BD_LOG" 2>/dev/null)"
+
+# ==========================================================================================
+echo
+echo "groomer.sh depends-on-fix <bug-id> --fix <id> --evidence <text>"
+# ==========================================================================================
+: > "$BD_LOG"
+out="$(run_groomer depends-on-fix sp-bug-1 --fix sp-fix-1 --evidence 'This fix addresses the root cause')"; rc=$?
+is   "depends-on-fix exits 0"                 0                    "$rc"
+want "bd called with dep add"                 "dep add"            "$(cat "$BD_LOG")"
+want "bd called with bug-id"                  "sp-bug-1"           "$(cat "$BD_LOG")"
+want "bd called with fix-id"                  "sp-fix-1"           "$(cat "$BD_LOG")"
+want "bd called with note"                    "note"               "$(cat "$BD_LOG")"
+want "note contains evidence"                 "This fix addresses" "$(cat "$BD_LOG")"
+
+# ==========================================================================================
+echo
+echo "groomer.sh depends-on-fix without --fix is refused (exits 1)"
+# ==========================================================================================
+: > "$BD_LOG"
+out="$(run_groomer depends-on-fix sp-bug-2)"; rc=$?
+is   "depends-on-fix without --fix exits 1"  1           "$rc"
+want "error mentions --fix"                   "--fix"     "$out"
+is   "bd not called when --fix missing"       ""          "$(cat "$BD_LOG" 2>/dev/null)"
+
+# ==========================================================================================
+echo
+echo "groomer.sh depends-on-fix without --evidence is refused (exits 1)"
+# ==========================================================================================
+: > "$BD_LOG"
+out="$(run_groomer depends-on-fix sp-bug-3 --fix sp-fix-3)"; rc=$?
+is   "depends-on-fix without --evidence exits 1" 1           "$rc"
+want "error mentions --evidence"                  "--evidence" "$out"
+is   "bd not called when --evidence missing"      ""          "$(cat "$BD_LOG" 2>/dev/null)"
+
+# ==========================================================================================
+echo
+echo "groomer.sh depends-on-fix refuses a closed fix bead (exits 1)"
+# ==========================================================================================
+: > "$BD_LOG"
+out="$(run_groomer depends-on-fix sp-bug-4 --fix closed-fix-1 --evidence 'This fix is closed')"; rc=$?
+is   "depends-on-fix with closed fix exits 1"    1           "$rc"
+want "error mentions closed"                      "closed"    "$out"
+is   "dep add not called for closed fix"          ""          "$(grep '^dep add' "$BD_LOG" 2>/dev/null || true)"
 
 # ==========================================================================================
 echo
