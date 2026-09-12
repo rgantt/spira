@@ -2650,6 +2650,21 @@ for bead in beads:
     bid = bead.get("id", "?")
     if L & {"needs-ryan", "spira-poison"}:
         continue
+    # A REPORT ABOUT AN UNCLAIMABLE BEAD IS NOT ITSELF A SUBJECT. The report is filed into
+    # the incident partition, so whenever that partition is unservable the report is
+    # unclaimable too — and reporting it files another report, which is also unclaimable.
+    # The dedup key is unclaimable:<subject>, so every link in the chain is a NEW subject
+    # and dedup never fires.
+    #
+    # Measured 2026-09-12: one watchtower incident seeded a 128-deep chain and took the
+    # store from 58 beads to 310 in minutes, while the roster was narrowed to a single
+    # persona for a focus period. Nothing here was wrong except the missing base case: the
+    # detector was correctly reporting a condition it was itself creating more of.
+    #
+    # external_ref is the structured mark the filer already sets, so this needs no new
+    # label and cannot drift from the title text.
+    if str(bead.get("external_ref") or "").startswith("unclaimable:"):
+        continue
     # CI-parked beads are intentionally excluded from every persona predicate;
     # the exclusion is not a misconfiguration, so they must not appear here.
     if ci_label and ci_label in L:
