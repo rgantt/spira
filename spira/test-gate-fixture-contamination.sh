@@ -19,7 +19,7 @@
 # the gate does not reject it.
 #
 # defects: sp-pvoyq, sp-qxxfd, sp-2mo8w, sp-05dvg, sp-ejjkr, sp-ubhqe
-# covers: spira/gate-spira.sh
+# covers: spira/gate-spira.sh spira/gate-fences.sh
 # shellcheck disable=SC1090
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -33,6 +33,7 @@ nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3
 command -v flock >/dev/null 2>&1 || { echo "  SKIP  flock is not on PATH"; exit 77; }
 
 . "$HERE/testdb.sh"
+. "$HERE/gate-fences.sh"
 testdb_require test-gate-fixture-contamination
 TMP="$(mktemp -d)"; trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
 testdb_up fixture-contamination || {
@@ -62,9 +63,8 @@ for b in (d if isinstance(d, list) else []):
 # the fixture database.
 SH="$TMP/spira"
 mkdir -p "$SH"
-cp "$HERE/gate-spira.sh" "$HERE/lib.sh" "$HERE/conf.sh" \
-   "$HERE/exclude.sh" "$HERE/inventory.sh" "$HERE/hermetic.sh" "$HERE/sop.sh" \
-   "$HERE/literal-lint.sh" "$SH/"
+cp "$HERE/gate-spira.sh" "$HERE/lib.sh" "$HERE/conf.sh" "$HERE/sop.sh" "$SH/"
+gate_fence_cp "$HERE/gate-spira.sh" "$HERE" "$SH"
 [ -f "$HERE/inventory-deny" ] && cp "$HERE/inventory-deny" "$SH/"
 # A REPO-MAP so _bdq_check_repo_label allows repo:spira if file_budget_bead fires.
 printf 'spira | %s\n' "$TMP" > "$SH/repo-map"

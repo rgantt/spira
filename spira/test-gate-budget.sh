@@ -16,7 +16,7 @@
 #   3. A second overrun does not file a second bead (deduplication).
 #
 # defect: sp-cv0i
-# covers: spira/gate-spira.sh spira/conf.sh
+# covers: spira/gate-spira.sh spira/conf.sh spira/gate-fences.sh
 # shellcheck disable=SC1090
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -29,6 +29,7 @@ want() { [[ "$3" == *"$2"* ]] && ok "$1" || bad "$1" "wanted [$2] in [$3]"; }
 command -v flock >/dev/null 2>&1 || { echo "  SKIP  flock is not on PATH"; exit 77; }
 
 . "$HERE/testdb.sh"
+. "$HERE/gate-fences.sh"
 testdb_require test-gate-budget
 TMP="$(mktemp -d)"; trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
 testdb_up budgetgate || { echo "test-gate-budget: could not build fixture database"; exit 1; }
@@ -39,8 +40,8 @@ testdb_up budgetgate || { echo "test-gate-budget: could not build fixture databa
 # the fixture database and a controllable budget.
 SH="$TMP/spira"
 mkdir -p "$SH"
-cp "$HERE/gate-spira.sh" "$HERE/lib.sh" "$HERE/conf.sh" \
-   "$HERE/exclude.sh" "$HERE/inventory.sh" "$HERE/hermetic.sh" "$HERE/sop.sh" "$SH/"
+cp "$HERE/gate-spira.sh" "$HERE/lib.sh" "$HERE/conf.sh" "$HERE/sop.sh" "$SH/"
+gate_fence_cp "$HERE/gate-spira.sh" "$HERE" "$SH"
 [ -f "$HERE/inventory-deny" ] && cp "$HERE/inventory-deny" "$SH/"
 # A REPO-MAP so _bdq_check_repo_label allows repo:spira when file_budget_bead fires. The
 # check only tests that "spira" is a known name — the path is not used by the check.

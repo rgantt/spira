@@ -16,7 +16,7 @@
 # gate-spira.sh captures it — a silent or broken stub would produce a false
 # all-clear on Case 2.
 #
-# covers: spira/gate-spira.sh
+# covers: spira/gate-spira.sh spira/gate-fences.sh
 # shellcheck disable=SC1090
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -30,6 +30,7 @@ gone() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "wanted [$2] absent from [$
 command -v flock >/dev/null 2>&1 || { echo "  SKIP  flock is not on PATH"; exit 77; }
 
 . "$HERE/testdb.sh"
+. "$HERE/gate-fences.sh"
 testdb_require test-gate-testdb-diag
 TMP="$(mktemp -d)"; trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
 testdb_up testdbdiag || { echo "  SKIP  could not build fixture database"; exit 77; }
@@ -40,9 +41,9 @@ testdb_up testdbdiag || { echo "  SKIP  could not build fixture database"; exit 
 # identically to the installed version while drawing on the fixture database.
 SH="$TMP/spira"
 mkdir -p "$SH"
-cp "$HERE/gate-spira.sh" "$HERE/lib.sh" "$HERE/conf.sh" \
-   "$HERE/exclude.sh" "$HERE/inventory.sh" "$HERE/hermetic.sh" "$HERE/sop.sh" \
-   "$HERE/literal-lint.sh" "$HERE/schema.sh" "$SH/"
+cp "$HERE/gate-spira.sh" "$HERE/lib.sh" "$HERE/conf.sh" "$HERE/sop.sh" \
+   "$HERE/schema.sh" "$SH/"
+gate_fence_cp "$HERE/gate-spira.sh" "$HERE" "$SH"
 [ -f "$HERE/inventory-deny" ] && cp "$HERE/inventory-deny" "$SH/"
 printf 'spira | %s\n' "$TMP" > "$SH/repo-map"
 

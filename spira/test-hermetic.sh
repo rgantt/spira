@@ -35,7 +35,8 @@
 # that let the box decide its verdict would be the joke it is meant to prevent.
 #
 # defect: sp-4d8v
-# covers: spira/hermetic.sh spira/gate-spira.sh
+# covers: spira/hermetic.sh spira/gate-spira.sh spira/gate-fences.sh
+# shellcheck disable=SC1090
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
@@ -48,6 +49,7 @@ nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3
 echo "test-hermetic.sh"
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT INT TERM
+. "$HERE/gate-fences.sh"
 
 fence() {                # fence <args...> -> the shipped fence's output, box excluded
     env -i PATH="$PATH" HOME="$TMP" TERM=dumb bash "$HERE/hermetic.sh" "$@" 2>&1
@@ -221,13 +223,12 @@ is   "and it is executable"      "0" "$([ -x "$HERE/hermetic.sh" ]; echo $?)"
 plant() {                # plant <root> <marker> — a tree whose fences announce which one it is
     mkdir -p "$1/spira"
     cp "$HERE/gate-spira.sh" "$1/spira/"
-    # EVERY fence the gate insists on, because it refuses a tree missing one before it runs
-    # anything — which is correct, and which silently made an earlier version of this fixture
-    # answer "neither marker" to both sides.
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$1/spira/exclude.sh"
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$1/spira/hermetic.sh"
+    # EVERY fence the gate insists on, derived from gate-spira.sh so adding a fence
+    # here requires no edit in this suite (gate_fence_stubs fails closed if the list
+    # is empty — law-absence-needs-a-positive-control).
+    gate_fence_stubs "$HERE/gate-spira.sh" "$1/spira"
     # inventory.sh is the one that speaks: it runs after exclude.sh and before the suites, and
-    # the gate prints its output and stops there.
+    # the gate prints its output and stops there. Override the stub gate_fence_stubs wrote.
     printf '#!/usr/bin/env bash\necho %s\nexit 1\n' "$2" > "$1/spira/inventory.sh"
 }
 plant "$TMP/under-trial" MARKER-UNDER-TRIAL
