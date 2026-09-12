@@ -1270,6 +1270,27 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
                 log "landing: $br merges clean but push kept losing the race — retrying next pass"
             else
                 git -C "$land" merge --abort 2>/dev/null
+                # ALREADY LANDED? ASK THE COMMIT GRAPH BEFORE REOPENING.
+                #
+                # A branch whose commits are all in the base cannot be merged again, and the
+                # failure looks exactly like a first-time conflict from here. On 2026-09-12
+                # sp-ce9 landed as 31fcf0d at 05:36:36 and was reopened at 05:38:32 for
+                # "conflicts with origin/main" — it conflicted BECAUSE it was already in
+                # origin/main. Left open it would have been re-claimed and the finished work
+                # redone, which during a single-epic focus period spends the capacity that
+                # period exists to protect.
+                #
+                # law-closed-is-not-landed cuts both ways: a REOPEN is also a claim about the
+                # commit graph, so it must be checked against the graph rather than against a
+                # branch's mergeability. Ancestry, never a tip comparison — a tip moves under
+                # you mid-pass.
+                if git -C "$repo" merge-base --is-ancestor "$br" "$base" 2>/dev/null; then
+                    log "landing: $br is already contained in $base — landed, not conflicted; not reopening $id"
+                    spira_event bead.landed "$id" "landed $br on $name's $base" \
+                        "branch already contained in $base; a merge conflict here means already-merged" || true
+                    unset 'judged[$br]'
+                    continue
+                fi
                 local _rn_merge
                 _rn_merge="$(git -C "$repo" rev-list --count "$base..$br" 2>/dev/null || echo '?')"
                 bead_reopen "$id" "Reopened by sentinel: branch $br conflicts with $base. The branch carries $_rn_merge commit(s) from the previous session — rebase onto $base, resolve the conflict, and finish. A merge conflict is not an escalation."
