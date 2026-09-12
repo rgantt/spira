@@ -1,11 +1,15 @@
-# gate-suites — the suites the landing gate runs, and why each one earns the wait.
+# gate-suites — the suites gate-spira.sh runs, and why each one earns the wait.
+#
+# NOTE: gate-spira.sh is NOT the production landing gate (sp-wyep). The landing gate is the
+# fence CMD in the repo-map. This file names the suites that gate-spira.sh runs on a schedule;
+# a red here files a bead but does not block landings.
 #
 # THIS IS THE ONLY HAND-WRITTEN LIST OF SUITES, and it is deliberately not a list of what
-# EXISTS. What exists is a glob over `spira/test-*.sh`; this file names the subset that sits
-# between a branch and its landing, which is a choice somebody has to make and cannot be
+# EXISTS. What exists is a glob over `spira/test-*.sh`; this file names the subset that
+# gate-spira.sh runs on the timed pass, which is a choice somebody has to make and cannot be
 # derived. Everything the glob finds and this file does not name is run by `suites.sh` on a
-# timer instead — so the complement is derived, and a suite dropped from here moves to the
-# timed run rather than falling out of the world.
+# timer without gate-spira.sh — so the complement is derived, and a suite dropped from here
+# moves to the timed run rather than falling out of the world.
 #
 # THE FAILURE THIS SHAPE EXISTS TO PREVENT. The list used to live inside gate-spira.sh, and
 # nothing else could read it, so the timed runner could not know what the gate already

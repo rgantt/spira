@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 #
-# gate-spira.sh — this repository's own landing gate.
+# gate-spira.sh — this repository's scheduled test runner.
 #
 #   gate-spira.sh
 #
-# WHAT THIS REPLACED, and why. Until 2026-09-07 this ran 43 suites, 13,098 lines of test code
-# against 4,642 lines of program, and took 17 minutes per branch. On the day the system spent
-# an entire morning unable to land anything, that gate found zero real defects and produced
-# two failures — both of them suites reading the state of the box they ran on rather than the
-# code under test. It was also, by being 17 minutes long, most of the contention that made a
-# shared worktree worth locking, and the lock is what livelocked the queue.
+# THE PRODUCTION LANDING GATE IS NOT THIS SCRIPT. The landing gate for this repository is
+# the CMD in the repo-map (the fence scripts run directly). This script is invoked by
+# suites.sh on a timer; when it is red it files a bead, but it does not block landings.
+# A branch lands when the repo-map CMD passes, not when this script passes. Being red here
+# is a fact for the timed run and for whoever can fix the failing suite — not for the gate.
+# Decision: sp-wyep. Scar: gate-spira.sh was red at 16:33 UTC 2026-09-12 while nineteen
+# commits landed unimpeded; the mechanism is that the landing gate is the fence CMD, not
+# this script (sp-50l).
+#
+# WHAT THIS REPLACED, and why. Until 2026-09-07 this ran 43 suites, 13,098 lines of test
+# code against 4,642 lines of program, and took 17 minutes per branch. On the day the system
+# spent an entire morning unable to land anything, that gate found zero real defects and
+# produced two failures — both of them suites reading the state of the box they ran on rather
+# than the code under test. It was also, by being 17 minutes long, most of the contention
+# that made a shared worktree worth locking, and the lock is what livelocked the queue.
 #
 # The three real defects that day were found by two things: tests written for the specific
 # change, in minutes, and a 20-second soak. Neither was in the 17 minutes.
