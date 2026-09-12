@@ -133,6 +133,53 @@ out="$(CONCIERGE_FAYTH=no-such-persona bash "$HARNESS/concierge.sh" brief 2>&1)"
 is   "a missing brief exits non-zero"     1 "$rc"
 want "and says which file was missing"    "no-such-persona.md" "$out"
 
+# A CORE SET THAT RENDERS NOTHING IN FULL IS A TYPO, AND IT IS THE SILENT ONE. render_memories
+# matches core slugs EXACTLY and demotes anything it does not recognise to the index tier
+# without a word, so a mistyped or retired slug costs that statute its full text and says
+# nothing at all. The brief still looks complete — right size, every placeholder filled, the
+# law apparently present — which is why this needs an assertion rather than a reader.
+#
+# A FIXTURE PERSONA, NOT THE SHIPPED ONE. Editing chamber/concierge.fayth to drive this would
+# leave the suite one failed assertion away from having corrupted the thing it tests.
+FX="$TMP/fx"; mkdir -p "$FX/chamber"
+cp "$HERE/chamber/concierge.md" "$FX/chamber/typo.md"
+sed -e 's|^FAYTH_STATUTE_CORE=.*|FAYTH_STATUTE_CORE="law-slug-that-does-not-exist"|' \
+    -e 's|^FAYTH_NAME=.*|FAYTH_NAME=typo|' \
+    "$HERE/chamber/concierge.fayth" > "$FX/chamber/typo.fayth"
+# The launcher reads $SPIRA_HOME/chamber, so the fixture chamber has to be the one it finds.
+# Everything else about the harness stays real: the point is that the STATUTE lookup misses.
+out="$(SPIRA_HOME="$FX" CONCIERGE_FAYTH=typo bash "$HARNESS/concierge.sh" brief 2>&1)"; rc=$?
+is   "an all-typo core set exits non-zero"  1 "$rc"
+want "and says the slugs were demoted"      "no statute rendered in full" "$out"
+
+# THE POSITIVE CONTROL FOR THAT REFUSAL. The same fixture with ONE real slug must compose —
+# otherwise the assertion above would pass against a fixture that was broken for some
+# unrelated reason, which is most of them (law-absence-needs-a-positive-control).
+sed -i 's|^FAYTH_STATUTE_CORE=.*|FAYTH_STATUTE_CORE="law-closed-is-not-landed"|' "$FX/chamber/typo.fayth"
+out="$(SPIRA_HOME="$FX" CONCIERGE_FAYTH=typo bash "$HARNESS/concierge.sh" brief 2>&1)"; rc=$?
+is   "one real slug composes a brief"       0 "$rc"
+want "and renders that statute in full"     "## law-closed-is-not-landed" "$(cat "$out" 2>/dev/null)"
+
+# THE SUMMARY LINE IS READ BY THE OPERATOR AND BY NOBODY ELSE, which is exactly why it needs
+# an assertion: `here` grew its own inline count, the quoting came out wrong, and it reported
+# "0 statutes in full" about a brief holding twenty. A launcher reporting on itself is the
+# reading nobody goes behind.
+#
+# AND IT IS PARSED, NOT SUBSTRING-MATCHED. The first version of this check asserted that the
+# line does not CONTAIN "0 statutes" and failed against the correct output, because "20
+# statutes" contains it. A count is a number; compare it as one.
+sum="$(bash "$HARNESS/concierge.sh" here --help 2>&1 >/dev/null | head -1)"
+want "the summary names a count and a size" "statutes in full," "$sum"
+n_sum="$(sed -n 's/^concierge: \([0-9]*\) statutes in full.*/\1/p' <<<"$sum")"
+if [ -n "$n_sum" ] && [ "$n_sum" -gt 0 ] 2>/dev/null; then
+    pass=$((pass+1)); printf '  ok    and the count is %s, not zero\n' "$n_sum"
+else
+    fail=$((fail+1)); printf '  FAIL  the summary reported [%s] statutes: %s\n' "$n_sum" "$sum"
+fi
+# THE COUNT MUST BE THE BRIEF'S OWN, not a constant that happens to look plausible.
+is "and it matches the rendered brief" \
+   "$(grep -c '^## law-' "$(bash "$HARNESS/concierge.sh" brief)" 2>/dev/null)" "$n_sum"
+
 echo
 echo "concierge self-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

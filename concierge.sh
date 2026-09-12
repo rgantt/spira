@@ -2,7 +2,8 @@
 #
 # concierge.sh — the single Remote Control session the operator talks to from their phone.
 #
-#   concierge.sh start     launch it in tmux (idempotent)
+#   concierge.sh start     launch it in tmux for the phone (idempotent)
+#   concierge.sh here      run it in the FOREGROUND, at this terminal; args pass to claude
 #   concierge.sh attach    attach locally
 #   concierge.sh brief     render the system prompt and print its path; change nothing
 #   concierge.sh status    is it up
@@ -113,6 +114,18 @@ compose_brief() {
         printf '\n# Memories in force\n\n%s\n' "$statutes"
     } > "$out" || return 1
 
+    # A DECLARED CORE SET THAT RENDERS NOTHING IN FULL IS A TYPO, NOT A CONFIGURATION.
+    # render_memories matches core slugs EXACTLY and silently demotes anything it does not
+    # recognise to the index tier, so one mistyped or retired slug costs that statute its full
+    # text and says nothing. All of them mistyped costs the whole point of the persona, and the
+    # brief still looks complete: 24KB, every placeholder filled, the law apparently present.
+    if [ -n "$(fayth_get "$FAYTH" FAYTH_STATUTE_CORE "")" ] && ! grep -q '^## law-' "$out"; then
+        echo "concierge: FAYTH_STATUTE_CORE is declared but no statute rendered in full" >&2
+        echo "  every slug in it was demoted to the index — check them against:" >&2
+        echo "  $HARNESS/rule.sh list" >&2
+        return 1
+    fi
+
     # THE PLACEHOLDER CHECK IS THE POINT OF DOING THIS IN A FUNCTION. An unsubstituted
     # `{{ASK}}` is not a cosmetic flaw — it is a command line the session will try to run,
     # and the failure arrives hours later as "the concierge does not escalate anything".
@@ -122,6 +135,19 @@ compose_brief() {
         return 1
     fi
     printf '%s' "$out"
+}
+
+# brief_summary <path> [model] -> the one line both launchers print about what they composed.
+#
+# ONE FUNCTION BECAUSE TWO COPIES DISAGREED IMMEDIATELY. `here` grew its own inline `grep -c`
+# and the quoting came out wrong, so it reported "0 statutes in full" about a brief holding
+# twenty — a number that would have been believed, because a launcher reporting on itself is
+# exactly the reading nobody goes behind.
+brief_summary() {
+    printf 'concierge: %s statutes in full, %s bytes%s\n' \
+        "$(grep -c '^## law-' "$1" 2>/dev/null || printf '?')" \
+        "$(wc -c < "$1" 2>/dev/null || printf '?')" \
+        "${2:+, $2}"
 }
 
 case "${1:-status}" in
@@ -142,7 +168,7 @@ start)
     unset $(bash "$_tmuxenv" names) 2>/dev/null || true
     BRIEF="$(compose_brief)" || exit 1
     MODEL="$(fayth_get "$FAYTH" FAYTH_MODEL "")"
-    echo "concierge: brief $(wc -c < "$BRIEF") bytes${MODEL:+, model $MODEL}"
+    brief_summary "$BRIEF" "$MODEL"
 
     # NO --allowedTools. For an interactive session under bypassed permissions that flag can
     # only SUBTRACT, and the persona's remit is unbounded — see concierge.fayth, where the
@@ -165,6 +191,52 @@ start)
 
 attach)  exec $TM attach -t "$SESSION" ;;
 
+# THE SAME PERSONA, AT THE OPERATOR'S OWN TERMINAL. `start` launches the detached Remote
+# Control session the phone reaches; this one runs in the foreground, attached to the TTY it
+# was invoked from, and replaces this shell.
+#
+# WHY IT IS A VERB HERE AND NOT ITS OWN SCRIPT. `compose_brief` is the single place that
+# knows how a concierge is assembled — which brief, which statute core, which refusals. A
+# second launcher would be a second copy of that knowledge, and the copy stays right until
+# somebody edits one of them. The operator types one command either way.
+#
+# NO --remote-control. That flag registers the session under a name the phone selects, and
+# exactly one session may hold the name `concierge`; a terminal session claiming it would
+# either collide with the tmux one or quietly take the phone's ingress away. This is the
+# keyboard's concierge, and the phone's is `start`.
+#
+# EVERYTHING AFTER `here` IS PASSED TO claude, so `--resume`, `--continue`, `-p "..."` and a
+# one-shot prompt all work without this script needing to know about any of them.
+here)
+    shift
+    command -v claude >/dev/null || { echo "concierge: claude not on PATH" >&2; exit 1; }
+    BRIEF="$(compose_brief)" || exit 1
+    MODEL="$(fayth_get "$FAYTH" FAYTH_MODEL "")"
+
+    # THE SAME SCRUB `start` DOES, AND FOR A SHARPER REASON. This is usually invoked from
+    # inside another Claude session — that is what "give me a session like this one" means —
+    # and a client that inherits CLAUDE_CODE_CHILD_SESSION believes it is a subagent and
+    # DOES NOT WRITE A TRANSCRIPT. No transcript means ctx-meter.sh reports "no session at
+    # the keyboard" and the token meters read the wrong session, with nothing naming the
+    # cause. There is no correct value for any of these in a new session; absent is the only
+    # right answer, and a real client sets its own on startup (cockpit/tmux-env.sh).
+    _tmuxenv="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/cockpit/tmux-env.sh"
+    unset $(bash "$_tmuxenv" names) 2>/dev/null || true
+
+    brief_summary "$BRIEF" "$MODEL" >&2
+
+    # `cd`, NOT --add-dir. The working directory is what decides which CLAUDE.md, which hooks
+    # and which project memory the client loads, and the whole point of this persona is that
+    # it gets the operator's own conventions and guards.
+    cd "$BRAIN" || exit 1
+    # PERMISSION MODE IS THE CALLER'S. Bypass is the default because it is what every other
+    # session on this box runs and a concierge stopping to ask about `bd list` is a concierge
+    # nobody uses — but a caller who passes their own --permission-mode gets it, because the
+    # flag they wrote comes after ours on the command line and wins.
+    exec claude --dangerously-skip-permissions \
+        ${MODEL:+--model "$MODEL"} --append-system-prompt-file "$BRIEF" "$@"
+    ;;
+
 # RENDER IT AND PRINT THE PATH, CHANGING NOTHING. The brief is the part of this session that
 # is easy to get wrong and impossible to see from outside once it has started, so it has a
 # seam of its own: `brief` is what the suite drives and what the operator reads before
@@ -185,5 +257,5 @@ status)
 
 stop)    $TM kill-session -t "$SESSION" 2>/dev/null && echo "concierge: stopped" ;;
 
-*)       sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+*)       sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
