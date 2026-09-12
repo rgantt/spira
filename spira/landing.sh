@@ -1281,10 +1281,23 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
                 # The second test is the one the reopen message itself already computes:
                 # commits on the branch not in the base. Zero means the branch introduces
                 # nothing — there is nothing to conflict about and nothing to redo.
+                # FETCH BEFORE ASSERTING A NEGATIVE. Both tests read $base, a
+                # remote-tracking ref, and a stale one makes a landed branch look unlanded.
+                # Measured 2026-09-12 06:17:40: sp-733 was judged "ancestor=no,
+                # commits-ahead=?" and reopened, while the identical commands run by hand
+                # minutes later returned ancestor=yes and 0 — the branch had landed as
+                # b85e5db and $repo's origin/main had not caught up. This is the rule that
+                # already existed and that the first two versions of this guard did not
+                # apply: re-fetch immediately before asserting that something did NOT land.
+                git -C "$repo" fetch -q origin 2>/dev/null || true
                 local _rn_merge _anc=no
                 _rn_merge="$(git -C "$repo" rev-list --count "$base..$br" 2>/dev/null || echo '?')"
                 git -C "$repo" merge-base --is-ancestor "$br" "$base" 2>/dev/null && _anc=yes
-                if [ "$_anc" = yes ] || [ "$_rn_merge" = 0 ]; then
+                # A '?' means the count could not be TAKEN, which is not evidence of a
+                # conflict. Refusing to reopen on an unreadable signal is the safe
+                # direction: a bead left closed that should be open is visible as missing
+                # work, while a bead reopened on finished work silently redoes it.
+                if [ "$_anc" = yes ] || [ "$_rn_merge" = 0 ] || [ "$_rn_merge" = '?' ]; then
                     log "landing: $br introduces nothing new to $base (ancestor=$_anc, commits-ahead=$_rn_merge) — landed, not conflicted; not reopening $id"
                     spira_event bead.landed "$id" "landed $br on $name's $base" \
                         "branch introduces no commit $base lacks; a conflict here means already-merged" || true
