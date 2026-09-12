@@ -224,7 +224,7 @@ create() { # type text why default labels
         # by an aeon. The emitters pass no labels at all, so this only ever fires on a new one.
         local bad
         # literal-ok: a deny-list of reserved names checked as DATA — it must name them
-    for bad in overseer needs-ryan insight spira plan; do
+        for bad in overseer needs-ryan insight spira plan; do
             case ",$labels," in *",$bad,"*)
                 echo "ask: refusing to label an event '$bad' — that label is how another reader claims or queues it" >&2
                 return 1 ;;

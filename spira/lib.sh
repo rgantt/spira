@@ -2901,9 +2901,10 @@ detect_livelocked() {
     _nr_raw="$(bdjson list --limit 0 --label "${SPIRA_ASK_LABEL:?SPIRA_ASK_LABEL is unset — source conf.sh}" 2>/dev/null)"
     if [ -n "$_nr_raw" ]; then
         printf '%s\n' "$_nr_raw" | python3 -c '
-import sys, json, re
+import os, sys, json, re
 try: d = json.load(sys.stdin)
 except Exception: raise SystemExit
+ask_label = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")  # literal-ok: Python fallback for direct invocation without conf.sh
 for i in (d if isinstance(d, list) else [d]):
     L = set(i.get("labels") or [])
     if ask_label not in L:
@@ -2961,6 +2962,7 @@ import os, sys, json, re
 try: d = json.load(sys.stdin)
 except Exception: raise SystemExit
 valid = set(os.environ.get("VALID_NAMES", "").split())
+ask_label = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")  # literal-ok: Python fallback for direct invocation without conf.sh
 for i in (d if isinstance(d, list) else [d]):
     L = i.get("labels") or []
     # Skip beads already handled by the unclaimable or needs-ryan checks.
