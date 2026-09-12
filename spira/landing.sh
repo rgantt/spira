@@ -1272,17 +1272,31 @@ print(d[0].get("status","-") if d else "-")' 2>/dev/null)"
                 # commit graph, so it must be checked against the graph rather than against a
                 # branch's mergeability. Ancestry, never a tip comparison — a tip moves under
                 # you mid-pass.
-                if git -C "$repo" merge-base --is-ancestor "$br" "$base" 2>/dev/null; then
-                    log "landing: $br is already contained in $base — landed, not conflicted; not reopening $id"
+                # TWO TESTS, because ancestry ALONE IS NOT ENOUGH. sp-ce9 was caught by
+                # ancestry; sp-lzt was not, and was reopened anyway at 06:11:18 on
+                # 2026-09-12 after the sending leg had touched the branch between the
+                # landing and the re-merge. Ancestry asks "is this TIP in the base", which
+                # a moved tip answers no to even when every change it carried is in.
+                #
+                # The second test is the one the reopen message itself already computes:
+                # commits on the branch not in the base. Zero means the branch introduces
+                # nothing — there is nothing to conflict about and nothing to redo.
+                local _rn_merge _anc=no
+                _rn_merge="$(git -C "$repo" rev-list --count "$base..$br" 2>/dev/null || echo '?')"
+                git -C "$repo" merge-base --is-ancestor "$br" "$base" 2>/dev/null && _anc=yes
+                if [ "$_anc" = yes ] || [ "$_rn_merge" = 0 ]; then
+                    log "landing: $br introduces nothing new to $base (ancestor=$_anc, commits-ahead=$_rn_merge) — landed, not conflicted; not reopening $id"
                     spira_event bead.landed "$id" "landed $br on $name's $base" \
-                        "branch already contained in $base; a merge conflict here means already-merged" || true
-                    unset 'judged[$br]'
+                        "branch introduces no commit $base lacks; a conflict here means already-merged" || true
+                    unset 'judged[$br]' _rn_merge _anc
                     continue
                 fi
-                local _rn_merge
-                _rn_merge="$(git -C "$repo" rev-list --count "$base..$br" 2>/dev/null || echo '?')"
+                # DIAGNOSABLE WHEN IT FIRES ANYWAY. Both numbers are recorded, so a future
+                # spurious reopen is a fact to read rather than a sequence to reconstruct
+                # from timestamps across two logs.
+                log "landing: $br genuinely conflicts with $base (ancestor=$_anc, commits-ahead=$_rn_merge)"
                 bead_reopen "$id" "Reopened by sentinel: branch $br conflicts with $base. The branch carries $_rn_merge commit(s) from the previous session — rebase onto $base, resolve the conflict, and finish. A merge conflict is not an escalation."
-                unset _rn_merge
+                unset _rn_merge _anc
                 # Counter labels (sp-requeue-N) no longer written (sp-lzt).
                 progress "reopened $id — branch conflicts with $base"
                 spira_event bead.reopened "$id" "reopened $id — $br conflicts with $name's $base" \
