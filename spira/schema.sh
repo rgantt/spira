@@ -121,6 +121,7 @@ schema_custom_types() {
 # --------------------------------------------------------------------------------------
 # WHAT THE STORE REPORTS — asked, never assumed.
 # --------------------------------------------------------------------------------------
+_dolt_scalar()    { dolt --data-dir "${SPIRA_DOLT_DIR:-/workspaces/beads}" sql -q "use ${SPIRA_DOLT_DB:-spira}; $1" 2>/dev/null | sed -n '4p' | tr -d '| '; }
 _store_types()    { bd -C "${SPIRA_DB:-/workspaces/spira}" types 2>/dev/null | sed -n '/Configured custom types/,$p' | tail -n +2 | tr -d ' ' | grep -v '^$'; }
 _store_statuses() { bd -C "${SPIRA_DB:-/workspaces/spira}" config get status.custom 2>/dev/null | tail -1 | tr ',' '\n' | tr -d ' ' | grep -v '^$'; }
 
@@ -167,6 +168,15 @@ schema_check() {
     for x in $want; do
         printf '%s\n' "$have" | grep -qx "$x" || { printf 'schema: MISSING custom status: %s\n' "$x" >&2; rc=1; }
     done
+    # THE SUBSTRATE HALF. These live in Dolt, below bd, and a bd upgrade can carry a table
+    # rewrite that does not bring them across. A constraint that silently disappeared is
+    # worse than one never added, because every tool above it stopped guarding what it no
+    # longer does — so its absence must be an ERROR here, not an omission.
+    local q
+    q="select count(*) from information_schema.columns where table_name='issues' and column_name='_is_work';"
+    [ "$(_dolt_scalar "$q")" = "1" ] || { printf 'schema: MISSING generated column: _is_work\n' >&2; rc=1; }
+    q="select count(*) from information_schema.table_constraints where table_name='issues' and constraint_type='CHECK' and constraint_name='spira_priority_range';"
+    [ "$(_dolt_scalar "$q")" = "1" ] || { printf 'schema: MISSING constraint: spira_priority_range\n' >&2; rc=1; }
     [ "$rc" = 0 ] && echo "schema: store matches the declaration"
     return "$rc"
 }
