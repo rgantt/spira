@@ -50,4 +50,32 @@ done < <(repo_names)
 #
 # bd gate check uses metadata.repo on each gate to call `gh run view <id> --repo <org/repo>`,
 # so this call is correct regardless of the current directory.
-bdq gate check --type=gh:run 2>&1 || true
+#
+# CAPTURE THE OUTPUT TO DETECT CI FAILURES. When a run concludes with failure or cancellation,
+# bd gate check prints "⚠ <gate-id>: ESCALATE" but leaves the gate open — the bead stays
+# blocked and cannot be re-claimed. Resolving the gate here unblocks the bead so the next
+# aeon can pick it up. The ESCALATE line is the only per-gate signal bd gate check produces
+# for failures; --json gives only aggregate counts.
+check_out="$(bdq gate check --type=gh:run 2>&1 || true)"
+printf '%s\n' "$check_out"
+
+# FOR EACH FAILED CI RUN: extract the gate id, find the blocked bead, resolve the gate
+# so the bead re-enters the queue, and emit ci.failed so the event feed records it.
+while IFS= read -r esc; do
+    gate_id="$(printf '%s' "$esc" | grep -oE 'sp-[a-z0-9]+' | head -1)" || continue
+    [ -n "${gate_id:-}" ] || continue
+    blocked="$(bdq show "$gate_id" --json 2>/dev/null | python3 -c '
+import json, sys, re
+try:
+    d = json.load(sys.stdin)
+    d = d if isinstance(d, list) else [d]
+    m = re.search(r"blocking (sp-\w+)", d[0].get("description", ""))
+    print(m.group(1) if m else "")
+except Exception:
+    pass
+' 2>/dev/null)" || true
+    [ -n "${blocked:-}" ] || continue
+    bdq gate resolve "$gate_id" >/dev/null 2>&1 || true
+    spira_event ci.failed "$blocked" "CI red — $blocked returned to queue" \
+        "$(printf '%s' "$esc")" || true
+done < <(printf '%s\n' "$check_out" | grep 'ESCALATE' 2>/dev/null || true)
