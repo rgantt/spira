@@ -1373,9 +1373,20 @@ capacity_withdrawn_mark() {
 # --------------------------------------------------------------------------------------
 # ATTEMPTS ARE COMPUTED FROM THE EVENTS TRAIL, NOT STORED AS LABELS.
 #
-# Every time an aeon claims a bead, bd writes a status_changed event with new_value
-# containing 'in_progress'. That event is the authoritative record. Counting those events
-# gives the attempt total without any label pollution (sp-lzt).
+# An aeon claiming a bead writes event_type='claimed'. A hand-driven transition through
+# `bd update --status in_progress` writes event_type='status_changed' with new_value
+# containing 'in_progress'. BOTH are attempts and the count is the union of the two.
+#
+# THE ORIGINAL PREDICATE COUNTED ONLY status_changed AND THEREFORE RETURNED 0 FOR EVERY
+# BEAD AN AEON HAD EVER WORKED. Measured 2026-09-12 across four real beads: shipped=0 for
+# all of them while claimed=1 for each of the three an aeon had taken. Since poisoning is
+# `attempts >= 3`, nothing could ever be poisoned and a looping bead would loop for ever —
+# a silent failure of a safety mechanism, which is worse than a loud one.
+#
+# The error came from the brief, not the implementation: the predicate was verified against
+# `bd update --status in_progress` and generalised to "how an aeon claims", which is a
+# different code path writing a different event_type. Verify the path the system actually
+# takes, not one that resembles it.
 #
 # WHY THE EVENTS TABLE, NOT LABELS. Counter labels (sp-attempt-N, sp-reclaim-N, etc.)
 # produced 195 of 660 distinct labels in the old store — sp-reclaim alone had 96 forms
@@ -1390,11 +1401,12 @@ capacity_withdrawn_mark() {
 # THREE CONSTRAINTS, VERIFIED IN sp-lzt AND RECORDED HERE SO NO ONE REDISCOVERS THEM:
 #   1. bd query cannot express it — no events field. bd sql is the right tool.
 #   2. json_extract on new_value returns empty in Dolt even with a cast. LIKE works.
-#   3. Match event_type='status_changed' too, or a label_added row whose comment mentions
-#      'in_progress' would be counted.
+#   3. Filter on event_type, or a label_added row whose comment mentions 'in_progress'
+#      would be counted. The filter is a whitelist of the two event types that mean an
+#      attempt, never a bare LIKE over every row.
 # --------------------------------------------------------------------------------------
 _attempts_sql_query() {   # _attempts_sql_query <id> -> the SQL that counts attempts
-    printf "select count(*) from events where issue_id='%s' and event_type='status_changed' and new_value like '%%in_progress%%'" "$1"
+    printf "select count(*) from events where issue_id='%s' and (event_type='claimed' or (event_type='status_changed' and new_value like '%%in_progress%%'))" "$1"
 }
 
 attempts_of() {          # attempts_of <id> -> count of in_progress status-change events

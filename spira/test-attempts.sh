@@ -192,12 +192,39 @@ after="$(grep -n 'cause="\$(session_outcome' "$HERE/aeon.sh" | sed -n 1p | cut -
 is "the requeue path exits before the trace is classified" yes \
    "$( [ -n "$before" ] && [ -n "$after" ] && [ "$before" -lt "$after" ] && echo yes || echo no)"
 
-# attempts_of must read from the events table, not from labels. The SQL builder
-# (_attempts_sql_query) must reference 'status_changed' — that filter makes the count
-# meaningful. attempts_of() must call it rather than building its own query.
+# BEHAVIOUR, NOT THE QUERY STRING. The original assertion here checked that the SQL
+# contained the word 'status_changed'. It passed while the predicate returned 0 for every
+# bead an aeon had ever worked, because an aeon claim writes event_type='claimed' and only
+# a hand-driven `bd update --status in_progress` writes 'status_changed'. A test that
+# restates the implementation agrees with it about everything, including its mistakes.
+#
+# So: run the query against a fixture holding one of each event shape and assert the NUMBER.
 body_sql="$(sed -n '/^_attempts_sql_query()/,/^}/p' "$HERE/lib.sh" 2>/dev/null)"
-is "the SQL query filters on status_changed events" "1" \
+is "attempts counts an aeon claim" "1" \
+   "$(grep -c "event_type='claimed'" <<<"$body_sql" || true)"
+is "attempts also counts a hand-driven in_progress transition" "1" \
    "$(grep -c 'status_changed' <<<"$body_sql" || true)"
+
+FX="$TMP/attfx"; mkdir -p "$FX"
+( cd "$FX" && dolt init -b main >/dev/null 2>&1 )
+dolt --data-dir "$FX" sql -q "create database fx; use fx; create table events (issue_id varchar(64), event_type varchar(32), new_value longtext);
+insert into events values
+ ('b1','claimed',null),
+ ('b1','claimed',null),
+ ('b1','status_changed','{\"status\":\"in_progress\"}'),
+ ('b1','status_changed','{\"status\":\"closed\"}'),
+ ('b1','label_added','mentions in_progress in a comment'),
+ ('b2','created',null);" >/dev/null 2>&1
+# THE FIXTURE MUST RUN THE SHIPPED QUERY, NOT A COPY OF IT. The first version of this block
+# built its own `mk()` with the correct SQL inlined, so reverting lib.sh to the broken
+# predicate left it passing — a fixture that tests a string the test itself wrote proves
+# only that the test agrees with itself. Source the real builder.
+( . "$HERE/lib.sh" >/dev/null 2>&1 || true )
+mk(){ ( . "$HERE/lib.sh" >/dev/null 2>&1; _attempts_sql_query "$1" ); }
+got_b1="$(dolt --data-dir "$FX" sql -q "use fx; $(mk b1)" 2>/dev/null | sed -n '4p' | tr -d '| ')"
+got_b2="$(dolt --data-dir "$FX" sql -q "use fx; $(mk b2)" 2>/dev/null | sed -n '4p' | tr -d '| ')"
+is "fixture: two claims + one hand transition = 3 attempts" "3" "$got_b1"
+is "fixture control: a bead with only a created event = 0" "0" "$got_b2"
 body_attempts="$(sed -n '/^attempts_of()/,/^}/p' "$HERE/lib.sh" 2>/dev/null)"
 is "attempts_of delegates to the SQL builder" "1" \
    "$(grep -c '_attempts_sql_query' <<<"$body_attempts" || true)"
