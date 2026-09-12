@@ -605,8 +605,8 @@ ready_count() {
 # BATCHED: one `bd list` + one `bd show` regardless of how many IN_PROGRESS beads exist.
 # In practice there are only a few at a time, so this is cheap.
 check2_protect_waiting() {
-    local ask_label="${SPIRA_ASK_LABEL:-needs-operator}"
-    local skip_label="${SPIRA_RECLAIM_SKIP_LABEL:-spira-waiting-operator}"
+    local ask_label="$SPIRA_ASK_LABEL"
+    local skip_label="$SPIRA_RECLAIM_SKIP_LABEL"
 
     # Collect IN_PROGRESS beads that need dep inspection.
     # Output: one line per bead: "<id> <has_skip:0|1> <dep_count>"
@@ -2643,7 +2643,7 @@ for line in os.environ["PARTS"].splitlines():
 # persona can claim, and the message correctly names the missing label in that case too.
 scope_label = os.environ.get("SPIRA_SCOPE_LABEL", "spira")
 partition_labels = sorted({lab for inc, _ in parts.values() for lab in inc if lab != scope_label})
-ci_label = os.environ.get("SPIRA_CI_LABEL", "awaiting-ci")
+ci_label = os.environ.get("SPIRA_CI_LABEL", "awaiting-ci")  # literal-ok: Python fallback for direct invocation without conf.sh
 
 for bead in beads:
     L = set(bead.get("labels") or [])
@@ -2815,7 +2815,7 @@ for i in (d if isinstance(d, list) else [d]):
 
     # ---- ci-stuck: awaiting-ci beads in a repo whose land mode is not `pr` ----
     local _ci_raw
-    _ci_raw="$(bdjson list --all --limit 0 --label "${SPIRA_CI_LABEL:-awaiting-ci}" 2>/dev/null)"
+    _ci_raw="$(bdjson list --all --limit 0 --label "$SPIRA_CI_LABEL" 2>/dev/null)"
     if [ -n "$_ci_raw" ]; then
         printf '%s\n' "$_ci_raw" | python3 -c '
 import sys, json, re
@@ -2837,8 +2837,8 @@ for i in (d if isinstance(d, list) else [d]):
             # Use repo_land directly — it is the one test that names the structural fault.
             _land="$(repo_land "$_crepo" 2>/dev/null)"
             if [ "${_land:-push}" != pr ]; then
-                printf 'LIVELOCK %s ci-stuck — repo %s land mode is not pr; awaiting-ci will never clear; strip the label or change the repo land mode. title: %s\n' \
-                    "$_cid" "$_crepo" "$_ctitle"
+                printf 'LIVELOCK %s ci-stuck — repo %s land mode is not pr; %s will never clear; strip the label or change the repo land mode. title: %s\n' \
+                    "$_cid" "$_crepo" "$SPIRA_CI_LABEL" "$_ctitle"
             fi
         done
     fi

@@ -1,6 +1,6 @@
 /* model.js — the whole view model, derived in the page from a raw bead array.
  *
- *   const model = LoomModel.derive(beads, {now: Date.now(), askLabel: 'needs-operator'});
+ *   const model = LoomModel.derive(beads, {now: Date.now(), askLabel: 'needs-operator'});  /* literal-ok: usage example, server overrides via meta */
  *
  * THE SERVER RETURNS BEADS AND NOTHING ELSE. No coordinates, no connected components, no
  * layers, no histograms, no headline counts. Those all live here, because a surface whose
@@ -33,8 +33,8 @@
    which is the reading that stops anybody looking. The defaults here match the harness's
    own defaults; a server that knows better passes `meta` and overrides them. */
 var DEFAULTS = {
-    askLabel: 'needs-operator',     /* SPIRA_ASK_LABEL — waiting on the operator */
-    ciLabel: 'awaiting-ci',         /* SPIRA_CI_LABEL — parked on a run */
+    askLabel: 'needs-operator',     /* SPIRA_ASK_LABEL — waiting on the operator — literal-ok: harness default, server overrides via meta */
+    ciLabel: 'awaiting-ci',         /* SPIRA_CI_LABEL — parked on a run — literal-ok: harness default, server overrides via meta */
     poisonLabel: 'spira-poison',    /* set once a bead has failed `threshold` times */
     attemptPrefix: 'sp-attempt-',   /* sp-attempt-N; the count is the largest N */
     reclaimPrefix: 'sp-reclaim-',   /* sp-reclaim-N, and sp-reclaim-N-unrecorded */

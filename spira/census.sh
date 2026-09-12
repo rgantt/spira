@@ -50,7 +50,7 @@ HERE="$(cd "$(dirname "$0")" && pwd -P)"
 WITH_SUPPRESSED=0
 case "${1:-}" in --with-suppressed) WITH_SUPPRESSED=1 ;; esac
 
-REMEDY_LABEL="${SPIRA_MAECHEN_REMEDY_LABEL:-maechen-remedy}"
+REMEDY_LABEL="$SPIRA_MAECHEN_REMEDY_LABEL"
 
 _TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$_TMPDIR"' EXIT INT TERM

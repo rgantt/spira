@@ -185,7 +185,7 @@ n_parts=0; n_reclaimed=0
 while IFS=$'\t' read -r part _; do
     [ -n "$part" ] || continue
     n_parts=$((n_parts+1))
-    out="$(bdq reclaim --older-than 180m --label "$part" --exclude-label "${SPIRA_RECLAIM_SKIP_LABEL:-spira-waiting-operator}" 2>&1)"
+    out="$(bdq reclaim --older-than 180m --label "$part" --exclude-label "$SPIRA_RECLAIM_SKIP_LABEL" 2>&1)"
     grep -q 'No stale leases' <<< "$out" && continue
     n="$(grep -cE '^(✓|Reclaimed)' <<< "$out" || true)"
     n_reclaimed=$(( n_reclaimed + ${n:-0} ))

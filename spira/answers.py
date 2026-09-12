@@ -311,7 +311,7 @@ def main():
     cfg = {
         "bd": args.get("bd") or os.environ.get("BD_BIN") or "bd",
         "db": args.get("db") or os.environ.get("SPIRA_DB") or "",
-        "ask_label": args.get("ask_label") or os.environ.get("SPIRA_ASK_LABEL") or "needs-operator",
+        "ask_label": args.get("ask_label") or os.environ.get("SPIRA_ASK_LABEL") or "needs-operator",  # literal-ok: Python fallback for direct invocation without conf.sh
         "operator_actor": (args.get("operator_actor")
                            or os.environ.get("SPIRA_OPERATOR_ACTOR") or "operator"),
         "self_closed": args.get("self_closed") or os.environ.get("SELF_CLOSED") or "",

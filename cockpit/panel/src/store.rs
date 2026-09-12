@@ -63,7 +63,7 @@ pub fn db() -> String {
 /// predicates come to disagree about which beads are waiting on anyone, and the panel is the
 /// half nobody notices is wrong: it simply shows fewer.
 pub fn ask_label() -> String {
-    std::env::var("SPIRA_ASK_LABEL").unwrap_or_else(|_| "needs-operator".to_string())
+    std::env::var("SPIRA_ASK_LABEL").unwrap_or_else(|_| "needs-operator".to_string()) // literal-ok: Rust fallback for direct invocation without conf.sh
 }
 
 /// Raw rows plus when they were fetched, and what went wrong if anything did.
@@ -1019,13 +1019,13 @@ mod tests {
         // AN *OPEN* EVENT, deliberately. DECISIONS also drops anything closed, and every
         // event `sp-emit` writes is closed — so a closed fixture here would pass on the
         // status check alone and prove nothing about the type check.
-        let mut ev = event_row("sp-ev", &["needs-operator", "spira", "plan"]);
+        let mut ev = event_row("sp-ev", &["needs-operator", "spira", "plan"]); // literal-ok: test fixture data
         ev["status"] = Value::from("open");
         // A closed decision is not shown either, so the control has to be genuinely open.
         let mut open_ask = serde_json::json!({
             "id": "sp-ask", "title": "t", "description": "body",
             "status": "open", "issue_type": "task",
-            "labels": ["needs-operator", "overseer"],
+            "labels": ["needs-operator", "overseer"], // literal-ok: test fixture data
             "created_at": "2026-09-06T10:00:00Z", "comment_count": 0,
         });
         open_ask["status"] = Value::from("open");
@@ -1048,7 +1048,7 @@ mod tests {
         let mut r = serde_json::json!({
             "id": "sp-x", "title": "t", "description": "body",
             "status": "open", "issue_type": "task",
-            "labels": ["needs-operator", "overseer"],
+            "labels": ["needs-operator", "overseer"], // literal-ok: test fixture data
             "created_at": "2026-09-06T10:00:00Z", "comment_count": 0,
         });
         r["status"] = Value::from("open");
@@ -1099,7 +1099,7 @@ mod tests {
         let mut open = serde_json::json!({
             "id": "sp-ask", "title": "t", "description": "",
             "status": "open", "issue_type": "task",
-            "labels": ["needs-operator"], "created_at": "2026-09-06T10:00:00Z",
+            "labels": ["needs-operator"], "created_at": "2026-09-06T10:00:00Z", // literal-ok: test fixture data
         });
         open["status"] = Value::from("open");
         let s = snap(vec![open]);
@@ -1291,7 +1291,7 @@ mod tests {
         let d1 = serde_json::json!({
             "id": "sp-d1", "title": "a question", "description": "what to do?",
             "status": "open", "issue_type": "task",
-            "labels": ["needs-operator", "overseer"],
+            "labels": ["needs-operator", "overseer"], // literal-ok: test fixture data
             "created_at": "2026-09-05T10:00:00Z", "comment_count": 0,
         });
         let s = snap(vec![
@@ -1317,7 +1317,7 @@ mod tests {
             "sp-d1",
             "open",
             "2026-09-05T10:00:00Z",
-            &["needs-operator", "overseer"],
+            &["needs-operator", "overseer"], // literal-ok: test fixture data
         )]);
         assert_eq!(view_items(&other, View::Alerts, false, NOW).unwrap().len(), 0);
         // And a reader that is genuinely broken is an error, never an empty list.
@@ -1475,7 +1475,7 @@ mod tests {
             "description": "what to do?",
             "status": "open",
             "issue_type": "task",
-            "labels": ["needs-operator", "overseer"],
+            "labels": ["needs-operator", "overseer"], // literal-ok: test fixture data
             "created_at": created,
             "comment_count": 0,
         })

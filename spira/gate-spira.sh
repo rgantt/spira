@@ -99,7 +99,7 @@ BODY
 # ---------------------------------------------------------------------------------------
 # 1. THE FENCES — first, and independently of everything below.
 # ---------------------------------------------------------------------------------------
-for fence in spira/exclude.sh spira/inventory.sh spira/hermetic.sh; do
+for fence in spira/exclude.sh spira/inventory.sh spira/hermetic.sh spira/literal-lint.sh; do
     [ -r "$fence" ] || { say "$fence is missing — refusing to land unchecked"; exit 1; }
 done
 
@@ -136,6 +136,18 @@ fi
 if ! sop_lint="$(bash spira/sop.sh lint 2>&1)"; then
     printf '%s\n' "$sop_lint" >&2
     say "sop lint FAILED — the shelf has malformed entries; fix with sop.sh write or sop.sh retire"
+    exit 1
+fi
+
+# CONFIGURED-NAME LITERAL FENCE. schema.sh is the one place that declares label, status
+# and type names; a name written as a literal in any other source file can disagree with
+# the declaration when an operator changes the default. lib.sh:117 grepped "needs-ryan"
+# while lib.sh:221 read ${SPIRA_ASK_LABEL:-needs-ryan}, and the code default is
+# needs-operator — so the destructive-procedure fence had no bypass and every halting bead
+# was refused on a default install. One accessor per name makes that class unwritable.
+[ -r spira/literal-lint.sh ] || { say "spira/literal-lint.sh is missing — refusing to land unchecked"; exit 1; }
+if ! lit="$(bash spira/literal-lint.sh 2>&1)"; then
+    printf '%s\n' "$lit" >&2
     exit 1
 fi
 

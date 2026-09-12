@@ -390,7 +390,7 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
             _ask_title="$_prov — $_ask_subj"
             _ask_db="${COCKPIT_DB:-$SPIRA_DB}"
             _ask_open="$(bd -C "$_ask_db" list --status open \
-                --label "${SPIRA_ASK_LABEL:-needs-operator}" --limit 0 --json 2>/dev/null \
+                --label "$SPIRA_ASK_LABEL" --limit 0 --json 2>/dev/null \
               | json_only \
               | python3 -c '
 import sys, json

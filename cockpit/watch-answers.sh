@@ -68,7 +68,7 @@ emit() {
     raw=$(cockpit_attention_beads) || return 0
     printf '%s' "$raw" | python3 "$ANSWERS" \
         "bd=$BD" "db=$COCKPIT_DB" \
-        "ask_label=${SPIRA_ASK_LABEL:-needs-operator}" \
+        "ask_label=$SPIRA_ASK_LABEL" \
         "operator_actor=${SPIRA_OPERATOR_ACTOR:-operator}" \
         "operator=${SPIRA_OPERATOR:-the operator}" \
         "verdict_cursor=$VERDICT_CURSOR" "comment_cursor=$COMMENT_CURSOR" \

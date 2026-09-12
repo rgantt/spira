@@ -422,7 +422,7 @@ fi
 # OUR OWN PIDFILE IS NOT YET WRITTEN — it is written below, beside the teardown — so
 # every pidfile we find here belongs to a peer, not to ourselves.
 WORLD_WAS_STOPPED=0
-_world_stop_label="${SPIRA_WORLD_STOP_LABEL:-world-stop}"
+_world_stop_label="$SPIRA_WORLD_STOP_LABEL"
 if bdjson show "$BEAD_ID" 2>/dev/null | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
@@ -430,7 +430,7 @@ except Exception: sys.exit(0)
 d = d if isinstance(d, list) else [d]
 if d and "'"$_world_stop_label"'" in (d[0].get("labels") or []): sys.exit(1)
 sys.exit(0)' 2>/dev/null; then
-    : # no world-stop label — proceed normally
+    : # no halting label — proceed normally
 else
     _world_live=""
     for _pf in "$SPIRA_RUN"/aeon-*.pid; do
@@ -448,12 +448,12 @@ else
         release_own_claim "$BEAD_ID"
         log "$FAYTH/$AEON: $BEAD_ID carries $_world_stop_label — live aeons present ($_world_live) — released. Set SPIRA_WORLD_STOP_SKIP=1 to override."
         bdq note "$BEAD_ID" "Released by aeon.sh: this bead carries $_world_stop_label and requires the world halted while it runs. Live aeons are present ($_world_live) and the world was not stopped. Wait for them to finish, or set SPIRA_WORLD_STOP_SKIP=1 to proceed with live aeons." >/dev/null 2>&1
-        ledger_done 0 world-stop-fence
+        ledger_done 0 world-stop-fence  # literal-ok: internal ledger category, not a label predicate
         exit 0
     fi
     # No live aeons (or operator override set): stop the world before the session.
     log "$FAYTH/$AEON: $BEAD_ID carries $_world_stop_label — stopping the world before this session${_world_live:+ (SPIRA_WORLD_STOP_SKIP set, live: $_world_live)}"
-    "$SPIRA_HOME/world.sh" stop --why "world-stop bead $BEAD_ID" >/dev/null 2>&1 \
+    "$SPIRA_HOME/world.sh" stop --why "$_world_stop_label bead $BEAD_ID" >/dev/null 2>&1 \
         || log "$FAYTH/$AEON: $BEAD_ID world.sh stop returned non-zero — proceeding"
     WORLD_WAS_STOPPED=1
     unset _world_live
@@ -480,8 +480,8 @@ if ! REPO="$(repo_root "$REPO_NAME")" || [ ! -e "$REPO/.git" ]; then
     # bead sits open but unclaimed until a human corrects the label or the repo-map. Scar:
     # sp-nlhy accumulated four identical notes, one per summon, before a keyboard session
     # fixed the label by hand. (sp-4l0d)
-    bdq label add "$BEAD_ID" "${SPIRA_ASK_LABEL:-needs-operator}" >/dev/null 2>&1 || true
-    bdq note "$BEAD_ID" "Parked by aeon.sh: this bead carries repo:$REPO_NAME, and $SPIRA_REPO_MAP has no entry for it (or its path is not a git checkout). Labeled ${SPIRA_ASK_LABEL:-needs-operator} — no aeon will claim it again until a human corrects the label or adds the repo to the map and removes that label. Refusing to work it in the home repo — a fix landed in the wrong repository passes every check downstream." >/dev/null 2>&1
+    bdq label add "$BEAD_ID" "$SPIRA_ASK_LABEL" >/dev/null 2>&1 || true
+    bdq note "$BEAD_ID" "Parked by aeon.sh: this bead carries repo:$REPO_NAME, and $SPIRA_REPO_MAP has no entry for it (or its path is not a git checkout). Labeled $SPIRA_ASK_LABEL — no aeon will claim it again until a human corrects the label or adds the repo to the map and removes that label. Refusing to work it in the home repo — a fix landed in the wrong repository passes every check downstream." >/dev/null 2>&1
     release_own_claim "$BEAD_ID"
     ledger_done 1 unmapped-repo
     exit 1
@@ -626,7 +626,7 @@ cleanup() {
     # but before any bead operations, so it fires on every exit path — a world halted for a
     # bead that fails must not stay halted because the aeon died mid-teardown.
     if [ "${WORLD_WAS_STOPPED:-0}" = 1 ]; then
-        log "$FAYTH: $BEAD_ID world-stop bead — starting the world"
+        log "$FAYTH: $BEAD_ID $SPIRA_WORLD_STOP_LABEL bead — starting the world"
         "$SPIRA_HOME/world.sh" start >/dev/null 2>&1 || true
     fi
     cd "$REPO" 2>/dev/null || true

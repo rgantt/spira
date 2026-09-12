@@ -67,7 +67,7 @@ while IFS=$'\t' read -r id pred; do
     fi
 done < <(python3 -c '
 import json, os, re, sys
-ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")
+ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")  # literal-ok: Python fallback for direct invocation without conf.sh
 try:
     doc = json.load(sys.stdin)
 except Exception:

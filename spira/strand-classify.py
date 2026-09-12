@@ -33,10 +33,10 @@ import json, os
 
 # The escalation label is one configured key; a literal here would silently disagree
 # with the predicates and the panel the moment an operator changed it.
-ASK  = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")
+ASK  = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")  # literal-ok: Python fallback for direct invocation without conf.sh
 # Beads CHECK 2 already exempted via check2_protect_waiting; the ghost check must honour
 # the same exemption so strand.sh does not reclaim what the sentinel explicitly protected.
-SKIP = os.environ.get("SPIRA_RECLAIM_SKIP_LABEL", "spira-waiting-operator")
+SKIP = os.environ.get("SPIRA_RECLAIM_SKIP_LABEL", "spira-waiting-operator")  # literal-ok: Python fallback for direct invocation without conf.sh
 from datetime import datetime, timezone
 
 def load(name):

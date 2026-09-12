@@ -264,7 +264,7 @@ if [ -n "${_REVIEW_TAG:-}" ] && [ -f "$_REVIEW_VDIR/$_REVIEW_TAG.verdict" ]; the
         else
             printf 'promote: release unit %s has a BLOCK verdict\n' "$_REVIEW_TAG" >&2
             printf 'promote: resolve the findings (label: %s) and re-run: review.sh %s\n' \
-                "${SPIRA_REVIEW_LABEL:-review-finding}" "$_REVIEW_TAG" >&2
+                "$SPIRA_REVIEW_LABEL" "$_REVIEW_TAG" >&2
             exit 1
         fi
     fi

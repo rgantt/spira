@@ -75,6 +75,13 @@ spira/test-sop-lint.sh
 # can reach its natural completion.
 spira/test-gate-budget.sh
 
+# THE LITERAL-LINT FENCE'S OWN POSITIVE CONTROL. A static check that reports a clean tree
+# is indistinguishable from one whose matcher never fires, so this suite plants an offender
+# in a scratch repository, requires the fence to name it, withdraws it, and only then reads
+# the shipped tree's silence as evidence of a clean tree. Without this, the fence could fail
+# to match for any reason and the gate would call it a pass.
+spira/test-literal-lint.sh
+
 # NOT IN THE GATE (budget): test-owned, test-uninstall, test-ready, test-install-conflicts,
 # test-configure, test-build. These hermetic suites cover the install/uninstall/configure/
 # ready/owned/build paths and run in the timed set (suites.sh). They are kept out of the gate

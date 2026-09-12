@@ -36,7 +36,7 @@ rows=""
 db=$(cockpit_db) || exit 1
 ids=$(bd -C "$db" list --all --limit 0 --json 2>/dev/null | sed -n '/^[[{]/,$p' | python3 -c '
 import os, sys, json
-ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")
+ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")  # literal-ok: Python fallback for direct invocation without conf.sh
 try: d = json.load(sys.stdin)
 except Exception: raise SystemExit
 for i in (d if isinstance(d, list) else [d]):

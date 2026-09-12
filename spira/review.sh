@@ -46,7 +46,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # ---------------------------------------------------------------------------
 VERDICTS="${SPIRA_REVIEWER_VERDICTS:-$SPIRA_RUN/review-verdicts}"
 MODEL="${SPIRA_REVIEWER_MODEL:-claude-fable-5-1}"
-REVIEW_LABEL="${SPIRA_REVIEW_LABEL:-review-finding}"
+REVIEW_LABEL="$SPIRA_REVIEW_LABEL"
 CLAUDE="${SPIRA_AGENT:-claude}"
 # How many bytes of diff the reviewer reads. A diff larger than this is
 # truncated with a note. 80 000 bytes fits the real diffs this harness

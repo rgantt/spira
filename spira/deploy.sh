@@ -135,7 +135,7 @@ log "deploy: $TAG verdict=$verdict"
 if [ "$verdict" = "block" ]; then
     printf 'deploy: %s is BLOCKED by the reviewer\n' "$TAG" >&2
     printf 'deploy: resolve findings (label: %s) and re-run: review.sh %s\n' \
-        "${SPIRA_REVIEW_LABEL:-review-finding}" "$TAG" >&2
+        "$SPIRA_REVIEW_LABEL" "$TAG" >&2
     printf 'deploy: then re-run: deploy.sh %s\n' "$TAG" >&2
     exit 1
 fi

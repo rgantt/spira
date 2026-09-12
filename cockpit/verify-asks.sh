@@ -71,7 +71,7 @@ while IFS=$'\t' read -r id cmd; do
   fi
 done < <(printf '%s' "$rows" | python3 -c '
 import json, os, re, sys
-ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")
+ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")  # literal-ok: Python fallback for direct invocation without conf.sh
 try:
     doc = json.load(sys.stdin)
 except Exception:
@@ -101,7 +101,7 @@ while IFS=$'\t' read -r id kind title; do
   echo "              an ${kind} cannot be answered; strip $SPIRA_ASK_LABEL or write the question"
 done < <(printf '%s' "$rows" | python3 -c '
 import json, os, sys
-ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")
+ASK = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")  # literal-ok: Python fallback for direct invocation without conf.sh
 try:
     doc = json.load(sys.stdin)
 except Exception:

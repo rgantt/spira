@@ -74,7 +74,7 @@ cockpit_attention_beads() {
   local db out
   db=$(cockpit_db) || return 1
   out=$("$BD" -C "$db" list --all --limit 0 \
-        --label-any "insight,${SPIRA_ASK_LABEL:-needs-operator},overseer" --json 2>/dev/null \
+        --label-any "insight,$SPIRA_ASK_LABEL,overseer" --json 2>/dev/null \
         | sed -n '/^[[{]/,$p')
   [ -n "$out" ] || return 1
   printf '%s' "$out"
