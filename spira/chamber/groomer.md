@@ -136,6 +136,18 @@ Then leave the bead open and exit non-zero.
 
 ## Finishing
 
+Before closing, write a line to the groom log — this is the evidence the sentinel
+verifies (the trigger bead carries `delivers:note:${SPIRA_RUN}/groom.log`):
+
+    printf '%s groom: pass complete. Examined %d beads. Actions: %s.\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" N "<list or none>" \
+        >> "$SPIRA_RUN/groom.log"
+
+Then close the trigger bead:
+
     bd -C {{DB}} close {{BEAD_ID}} --reason-file - <<'REASON'
     Groom pass complete. Examined N beads. Actions: <list>.
     REASON
+
+`--reason-file -`, never `--reason -` — `bd close` does not read stdin for `--reason`;
+it stores the literal dash and the close record becomes a hyphen.

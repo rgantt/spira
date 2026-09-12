@@ -162,12 +162,13 @@ out="$(BD_LIST_OUTPUT="[]" \
 is   "custom labels exits 0"                        0           "$rc"
 want "custom scope label in create args"            "myproject" "$(cat "$BD_LOG")"
 want "custom groomer label in create args"          "hygiene"   "$(cat "$BD_LOG")"
-# The --label argument must not include the old defaults when overridden. Extract only
-# the value following --label from the create call; the description may contain
-# "spira/" as a path reference and should not falsify the check.
+# The --label argument must not include the old defaults when overridden. Extract the
+# partition labels only (strip delivers:* labels whose path may contain the default
+# scope name as a directory component — e.g. /path/to/.runtime/spira/groom.log).
 label_arg="$(grep 'create' "$BD_LOG" | grep -oP '(?<=--label )\S+')"
-nowant "default scope label not in --label" "spira"  "${label_arg:-}"
-nowant "default groom label not in --label" ",groom" "${label_arg:-}"
+partition_labels="$(printf '%s' "${label_arg:-}" | tr ',' '\n' | grep -v '^delivers:' | paste -sd, -)"
+nowant "default scope label not in --label" "spira"  "${partition_labels:-}"
+nowant "default groom label not in --label" ",groom" "${partition_labels:-}"
 
 # ==========================================================================================
 echo

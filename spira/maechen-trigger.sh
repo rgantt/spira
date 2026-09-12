@@ -175,11 +175,11 @@ trigger_reason=""
 if "$BD" -C "$DB" create \
     "Maechen pass — ${trigger_reason}" \
     --type task \
-    --label "$LABELS" \
+    --label "$LABELS,delivers:note:${SPIRA_RUN}/maechen.log" \
     --priority 3 \
     --description "Scheduled trigger: the Maechen persona will claim this bead, run a retrospective pass over the failure distribution, identify recurring failure classes, and cut at most ${SPIRA_MAECHEN_MAX_BEADS:-3} remedy beads. Trigger: ${trigger_reason} since watermark (ts=${watermark_ts}). See spira/chamber/maechen.md for the pass procedure." \
 ; then
-    log "Maechen trigger bead filed (labels: $LABELS, reason: ${trigger_reason})"
+    log "Maechen trigger bead filed (labels: $LABELS,delivers:note:${SPIRA_RUN}/maechen.log, reason: ${trigger_reason})"
 else
     log "ERROR: failed to file Maechen trigger bead"
     exit 1

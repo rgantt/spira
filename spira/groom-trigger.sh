@@ -68,11 +68,11 @@ fi
 if "$BD" -C "$DB" create \
     "Groomer pass — scheduled graph hygiene" \
     --type task \
-    --label "$LABELS" \
+    --label "$LABELS,delivers:note:${SPIRA_RUN}/groom.log" \
     --priority 3 \
     --description "Scheduled trigger: the groomer persona will claim this bead, run a hygiene pass over the open bead graph (splitting unsplittable beads, merging duplicates, closing stale premises, correcting mislabelled lanes), and close this bead when finished. See spira/chamber/groomer.md for the pass procedure." \
 ; then
-    log "groomer trigger bead filed (labels: $LABELS)"
+    log "groomer trigger bead filed (labels: $LABELS,delivers:note:${SPIRA_RUN}/groom.log)"
 else
     log "ERROR: failed to file groomer trigger bead"
     exit 1

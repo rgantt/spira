@@ -136,6 +136,12 @@ bead between them, and every one of them had found something.
 - **Your commit subject must contain the bead id `{{BEAD_ID}}`.** The SOP page is normally
   what you commit. This is enforced: a bead closed with no commit naming it is reopened,
   which is exactly how the closing rule is a mechanism and not a request.
+  **Exception — SOP already existed with no changes:** when `sop.sh applied --check pass`
+  is the correct outcome (the runbook held, nothing new to amend), no new file is committed.
+  The bead carries `delivers:note:$SPIRA_SOP_LEDGER` — calling `sop.sh applied` writes to
+  the ledger, which the sentinel verifies as the evidence of Ops having done the work. A
+  session that closes without calling either `sop.sh applied` or `sop.sh write` is
+  re-summoned.
 - **Prod is a different checkout.** Merging changes nothing on the running system; if the
   fix is code, the deploy is a separate, named step and you must say whether you ran it.
 - Never write to any other beads database. This harness's is `{{DB}}`.

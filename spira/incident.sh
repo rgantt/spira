@@ -373,6 +373,15 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
     if [ "${INCIDENT_REPO_DECLARED:-0}" = 1 ] && [ -n "${_irepo:-}" ]; then
         bdq set-state "$id" "repo=${_irepo}" >/dev/null 2>&1
     fi
+    # DELIVERS LABEL. When an Ops session commits code naming the bead, the sentinel's
+    # commit-naming check accepts the close and this label is never consulted. When no
+    # commit is made (the SOP already existed and no file changed), the sentinel checks
+    # this label: if `sop.sh applied` or `sop.sh write` ran during the session the
+    # applications ledger is updated, its mtime is after started_at, and the close stands.
+    # A session that skips both sop.sh calls is re-summoned — enforcing the closing rule
+    # mechanically rather than trusting the brief alone.
+    _sop_ledger="${SPIRA_SOP_LEDGER:-${SPIRA_RUN}/sop/applied.jsonl}"
+    bdq label add "$id" "delivers:note:${_sop_ledger}" >/dev/null 2>&1
     # THE INITIAL FILING IS OCCURRENCE 1. Without this the dedup counter starts at 0 on the
     # first recurrence, so the Nth total filing produces n=N-1 and the SIN fires one interval
     # late. At SIN_AT=5 (10-minute sweep) that is 60 min rather than the 50 min the comment
