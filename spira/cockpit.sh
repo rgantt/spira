@@ -693,7 +693,7 @@ for n, (ts_str, actor, body, verb, bead) in enumerate(rows[:5]):
     # are opposite: beads arriving because a design was decomposed is progress, and beads
     # arriving because one broken thing keeps reporting itself is a defect wearing throughput's
     # clothes. The operator, reading an hour of it: "11 of the 12 beads right now are from the
-    # timed test run." (per Ryan, 2026-09-12)
+    # timed test run."
     #
     # THE SAME FILE AS THE TITLE MAP, DELIBERATELY. $TITLEMAP is already `bd list --all
     # --limit 0` -- the whole store, unfiltered, closed rows included. A second query here

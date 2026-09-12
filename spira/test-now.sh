@@ -279,7 +279,7 @@ fi
 # every live aeon spends this many rows, so it is the figure that decides how much is left
 # for everything else when three of them are awake. The third moment was the row that paid
 # least — "what led here" is answered by the moment before the current one — and it is what
-# INFLOW is built out of (per Ryan, 2026-09-12). Asserted against an unset variable, which is
+# INFLOW is built out of. Asserted against an unset variable, which is
 # what a pane with no conf sourced actually runs with, so the renderer's own fallback and
 # conf.sh cannot drift apart unnoticed.
 trail2="$(pane 0)"
