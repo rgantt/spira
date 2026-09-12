@@ -114,7 +114,15 @@ _bdq_check_destructive() {  # _bdq_check_destructive <create-args> -> 0 or refus
 
     # needs-ryan is the label that makes a halting bead correct — if it is already there,
     # the filer has already acknowledged the danger.
-    printf '%s\n' "$labels" | tr ',' '\n' | grep -qxF "needs-ryan" && return 0
+    # NO LITERAL, AND NO FALLBACK. This line and the one in ask_already_open below read the
+    # same name and disagreed about it: this one hardcoded a value while that one read
+    # ${SPIRA_ASK_LABEL:-...}. Since the code default differs from the configured value, a
+    # default install left this fence with no bypass at all and refused every legitimate
+    # halting bead. A fallback here would only move the disagreement one step; conf.sh
+    # guarantees the variable, so an unset one is a broken environment and must say so
+    # rather than silently match nothing — matching nothing fails OPEN.
+    local _ask="${SPIRA_ASK_LABEL:?SPIRA_ASK_LABEL is unset — source conf.sh}"
+    printf '%s\n' "$labels" | tr ',' '\n' | grep -qxF "$_ask" && return 0
 
     local text="$title $desc"
     [ -z "${text# }" ] && return 0
@@ -136,6 +144,7 @@ _bdq_check_destructive() {  # _bdq_check_destructive <create-args> -> 0 or refus
     done
     [ -z "$matched" ] && return 0
 
+    # literal-ok: operator-facing message text; it names the label to a human, it does not compare against it
     printf 'spira: bead contains "%s" — procedures that halt the harness require needs-ryan.\nAdd needs-ryan to --labels, or reword to remove the destructive step.\n' \
         "$matched" >&2
     return 1
@@ -181,6 +190,7 @@ _bdq_check_schema_delete() {  # _bdq_check_schema_delete <create-args> -> 0 or r
     printf '%s\n' "$text" | grep -iqE 'DELETE[[:space:]]+FROM[[:space:]]+schema_migrations' || return 0
 
     printf 'spira: bead contains "DELETE FROM schema_migrations" — this SQL is refused\n' >&2
+    # literal-ok: operator-facing message text, not a comparison
     printf 'even with needs-ryan because it was escalated and approved three times while wrong.\n' >&2
     printf 'Run `bd migrate schema` and include its output in the escalation instead.\n' >&2
     printf 'The correct response to a real mismatch is rebuilding bd (see bd-pin.sh),\n' >&2
@@ -218,7 +228,7 @@ bdjson() { bdq "$@" --json 2>/dev/null | json_only; }
 ask_already_open() {     # ask_already_open <subject>
     local subject="$1" hits
     [ -n "$subject" ] || return 1
-    hits="$(bdjson list --status open --label "${SPIRA_ASK_LABEL:-needs-ryan}" --limit 0 2>/dev/null \
+    hits="$(bdjson list --status open --label "${SPIRA_ASK_LABEL:?SPIRA_ASK_LABEL is unset — source conf.sh}" --limit 0 2>/dev/null \
         | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
@@ -2644,11 +2654,12 @@ for line in os.environ["PARTS"].splitlines():
 scope_label = os.environ.get("SPIRA_SCOPE_LABEL", "spira")
 partition_labels = sorted({lab for inc, _ in parts.values() for lab in inc if lab != scope_label})
 ci_label = os.environ.get("SPIRA_CI_LABEL", "awaiting-ci")  # literal-ok: Python fallback for direct invocation without conf.sh
+ask_label = os.environ.get("SPIRA_ASK_LABEL", "needs-operator")  # literal-ok: Python fallback for direct invocation without conf.sh
 
 for bead in beads:
     L = set(bead.get("labels") or [])
     bid = bead.get("id", "?")
-    if L & {"needs-ryan", "spira-poison"}:
+    if L & {ask_label, "spira-poison"}:
         continue
     # A REPORT ABOUT AN UNCLAIMABLE BEAD IS NOT ITSELF A SUBJECT. The report is filed into
     # the incident partition, so whenever that partition is unservable the report is
@@ -2809,7 +2820,7 @@ detect_livelocked() {
     # The decisions pane selects on `overseer`; without it, the bead is invisible to Ryan.
     # The loop excludes needs-ryan from every predicate, so no aeon can claim it either.
     local _nr_raw
-    _nr_raw="$(bdjson list --limit 0 --label "${SPIRA_ASK_LABEL:-needs-ryan}" 2>/dev/null)"
+    _nr_raw="$(bdjson list --limit 0 --label "${SPIRA_ASK_LABEL:?SPIRA_ASK_LABEL is unset — source conf.sh}" 2>/dev/null)"
     if [ -n "$_nr_raw" ]; then
         printf '%s\n' "$_nr_raw" | python3 -c '
 import sys, json, re
@@ -2817,11 +2828,12 @@ try: d = json.load(sys.stdin)
 except Exception: raise SystemExit
 for i in (d if isinstance(d, list) else [d]):
     L = set(i.get("labels") or [])
-    if "needs-ryan" not in L:
+    if ask_label not in L:
         continue
     if "overseer" in L:
         continue
     title = re.sub(r"[^ A-Za-z0-9._/:,()#+-]", " ", (i.get("title") or ""))[:60]
+    # literal-ok: a livelock CATEGORY name in output text, not a comparison; nothing matches on it
     print("LIVELOCK %s needs-ryan-no-overseer — missing overseer label; "
           "the decisions pane cannot see this bead and no aeon can claim it; "
           "add overseer label. title: %s" % (i["id"], title))
@@ -2874,7 +2886,7 @@ valid = set(os.environ.get("VALID_NAMES", "").split())
 for i in (d if isinstance(d, list) else [d]):
     L = i.get("labels") or []
     # Skip beads already handled by the unclaimable or needs-ryan checks.
-    if "needs-ryan" in L or "spira-poison" in L:
+    if ask_label in L or "spira-poison" in L:
         continue
     repo_labels = [l[5:] for l in L if l.startswith("repo:")]
     if not repo_labels:

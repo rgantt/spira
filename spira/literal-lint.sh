@@ -42,15 +42,48 @@ ROOT="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null)"
 # THE CONFIGURED NAMES — must match schema.sh schema_name() defaults. Short single-word
 # names omitted (plan, incident, spike, groom, insight, scope) because they appear as
 # ordinary English words and would produce excessive false positives.
-CONFIGURED_NAMES=(
-    "needs-operator"
-    "awaiting-ci"
-    "maechen-sweep"
-    "maechen-remedy"
-    "review-finding"
-    "spira-waiting-operator"
-    "world-stop"
-)
+# THE NAMES COME FROM schema.sh, AND FROM BOTH SIDES OF EVERY ACCESSOR.
+#
+# This was a hardcoded array — a literal-lint whose own patterns were literals, copied from
+# the declaration it exists to enforce, free to drift from it. Worse, the copy held the code
+# DEFAULTS: it guarded "needs-operator" while this host runs SPIRA_ASK_LABEL=needs-ryan, so
+# the exact line that motivated the lint — lib.sh:117's grep for "needs-ryan" — and four
+# other files sailed through while it reported "clean, 474 files". A fence blind to the
+# defect it was built for is worse than no fence, because it reads as covered.
+#
+# BOTH VALUES ARE GUARDED, never one. A literal is wrong whether it happens to match the
+# configured value or the shipped default, and which of the two schema.sh returns depends on
+# whether conf.sh found an operator config — which in the gate's minimal environment is not
+# something to depend on. Taking the union removes the environment from the question
+# entirely (law-schema-over-code: ask the declaration, do not keep a copy).
+_schema="$(dirname "${BASH_SOURCE[0]}")/schema.sh"
+CONFIGURED_NAMES=()
+if [ -x "$_schema" ]; then
+    while IFS= read -r _k; do
+        [ -n "$_k" ] || continue
+        for _v in "$("$_schema" name "$_k" 2>/dev/null)" \
+                  "$(SPIRA_CONF=/dev/null "$_schema" name "$_k" 2>/dev/null)"; do
+            # Short single-word names appear legitimately as English prose; a fence with a
+            # high false-positive rate is one everybody learns to ignore.
+            case "$_v" in ""|*[!a-z0-9-]*) continue ;; esac
+            case "$_v" in *-*) ;; *) continue ;; esac
+            case " ${CONFIGURED_NAMES[*]:-} " in *" $_v "*) continue ;; esac
+            CONFIGURED_NAMES+=("$_v")
+        done
+    done < <("$_schema" names 2>/dev/null || printf 'ask\nci\nmaechen\nmaechen_remedy\nreview\nreclaim_skip\nworld_stop\n')
+fi
+# NEVER EMPTY. An empty pattern list makes every tree "clean" — the failure mode this whole
+# file exists to prevent, arriving through its own configuration. When schema.sh cannot be
+# read (a fixture tree, a partial checkout) fall back to the shipped defaults and SAY SO on
+# stderr, rather than refusing: refusing would make the lint unusable anywhere schema.sh is
+# absent, and silence would make it useless everywhere.
+if [ "${#CONFIGURED_NAMES[@]}" -eq 0 ]; then
+    printf 'literal-lint: WARNING — could not read names from %s; using shipped defaults\n' "$_schema" >&2
+    CONFIGURED_NAMES=(
+        "needs-operator" "needs-ryan" "awaiting-ci" "maechen-sweep"
+        "maechen-remedy" "review-finding" "spira-waiting-operator" "world-stop"
+    )
+fi
 
 OVERRIDE_MARKER="literal-ok"
 
@@ -80,7 +113,11 @@ scan() {
             line = L[i]
             # A pure comment line carries no executable literal
             stripped = line; sub(/^[[:space:]]*/, "", stripped)
+            # A pure comment carries no executable literal. Both comment syntaxes in this
+            # tree: # for shell and python, // for rust. Only # was skipped, so every rust
+            # comment mentioning a label read as an offence.
             if (stripped ~ /^#/) continue
+            if (stripped ~ /^\/\//) continue
             # The escape hatch: this line or the one directly above carries the marker
             if (line ~ MARK) continue
             if (i > 1 && L[i-1] ~ MARK) continue
@@ -110,6 +147,11 @@ for f in "${files[@]}"; do
         */conf.sh|conf.sh)                               continue ;;
         # THIS TOOL AND ITS TEST (content IS the pattern and the planted example)
         */literal-lint.sh|literal-lint.sh)               continue ;;
+        # PROSE IS NOT CODE. Documentation explaining what a label means cannot drift from
+        # the declaration in the way a comparison against a literal can — and a generated
+        # page like standard-operating-procedures.md is rewritten wholesale from its source
+        # anyway. Flagging prose is the false-positive rate this fence cannot afford.
+        *.md)                                            continue ;;
         */test-literal-lint.sh|test-literal-lint.sh)     continue ;;
         # TEST SUITES — fixture data legitimately carries specific label values; a test that
         # overrides SPIRA_CI_LABEL=awaiting-ci is controlling a fixture, not hardcoding logic

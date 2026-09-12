@@ -156,7 +156,9 @@ compose() { # kind why default evidence from
             event)   body="${body}**Detail:** ${why}"$'\n\n' ;;
             insight) body="${body}**Why it matters:** ${why}"$'\n\n' ;;
             # A lawsuit is a challenge to existing law, not a task waiting on a person.
-            suit)    body="${body}**Evidence it is wrong / over-broad / superseded:**"$'\n'"${why}"$'\n\n' ;;
+            suit)    body="${body}**THE STATUTE ON TRIAL — \`${SUIT_SLUG:-?}\`, verbatim and in force today:**"$'\n\n'
+                     body="${body}> $(printf '%s' "${SUIT_STATUTE:-(could not be read)}" | sed 's/^/> /; s/^> > /> /')"$'\n\n'
+                     body="${body}**THE CHARGE — why it is wrong, over-broad or superseded:**"$'\n'"${why}"$'\n\n' ;;
             *)       body="${body}**What is blocked:** ${why}"$'\n\n' ;;
         esac
     fi
@@ -221,7 +223,8 @@ create() { # type text why default labels
         # and `spira`/`plan` on an event that ever reaches `bd ready` makes it claimable work
         # by an aeon. The emitters pass no labels at all, so this only ever fires on a new one.
         local bad
-        for bad in overseer needs-ryan insight spira plan; do
+        # literal-ok: a deny-list of reserved names checked as DATA — it must name them
+    for bad in overseer needs-ryan insight spira plan; do
             case ",$labels," in *",$bad,"*)
                 echo "ask: refusing to label an event '$bad' — that label is how another reader claims or queues it" >&2
                 return 1 ;;
@@ -480,10 +483,18 @@ suit|lawsuit)
     # Canonicalise: strip the law- prefix so rule.sh slugify adds it back cleanly.
     clean_slug="${slug#law-}"
     RULE_SH="$(dirname "$SPIRA_HOME")/rule.sh"
-    if ! "$RULE_SH" show "$clean_slug" >/dev/null 2>&1; then
+    # THE STATUTE TRAVELS WITH THE SUIT. This call already had to fetch it to prove it is in
+    # force; discarding the text left the operator holding a verdict about a law the bead
+    # never showed them. (Ryan, 2026-09-12: "i can't even interact with these lawsuit
+    # decisions. they don't include the law, they don't include enough information about
+    # what happened.") A decision that requires going and finding its own subject is a
+    # problem report wearing a decision's clothes — the same fault the evidence block was
+    # added to fix, one field over.
+    if ! SUIT_STATUTE="$("$RULE_SH" show "$clean_slug" 2>/dev/null)" || [ -z "$SUIT_STATUTE" ]; then
         echo "ask: no statute 'law-${clean_slug}' is in force — check 'rule.sh list'" >&2
         exit 1
     fi
+    export SUIT_STATUTE SUIT_SLUG="law-${clean_slug}"
     # statute:law-<slug> is the machine-readable label the panel reads to know which statute
     # to operate on. It avoids body parsing and keeps the panel and the shell tool in sync
     # by the same convention as enacted:law-<slug> on a promoted insight.

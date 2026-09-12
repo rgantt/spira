@@ -948,6 +948,7 @@ mod tests {
     #[test]
     fn beads_with_ask_labels_are_asks() {
         for label in ["ask-question", "ask-decision", "ask-task"] {
+            // literal-ok: test fixture constructing a label array
             let it = work_item(&[label, "needs-ryan", "overseer"]);
             assert!(is_ask(&it), "{label} must be recognized as an ask");
         }
@@ -966,6 +967,7 @@ mod tests {
     /// suit that is_ask=false would be offered only comment (not decide) on ⏎ press.
     #[test]
     fn ask_suit_is_an_ask() {
+        // literal-ok: test fixture constructing a label array
         let it = work_item(&["ask-suit", "needs-ryan", "overseer", "statute:law-foo"]);
         assert!(is_ask(&it), "ask-suit must be recognized as an ask");
     }
@@ -1000,6 +1002,7 @@ mod tests {
     /// THE POSITIVE CONTROL: is_ask_law fires on ask-law.
     #[test]
     fn a_law_bead_is_recognized_as_ask_law() {
+        // literal-ok: test fixture constructing a label array
         let it = law_item(&["ask-law", "needs-ryan", "overseer"]);
         assert!(is_ask_law(&it), "ask-law must be recognized as a law proposal");
     }
@@ -1007,6 +1010,7 @@ mod tests {
     /// A law proposal is NOT an ordinary ask — ⏎ must comment, not decide.
     #[test]
     fn a_law_bead_is_not_an_ordinary_ask() {
+        // literal-ok: test fixture constructing a label array
         let it = law_item(&["ask-law", "needs-ryan", "overseer"]);
         assert!(!is_ask(&it), "ask-law must NOT match is_ask — its lifecycle is enact/amend/decline");
     }
@@ -1014,6 +1018,7 @@ mod tests {
     /// Without ask-law, is_ask_law returns false.
     #[test]
     fn a_non_law_bead_is_not_ask_law() {
+        // literal-ok: test fixture constructing a label array
         let it = law_item(&["ask-question", "needs-ryan", "overseer"]);
         assert!(!is_ask_law(&it));
         assert!(!is_ask_law(&work_item(&["overseer", "spira"])));
@@ -1039,12 +1044,14 @@ mod tests {
     /// predicate would satisfy "non-suits are not suits" while being entirely broken.
     #[test]
     fn is_suit_detects_ask_suit_label() {
+        // literal-ok: test fixture constructing a label array
         let it = suit_item(&["ask-suit", "needs-ryan", "overseer", "statute:law-foo"]);
         assert!(is_suit(&it), "ask-suit label must be detected");
     }
 
     #[test]
     fn a_plain_ask_is_not_a_suit() {
+        // literal-ok: test fixture constructing a label array
         let it = work_item(&["ask-decision", "needs-ryan", "overseer"]);
         assert!(!is_suit(&it));
     }
