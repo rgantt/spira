@@ -81,6 +81,14 @@ schema_name() {          # schema_name <key> -> the name; exit 2 on an undeclare
         ask)           printf '%s' "${SPIRA_ASK_LABEL:-needs-operator}" ;;
         ci)            printf '%s' "${SPIRA_CI_LABEL:-awaiting-ci}" ;;
         scope)         printf '%s' "${SPIRA_SCOPE_LABEL-spira}" ;;
+        # THE TWO CORE PARTITION LABELS — one per persona that works the plan. Declared here
+        # so a caller that needs to say "plan bead" or "incident bead" reads the configured
+        # value through a validated name rather than through a literal it has to remember and
+        # keep consistent with the fayth file. An undeclared key returns 2 (below); if a
+        # caller asks for a name not on this list, the error is immediate rather than a silent
+        # empty query that returns [] from bd and reads as "no work".
+        plan)          printf '%s' "${SPIRA_PLAN_LABEL:-plan}" ;;
+        incident)      printf '%s' "${SPIRA_INCIDENT_LABEL:-incident}" ;;
         spike)         printf '%s' "${SPIRA_SPIKE_LABEL:-spike}" ;;
         groomer)       printf '%s' "${SPIRA_GROOMER_LABEL:-groom}" ;;
         maechen)       printf '%s' "${SPIRA_MAECHEN_LABEL:-maechen-sweep}" ;;
@@ -98,7 +106,7 @@ schema_name() {          # schema_name <key> -> the name; exit 2 on an undeclare
             return 2 ;;
     esac
 }
-schema_names() { printf '%s\n' ask ci scope spike groomer maechen maechen_remedy review reclaim_skip world_stop insight; }
+schema_names() { printf '%s\n' ask ci scope plan incident spike groomer maechen maechen_remedy review reclaim_skip world_stop insight; }
 
 schema_kinds()    { local p; for p in $SCHEMA_KINDS; do printf '%s\n' "${p%%:*}"; done; }
 schema_type_of()  { local p; for p in $SCHEMA_KINDS; do [ "${p%%:*}" = "${1:-}" ] && { printf '%s' "${p#*:}"; return 0; }; done

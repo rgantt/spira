@@ -60,7 +60,7 @@ SPIRA_CI_LABEL SPIRA_CI_PARK_MAX SPIRA_WORLD_STOP_LABEL
 SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE SPIRA_VERDICT_TTL SPIRA_REBASE_ESCALATE_AT SPIRA_VERDICT_WINDOW
 SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S SPIRA_LOOM_BIN
 SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS
-SPIRA_GROOMER_LABEL SPIRA_SCOPE_LABEL
+SPIRA_GROOMER_LABEL SPIRA_SCOPE_LABEL SPIRA_PLAN_LABEL SPIRA_INCIDENT_LABEL
 SPIRA_MAECHEN_LABEL SPIRA_MAECHEN_LANDING_INTERVAL SPIRA_MAECHEN_MAX_GAP_SECONDS SPIRA_MAECHEN_MAX_BEADS SPIRA_MAECHEN_REMEDY_LABEL
 COCKPIT_DB COCKPIT_BOTTOM_PCT COCKPIT_RIGHT_PCT COCKPIT_CWD COCKPIT_SESSIONS COCKPIT_HOST
 SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA
@@ -530,6 +530,16 @@ spira_conf_defaults() {
     # when it is empty. Empty is a valid and meaningful value here (no scope restriction), and
     # the colon form would silently promote it back to "spira", defeating the feature.
     : "${SPIRA_SCOPE_LABEL=spira}"
+    # THE PLAN PARTITION LABEL — the label that marks a bead as ready plan work for a builder.
+    # Declared here so the fayth predicate, the sentinel, and any other reader that needs to
+    # say "plan bead" all read the same value. A literal in multiple files is how those
+    # multiple programs come to disagree (law-schema-over-code). The default is "plan" — the
+    # value the store has always used — so upgrading a clean install changes nothing.
+    : "${SPIRA_PLAN_LABEL:=plan}"
+    # THE INCIDENT PARTITION LABEL — the label that marks a bead as a production event for
+    # the ops persona. Filed by incident.sh from systemd OnFailure handlers. Same reason as
+    # SPIRA_PLAN_LABEL: one configurable name, never a literal in reader code.
+    : "${SPIRA_INCIDENT_LABEL:=incident}"
     # The name the operator's OWN comments are recorded under, so the attention panel can tell
     # a reply of theirs from a reply of the agent's. Both write into the same thread, and a
     # panel that cannot separate them announces the agent's own comment back to it as an answer.
@@ -996,6 +1006,7 @@ export SPIRA_INSTANCE \
        SPIRA_LAND_MAXSEC SPIRA_LAND_GATE_RESERVE \
        SPIRA_LOOM_ADDR SPIRA_LOOM_BUDGET_MS SPIRA_LOOM_CACHE_S SPIRA_LOOM_BIN SPIRA_RUN SPIRA_SYSTEMCTL \
        SPIRA_SPIKE_LABEL SPIRA_SPIKE_DIR SPIRA_SPIKE_PATHS SPIRA_SCOPE_LABEL \
+       SPIRA_PLAN_LABEL SPIRA_INCIDENT_LABEL \
        SPIRA_TOWN SPIRA_MIRROR SPIRA_EXPORTER SPIRA_DESIGN SPIRA_WIKI SPIRA_WIKI_HOOK SPIRA_DOLT_DATA \
        SPIRA_ALERT_GLOB \
        SPIRA_GATE_NOVERDICT SPIRA_GATE_BASEFAIL \

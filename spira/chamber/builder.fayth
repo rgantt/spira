@@ -12,7 +12,13 @@ FAYTH_DESC="Guardian — the DPS: claims ready Spira plan beads and implements t
 # The ${var:+val} form ensures a non-empty scope label is prepended with a comma separator,
 # and an empty one produces no leading comma — a leading comma is an empty label that would
 # match nothing and look exactly like "no work ready".
-FAYTH_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}plan"
+#
+# SPIRA_PLAN_LABEL, not the literal "plan". A literal here is a label that cannot be changed
+# at runtime and cannot be validated by schema.sh at write time. The configured variable is
+# what keeps the fayth, the sentinel and every other reader in agreement on which label means
+# "ready work for a builder" — a literal in five files is how five programs come to disagree
+# (law-schema-over-code).
+FAYTH_LABELS="${SPIRA_SCOPE_LABEL:+$SPIRA_SCOPE_LABEL,}$SPIRA_PLAN_LABEL"
 FAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL,qa-proposed"
 
 # Statutes only. SOPs are runbooks for production incidents; a builder will never execute
