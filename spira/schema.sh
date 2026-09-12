@@ -47,7 +47,7 @@ SCHEMA_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 #
 # `insight` is deliberately NOT a type: an insight is created closed, so every work query
 # already excludes it on status, and a type would cost something in each reader that
-# enumerates types while buying nothing (per Ryan, 2026-09-11). It is a closed `chore`
+# enumerates types while buying nothing. It is a closed `chore`
 # carrying the `insight` label at P4.
 #
 # `gate` is bd's own type, backing await_type/await_id/timeout/waiters. It is listed here so
@@ -62,7 +62,7 @@ SCHEMA_WORK_TYPES="task bug feature epic chore spike"
 #
 # awaiting_ci is NOT here. It is a gh:run GATE, because a status still requires every reader
 # to remember to exclude it while a gate makes the bead not ready — so a reader that knows
-# nothing about CI is still correct (per Ryan, 2026-09-11).
+# nothing about CI is still correct.
 SCHEMA_STATUSES="approved premise_rejected retired archived"
 
 # DIMENSION — a single-valued attribute, written with `bd set-state <id> <dim>=<val>` and read
@@ -121,9 +121,13 @@ schema_custom_types() {
 # --------------------------------------------------------------------------------------
 # WHAT THE STORE REPORTS — asked, never assumed.
 # --------------------------------------------------------------------------------------
-_dolt_scalar()    { dolt --data-dir "${SPIRA_DOLT_DIR:-/workspaces/beads}" sql -q "use ${SPIRA_DOLT_DB:-spira}; $1" 2>/dev/null | sed -n '4p' | tr -d '| '; }
-_store_types()    { bd -C "${SPIRA_DB:-/workspaces/spira}" types 2>/dev/null | sed -n '/Configured custom types/,$p' | tail -n +2 | tr -d ' ' | grep -v '^$'; }
-_store_statuses() { bd -C "${SPIRA_DB:-/workspaces/spira}" config get status.custom 2>/dev/null | tail -1 | tr ',' '\n' | tr -d ' ' | grep -v '^$'; }
+# THE SEAM IS `bd sql`, not a direct dolt call. bd already knows which database this store
+# is, so routing through it needs no path of our own — and a path of our own is one
+# operator's box baked into a repository meant to be cloned, which inventory.sh refuses and
+# test-conf.sh fails the gate on.
+_sql_scalar()     { bd -C "$SPIRA_DB" sql "$1" 2>/dev/null | sed -n '3p' | tr -d ' '; }
+_store_types()    { bd -C "$SPIRA_DB" types 2>/dev/null | sed -n '/Configured custom types/,$p' | tail -n +2 | tr -d ' ' | grep -v '^$'; }
+_store_statuses() { bd -C "$SPIRA_DB" config get status.custom 2>/dev/null | tail -1 | tr ',' '\n' | tr -d ' ' | grep -v '^$'; }
 
 schema_contract() {
     echo "KINDS — declared here; a kind is what a record IS and never changes"
@@ -174,9 +178,9 @@ schema_check() {
     # longer does — so its absence must be an ERROR here, not an omission.
     local q
     q="select count(*) from information_schema.columns where table_name='issues' and column_name='_is_work';"
-    [ "$(_dolt_scalar "$q")" = "1" ] || { printf 'schema: MISSING generated column: _is_work\n' >&2; rc=1; }
+    [ "$(_sql_scalar "$q")" = "1" ] || { printf 'schema: MISSING generated column: _is_work\n' >&2; rc=1; }
     q="select count(*) from information_schema.table_constraints where table_name='issues' and constraint_type='CHECK' and constraint_name='spira_priority_range';"
-    [ "$(_dolt_scalar "$q")" = "1" ] || { printf 'schema: MISSING constraint: spira_priority_range\n' >&2; rc=1; }
+    [ "$(_sql_scalar "$q")" = "1" ] || { printf 'schema: MISSING constraint: spira_priority_range\n' >&2; rc=1; }
     [ "$rc" = 0 ] && echo "schema: store matches the declaration"
     return "$rc"
 }

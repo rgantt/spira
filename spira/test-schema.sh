@@ -56,7 +56,7 @@ out="$("$S" type-of not-a-kind 2>/dev/null)"; rc=$?
 [ "$rc" != 0 ] && ok "undeclared kind fails closed (rc=$rc)" || bad "undeclared kind" "exited 0"
 
 echo
-echo "insight is NOT a custom type — it is a closed chore (per Ryan, 2026-09-11)"
+echo "insight is NOT a custom type — it is a closed chore"
 ct="$("$S" custom-types | tr '\n' ' ')"
 want "custom types carry escalation" "escalation" "$ct"
 want "custom types carry proposal"   "proposal"   "$ct"

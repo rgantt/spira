@@ -29,15 +29,16 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=/dev/null
 . "$HERE/conf.sh" 2>/dev/null || true
-DB="${SPIRA_DB:-/workspaces/spira}"
-DOLT_DIR="${SPIRA_DOLT_DIR:-/workspaces/beads}"
-DOLT_DB="${SPIRA_DOLT_DB:-spira}"
+# EVERY PATH COMES FROM THE CONFIG, never a default written here. A hardcoded path is one
+# operator's box baked into a repository meant to be cloned, and test-conf.sh fails the
+# landing gate on one. Unset is refused rather than guessed.
+DB="${SPIRA_DB:?SPIRA_DB is unset — source conf.sh}"
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
 
 say()  { printf 'schema-apply: %s\n' "$*"; }
 run()  { if [ "$DRY" = 1 ]; then printf 'schema-apply: WOULD RUN: %s\n' "$*"; else eval "$@"; fi; }
-sql()  { dolt --data-dir "$DOLT_DIR" sql -q "use $DOLT_DB; $1" 2>&1; }
-sqlq() { sql "$1" | sed -n '4p' | tr -d '| '; }
+sql()  { bd -C "$DB" sql "$1" 2>&1; }
+sqlq() { sql "$1" | sed -n '3p' | tr -d ' '; }
 
 # ---- 1. custom types -------------------------------------------------------------------
 # EXHAUSTIVE, and that is what retires the Gas Town types. Registration is the line between a
