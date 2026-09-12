@@ -296,7 +296,7 @@ spira_conf_defaults() {
     # how much of the column is left for everything else when three aeons are awake — and the
     # third moment was the one paying least: "what led here" is answered by the moment before
     # the current one, and the one before that is history the trace file already holds. The
-    # row it gave back is what INFLOW is built on (per Ryan, 2026-09-12).
+    # row it gave back is what INFLOW is built on.
     : "${SPIRA_COCKPIT_TRACE_LINES:=2}"
     : "${SPIRA_NOTIFY:=$SPIRA_COCKPIT/ask.sh}"
     # HOW LONG AN ACTIONABLE EVENT MAY WAIT WITH NO READER before it is escalated through a
