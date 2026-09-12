@@ -237,52 +237,79 @@ want "a hold repo's aeon is told the same"  "do not create a gh:run gate" "$hold
 want "naming its own land mode"             "lands by \`hold\`"           "$hold_brief"
 
 # ======================================================================================
-# THE OPS PANE. Waiting on a run is routine; parked with no run to wait for is a fault, and
-# for as long as one line said both, the pane rendered the fault as the routine case under
-# the word "CI" — which is the description that stops anybody looking.
+# THE OPS PANE. Gate state replaces the awaiting-ci label: the pane reads open gh:run
+# gates via bd gate list rather than querying a label bag that bd cannot validate.
 #
-# It reads spira_ci_park_state, the SAME function the sweep acts on, so the pane cannot
-# disagree with the harness about what is parked on nothing.
+# GATES ARE CLASSIFIED BY AGE ALONE. A gh:run gate only exists for pr-mode repos (the
+# aeon brief refuses to create one for push or hold), so the no-ci verdict of the former
+# label reader is not needed; age against SPIRA_CI_PARK_MAX decides watch vs stuck.
+#
+# CALLED VIA core_detail, NOT once. core_detail_keys() emits the SP_AWAITING_* keys;
+# probe() (the once-mode backward-compat wrapper) does not call it. The tiered collector
+# calls cockpit.sh core_detail — that is the seam driven here.
+#
+# NON-ZERO EXPECTED VALUE. Every assertion that a count is N>0 uses a fixture with
+# exactly N gates, so a collector reading the wrong source (labels → 0) is
+# distinguishable from one reading the right source (gates → N).
 # ======================================================================================
 echo
 echo "the ops pane:"
 
 CRUN="$TMP/crun"; mkdir -p "$CRUN"
 cp "$HERE/cockpit.sh" "$HERE/cockpit-metrics.py" "$SH/" 2>/dev/null || true
-snapshot() {   # snapshot [max] -> the CI keys of one collector pass
+
+# snapshot [max] -> quoted SP_AWAITING_* lines from one core_detail pass.
+# core_detail outputs raw KEY=VALUE; awk wraps to KEY='VALUE' so key() works unchanged.
+snapshot() {
     SPIRA_HOME="$SH" SPIRA_RUN="$CRUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$ALPHA" \
     SPIRA_REPO_MAP="$MAP" SPIRA_CI_PARK_MAX="${1-600}" SPIRA_GOAL=sp-goal SPIRA_FAYTHS=t \
-    SPIRA_COCKPIT_FORCE=1 \
-        bash "$SH/cockpit.sh" once >/dev/null 2>&1
-    grep '^SP_AWAITING' "$CRUN/cockpit.env" 2>/dev/null
+        bash "$SH/cockpit.sh" core_detail 2>/dev/null | \
+    awk -F= '/^SP_AWAITING/{printf "%s='"'"'%s'"'"'\n", $1, substr($0, index($0,"=")+1)}'
 }
 key() { sed -n "s/^$1='\(.*\)'$/\1/p" <<< "$2"; }
 
-# THE ZERO CASE TESTS BOTH COUNTS. Testing the watched population alone would render
-# "nothing parked on CI" over a queue of parks nothing can end — the exact reading this
-# section exists to stop.
+# seed_gates: one gate inside the 600s deadline, one past it. Both seeded via bd import
+# with explicit created_at timestamps so the test does not depend on wall-clock timing.
+# SEED VIA JSONL NOT bd gate create, because gate create sets created_at=now: an old gate
+# requires an explicit past timestamp.
+seed_gates() {
+    testdb_reset
+    printf '{"id":"sp-goal","title":"goal","status":"open","issue_type":"epic","labels":["spira","plan"]}\n' | testdb_seed
+    # FRESH GATE: 60s old, inside the 600s deadline.
+    printf '{"id":"sp-new-gate","title":"Gate: gh:run","description":"Ad-hoc gate blocking sp-wk1","status":"open","issue_type":"gate","await_type":"gh:run","created_at":"%s","updated_at":"%s"}\n' \
+        "$(ago 60)" "$(ago 60)" | testdb_seed
+    # OLD GATE: 900s old, past any reasonable deadline. Seeded oldest-first so the
+    # collector's oldest-first sort emits sp-old-gate as SP_AWAITING0.
+    printf '{"id":"sp-old-gate","title":"Gate: gh:run","description":"Ad-hoc gate blocking sp-wk2","status":"open","issue_type":"gate","await_type":"gh:run","created_at":"%s","updated_at":"%s"}\n' \
+        "$(ago 900)" "$(ago 900)" | testdb_seed
+}
+
+# THE ZERO CASE TESTS BOTH COUNTS. A gate reader aimed at the wrong source (labels)
+# answers 0 here AND for the non-zero cases below — both pass, neither signals anything.
 testdb_reset
 printf '{"id":"sp-goal","title":"goal","status":"open","issue_type":"epic","labels":["spira","plan"]}\n' | testdb_seed
 snap="$(snapshot 600)"
-is "with nothing parked, nothing is watched" 0 "$(key SP_AWAITING_N "$snap")"
-is "and nothing is stuck"                    0 "$(key SP_AWAITING_STUCK "$snap")"
+is "with no gates, nothing is watched" 0 "$(key SP_AWAITING_N "$snap")"
+is "and nothing is stuck"              0 "$(key SP_AWAITING_STUCK "$snap")"
 
-seed_parks
+# THE NON-ZERO CASE: fresh gate (60s) is watched, old gate (900s) is stuck.
+# NON-ZERO EXPECTED VALUES — the critical assertions that distinguish gate-reading
+# from label-reading (law-a-regression-test-must-be-seen-to-fail).
+seed_gates
 snap="$(snapshot 600)"
-# One alpha park inside its deadline; three that no run will ever end.
-is "the watched population is counted"       1 "$(key SP_AWAITING_N "$snap")"
-is "and the stuck one separately"            3 "$(key SP_AWAITING_STUCK "$snap")"
-# THE SUMMARY SAYS HOW MANY; ONLY THE ROW SAYS WHICH. A reader looking at one bead should
-# not have to work out which population it fell into.
-want "a stuck bead's own row carries its reason" "no run to wait for" "$snap"
-nowant "and the watched bead's row does not"     "sp-pk-live no run"  "$snap"
-want "the stuck one is named for the summary"    "SP_AWAITING_STUCK_ID='sp-pk-" "$snap"
+is "a fresh gate is watched (non-zero expected value)"  1 "$(key SP_AWAITING_N "$snap")"
+is "an old gate is stuck (non-zero expected value)"     1 "$(key SP_AWAITING_STUCK "$snap")"
+# THE ROW CARRIES ITS OWN REASON. Oldest gate is SP_AWAITING0 (stuck); fresh is SP_AWAITING1.
+want  "a stuck gate's row names it"               "gate overdue"  "$snap"
+want  "the stuck gate is named for the summary"   "SP_AWAITING_STUCK_ID='sp-" "$snap"
+nowant "the fresh gate's row does not say overdue" "gate overdue" \
+    "$(grep 'SP_AWAITING1=' <<< "$snap")"
 
-# The deadline moves beads between the two populations and nothing else does: same database,
-# same instant, one key different.
+# The deadline moves gates between populations: same database, same instant, deadline=1s.
+# Both gates (60s and 900s old) exceed 1s, so both must appear as stuck.
 snap="$(snapshot 1)"
-is "past the deadline the watched count falls" 0 "$(key SP_AWAITING_N "$snap")"
-is "and every park is reported stuck"          4 "$(key SP_AWAITING_STUCK "$snap")"
+is "past the deadline the fresh gate also becomes stuck" 0 "$(key SP_AWAITING_N "$snap")"
+is "and both gates are stuck"                           2 "$(key SP_AWAITING_STUCK "$snap")"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
