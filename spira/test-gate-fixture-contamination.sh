@@ -63,7 +63,8 @@ for b in (d if isinstance(d, list) else []):
 SH="$TMP/spira"
 mkdir -p "$SH"
 cp "$HERE/gate-spira.sh" "$HERE/lib.sh" "$HERE/conf.sh" \
-   "$HERE/exclude.sh" "$HERE/inventory.sh" "$HERE/hermetic.sh" "$HERE/sop.sh" "$SH/"
+   "$HERE/exclude.sh" "$HERE/inventory.sh" "$HERE/hermetic.sh" "$HERE/sop.sh" \
+   "$HERE/literal-lint.sh" "$SH/"
 [ -f "$HERE/inventory-deny" ] && cp "$HERE/inventory-deny" "$SH/"
 # A REPO-MAP so _bdq_check_repo_label allows repo:spira if file_budget_bead fires.
 printf 'spira | %s\n' "$TMP" > "$SH/repo-map"
