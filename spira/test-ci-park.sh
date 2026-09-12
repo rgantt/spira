@@ -20,18 +20,18 @@
 # check made at the moment of parking could have seen.
 #
 # WHY EVERY CASE HERE IS A PAIR. Each of these mechanisms fails by doing nothing, and doing
-# nothing is what a healthy pipeline also looks like: a sweep whose classifier answered
-# `no-ci` to everything would strip every park and pass a suite that only ever asserted
-# "the label is gone", and one that answered `watch` to everything would pass a suite that
-# only asserted "a real park survives". So the same input is driven both ways round wherever
-# a verdict is asserted (law-absence-needs-a-positive-control).
+# nothing is what a healthy pipeline also looks like: a classifier that answered `no-ci` to
+# everything would block any gate from being created where no run can resolve it, and one
+# that answered `watch` to everything would gate every bead including those with no run.
+# So the same input is driven both ways round wherever a verdict is asserted
+# (law-absence-needs-a-positive-control).
 #
 # THE DEADLINE IS PINNED TO A NON-DEFAULT, 600 rather than the shipped 5400. Asserting
 # against the shipped value passes just as well if the number is written into the code,
 # which is the thing the configuration key exists to stop.
 #
 # defect: sp-jll sp-0092
-# covers: spira/lib.sh spira/sentinel.sh spira/cockpit.sh spira/aeon.sh spira/strand.sh
+# covers: spira/lib.sh spira/cockpit.sh spira/aeon.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
@@ -129,19 +129,7 @@ is "and still expires outside it"                     "expired 0" "$(park alpha 
 
 
 # ======================================================================================
-# THE SWEEP, against a real bd and the real sentinel.
-#
-# What the classifier decides is only half of it; the other half is that the sweep ACTS on
-# both verdicts at the TOP of its loop, above every `continue`. That ordering is the fix.
-# Everything below it asks `gh` a question, and every one of those questions can give up
-# quietly — an unmapped repository, a path that is not a checkout, a pull request that does
-# not exist — and each of those exits used to leave the label standing. So the push and hold
-# repositories here are deliberately given paths that are NOT checkouts, and `gh` is stubbed
-# to fail outright: if the verdict moved back below the `continue`s, every case below would
-# go green on the classifier and red here, which is exactly the seam that broke.
-#
-# A REAL bd, because what is asserted is what a label sweep does to a database — a stub
-# would be a second implementation of the one thing in question (law-prefer-the-real-dependency).
+# Shared test database and fixtures used by the brief and ops-pane sections below.
 # ======================================================================================
 # shellcheck disable=SC1090
 . "$HERE/testdb.sh"
@@ -152,56 +140,12 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 
 SH="$TMP/spira"; RUN="$TMP/run"; ALPHA="$TMP/alpha"
 mkdir -p "$SH/chamber" "$RUN/worktree"
-cp "$HERE/sentinel.sh" "$HERE/lib.sh" "$HERE/landing.sh" "$HERE/conf.sh" "$SH/"
+cp "$HERE/lib.sh" "$HERE/conf.sh" "$SH/"
 # `alpha` is a real checkout so the pr path can be reached at all; `beta` and `gamma` are
 # the paths the map already names and nothing created them. That absence is the assertion.
 git init -q -b main "$ALPHA"
 git -C "$ALPHA" commit -q --allow-empty -m base
 
-stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SH/$1"; chmod +x "$SH/$1"; }
-stub pilgrimage.sh 'exit 0'
-stub strand.sh     'exit 0'
-stub sending.sh    'exit 0'
-stub governor.sh   'exit 0'
-stub gate.sh       'exit 0'
-stub reflect.sh    'exit 0'
-stub ask.sh        'printf "%s\n" "$*" >> "${ASK_LOG:-/dev/null}"; exit 0'
-export ASK_LOG="$TMP/ask.log"; : > "$ASK_LOG"
-# THE PULL-REQUEST PROBE IS THE SEAM, injected through SPIRA_GH rather than by PATH: conf.sh
-# replaces $PATH, so a shim placed there would be stepped over and the real `gh` would answer
-# from the operator's account. GH_STATE empty means the probe fails, which is the state every
-# repository with no pull request is actually in.
-GH="$TMP/bin/gh"; mkdir -p "$TMP/bin"
-cat > "$GH" <<'GH'
-#!/usr/bin/env bash
-[ -n "${GH_STATE:-}" ] || exit 1
-printf '%s\n' "$GH_STATE"
-GH
-chmod +x "$GH"
-grep -q 'SPIRA_GH' "$HERE/lib.sh" \
-    || { echo "test-ci-park: lib.sh has no SPIRA_GH injection point — refusing to run the real gh" >&2; exit 1; }
-
-printf 'FAYTH_NAME=t\nFAYTH_LABELS="spira,plan"\nFAYTH_EXCLUDE_LABELS="spira-poison,$SPIRA_ASK_LABEL,$SPIRA_CI_LABEL"\nFAYTH_MAX_CONCURRENT=0\n' \
-    > "$SH/chamber/t.fayth"
-
-B() { bd -C "$SPIRA_DB" "$@"; }
-labels_of() { B show "$1" --json 2>/dev/null | sed -n '/^[[{]/,$p' | python3 -c '
-import json, sys
-d = json.load(sys.stdin); d = d if isinstance(d, list) else [d]
-print(" ".join(d[0].get("labels") or []))' 2>/dev/null; }
-parked() { case " $(labels_of "$1") " in *" awaiting-ci "*) echo parked ;; *) echo unparked ;; esac; }
-# THE NOTE IS RE-WRAPPED BY `bd show`, so it is squeezed before it is matched. Asserting
-# against the raw output would make every phrase here hostage to a terminal width.
-notes()  { B show "$1" 2>/dev/null | tr -s '[:space:]' ' '; }
-
-sweep() {   # sweep [max] -> one sentinel pass under the fixture
-    SPIRA_HOME="$SH" SPIRA_RUN="$RUN" SPIRA_DB="$SPIRA_DB" SPIRA_REPO="$ALPHA" \
-    SPIRA_REPO_MAP="$MAP" SPIRA_CI_PARK_MAX="${1-600}" SPIRA_CI_LABEL=awaiting-ci \
-    SPIRA_GOAL=sp-goal SPIRA_FAYTHS=t SPIRA_INFERENCE_EVERY=999999 \
-    SPIRA_NOTIFY="$SH/ask.sh" SPIRA_GH="$GH" GH_STATE="${GH_STATE:-}" \
-    SPIRA_LAUNCH="/bin/true" SPIRA_SYSTEMCTL="/bin/true" \
-        bash "$SH/sentinel.sh" 2>&1
-}
 seed_parks() {
     testdb_reset
     testdb_seed <<JSONL
@@ -213,142 +157,13 @@ seed_parks() {
 JSONL
 }
 
-echo
-echo "the sweep (real bd, real sentinel):"
-
-GH_STATE="OPEN MERGEABLE PENDING"
-seed_parks
-# THE POSITIVE CONTROL COMES FIRST. Every assertion after this one says "the label is gone";
-# read alone they would all pass against a sweep that stripped every park it saw, which is
-# the same defect wearing the other face — an aeon summoned for work that is genuinely in CI.
-out="$(sweep 600)"
-is "a live pr park survives the sweep"        parked   "$(parked sp-pk-live)"
-is "a push repo's park is stripped"           unparked "$(parked sp-pk-push)"
-is "a hold repo's park is stripped"           unparked "$(parked sp-pk-hold)"
-is "an unmapped repo's park is stripped"      unparked "$(parked sp-pk-gone)"
-# THE BEAD CARRIES ITS OWN REASON. A label that vanishes with nothing recorded is
-# indistinguishable from one an operator removed by hand, and the next reader has no way to
-# tell which — nor what the harness thinks the repository does instead of opening a run.
-want "and says why, on the bead"  "nothing opens a pull request" "$(notes sp-pk-push)"
-want "naming the land mode"       "lands by push"   "$(notes sp-pk-push)"
-want "and the pass says so too"   "sp-pk-push: unparked" "$out"
-nowant "while the live park is not mentioned" "sp-pk-live: unparked" "$out"
-
-# THE ORDERING, STATED AS ITS OWN CASE. `beta` names a path that does not exist and `gh` is
-# refusing every call, so this passes only while the no-ci verdict is taken above the
-# `continue`s that give up on both.
-is "the checkout need not exist for the strip" unparked "$(parked sp-pk-push)"
-GH_STATE=""
-seed_parks
-sweep 600 >/dev/null
-is "and neither need gh answer at all"         unparked "$(parked sp-pk-push)"
-is "while a pr park gh cannot answer for is left alone" parked "$(parked sp-pk-live)"
-
-# A PARK THAT OUTLIVED THE LONGEST PLAUSIBLE RUN is not parked, it is lost, and the label is
-# the one thing keeping it out of the report that would have found it. Zero and one second
-# are the pair: the same bead, the same instant, the deadline the only thing that moved.
-GH_STATE="OPEN MERGEABLE PENDING"
-seed_parks
-sweep 0 >/dev/null
-is "a park survives a disabled deadline"   parked "$(parked sp-pk-live)"
-out="$(sweep 1)"
-is "and is stripped once it outlives one"  unparked "$(parked sp-pk-live)"
-want "the bead names the deadline that ended it" "SPIRA_CI_PARK_MAX" "$(notes sp-pk-live)"
-want "and the pass says which bead"              "sp-pk-live: unparked" "$out"
-
-# NOT `--status open`. A parked bead may still be in_progress: the aeon that applied the
-# label has not necessarily exited yet. Filtering on open alone reported zero parked beads
-# while one sat labelled and plainly visible in `bd show`.
-GH_STATE="OPEN MERGEABLE PENDING"
-seed_parks
-B update sp-pk-push --claim >/dev/null 2>&1
-is "the bead is held"                       in_progress \
-   "$(B show sp-pk-push --json 2>/dev/null | sed -n '/^[[{]/,$p' | python3 -c '
-import json,sys
-d=json.load(sys.stdin); d=d if isinstance(d,list) else [d]; print(d[0].get("status") or "")' 2>/dev/null)"
-sweep 600 >/dev/null
-is "an in_progress park is swept as well"   unparked "$(parked sp-pk-push)"
-
-# AND A CLOSED BEAD IS NOT. Its park cannot strand anything, and rewriting closed beads every
-# two minutes is a write the pass has no reason to make.
-seed_parks
-B close sp-pk-push --reason done >/dev/null 2>&1
-sweep 600 >/dev/null
-is "a closed bead's park is left where it is" parked "$(parked sp-pk-push)"
-
-# ======================================================================================
-# RED CI RESULT. When a PR's CI comes back red, the bead must be claimable again —
-# that is what the sweep is FOR — but its priority must be left alone. Priority
-# expresses how much the work MATTERS; CI failure expresses how loudly it is FAILING.
-# Those are unrelated. A trivial bead that fails repeatedly must not outrank genuine
-# high-priority work just because it is noisy.
-#
-# THE PAIR. A P2 bead; CI red. Assert the park is stripped AND the priority is
-# unchanged. Without the priority half, a sweep that still promoted to P0 would pass
-# on the unparked assertion alone. Without the unparked half, the priority assertion
-# would pass against a sweep that simply did nothing at all
-# (law-absence-needs-a-positive-control).
-# ======================================================================================
-echo
-echo "CI red — bead returns at its own priority:"
-
-priority_of() {
-    B show "$1" --json 2>/dev/null | sed -n '/^[[{]/,$p' | python3 -c '
-import json,sys
-d=json.load(sys.stdin); d=d if isinstance(d,list) else [d]
-p=d[0].get("priority"); print(p if p is not None else "")' 2>/dev/null
-}
-
-GH_STATE="OPEN MERGEABLE FAILURE"
-testdb_reset
-testdb_seed <<JSONL
-{"id":"sp-goal","title":"goal","status":"open","issue_type":"epic","labels":["spira","plan"]}
-{"id":"sp-pk-red","title":"parked on a red run","status":"open","issue_type":"task","priority":2,"labels":["spira","plan","repo:alpha","awaiting-ci"]}
-JSONL
-is "the bead starts at P2"             2      "$(priority_of sp-pk-red)"
-is "and is parked"                     parked "$(parked sp-pk-red)"
-out="$(sweep 600)"
-is "a red CI result unparks the bead"  unparked "$(parked sp-pk-red)"
-is "and the priority is unchanged at P2" 2     "$(priority_of sp-pk-red)"
-want   "the pass mentions the bead"                 "sp-pk-red" "$out"
-want   "the bead note records the sweep acted"      "Cleared awaiting-ci" "$(notes sp-pk-red)"
-nowant "and the note makes no claim about priority" "P0" "$(notes sp-pk-red)"
-
-# ======================================================================================
-# THE OUTCOME STREAM: a red run records an event, a run still in progress is silent.
-#
-# ci.failed fires inside the FAILURE branch of the state switch and only there. A run still
-# in progress is a steady state on a two-minute timer — one event per pass would bury every
-# other outcome in the same view, which is the failure the stream was built to prevent.
-# ======================================================================================
-echo
-echo "CI outcome events:"
-
-GH_STATE="OPEN MERGEABLE FAILURE"
-seed_parks
-: > "$ASK_LOG"
-out="$(sweep 600)"
-want "a red run hands sp-pk-live back to the queue"  "CI red on sp-pk-live" "$out"
-want "and the verdict is recorded as an event"        "--kind ci.failed"    "$(cat "$ASK_LOG")"
-want "against the bead that was parked"               "--target sp-pk-live" "$(cat "$ASK_LOG")"
-
-# THE NEGATIVE THAT MATTERS MOST: a run still going is a steady state, and a steady state on
-# a two-minute timer is what buries every other outcome in the same view.
-GH_STATE="OPEN MERGEABLE PENDING"
-seed_parks
-: > "$ASK_LOG"
-out="$(sweep 600)"
-nowant "a run still in progress says nothing about sp-pk-live" "sp-pk-live" "$out"
-is     "and emits no event for it"                             ""            "$(cat "$ASK_LOG")"
-
 
 # ======================================================================================
 # THE BRIEF, generated per land mode.
 #
-# The sweep is the mechanism and this is what stops it having to fire. They exist together
-# because they fail differently: prose alone is a resolution, and a sweep alone means every
-# push-mode bead is parked and unparked once per lifetime, which reads to anybody watching
-# the pane as a harness arguing with itself.
+# The gate-check sweep resolves gates for pr-mode repos; the brief is what stops a gate
+# being created where nothing can resolve it — a push or hold bead told to create a gh:run
+# gate would sit gated forever, invisible, while the pane said "in CI".
 #
 # Driven through the REAL aeon.sh with a shim standing where the model would be, capturing
 # the prompt it was actually handed. A structural grep over aeon.sh would assert that both
@@ -402,25 +217,24 @@ brief_for() {   # brief_for <land> -> the PARK section of the brief an aeon was 
 pr_brief="$(brief_for pr)"
 want "the prompt was rendered at all"        "work sp-br-1"          "$pr_brief"
 nowant "with no placeholder left standing"   "{{PARK}}"              "$pr_brief"
-# THE BULLET, not the bare phrase. The push brief says "do NOT label the bead
-# \`awaiting-ci\`", which contains the phrase — a looser match here would be satisfied by the
-# instruction's own negation and the pair below would assert nothing.
-want "a pr repo's aeon is told to park"      "- label the bead \`awaiting-ci\`" "$pr_brief"
-want "and told the park has a deadline"      "SPIRA_CI_PARK_MAX"     "$pr_brief"
-want "rendered as the configured number"     "(600s)"                "$pr_brief"
+# THE COMMAND, not the bare phrase. The push brief says "do not create a gh:run gate",
+# which contains "gate" — a looser match would be satisfied by the negation and the pair
+# below would assert nothing.
+want "a pr repo's aeon is told to create a gate" "bd gate create --type=gh:run" "$pr_brief"
+want "with the repo set on the gate"             "set-metadata"                 "$pr_brief"
 
 # And the other side: the same aeon, the same bead, one column of the map different.
 push_brief="$(brief_for push)"
-want "a push repo's aeon is told there is no run" "no CI run to wait for" "$push_brief"
-want "and told not to apply the label"            "do not label the bead" "$push_brief"
-want "naming the land mode it read"               "lands by \`push\`"     "$push_brief"
-nowant "and is never told to park"                "- label the bead \`awaiting-ci\`" "$push_brief"
+want "a push repo's aeon is told there is no run"  "no CI run to wait for"       "$push_brief"
+want "and told not to create a gate"               "do not create a gh:run gate" "$push_brief"
+want "naming the land mode it read"                "lands by \`push\`"           "$push_brief"
+nowant "and is never told to create a gate"        "bd gate create --type=gh:run" "$push_brief"
 
 # `hold` is the third mode and it takes the same side of the branch. It is asserted because
 # the condition is `= pr`, not `!= push`, and those differ on exactly this value.
 hold_brief="$(brief_for hold)"
-want "a hold repo's aeon is told the same"  "do not label the bead" "$hold_brief"
-want "naming its own land mode"             "lands by \`hold\`"     "$hold_brief"
+want "a hold repo's aeon is told the same"  "do not create a gh:run gate" "$hold_brief"
+want "naming its own land mode"             "lands by \`hold\`"           "$hold_brief"
 
 # ======================================================================================
 # THE OPS PANE. Waiting on a run is routine; parked with no run to wait for is a fault, and

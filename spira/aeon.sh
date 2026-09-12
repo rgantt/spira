@@ -1200,15 +1200,9 @@ esac
 # WHETHER THERE IS ANYTHING TO WAIT FOR IS ALSO PART OF THE BRIEF, and the same fact decides
 # it. Only `pr` opens a pull request; `push` merges the branch itself and `hold` leaves it for
 # a human, so in both of those the landing gate is the only gate and a park waits for an event
-# that cannot occur. Because the park label is excluded from every persona's predicate AND
-# from the stranded-work report — which is what stops parked work looking abandoned — such a
-# park is not merely wrong, it is invisible: not claimable, not reported, and shown to the
-# operator as "in CI", the one description that stops anybody looking for the real cause. One
-# bead reached 22 reclaims that way, not one of them a work failure.
-#
-# The sweep strips a park no run can end, so this is not the guard — it is the brief that
-# stops it being applied in the first place. A rule delivered only as prose is a resolution;
-# the mechanism is in the sweep, and both exist because they fail differently.
+# that cannot occur. A gate applied where no run exists is a permanent, invisible hold: not
+# claimable, not reported, and shown to the operator as "in CI", the one description that
+# stops anybody looking for the real cause.
 if [ "$REPO_LAND" = pr ]; then
     PARK_BRIEF="## Your lifetime: do the work, cut the review, then exit
 
@@ -1217,23 +1211,29 @@ suite runs is the most expensive way to wait that exists. When your work is push
 pull request is open, your job is done for now — exit cleanly and let the harness bring the
 bead back when there is something to decide.
 
-What makes that safe is the bead, not your memory of it. Before you exit:
+What makes that safe is the gate, not your memory of it. Before you exit:
 
-- push your branch, and open or update its pull request
-- label the bead \`$SPIRA_CI_LABEL\` — that is the harness's signal that this is parked ON
-  PURPOSE and not abandoned, so it is not treated as stalled work
-- leave the bead OPEN with a note saying what state it is in and what should happen when
-  the run finishes
+1. push your branch and open or update its pull request
+2. create a gh:run gate to park the bead:
 
-The sweep then watches that pull request for you. Green and mergeable, it lands and closes
-the bead. Red, it clears the label and raises the priority so the next aeon picks the bead
-up to fix it — and that aeon is you-in-effect: same bead, same recorded branch, all your
-commits, the failure waiting to be read.
+   \`\`\`
+   GATE_ID=\$(bd gate create --type=gh:run --blocks \$BEAD_ID -r \"waiting for CI\" | grep -oP 'sp-\\w+')
+   bd update \$GATE_ID --set-metadata \"repo=\$(gh repo view --json nameWithOwner -q .nameWithOwner)\"
+   \`\`\`
 
-A park is not open-ended. One older than \`SPIRA_CI_PARK_MAX\` (${SPIRA_CI_PARK_MAX}s) is
-treated as lost rather than parked: the sweep takes the label off and the bead goes back into
-the stranded-work report, because a park nothing is watching must not be the one state that
-hides a bead from the report that would have found it."
+3. leave the bead OPEN with a note saying what state it is in
+
+The gate makes the bead not ready — no reader has to remember to exclude a label —
+and the harness's gate-check sweep (running every two minutes on spira-gate-check.timer)
+finds the matching run via \`bd gate discover\` and resolves the gate via \`bd gate check\`.
+
+Green: the gate resolves, the bead returns to ready, and the sentinel lands it.
+Red: \`bd gate check\` escalates the gate; the bead returns to the queue at its own priority
+so the next aeon can fix it — same bead, same recorded branch, all your commits.
+
+**Set metadata.repo** on the gate (step 2 above). The check command uses it to call
+\`gh run view --repo <org/repo>\`, which is what prevents a run from the wrong repository
+from resolving this gate."
 else
     PARK_BRIEF="## Your lifetime: do the work, then exit
 
@@ -1241,12 +1241,11 @@ else
 nothing opens a pull request for \`$BRANCH\` and no run will ever report on it. The landing
 gate is the only gate, and once it passes there is nothing further to wait for.
 
-**So do not label the bead \`$SPIRA_CI_LABEL\`.** That label means \"parked on a run somebody
-else is watching\", and it excludes the bead from every persona's predicate and from the
-stranded-work report — the two mechanisms that would otherwise notice the work had stopped.
-Applied where no run exists it is a permanent, invisible hold: not claimable, not reported,
-and shown to the operator as \"in CI\", which is the one description that stops anybody
-looking for the real cause. The sweep strips such a park; do not make it have to.
+**So do not create a gh:run gate for this bead.** A gate means \"parked on a run somebody
+else is watching\", and it excludes the bead from ready — the mechanism that would otherwise
+make the bead claimable. Applied where no run exists it is a permanent, invisible hold: not
+claimable, not reported, and shown to the operator as \"in CI\", which is the one description
+that stops anybody looking for the real cause.
 
 When the work is committed on your branch, close the bead with its evidence and exit. How the
 branch reaches \`$BASE_BRANCH\` from there is described above, and none of it needs you."

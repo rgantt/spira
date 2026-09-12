@@ -1,0 +1,31 @@
+[Unit]
+# Evaluate open gh:run gates and resolve those whose CI run has passed.
+#
+# WHY THIS IS NOT PART OF THE SENTINEL. The sentinel runs once every two minutes and
+# the CI check is one of its cheaper legs — but it calls `gh` for every parked bead on
+# every pass, and `gh` is a network call. Keeping the CI check in a separate timer lets
+# the sentinel stay deterministic and cheap, and lets the CI check be suspended
+# independently (world.sh stop leaves the sentinel running; gate check is a separate target).
+#
+# WHY A ONESHOT ON A TIMER. A daemon that loops cannot repair itself when it crashes; the
+# systemd-managed oneshot restarts cleanly on the next timer tick. This is the same shape
+# as every other spira timer.
+Description=Spira gate check — evaluate gh:run CI gates and resolve those that have passed
+Documentation=file://@SPIRA_HOME@/gate-check.sh
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=@SPIRA_PROD@/gate-check.sh
+# A gh round-trip per open gate, plus discover across pr-mode repos. 120 seconds covers
+# a busy queue on a slow connection and does not compete with the sentinel's own ceiling.
+TimeoutStartSec=120
+# Network I/O only; keep the CPU share low so the sentinel and CI runner are not starved
+# (law-fence-loops-on-shared-hardware).
+CPUQuota=10%
+Nice=10
+StandardOutput=append:@SPIRA_RUN@/gate-check.log
+StandardError=append:@SPIRA_RUN@/gate-check.log
+
+[Install]
+WantedBy=default.target
