@@ -59,8 +59,16 @@ echo "the persona is installed, and every placeholder in its brief is one its fi
 # EACH BRIEF IS CHECKED AGAINST THE PROGRAM THAT ACTUALLY RENDERS IT, not against aeon.sh.
 # The chamber holds briefs for agents that are not aeons and are filled by their own script,
 # and a check that assumed one filler failed the moment a second kind of brief was added —
-# reporting ten missing substitutions in a brief that was entirely correct. A brief with a
-# `.fayth` beside it is an aeon's; otherwise its filler is the script of the same name.
+# reporting ten missing substitutions in a brief that was entirely correct.
+#
+# THE DISCRIMINATOR IS WHO SUMMONS THE PERSONA, not whether a `.fayth` sits beside the brief.
+# It was the latter, and it broke on the concierge: an operator persona has a full fayth —
+# model, memories, statute core — and is nevertheless filled by its own launcher, because
+# nothing summons it. Under the old rule its brief was checked against aeon.sh's substitution
+# list and reported five missing placeholders that concierge.sh fills correctly.
+#
+# So: a fayth the sentinel can summon is aeon.sh's; anything else is filled by the script of
+# the same name, which may sit beside this suite or at the harness root.
 unfilled() {                    # unfilled <brief> <filler> -> the placeholders it leaves behind
     local f="$1" filler="$2" ph key missing=""
     for ph in $(grep -o '{{[A-Z_]*}}' "$f" | sort -u); do
@@ -104,7 +112,16 @@ rm -rf "$PLANT"
 
 for f in "$HERE"/chamber/*.md; do
     n="$(basename "$f" .md)"
-    if [ -f "$HERE/chamber/$n.fayth" ]; then filler="$HERE/aeon.sh"; else filler="$HERE/$n.sh"; fi
+    summon=auto
+    [ -f "$HERE/chamber/$n.fayth" ] && summon="$(sed -n 's/^FAYTH_SUMMON=//p' "$HERE/chamber/$n.fayth" | tr -d '"' | tail -1)"
+    [ -n "$summon" ] || summon=auto
+    if [ -f "$HERE/chamber/$n.fayth" ] && [ "$summon" = auto ]; then
+        filler="$HERE/aeon.sh"
+    elif [ -f "$HERE/$n.sh" ]; then
+        filler="$HERE/$n.sh"
+    else
+        filler="$HERE/../$n.sh"
+    fi
     if [ ! -f "$filler" ]; then
         bad "every placeholder in $n.md is substituted" "no filler: $(basename "$filler") does not exist"
         continue

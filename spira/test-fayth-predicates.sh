@@ -112,6 +112,16 @@ echo "EVERY ACTIVE PERSONA resolves to a non-empty partition at runtime"
 # fayth_get sources the fayth in a subshell with conf.sh in scope, so $SPIRA_PLAN_LABEL
 # expands to its configured value. An unset or empty label would produce an empty FAYTH_LABELS,
 # which the cockpit renders as ? (correct) but the sentinel would see as a malformed predicate.
+#
+# "ACTIVE" MEANS SUMMONABLE, AND AN OPERATOR PERSONA IS NOT. A predicate carves a partition of
+# the graph for something that CLAIMS beads; the concierge claims none, runs for days as the
+# operator's own session, and a partition would be actively wrong — a bead it held is a bead no
+# aeon could work. Its empty FAYTH_LABELS is a declaration, which is why `fayth_partitions` and
+# the cockpit's partition map both skip a fayth without one.
+#
+# The exclusion is keyed on FAYTH_SUMMON rather than on the name, because a check that
+# recognised "concierge" by string would bind the wrong persona the day it is renamed or a
+# second operator role is added beside it.
 
 export SPIRA_HOME="$HERE"
 export SPIRA_RUN="$T/run"; mkdir -p "$T/run"
@@ -119,7 +129,13 @@ export SPIRA_CONF="$T/no.conf"
 # shellcheck disable=SC1090
 . "$HERE/lib.sh" 2>/dev/null
 
+_checked=0
 for f in $(fayth_names 2>/dev/null); do
+    if [ "$(fayth_get "$f" FAYTH_SUMMON auto 2>/dev/null)" != auto ]; then
+        ok "$f: operator persona, no predicate expected"
+        continue
+    fi
+    _checked=$(( _checked + 1 ))
     labels="$(fayth_get "$f" FAYTH_LABELS '' 2>/dev/null)"
     if [ -n "$labels" ]; then
         ok "$f: FAYTH_LABELS resolves to non-empty: $labels"
@@ -127,6 +143,14 @@ for f in $(fayth_names 2>/dev/null); do
         bad "$f: FAYTH_LABELS resolved to empty" "predicate is missing"
     fi
 done
+
+# AND THE EXCLUSION MUST NOT HAVE EMPTIED THE LOOP. Skipping every persona would satisfy every
+# assertion above by having made none of them (law-absence-needs-a-positive-control).
+if [ "$_checked" -gt 0 ]; then
+    ok "$_checked summonable persona(s) were actually checked"
+else
+    bad "the predicate loop checked nothing" "every fayth was skipped as operator-summoned"
+fi
 
 # ==========================================================================================
 echo ""

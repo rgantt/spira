@@ -496,8 +496,43 @@ spira_fayths() {         # the personas this harness runs, space separated, IN P
 spira_task_fayths() {
     local f out=""
     for f in $(spira_fayths); do
+        [ "$(fayth_get "$f" FAYTH_SUMMON auto)" = auto ] || continue
         [ "$(fayth_get "$f" FAYTH_ROLE task)" = party ] && continue
         [ -n "$(fayth_get "$f" FAYTH_LANE "")" ] && continue
+        out="$out $f"
+    done
+    printf '%s' "${out# }"
+}
+
+# spira_operator_fayths -> the personas only a human starts. FAYTH_SUMMON is not `auto`.
+#
+# A PERSONA THE SENTINEL MUST NEVER SUMMON IS A DECLARED FACT, NOT AN ACCIDENT OF ITS SHAPE.
+# The concierge is the case: it holds no partition, claims no bead and runs for days as the
+# operator's Remote Control session, so every property that would have kept it out of the
+# pool by side effect — an empty FAYTH_LABELS, an absent FAYTH_LANE — is a property somebody
+# could reasonably change while meaning something else entirely, and the sentinel would then
+# start summoning a session that has no bead to work and no deadline to end it.
+#
+# The cockpit's allocator taught this the same week, in miniature: it decided which sections
+# were served first by testing `base == max`, and the day two sections were capped they
+# satisfied that test by accident and starved a third. A property's MEANING and the shape it
+# happens to have are two facts, and deriving one from the other breaks at the moment somebody
+# changes the shape for an unrelated reason.
+#
+# IT READS THE CHAMBER, NOT `spira_fayths`, AND THAT IS THE ONE DIFFERENCE FROM EVERY LIST
+# ABOVE. `spira_fayths` honours $SPIRA_FAYTHS, which is a HOST's declaration of which personas
+# it runs — a deployment list, and a list of things that get SUMMONED. An operator persona is
+# summoned by nobody, so whether this box runs a worker pool containing it is not a question
+# that applies: the operator can start it whether or not the sentinel has ever heard of it.
+#
+# The practical consequence is the safe one. On a host whose $SPIRA_FAYTHS omits the concierge
+# — which is every host today — the sentinel cannot summon it because it is not in the roster,
+# AND `FAYTH_SUMMON` would stop it if it were. Two independent reasons, neither relying on the
+# other, which is what is wanted for the one persona that must never be started by a machine.
+spira_operator_fayths() {
+    local f out=""
+    for f in $(fayth_names); do
+        [ "$(fayth_get "$f" FAYTH_SUMMON auto)" = auto ] && continue
         out="$out $f"
     done
     printf '%s' "${out# }"
@@ -517,6 +552,10 @@ spira_task_fayths() {
 spira_lane_fayths() {
     local f out=""
     for f in $(spira_fayths); do
+        # THE SAME EXCLUSION AS THE TASK POOL, because the sentinel summons from BOTH lists
+        # and a persona kept out of one is summoned by the other. A lane is how a persona gets
+        # capacity of its own; FAYTH_SUMMON is whether anything may summon it at all.
+        [ "$(fayth_get "$f" FAYTH_SUMMON auto)" = auto ] || continue
         [ -n "$(fayth_get "$f" FAYTH_LANE "")" ] && out="$out $f"
     done
     printf '%s' "${out# }"
@@ -2567,9 +2606,19 @@ other_beads_on_conflicts() {
 #                 that states it binds equally, with a command to read the full text.
 # Nothing is hidden: slug count == statute count. Every statute is named in every session.
 # --------------------------------------------------------------------------------------
-render_memories() {      # render_memories <prefix-csv> [char-budget]
+# THE CORE SET IS A THIRD ARGUMENT, because WHICH statutes a session needs in full is a
+# property of the ROLE, not of the box. The shipped default is builder-shaped — testing,
+# gates, landing, guards — and it is the right default for four of the six personas. It is
+# the wrong one for an operator session, whose whole job is deciding what to escalate and
+# what to decompose, and the gap was not theoretical: the statute that the harness checkout
+# is production sat OUTSIDE the core set while the operator's own session violated it for
+# thirty-nine turns (sp-u4x). Delivered, it would still have arrived as a slug in an index.
+#
+# A fayth declares its own with FAYTH_STATUTE_CORE; unset, it gets $SPIRA_STATUTE_CORE, which
+# is what every persona got before this parameter existed.
+render_memories() {      # render_memories <prefix-csv> [char-budget] [core-csv]
     local prefixes="${1:-law-}" budget="${2:-120000}"
-    local core_csv="${SPIRA_STATUTE_CORE:-}" harness="${SPIRA_HOME:-<harness>}"
+    local core_csv="${3:-${SPIRA_STATUTE_CORE:-}}" harness="${SPIRA_HOME:-<harness>}"
     bdjson memories 2>/dev/null | python3 -c '
 import sys, json, os
 prefixes = [p for p in sys.argv[1].split(",") if p]

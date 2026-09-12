@@ -181,7 +181,7 @@ if [ "$SWEEP" = 1 ]; then
     # Prompt: caller-supplied text (from --prompt or -) prepended with statutes. If no
     # prompt was given, use the fayth's .md as-is — without bead substitutions, since
     # there is no bead. The fayth .md is still useful as the persona's standing brief.
-    SWEEP_STATUTES="$(render_memories "${FAYTH_MEMORY_PREFIXES:-law-}")"
+    SWEEP_STATUTES="$(render_memories "${FAYTH_MEMORY_PREFIXES:-law-}" "" "${FAYTH_STATUTE_CORE:-}")"
     if [ -z "$SWEEP_PROMPT" ]; then
         SWEEP_PROMPT="$(cat "$SPIRA_HOME/chamber/$FAYTH.md" 2>/dev/null || true)"
     fi
@@ -1390,7 +1390,7 @@ PROMPT="${PROMPT/\{\{DEADLINE\}\}/$DEADLINE_BRIEF}"
 # half-sentences of the law they are held to, and the `head` then dropped whichever
 # memories sorted last without saying so. render_memories reads the JSON and prints each
 # one whole.
-STATUTES="$(render_memories "${FAYTH_MEMORY_PREFIXES:-law-}")"
+STATUTES="$(render_memories "${FAYTH_MEMORY_PREFIXES:-law-}" "" "${FAYTH_STATUTE_CORE:-}")"
 # THE MACHINE-READABLE ALTERNATIVE TO "ALREADY DONE" IS PART OF THE BRIEF. An aeon that
 # concludes the work is already done will close with "already done" in the reason unless it
 # is explicitly told not to. The sentinel reads the COMMIT GRAPH, not the close reason: a
