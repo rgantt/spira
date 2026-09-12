@@ -52,6 +52,7 @@ for f in conf.sh watchd.sh lib.sh; do
     [ -e "$HERE/$f" ] && ln -s "$HERE/$f" "$FIXTURE/spira/$f"
 done
 printf '# empty\n' > "$FIXTURE/spira/watchers"
+printf '# empty\n' > "$FIXTURE/spira/repo-map"
 printf '# empty\n' > "$FIXTURE/spira/repo-map.example"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FIXTURE/spira/install-session-hook.sh"
 chmod +x "$FIXTURE/spira/install-session-hook.sh"
@@ -94,8 +95,8 @@ inst_conf() {
         "SPIRA_WATCHERS=$FIXTURE/spira/watchers" \
         SPIRA_DOLT_DATA= SPIRA_TESTDB_DATA= \
         "SPIRA_RUN=$SPIRA_RUN_DIR" \
-        "SPIRA_HOME=$HERE" \
-        "SPIRA_PROD=$HERE" \
+        "SPIRA_HOME=$FIXTURE/spira" \
+        "SPIRA_PROD=$FIXTURE/spira" \
         "SPIRA_REPO=$REAL_REPO" \
         "SPIRA_COCKPIT=$REAL_COCKPIT" \
         "MOCK_LOG=$MOCK_LOG" \
@@ -115,8 +116,8 @@ rendered="$(
         "SPIRA_WATCHERS=$FIXTURE/spira/watchers" \
         SPIRA_DOLT_DATA= SPIRA_TESTDB_DATA= \
         "SPIRA_RUN=$SPIRA_RUN_DIR" \
-        "SPIRA_HOME=$HERE" \
-        "SPIRA_PROD=$HERE" \
+        "SPIRA_HOME=$FIXTURE/spira" \
+        "SPIRA_PROD=$FIXTURE/spira" \
         "SPIRA_REPO=$REAL_REPO" \
         "SPIRA_COCKPIT=$REAL_COCKPIT" \
         "MOCK_LOG=$MOCK_LOG" \
@@ -194,8 +195,8 @@ no_conf_out="$(
         "SPIRA_WATCHERS=$FIXTURE/spira/watchers" \
         SPIRA_DOLT_DATA= SPIRA_TESTDB_DATA= \
         "SPIRA_RUN=$SPIRA_RUN_DIR" \
-        "SPIRA_HOME=$HERE" \
-        "SPIRA_PROD=$HERE" \
+        "SPIRA_HOME=$FIXTURE/spira" \
+        "SPIRA_PROD=$FIXTURE/spira" \
         "SPIRA_REPO=$REAL_REPO" \
         "SPIRA_COCKPIT=$REAL_COCKPIT" \
         "MOCK_LOG=$MOCK_LOG" \
