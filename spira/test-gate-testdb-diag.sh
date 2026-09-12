@@ -41,7 +41,8 @@ testdb_up testdbdiag || { echo "  SKIP  could not build fixture database"; exit 
 SH="$TMP/spira"
 mkdir -p "$SH"
 cp "$HERE/gate-spira.sh" "$HERE/lib.sh" "$HERE/conf.sh" \
-   "$HERE/exclude.sh" "$HERE/inventory.sh" "$HERE/hermetic.sh" "$HERE/sop.sh" "$SH/"
+   "$HERE/exclude.sh" "$HERE/inventory.sh" "$HERE/hermetic.sh" "$HERE/sop.sh" \
+   "$HERE/literal-lint.sh" "$HERE/schema.sh" "$SH/"
 [ -f "$HERE/inventory-deny" ] && cp "$HERE/inventory-deny" "$SH/"
 printf 'spira | %s\n' "$TMP" > "$SH/repo-map"
 
