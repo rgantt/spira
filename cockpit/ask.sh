@@ -358,6 +358,15 @@ add|ask|question)
         id=$(create decision "$text" "$WHY" "$DFLT" "$SPIRA_ASK_LABEL,overseer,ask-question") || exit 1
     fi
     echo "asked [$id] $text"
+    # When the ref identifies the work bead this escalation is about, write a typed edge so
+    # bd graph can traverse the ask→work relationship.  An unrecognised ref format is silently
+    # skipped; the ask was already created and its external_ref carries the ref for dedup.
+    case "${REF:-}" in
+        escalation:*:*)
+            _esc_work="${REF##*:}"
+            [ -n "$_esc_work" ] && bdt dep add "$id" "$_esc_work" --type tracks >/dev/null 2>&1 || true
+            ;;
+    esac
     ;;
 
 decide|decision)
