@@ -611,8 +611,10 @@ fi
 
 if [ "$_unadopted" != "?" ] && [ "$_unadopted" -gt 0 ] 2>/dev/null; then
     if [ -x "$INC" ] || [ -r "$INC" ]; then
-        printf 'Unadopted refs: %s\n\nA spira/* branch whose suffix resolves to no bead can never be reaped by any rite.\nEach one is a permanent +1 on SP_UNADOPTED until removed by hand.\n\nList with: git -C <repo> for-each-ref --format="%%(*refname:short)" refs/heads/spira/ | while read b; do bd show "${b#spira/}" 2>/dev/null || echo "UNADOPTED: $b"; done\nDelete safely: git -C <repo> branch -D <branch> (no bead, no aeon holds it)\n' \
-            "$_unadopted" | \
+        _ur="$([ -n "${SP_UNADOPTED_REFS:-}" ] && printf '%s\n' ${SP_UNADOPTED_REFS} \
+                || printf '(refs not in snapshot; re-run cockpit.sh to list)')"
+        printf 'Unadopted refs: %s\n\nA spira/* branch whose suffix resolves to no bead can never be reaped by any rite.\nEach one is a permanent +1 on SP_UNADOPTED until removed by hand.\n\nStray branches (same measurement as the count above):\n%s\n\nDelete safely: git -C <repo> branch -D spira/<id> (no bead, no aeon holds it)\n' \
+            "$_unadopted" "$_ur" | \
         SPIRA_DB="$SPIRA_DB" \
         SPIRA_INCIDENT_TYPE=task \
         SPIRA_INCIDENT_PRIORITY=2 \

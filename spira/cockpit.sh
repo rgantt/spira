@@ -1061,7 +1061,7 @@ unsent_keys() {
     # the home repo's branches would report "no unsent work" while another repository's
     # branches aged forever — the reassuring answer, produced by looking in the wrong place.
     # Refs are a local read, so this costs nothing per repository; no fetch happens here.
-    _fail=0; _n=0; _o=""; _done=0; _unadopted=0
+    _fail=0; _n=0; _o=""; _done=0; _unadopted=0; _unadopted_refs=""
     for _r in $(spira_repos); do
         _p="$(repo_root "$_r")" || continue
         [ -e "$_p/.git" ] || continue
@@ -1078,6 +1078,7 @@ try: d = json.load(sys.stdin); print((d if isinstance(d, list) else [d])[0].get(
 except Exception: print("")' 2>/dev/null)"
                 if [ -z "$_st" ]; then
                     _unadopted=$((_unadopted+1))
+                    _unadopted_refs="${_unadopted_refs:+${_unadopted_refs} }${_b}"
                     continue
                 fi
                 [ "$_st" = closed ] && _done=$((_done+1))
@@ -1092,6 +1093,7 @@ except Exception: print("")' 2>/dev/null)"
     done
     echo "SP_BRANCH_DONE=$_done"
     echo "SP_UNADOPTED=$_unadopted"
+    printf "SP_UNADOPTED_REFS='%s'\n" "$_unadopted_refs"
     if [ "$_fail" = 1 ]; then
         echo "SP_UNSENT=?"
         echo "SP_UNSENT_OLDEST_H=?"

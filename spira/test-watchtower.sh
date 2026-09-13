@@ -730,6 +730,38 @@ wt_file_multi SPIRA_UNSENT_WARN_H=0
 subjects="$(cat "$TMP/inc-subjects" 2>/dev/null || echo "")"
 nowant "? unadopted never fires escalation" "unadopted" "$subjects"
 
+# UNADOPTED BODY: the incident body must name the stray refs drawn from SP_UNADOPTED_REFS
+# (the same measurement that produced SP_UNADOPTED), not a listing command. The defect
+# shipped a for-each-ref --format="%(*refname:short)" form — the tag-dereference form —
+# which appends a literal '^{}' to every branch name so every bd lookup fails and every
+# branch reports UNADOPTED. The fix removes the command and puts the actual names in the
+# body instead. (sp-gjpc)
+#
+# wt_body_multi: like wt_file_multi but also captures the stdin body passed to incident.sh.
+wt_body_multi() {   # wt_body_multi [VAR=val ...] -> appends subjects to $TMP/inc-subjects; appends bodies to $TMP/inc-bodies
+    local mock="$TMP/mock-inc-body.sh"
+    printf '#!/usr/bin/env bash\nprintf "%%s\n" "$2" >> "%s"\ncat >> "%s"\n' \
+        "$TMP/inc-subjects" "$TMP/inc-bodies" > "$mock"
+    chmod +x "$mock"
+    env -i PATH="$PATH" HOME="$TMP" \
+        SPIRA_CONF=/nonexistent SPIRA_RUN="$TMP/run" \
+        SPIRA_WATCH_GATE_WINDOW="$GATE_WINDOW" \
+        SPIRA_WATCH_PROMPT_FILE="$TMP/ops-prompt" \
+        SPIRA_INCIDENT_SH="$mock" \
+        "$@" bash "$HERE/watchtower.sh" 2>/dev/null
+}
+
+# Positive control: body names the stray ref from SP_UNADOPTED_REFS.
+fresh
+mkdir -p "$TMP/run/landstate"
+printf "SP_UNSENT=2\nSP_UNSENT_OLDEST_H=1\nSP_UNADOPTED=1\nSP_UNADOPTED_REFS='spira/sp-stray'\nSP_SENT_FAILED=0\n" \
+    > "$TMP/run/cockpit.env"
+rm -f "$TMP/inc-subjects" "$TMP/inc-bodies"
+wt_body_multi SPIRA_UNSENT_WARN_H=24
+body="$(cat "$TMP/inc-bodies" 2>/dev/null || echo "")"
+want "unadopted body names the stray ref from SP_UNADOPTED_REFS"  "sp-stray"    "$body"
+nowant "unadopted body does not contain the buggy format string"  "%(*refname"  "$body"
+
 # ======================================================================================
 echo
 echo "sending escalation dedup: two passes with different measured values produce one ref:"
