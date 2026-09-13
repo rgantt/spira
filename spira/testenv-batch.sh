@@ -56,6 +56,10 @@
 #                           recorded as "timeout" and the corpus continues. This
 #                           mirrors gate-spira.sh's per-suite watchdog so neither
 #                           runner can be held indefinitely by one runaway suite.
+#   SPIRA_BATCH_MAXPAR      max parallel suites in parallel mode (default: 20).
+#                           Prevents container PID-limit exhaustion when a large
+#                           diff-derived selection runs many suites simultaneously.
+#                           Set to 0 to run all selected suites at once (unlimited).
 
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -498,7 +502,14 @@ fi
 #                   their own fixture database.
 # ---------------------------------------------------------------------------
 _n_selected=0; for _s in $SELECTED; do _n_selected=$((_n_selected+1)); done
-log "batch: running $_n_selected suite(s) in $CNAME (mode: $MODE)"
+if [ "$MODE" = parallel ]; then
+    _maxpar_display="${SPIRA_BATCH_MAXPAR:-20}"
+    [ "${_maxpar_display:-0}" -gt 0 ] 2>/dev/null \
+        && log "batch: running $_n_selected suite(s) in $CNAME (mode: $MODE, maxpar: $_maxpar_display)" \
+        || log "batch: running $_n_selected suite(s) in $CNAME (mode: $MODE, maxpar: unlimited)"
+else
+    log "batch: running $_n_selected suite(s) in $CNAME (mode: $MODE)"
+fi
 
 _batch_red=0
 _batch_container_dead=0
@@ -599,7 +610,7 @@ if [ "$MODE" = serial ]; then
 
 else
 
-    # Parallel: all suites concurrently, each with its own SPIRA_INSTANCE,
+    # Parallel: suites run concurrently, each with its own SPIRA_INSTANCE,
     # SPIRA_RUN, and testdb fixture (TESTDB_SHARED=0 + empty TESTDB_NAME).
     #
     # Each subshell writes .out and .result immediately on completion, so
@@ -608,11 +619,24 @@ else
     #
     # A suite that passes serially and fails in parallel means shared state
     # leaked between suites — a bead against the leak, never a retry.
+    #
+    # SPIRA_BATCH_MAXPAR caps the number of concurrently running suites (default
+    # 20). Without a cap, a large diff-derived selection saturates the container's
+    # PID limit — fork() fails mid-suite and suites die with "resource temporarily
+    # unavailable". Set to 0 to disable the cap (unlimited, as before).
+    _maxpar="${SPIRA_BATCH_MAXPAR:-20}"
     _par_tmp="$(mktemp -d)"
     _par_pids=""
     _n=0
 
     for s in $SELECTED; do
+        # Throttle: wait for a slot before launching the next suite.
+        if [ "${_maxpar:-0}" -gt 0 ] 2>/dev/null; then
+            while [ "$(jobs -rp | wc -l)" -ge "$_maxpar" ]; do
+                wait -n 2>/dev/null || true
+            done
+        fi
+
         _n=$((_n+1))
         _suite_instance="${INSTANCE}-${_n}"
         _suite_run="/tmp/spira-batch-${INSTANCE}-${_n}"
