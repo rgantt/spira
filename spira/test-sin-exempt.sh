@@ -85,13 +85,18 @@ echo "test-sin-exempt.sh"
 echo
 echo "the positive control — a non-exempt ref reaches SIN:"
 # ======================================================================================
-# File the same ref SIN_AT times. The first creates the bead; subsequent calls recur.
+# SIN_AT+1 total filings: the first creates the bead with 0 recurrence events; each of
+# the next SIN_AT filings writes one event via bump_recur, so after SIN_AT+1 filings
+# recurs_of == SIN_AT and the SIN fires on the (SIN_AT+1)-th filing.  The old code wrote
+# a recurrence event on the initial filing too (so SIN fired on the SIN_AT-th total), but
+# that conflated creation with recurrence — recurs_of now counts only real recurrences
+# (second-and-later filings). (sp-doh5)
 testdb_reset
 : > "$ASK_LOG"
 SIN_AT=3
 ref="incident:test-nonexempt-sin"
 title="non-exempt incident"
-for i in $(seq 1 "$SIN_AT"); do
+for i in $(seq 1 "$((SIN_AT + 1))"); do
     file_incident "$ref" "$title" "payload $i" SPIRA_SIN_AT="$SIN_AT" >/dev/null
 done
 
@@ -119,11 +124,12 @@ fi
 echo
 echo "an exempt ref does NOT reach SIN:"
 # ======================================================================================
+# Same SIN_AT+1 total filings as the positive control, to reach recurs_of == SIN_AT.
 testdb_reset
 : > "$ASK_LOG"
 ref="incident:test-exempt-sin"
 title="exempt incident"
-for i in $(seq 1 "$SIN_AT"); do
+for i in $(seq 1 "$((SIN_AT + 1))"); do
     file_incident "$ref" "$title" "payload $i" SPIRA_SIN_AT="$SIN_AT" SPIRA_SIN_EXEMPT=1 >/dev/null
 done
 
