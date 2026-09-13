@@ -56,7 +56,7 @@
 #                           recorded as "timeout" and the corpus continues. This
 #                           mirrors gate-spira.sh's per-suite watchdog so neither
 #                           runner can be held indefinitely by one runaway suite.
-#   SPIRA_BATCH_MAXPAR      max parallel suites in parallel mode (default: 20).
+#   SPIRA_BATCH_MAXPAR      max parallel suites in parallel mode (default: 6).
 #                           Prevents container PID-limit exhaustion when a large
 #                           diff-derived selection runs many suites simultaneously.
 #                           Set to 0 to run all selected suites at once (unlimited).
@@ -503,7 +503,7 @@ fi
 # ---------------------------------------------------------------------------
 _n_selected=0; for _s in $SELECTED; do _n_selected=$((_n_selected+1)); done
 if [ "$MODE" = parallel ]; then
-    _maxpar_display="${SPIRA_BATCH_MAXPAR:-20}"
+    _maxpar_display="${SPIRA_BATCH_MAXPAR:-6}"
     [ "${_maxpar_display:-0}" -gt 0 ] 2>/dev/null \
         && log "batch: running $_n_selected suite(s) in $CNAME (mode: $MODE, maxpar: $_maxpar_display)" \
         || log "batch: running $_n_selected suite(s) in $CNAME (mode: $MODE, maxpar: unlimited)"
@@ -621,10 +621,12 @@ else
     # leaked between suites — a bead against the leak, never a retry.
     #
     # SPIRA_BATCH_MAXPAR caps the number of concurrently running suites (default
-    # 20). Without a cap, a large diff-derived selection saturates the container's
+    # 6). Without a cap, a large diff-derived selection saturates the container's
     # PID limit — fork() fails mid-suite and suites die with "resource temporarily
-    # unavailable". Set to 0 to disable the cap (unlimited, as before).
-    _maxpar="${SPIRA_BATCH_MAXPAR:-20}"
+    # unavailable". Set to 0 to disable the cap (unlimited, as before). 20 was
+    # too high: each suite starts MySQL, so 20 concurrent instances exhaust the
+    # container's PID and memory limits and kill the whole container.
+    _maxpar="${SPIRA_BATCH_MAXPAR:-6}"
     _par_tmp="$(mktemp -d)"
     _par_pids=""
     _n=0
