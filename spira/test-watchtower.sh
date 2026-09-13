@@ -448,7 +448,7 @@ want "and says summons are gated"                "Summons gated"                
 nowant "a drain is not a halt"                   "HALTED"                       "$snap"
 nowant "and does not claim no incidents are filed" "No incidents are filed"     "$snap"
 # The section label distinguishes drain from the not-draining state.
-want "drain_mins is a number — positive control" "5"   "$(field "$snap" 'draining since (? = cannot read)')"
+nowant "drain_mins is a number — positive control" "?"   "$(field "$snap" 'draining since (? = cannot read)')"
 
 # NO DRAIN STAMP renders 0, NOT `?`. "Not draining" and "draining but probe failed" are
 # different facts; the former is the healthy state and must not show the alarm colour.

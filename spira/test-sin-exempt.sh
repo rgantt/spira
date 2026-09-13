@@ -40,6 +40,10 @@ nowant() { [[ "$3" != *"$2"* ]] && ok "$1" || bad "$1" "did not want [$2] in [$3
 testdb_require test-sin-exempt
 TMP="$(mktemp -d)"; trap 'testdb_drop; rm -rf "$TMP"' EXIT INT TERM
 testdb_up sinex || { echo "test-sin-exempt: could not build a fixture database"; exit 1; }
+# lib.sh provides recurs_of for event-based recurrence counting (sp-recur-N labels
+# are no longer written; sp-lzt moved the count to the events table).
+# shellcheck disable=SC1090
+. "$HERE/lib.sh"
 
 INC="$HERE/incident.sh"
 B() { bd -C "$SPIRA_DB" "$@"; }
@@ -58,10 +62,9 @@ import json, sys
 d = json.load(sys.stdin); d = d if isinstance(d, list) else [d]
 print(" ".join(d[0].get("labels") or []))'; }
 has_label() { [[ " $(labels_of "$1") " == *" $2 "* ]]; }
-# recur_max: highest sp-recur-N value on a bead, regardless of cause suffix.
-# sp-recur-3 and sp-recur-3-unrecorded both yield 3; an empty result yields 0.
-recur_max() { B label list "$1" 2>/dev/null | grep -oE 'sp-recur-[0-9]+' \
-    | grep -oE '[0-9]+$' | sort -n | tail -1 || echo 0; }
+# recur_max: count of "recurred" events on this bead. sp-recur-N labels are no longer
+# written (sp-lzt); the count lives in the events table, read via recurs_of from lib.sh.
+recur_max() { recurs_of "$1" 2>/dev/null || echo 0; }
 
 # file_incident <ref> <title> <payload> [VAR=val ...]
 # Runs incident.sh file once with the given ref and title on stdin.
