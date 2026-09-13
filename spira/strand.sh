@@ -170,7 +170,7 @@ harness_state() {
     if [ "$_su" = '?' ]; then
         active=unknown
     else
-        active="$(systemctl --user is-active "$_su" 2>/dev/null)"
+        active="$("${SPIRA_SYSTEMCTL:-systemctl}" --user is-active "$_su" 2>/dev/null)"
         [ -n "$active" ] || active=unknown
     fi
     if [ -f "$SENTINEL_LOG" ]; then
