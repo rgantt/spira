@@ -46,7 +46,7 @@ testdb_up coversgate || { echo "test-gate-covers: could not build fixture databa
 SH="$TMP/spira"
 mkdir -p "$SH"
 cp "$HERE/gate-spira.sh" "$HERE/lib.sh" "$HERE/conf.sh" \
-   "$HERE/suite-covers.sh" \
+   "$HERE/suite-covers.sh" "$HERE/select.sh" \
    "$HERE/exclude.sh" "$HERE/inventory.sh" "$HERE/sop.sh" \
    "$HERE/literal-lint.sh" "$HERE/orphan-test.sh" "$SH/"
 [ -f "$HERE/inventory-deny" ] && cp "$HERE/inventory-deny" "$SH/"
