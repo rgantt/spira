@@ -282,6 +282,9 @@ file_one() {
         "closed "*) _rest="${_hit#closed }"; id="${_rest%% *}"; _recur_n="${_rest##* }"; _was_closed=1 ;;
     esac
     if [ -n "${id:-}" ]; then
+        # sp-recur-N labels are no longer written (sp-lzt); derive recurrence count from
+        # the events trail so the SIN threshold is computed correctly.
+        _recur_n="$(recurs_of "$id")"
         n=$((_recur_n + 1))
         if [ "$_was_closed" = 1 ]; then
             bead_reopen "$id" "Recurrence $n at $(date -u +%Y-%m-%dT%H:%M:%SZ) — same failure fingerprint, dedup within ${DEDUP_LOOKBACK_DAYS}-day window"
@@ -389,13 +392,11 @@ $(head -c 2000 "$pf")" >/dev/null 2>&1
     # mechanically rather than trusting the brief alone.
     _sop_ledger="${SPIRA_SOP_LEDGER:-${SPIRA_RUN}/sop/applied.jsonl}"
     bdq label add "$id" "delivers:note:${_sop_ledger}" >/dev/null 2>&1
-    # THE INITIAL FILING IS OCCURRENCE 1. Without this the dedup counter starts at 0 on the
-    # first recurrence, so the Nth total filing produces n=N-1 and the SIN fires one interval
-    # late. At SIN_AT=5 (10-minute sweep) that is 60 min rather than the 50 min the comment
-    # promises. The label makes the initial bead indistinguishable from a recurrence in the
-    # counter, so N filings reliably produce sp-recur-N and the SIN fires on the Nth.
-    # sp-recur-1-<cause> label is no longer written; recurrence count comes from the
-    # events trail (sp-lzt). The initial filing is still occurrence 1; see note below.
+    # THE INITIAL FILING IS NOT A RECURRENCE. Only subsequent filings write recurred events
+    # (sp-lzt, sp-ycvpd). SIN fires after SIN_AT recurrences of the initial incident, so the
+    # total filings needed = SIN_AT+1. The old label system wrote sp-recur-1 on creation,
+    # making the SIN fire on the SIN_AT-th total filing; that off-by-one was a label artefact,
+    # not the intended semantics (law-verify-the-discriminating-fact).
     # LABEL THE REF HASH so future dedup queries take the O(1) label-keyed path instead of
     # scanning all open incident beads. Added at creation so every new bead carries it from
     # the start; the backfill-ref-labels subcommand labels beads filed before this was added.

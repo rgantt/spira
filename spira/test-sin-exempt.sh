@@ -52,16 +52,17 @@ printf '%s\n' "$*" >> "$ASK_LOG"
 A
 chmod +x "$TMP/ask.sh"
 export ASK_LOG="$TMP/ask.log"
+ILOG="$TMP/run/incident.log"
 
 labels_of() { B show "$1" --json 2>/dev/null | python3 -c '
 import json, sys
 d = json.load(sys.stdin); d = d if isinstance(d, list) else [d]
 print(" ".join(d[0].get("labels") or []))'; }
 has_label() { [[ " $(labels_of "$1") " == *" $2 "* ]]; }
-# recur_max: highest sp-recur-N value on a bead, regardless of cause suffix.
-# sp-recur-3 and sp-recur-3-unrecorded both yield 3; an empty result yields 0.
-recur_max() { B label list "$1" 2>/dev/null | grep -oE 'sp-recur-[0-9]+' \
-    | grep -oE '[0-9]+$' | sort -n | tail -1 || echo 0; }
+# recur_count: number of "recurred" events in the incident log for the current section.
+# sp-recur-N labels are no longer written (sp-lzt); the incident log is the authoritative
+# count: N filings produce N-1 "recurred" lines (the first creates the bead, no recurrence).
+recur_count() { grep -c ' recurred ' "$ILOG" 2>/dev/null || echo 0; }
 
 # file_incident <ref> <title> <payload> [VAR=val ...]
 # Runs incident.sh file once with the given ref and title on stdin.
@@ -82,13 +83,17 @@ echo "test-sin-exempt.sh"
 echo
 echo "the positive control — a non-exempt ref reaches SIN:"
 # ======================================================================================
-# File the same ref SIN_AT times. The first creates the bead; subsequent calls recur.
+# File SIN_AT+1 times. The first creates the bead; subsequent calls recur.
+# SIN fires after SIN_AT *recurrences* of the initial incident. The initial filing is not
+# a recurrence, so SIN_AT+1 total filings are needed. (The old sp-recur-1 label on
+# creation made it look like SIN_AT filings sufficed; that was a label artefact.)
 testdb_reset
 : > "$ASK_LOG"
+: > "$ILOG"
 SIN_AT=3
 ref="incident:test-nonexempt-sin"
 title="non-exempt incident"
-for i in $(seq 1 "$SIN_AT"); do
+for i in $(seq 1 "$((SIN_AT+1))"); do
     file_incident "$ref" "$title" "payload $i" SPIRA_SIN_AT="$SIN_AT" >/dev/null
 done
 
@@ -108,7 +113,10 @@ for i in d:
 if [ -n "$bid" ]; then
     has_label "$bid" sin && ok "the non-exempt bead gets the sin label" \
         || bad "the non-exempt bead gets the sin label" "labels: $(labels_of "$bid")"
-    is "the recurrence counter reached $SIN_AT" "$SIN_AT" "$(recur_max "$bid")"
+    # SIN_AT+1 filings produce SIN_AT "recurred" events in the incident log (first filing
+    # creates the bead without a recurrence entry; sp-recur-N labels retired by sp-lzt).
+    is "the recurrence counter reached $SIN_AT events after $((SIN_AT+1)) filings" \
+        "$SIN_AT" "$(recur_count)"
     want "the ask was filed" "recurred" "$(cat "$ASK_LOG" 2>/dev/null)"
 fi
 
@@ -118,9 +126,10 @@ echo "an exempt ref does NOT reach SIN:"
 # ======================================================================================
 testdb_reset
 : > "$ASK_LOG"
+: > "$ILOG"
 ref="incident:test-exempt-sin"
 title="exempt incident"
-for i in $(seq 1 "$SIN_AT"); do
+for i in $(seq 1 "$((SIN_AT+1))"); do
     file_incident "$ref" "$title" "payload $i" SPIRA_SIN_AT="$SIN_AT" SPIRA_SIN_EXEMPT=1 >/dev/null
 done
 
@@ -139,7 +148,7 @@ for i in d:
 if [ -n "$bid" ]; then
     has_label "$bid" sin && bad "the exempt bead does NOT get the sin label" "labels: $(labels_of "$bid")" \
         || ok "the exempt bead does NOT get the sin label"
-    is "the recurrence counter still advances" "$SIN_AT" "$(recur_max "$bid")"
+    is "the recurrence counter still advances" "$SIN_AT" "$(recur_count)"
     is "the ask was NOT filed" "" "$(cat "$ASK_LOG" 2>/dev/null | tr -d '[:space:]')"
 fi
 
@@ -147,10 +156,10 @@ fi
 echo
 echo "an exempt ref past the threshold still increments:"
 # ======================================================================================
-# File one more beyond SIN_AT. The counter should still advance.
+# File one more beyond SIN_AT+1. The counter should still advance (ILOG carries forward).
 file_incident "$ref" "$title" "payload extra" SPIRA_SIN_AT="$SIN_AT" SPIRA_SIN_EXEMPT=1 >/dev/null
 if [ -n "$bid" ]; then
-    is "the counter advances past SIN_AT" "$(( SIN_AT + 1 ))" "$(recur_max "$bid")"
+    is "the counter advances past SIN_AT" "$((SIN_AT+1))" "$(recur_count)"
     has_label "$bid" sin \
         && bad "still no sin label after passing SIN_AT" "labels: $(labels_of "$bid")" \
         || ok "still no sin label after passing SIN_AT"
