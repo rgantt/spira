@@ -1511,28 +1511,7 @@ reopens_of() {          # reopens_of <id> -> count of reopened events for the be
     # thrash loop: every claim is matched by a close, so claims - closes stays at 0 or 1
     # regardless of how many sessions burn. reopens_of counts the reopened events directly
     # and gives the requeue cap a signal the attempts counter cannot provide.
-    local id="$1" q result=""
-    q="select count(*) from events where issue_id='$id' and event_type='reopened'"
-    # Server mode: bd sql returns a table; the count is on line 3.
-    if result="$("${SPIRA_BD:-bd}" -C "$SPIRA_DB" sql "$q" 2>/dev/null | sed -n '3p' \
-                  | tr -d ' ')" && [ -n "$result" ] \
-       && printf '%d' "$result" >/dev/null 2>&1; then
-        printf '%d' "$result"; return 0
-    fi
-    # Embedded mode: dolt reads the local storage directly.
-    local doltdb="${SPIRA_DB}/.beads/embeddeddolt"
-    if [ -d "$doltdb" ] && command -v dolt >/dev/null 2>&1; then
-        local dbname
-        dbname="$(ls "$doltdb" 2>/dev/null | grep -v '^\.' | grep -v '^\.lock$' | head -1)" \
-            || dbname="sp"
-        [ -n "$dbname" ] || dbname="sp"
-        result="$(dolt --data-dir "$doltdb" sql -q "use $dbname; $q;" 2>/dev/null \
-                  | sed -n '4p' | tr -d '| ')" || result=""
-        if [ -n "$result" ] && printf '%d' "$result" >/dev/null 2>&1; then
-            printf '%d' "$result"; return 0
-        fi
-    fi
-    printf '0'
+    _counter_events_query "${1:-}" reopened
 }
 
 # BUMP FUNCTIONS. bump_attempt and bump_timeout are no-ops (attempts are counted via
