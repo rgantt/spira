@@ -123,19 +123,19 @@ echo "positive control — bead at threshold raises requeue escalation:"
 # indistinguishable from one that fires correctly.
 testdb_reset; : > "$ASK_LOG"; rm -rf "$RUN/poison-asked"
 testdb_seed <<'JSONL'
-{"id":"sp-rq-1","title":"thrash bead at threshold","status":"open","issue_type":"task","labels":["spira","plan"],"updated_at":"2026-09-13T00:00:00Z"}
+{"id":"sp-ck4-1","title":"thrash bead at threshold","status":"open","issue_type":"task","labels":["spira","plan"],"updated_at":"2026-09-13T00:00:00Z"}
 JSONL
 
 # Seed FIXTURE_REQUEUE_AT closed/reopened pairs so reopens_of reaches the cap.
-cycle_reopen sp-rq-1 "$FIXTURE_REQUEUE_AT"
+cycle_reopen sp-ck4-1 "$FIXTURE_REQUEUE_AT"
 
 # Verify the events are there before running the sentinel.
-reopen_count="$(num "$(reopens_of sp-rq-1)")"
+reopen_count="$(num "$(reopens_of sp-ck4-1)")"
 is "fixture has $FIXTURE_REQUEUE_AT reopened events" "$FIXTURE_REQUEUE_AT" "$reopen_count"
 
 out="$(sentinel)"
 # The escalation ask.sh call carries the bead id and reopen count.
-want "requeue escalation fires naming the bead"   "sp-rq-1"              "$(cat "$ASK_LOG")"
+want "requeue escalation fires naming the bead"   "sp-ck4-1"             "$(cat "$ASK_LOG")"
 want "requeue escalation names the reopen count"  "requeued $FIXTURE_REQUEUE_AT times" "$(cat "$ASK_LOG")"
 
 # ======================================================================================
@@ -144,16 +144,16 @@ echo "below threshold — bead with fewer reopens raises no escalation:"
 # ======================================================================================
 testdb_reset; : > "$ASK_LOG"; rm -rf "$RUN/poison-asked"
 testdb_seed <<'JSONL'
-{"id":"sp-rq-2","title":"thrash bead below threshold","status":"open","issue_type":"task","labels":["spira","plan"],"updated_at":"2026-09-13T00:00:00Z"}
+{"id":"sp-ck4-2","title":"thrash bead below threshold","status":"open","issue_type":"task","labels":["spira","plan"],"updated_at":"2026-09-13T00:00:00Z"}
 JSONL
 
 # One reopen — below the fixture threshold of 3.
-cycle_reopen sp-rq-2 1
-reopen_count="$(num "$(reopens_of sp-rq-2)")"
+cycle_reopen sp-ck4-2 1
+reopen_count="$(num "$(reopens_of sp-ck4-2)")"
 is "fixture has 1 reopened event" "1" "$reopen_count"
 
 out="$(SPIRA_REQUEUE_AT=$FIXTURE_REQUEUE_AT sentinel)"
-nowant "no requeue escalation below threshold" "sp-rq-2" "$(cat "$ASK_LOG")"
+nowant "no requeue escalation below threshold" "sp-ck4-2" "$(cat "$ASK_LOG")"
 
 printf '\ntest-check4-requeue.sh: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
