@@ -110,6 +110,7 @@ sentinel() {
     SPIRA_SUMMON="$TMP/launch" \
     SPIRA_SKIP_RECLAIM=1 \
     SPIRA_SKIP_CLOSED_CHECK=1 \
+    SPIRA_SKIP_REQUEUE_CAP=1 \
         bash "$SH/sentinel.sh" 2>&1
 }
 

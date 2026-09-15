@@ -301,7 +301,14 @@ for id in $dispatchable; do
     _labels="$(bdq label list "$id" 2>/dev/null)" || _labels=""
     n="$(attempts_of "$id")"; n="${n:-0}"
     _reclaims=0
-    _requeues="$(reopens_of "$id")"; _requeues="${_requeues:-0}"
+    # SPIRA_SKIP_REQUEUE_CAP=1: skip the reopens query. Each call is one SQL round trip
+    # (~500ms on embedded Dolt), and a suite that seeds many beads and calls sentinel many
+    # times cannot afford it. Use this flag in fixtures that do not exercise the requeue cap.
+    if [ "${SPIRA_SKIP_REQUEUE_CAP:-0}" = 1 ]; then
+        _requeues=0
+    else
+        _requeues="$(reopens_of "$id")"; _requeues="${_requeues:-0}"
+    fi
 
     # REQUEUE CAP. A bead completed and requeued past the cap is stuck in a loop the harness
     # is causing: the session finished the work, closed the bead, and the harness put it back
